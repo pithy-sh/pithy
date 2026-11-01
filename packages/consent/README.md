@@ -79,7 +79,7 @@ The paths above are at the default `basePath`. Consent's client projection is `{
 
 ## Management
 
-With `controlplane()` composed, `consent:read` (kind `reads`) reads counts of current grants and withdrawals per purpose and notice version (a person counted once, by the row `hasConsent` decides on, a visitor merged into an account counted as that account), one subject's record with the merges behind it, a signed document by its hash, and a drawn signature or certificate by its hash. There is no write: consent is the person's to give and to take back. The routes are in [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13.
+With `controlplane()` composed, `consent:read` (kind `reads`) reads counts of current grants, withdrawals and expired grants per purpose and notice version (a person counted once, by the row `hasConsent` decides on, a visitor merged into an account counted as that account), the grants whose expiry has passed or falls within a window of days, whatever their method, soonest first, one subject's record with the merges behind it, a signed document by its hash, and a drawn signature or certificate by its hash. There is no write: consent is the person's to give and to take back. The routes are in [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md) §13.
 
 ## A person's data
 

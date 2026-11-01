@@ -136,8 +136,16 @@ export const ConsentVersionCountView = z
     noticeVersion: z.number().int().describe("The notice version."),
     grants: z.number().int().describe("Subjects whose latest row is a grant under this version."),
     withdrawals: z.number().int().describe("Subjects whose latest row is a withdrawal under this version."),
+    expired: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "Of `grants`, the subjects whose grant carried an expiry that has passed, so `grants - expired` still stand on expiry. Absent from a Worker on a release that cannot say.",
+      ),
   })
   .describe("Counts under one notice version.");
+export type ConsentVersionCountView = z.output<typeof ConsentVersionCountView>;
 
 /** `GET {basePath}/control-plane/purposes`. */
 export const ConsentAdminPurposesResponse = z
@@ -157,6 +165,37 @@ export const ConsentAdminPurposesResponse = z
   })
   .describe("Counts of current grants and withdrawals, per purpose and notice version.");
 export type ConsentAdminPurposesResponse = z.output<typeof ConsentAdminPurposesResponse>;
+
+/** One signed grant on the expiring list. */
+export const ConsentExpiringGrantView = z
+  .object({
+    recordId: z.string().describe("The id of the grant's row in the consent record."),
+    subject: ConsentSubjectView.describe(
+      "Whose grant this is. A visitor merged into an account is named as that account, as the counts name it.",
+    ),
+    purpose: z.string().describe("The purpose id."),
+    noticeVersion: z.number().int().describe("The notice version the grant was given under."),
+    method: Method,
+    expiresAt: z.string().describe("When the grant stops counting, ISO-8601."),
+    expired: z.boolean().describe("Whether the expiry has passed, so `hasConsent` already answers no."),
+    documentHash: z.string().nullable().describe("The SHA-256 of the exact document agreed to, or null."),
+  })
+  .describe("A subject's latest grant for a purpose, with an expiry that has passed or soon will.");
+export type ConsentExpiringGrantView = z.output<typeof ConsentExpiringGrantView>;
+
+/** `GET {basePath}/control-plane/expiring`. */
+export const ConsentExpiringResponse = z
+  .object({
+    grants: z
+      .array(ConsentExpiringGrantView)
+      .describe("The grants expired or expiring within the window, soonest expiry first."),
+    nextCursor: z
+      .string()
+      .nullable()
+      .describe("Where the next page resumes. Null at the end of the list. Opaque; pass it back verbatim."),
+  })
+  .describe("The signed grants that have expired or expire soon, one page of them.");
+export type ConsentExpiringResponse = z.output<typeof ConsentExpiringResponse>;
 
 /** One merge. */
 export const ConsentMergeView = z

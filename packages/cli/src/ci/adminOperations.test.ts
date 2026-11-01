@@ -193,6 +193,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "subjects.read": "GET /consent/control-plane/subjects/:kind/:subjectId",
     "documents.read": "GET /consent/control-plane/documents/:hash",
     "evidence.read": "GET /consent/control-plane/evidence/:hash",
+    "expiring.read": "GET /consent/control-plane/expiring",
   },
 };
 

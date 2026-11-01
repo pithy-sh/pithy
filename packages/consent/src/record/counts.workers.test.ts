@@ -69,9 +69,20 @@ const grant = (noticeVersion = 1) => ({
   method: "click" as const,
   surface: "settings",
 });
+const DAY = 86_400_000;
+
+const signed = (expiresAt: Date) => ({
+  purpose: "email.marketing",
+  noticeVersion: 1,
+  method: "typed" as const,
+  surface: "intake",
+  document: "I agree to the newsletter.",
+  typedName: "Ada Lovelace",
+  expiresAt: expiresAt.toISOString(),
+});
 const withdrawal = { purpose: "email.marketing", method: "click" as const, surface: "settings" };
 
-const counts = () => consentCounts(consentDatabase(env.DB));
+const counts = () => consentCounts(consentDatabase(env.DB), clock);
 
 beforeEach(async () => {
   clock = T0;
@@ -94,7 +105,9 @@ describe("consentCounts", () => {
     await s.grant(ada, grant());
     tick();
     await s.withdraw(ada, withdrawal);
-    expect(await counts()).toEqual([{ purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1 }]);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1, expired: 0 },
+    ]);
   });
 
   test("grants under two notice versions land in two rows", async () => {
@@ -102,8 +115,8 @@ describe("consentCounts", () => {
     tick();
     await store(2).grant(bob, grant(2));
     expect(await counts()).toEqual([
-      { purpose: "email.marketing", noticeVersion: 1, grants: 1, withdrawals: 0 },
-      { purpose: "email.marketing", noticeVersion: 2, grants: 1, withdrawals: 0 },
+      { purpose: "email.marketing", noticeVersion: 1, grants: 1, withdrawals: 0, expired: 0 },
+      { purpose: "email.marketing", noticeVersion: 2, grants: 1, withdrawals: 0, expired: 0 },
     ]);
   });
 
@@ -112,7 +125,9 @@ describe("consentCounts", () => {
     await s.grant(ada, grant());
     await s.withdraw(ada, withdrawal);
     expect(await s.hasConsent(ada, "email.marketing")).toBe(false);
-    expect(await counts()).toEqual([{ purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1 }]);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1, expired: 0 },
+    ]);
   });
 
   test("a merged visitor's grant, withdrawn by the account, counts as one withdrawal and no grant", async () => {
@@ -123,7 +138,9 @@ describe("consentCounts", () => {
     tick();
     await s.withdraw(ada, withdrawal);
     expect(await s.hasConsent(ada, "email.marketing")).toBe(false);
-    expect(await counts()).toEqual([{ purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1 }]);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1, expired: 0 },
+    ]);
   });
 
   test("a merged visitor's grant, never withdrawn, counts once, under the account", async () => {
@@ -133,13 +150,39 @@ describe("consentCounts", () => {
     await s.merge(visitor.id, ada.id);
     tick();
     await s.grant(ada, grant());
-    expect(await counts()).toEqual([{ purpose: "email.marketing", noticeVersion: 1, grants: 1, withdrawals: 0 }]);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 1, withdrawals: 0, expired: 0 },
+    ]);
   });
 
   test("an unmerged visitor counts as its own subject", async () => {
     const s = store();
     await s.grant(visitor, grant());
     await s.grant(ada, grant());
-    expect(await counts()).toEqual([{ purpose: "email.marketing", noticeVersion: 1, grants: 2, withdrawals: 0 }]);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 2, withdrawals: 0, expired: 0 },
+    ]);
+  });
+
+  test("a grant whose expiry has passed is counted as a grant and as expired", async () => {
+    const s = store();
+    await s.grant(ada, signed(new Date(T0.getTime() + DAY)));
+    await s.grant(bob, signed(new Date(T0.getTime() + 10 * DAY)));
+    clock = new Date(T0.getTime() + DAY);
+    expect(await s.hasConsent(ada, "email.marketing")).toBe(false);
+    expect(await s.hasConsent(bob, "email.marketing")).toBe(true);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 2, withdrawals: 0, expired: 1 },
+    ]);
+  });
+
+  test("an expired grant later withdrawn is a withdrawal and nothing expired", async () => {
+    const s = store();
+    await s.grant(ada, signed(new Date(T0.getTime() + DAY)));
+    clock = new Date(T0.getTime() + 2 * DAY);
+    await s.withdraw(ada, withdrawal);
+    expect(await counts()).toEqual([
+      { purpose: "email.marketing", noticeVersion: 1, grants: 0, withdrawals: 1, expired: 0 },
+    ]);
   });
 });

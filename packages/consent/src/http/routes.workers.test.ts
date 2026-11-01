@@ -4,12 +4,13 @@
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability, type PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { ConsentPurpose } from "@pithy-sh/core/src/consent/purpose";
 import type { ConsentGrant, ConsentWithdrawal } from "@pithy-sh/core/src/consent/reader";
 import { composedConsent } from "@pithy-sh/core/src/consent/reader";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
-import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { type ControlPlaneScope, PRIVACY_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
@@ -23,16 +24,19 @@ import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { CONSENT_MIGRATION_ORDER, consent } from "../capability";
 import { CONSENT_VISITOR_HEADER } from "../client/api";
 import { CONSENT_VISITOR_COOKIE } from "../config/config";
+import { consentDatabase } from "../data/tables";
 import { documentHash } from "../evidence/evidence";
 import { consent_0001_init } from "../migrations/0001_init";
+import { consentStore } from "../record/store";
 import {
   ConsentAdminPurposesResponse,
   ConsentAdminSubjectResponse,
   ConsentChoiceResponse,
+  ConsentExpiringResponse,
   ConsentPurposesResponse,
   MyConsentResponse,
 } from "./responses";
-import { CONSENT_READ_SCOPE } from "./scopes";
+import { CONSENT_READ_SCOPE, consentAdminRoutes } from "./scopes";
 
 /**
  * The consent routes, actually served: real D1 and R2, a live control-plane verifier, a capturing audit seam, a
@@ -178,20 +182,18 @@ const auth = defineCapability({
  * The composed app. The consent middleware is mounted **before** the identity stand-in, the hard order for the
  * merge: it must still see the identity set after it.
  */
+const CLINIC_RECORDS = {
+  id: "clinic.records",
+  summary: "Keep my health record.",
+  noticeVersion: 2,
+  classes: ["phi"],
+  explicit: true,
+  minimumMethod: "typed",
+  writtenWithdrawal: true,
+} as const;
+
 function makeApp(granted: readonly ControlPlaneScope[] = [CONSENT_READ_SCOPE]) {
-  const capability = consent({
-    purposes: [
-      {
-        id: "clinic.records",
-        summary: "Keep my health record.",
-        noticeVersion: 2,
-        classes: ["phi"],
-        explicit: true,
-        minimumMethod: "typed",
-        writtenWithdrawal: true,
-      },
-    ],
-  });
+  const capability = consent({ purposes: [{ ...CLINIC_RECORDS, classes: [...CLINIC_RECORDS.classes] }] });
   const capabilities: Capability[] = [auth, email, capability];
   capability.compose?.({ capabilities });
   const app = new Hono<PithyHonoEnv>();
@@ -578,7 +580,7 @@ describe("the control plane", () => {
       await (await send(app, "/consent/control-plane/purposes", CONSENT_READ_SCOPE)).json(),
     );
     expect(counts.purposes.find((p) => p.purpose.id === "email.marketing")?.versions).toEqual([
-      { noticeVersion: 1, grants: 1, withdrawals: 1 },
+      { noticeVersion: 1, grants: 1, withdrawals: 1, expired: 0 },
     ]);
 
     const subject = ConsentAdminSubjectResponse.parse(
@@ -592,10 +594,98 @@ describe("the control plane", () => {
     expect(await document.text()).toBe(DOCUMENT);
   });
 
-  test("a connection without consent:read is refused", async () => {
-    const { app } = makeApp([]);
-    const response = await send(app, "/consent/control-plane/purposes", CONSENT_READ_SCOPE);
-    expect(response.status).toBe(403);
+  test("the signed grants expired or expiring within the window, soonest first, with no name on them", async () => {
+    const { app } = makeApp();
+    const day = 86_400_000;
+    const signedBody = (user: string, days: number) =>
+      request(app, "POST", "/consent/grants", {
+        user,
+        body: {
+          purpose: "clinic.records",
+          noticeVersion: 2,
+          method: "typed",
+          surface: "intake",
+          document: DOCUMENT,
+          typedName: "Ada Lovelace",
+          representative: { name: "Byron", relationship: "parent" },
+          expiresAt: new Date(Date.now() + days * day).toISOString(),
+        },
+      });
+    expect((await signedBody("ada", 20)).status).toBe(201);
+    expect((await signedBody("grace", 90)).status).toBe(201);
+    await request(app, "POST", "/consent/grants", { user: "alan", body: marketing });
+    const past = new Date(Date.now() - 10 * day);
+    await consentStore({
+      db: consentDatabase(env.DB),
+      keys: env.PITHY_FIELD_KEYS,
+      bucket: env.CONSENT_EVIDENCE,
+      purposes: new Map([["clinic.records", ConsentPurpose.parse(CLINIC_RECORDS)]]),
+      visitorWindowMs: 30 * day,
+      now: () => past,
+      newId: () => crypto.randomUUID(),
+    }).grant(
+      { kind: "account", id: "edsger" },
+      {
+        purpose: "clinic.records",
+        noticeVersion: 2,
+        method: "typed",
+        surface: "intake",
+        document: DOCUMENT,
+        typedName: "Edsger",
+        expiresAt: new Date(past.getTime() + day).toISOString(),
+      },
+    );
+
+    const response = await send(app, "/consent/control-plane/expiring", CONSENT_READ_SCOPE);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const page = ConsentExpiringResponse.parse(body);
+    expect(page.nextCursor).toBeNull();
+    expect(page.grants.map((grant) => [grant.subject.id, grant.expired])).toEqual([
+      ["edsger", true],
+      ["ada", false],
+    ]);
+    expect(page.grants[1]).toMatchObject({ purpose: "clinic.records", noticeVersion: 2, method: "typed" });
+    expect(JSON.stringify(body)).not.toMatch(/Ada Lovelace|Byron|Edsger"/);
+
+    const wider = ConsentExpiringResponse.parse(
+      await (await send(app, "/consent/control-plane/expiring?within=120", CONSENT_READ_SCOPE)).json(),
+    );
+    expect(wider.grants.map((grant) => grant.subject.id)).toEqual(["edsger", "ada", "grace"]);
+
+    const counts = ConsentAdminPurposesResponse.parse(
+      await (await send(app, "/consent/control-plane/purposes", CONSENT_READ_SCOPE)).json(),
+    );
+    expect(counts.purposes.find((p) => p.purpose.id === "clinic.records")?.versions).toEqual([
+      { noticeVersion: 2, grants: 3, withdrawals: 0, expired: 1 },
+    ]);
+  });
+
+  test("a window outside 1 to 366 days is refused, naming the range", async () => {
+    const { app } = makeApp();
+    for (const within of ["0", "367", "1.5", "soon"]) {
+      const response = await send(app, `/consent/control-plane/expiring?within=${within}`, CONSENT_READ_SCOPE);
+      expect(response.status, within).toBe(400);
+      const body = (await response.json()) as { error?: { code?: string; message?: string; params?: unknown } };
+      expect(body.error?.code, within).toBe("validation/invalid_input");
+      expect(JSON.stringify(body.error), within).toContain("Between 1 and 366 days.");
+    }
+    for (const within of ["1", "366"]) {
+      const response = await send(app, `/consent/control-plane/expiring?within=${within}`, CONSENT_READ_SCOPE);
+      expect(response.status, within).toBe(200);
+    }
+  });
+
+  test("every management route refuses a connection without consent:read, whatever else it was granted", async () => {
+    for (const route of consentAdminRoutes("/consent")) {
+      const path = route.path.replace(":kind", "account").replace(":subjectId", "ada").replace(":hash", "a".repeat(64));
+      const { app: ungranted } = makeApp([]);
+      const refused = await send(ungranted, path, CONSENT_READ_SCOPE);
+      expect(refused.status, path).toBe(403);
+      const { app: elsewhere } = makeApp([PRIVACY_READ_SCOPE]);
+      const otherScope = await send(elsewhere, path, PRIVACY_READ_SCOPE);
+      expect(otherScope.status, path).toBe(403);
+    }
   });
 
   test("evidence is served as an attachment that will not render on this origin", async () => {
