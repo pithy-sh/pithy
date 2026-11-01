@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ConsentMethod, ConsentPurposeId } from "@pithy-sh/core/src/consent/purpose";
+import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 import { ConsentIdentity, ConsentSubjectKind } from "../data/enums";
 
@@ -134,3 +135,39 @@ export const SubjectParams = z
     subjectId: z.string().min(1).max(256).describe("The user id or the anonymous device id."),
   })
   .describe("A consent subject in the path: its kind, and its id in that kind.");
+
+/** The default window of the expiring list, in days. */
+export const DEFAULT_EXPIRING_WITHIN_DAYS = 30;
+
+/** The widest window of the expiring list, in days: a year, leap day included. */
+export const MAX_EXPIRING_WITHIN_DAYS = 366;
+
+const WITHIN_RANGE = `Between 1 and ${MAX_EXPIRING_WITHIN_DAYS} days.`;
+
+/** `GET {basePath}/control-plane/expiring`. */
+export const ExpiringGrantsQuery = z
+  .object({
+    within: z.coerce
+      .number({ error: WITHIN_RANGE })
+      .int(WITHIN_RANGE)
+      .min(1, WITHIN_RANGE)
+      .max(MAX_EXPIRING_WITHIN_DAYS, WITHIN_RANGE)
+      .default(DEFAULT_EXPIRING_WITHIN_DAYS)
+      .describe(
+        `How many days ahead to look, from 1 to ${MAX_EXPIRING_WITHIN_DAYS}. Defaults to ${DEFAULT_EXPIRING_WITHIN_DAYS}. A grant already expired is listed whatever the window.`,
+      ),
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PAGE_SIZE)
+      .optional()
+      .describe("How many grants to return. Bounded, because a verified client can still have a bug."),
+  })
+  .describe("The expiring list's query: how far ahead to look, and where to resume.");
+export type ExpiringGrantsQuery = z.output<typeof ExpiringGrantsQuery>;

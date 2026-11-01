@@ -18,17 +18,19 @@ import { consentDatabase } from "../data/tables";
 import { ConsentDocumentNotFoundError } from "../error/errors";
 import { evidenceBucket, readEvidence } from "../evidence/evidence";
 import { consentCounts } from "../record/counts";
+import { expiringGrants } from "../record/expiring";
 import { type ConsentStore, consentStore, type OpenedRecord } from "../record/store";
 import {
   ConsentAdminPurposesResponse,
   ConsentAdminSubjectResponse,
   ConsentChoiceResponse,
+  ConsentExpiringResponse,
   ConsentPurposesResponse,
   MyConsentResponse,
 } from "./responses";
-import { GrantBody, HashParams, SubjectParams, WithdrawBody } from "./schemas";
+import { ExpiringGrantsQuery, GrantBody, HashParams, SubjectParams, WithdrawBody } from "./schemas";
 import { CONSENT_READ_SCOPE } from "./scopes";
-import { mergeView, purposeView, recordView, standingView } from "./views";
+import { expiringGrantView, mergeView, purposeView, recordView, standingView, versionCountView } from "./views";
 import { phoneDevice, readVisitor, writeVisitor } from "./visitor";
 
 /**
@@ -44,6 +46,7 @@ import { phoneDevice, readVisitor, writeVisitor } from "./visitor";
  * | POST   | /consent/grants                                        | bearer \| session \| visitor, same origin | json `GrantBody` |
  * | POST   | /consent/withdrawals                                   | bearer \| session \| visitor, same origin | json `WithdrawBody` |
  * | GET    | /consent/control-plane/purposes                        | control-plane: consent:read       | — |
+ * | GET    | /consent/control-plane/expiring                        | control-plane: consent:read       | query `ExpiringGrantsQuery` |
  * | GET    | /consent/control-plane/subjects/:kind/:subjectId       | control-plane: consent:read       | param `SubjectParams` |
  * | GET    | /consent/control-plane/documents/:hash                 | control-plane: consent:read       | param `HashParams` |
  * | GET    | /consent/control-plane/evidence/:hash                  | control-plane: consent:read       | param `HashParams` |
@@ -68,6 +71,8 @@ export interface ConsentRoutesOptions {
   /** The Workers Rate Limiting binding the two writes are held to, per client IP. */
   readonly rateLimiterBinding: string;
 }
+
+const DAY_MS = 86_400_000;
 
 /** The app `DB` off the env, or a wiring fault naming it. */
 function dbOf(c: Context<PithyHonoEnv>): D1Database {
@@ -334,21 +339,47 @@ export function registerConsentRoutes(options: ConsentRoutesOptions): (app: Hono
     app.get(
       `${base}/control-plane/purposes`,
       describeRoute({
-        summary: "List every consent purpose, with counts of current grants and withdrawals per notice version.",
+        summary:
+          "List every consent purpose, with counts of current grants, withdrawals and expired grants per notice version.",
         verification: "control-plane",
         scopes: [CONSENT_READ_SCOPE],
         responses: { 200: ConsentAdminPurposesResponse },
       }),
       requireControlPlane(CONSENT_READ_SCOPE),
       async (c) => {
-        const counts = await consentCounts(consentDatabase(dbOf(c)));
+        const counts = await consentCounts(consentDatabase(dbOf(c)), new Date());
         const purposes = [...options.catalog().values()].map((purpose) => ({
           purpose: purposeView(purpose),
-          versions: counts
-            .filter((count) => count.purpose === purpose.id)
-            .map(({ noticeVersion, grants, withdrawals }) => ({ noticeVersion, grants, withdrawals })),
+          versions: counts.filter((count) => count.purpose === purpose.id).map(versionCountView),
         }));
         return c.json({ purposes } satisfies ConsentAdminPurposesResponse, 200);
+      },
+    );
+
+    app.get(
+      `${base}/control-plane/expiring`,
+      describeRoute({
+        summary: "List the signed grants that have expired or expire within a window, soonest first.",
+        verification: "control-plane",
+        scopes: [CONSENT_READ_SCOPE],
+        responses: { 200: ConsentExpiringResponse },
+      }),
+      requireControlPlane(CONSENT_READ_SCOPE),
+      validate("query", ExpiringGrantsQuery),
+      async (c) => {
+        const { within, cursor, limit } = c.req.valid("query");
+        const now = new Date();
+        const page = await expiringGrants(consentDatabase(dbOf(c)), {
+          purposes: [...options.catalog().keys()],
+          now,
+          horizon: new Date(now.getTime() + within * DAY_MS),
+          cursor,
+          limit,
+        });
+        return c.json(
+          { grants: page.grants.map(expiringGrantView), nextCursor: page.nextCursor } satisfies ConsentExpiringResponse,
+          200,
+        );
       },
     );
 
