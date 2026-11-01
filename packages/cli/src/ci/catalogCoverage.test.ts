@@ -36,14 +36,8 @@ import { readSource, sourcePaths } from "./sourceFiles";
  *   it is copied into the adopter's repository — there is no second copy in a package to compare it
  *   with, so a list here would be the second copy.
  * - **The capabilities**: every `Capability.messages` contribution in the tree, **swept for rather than
- *   named**. This is #441's verification finding and the reason this file was rewritten: it used to
- *   import `EMAIL_MESSAGES` and nothing else, because `@pithy-sh/email` was the only capability
- *   contributing one — with nothing gating that it stayed the only one. A `messages` contribution
- *   planted on `@pithy-sh/turnstile` with one untranslated English key left this file **green**, which
- *   is exactly the failure the paragraph above says it exists to prevent. Worse in the other direction:
- *   translate that capability's keys and the reverse check below reports them as strays, so the gate
- *   fails on correct work. The sweep is the same move `project/capabilityVersions.test.ts` and
- *   `capabilities/addable.test.ts` make — walk `packages/*`, find the capability file, read what it
+ *   named**, so a capability that contributes one is held to it without being listed here. The sweep
+ *   is the same move `project/capabilityVersions.test.ts` and `capabilities/addable.test.ts` make — walk `packages/*`, find the capability file, read what it
  *   declares — and it is `readdirSync`, not `import.meta.glob`, so `ci/sweepPopulation.test.ts` has
  *   nothing to enroll and the population is pinned here instead.
  * - **The errors**: `KitErrorPayload.options`. An error has no English catalog at all — the payload
@@ -110,7 +104,7 @@ const CODES = KitErrorPayload.options.map((member) => member.shape.code.value);
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 165;
+const KIT_ERROR_CODE_COUNT = 167;
 
 /**
  * The domain segment a *catalog key* must carry: a capability's `name`, or `app`.
@@ -124,13 +118,12 @@ const CAPABILITY_DOMAINS = new Set<string>([...CATALOG.map((entry) => entry.name
 
 /**
  * The five domains the **error taxonomy** owns that no capability is named after. `input` is the CLI's:
- * `input/required` is how a run that may not prompt refuses a question it cannot ask (#697).
+ * `input/required` is how a run that may not prompt refuses a question it cannot ask.
  *
- * **A frozen literal, and that is the whole point.** The previous version of this file built its
- * permitted domain set partly from `CODES.map(messageDomain)` while `CODES` was one of the sets making
- * up the keys being checked — shape 2 of `ci/sweepPopulation.test.ts`'s taxonomy, a check derived from
- * its own subject. No error code could ever have been reported by it: every code's domain was admitted
- * by construction, including the typo'd one the check was for.
+ * **A frozen literal, and that is the whole point.** Derived from `CODES`, the permitted set would admit
+ * every code's domain by construction, typos included, because `CODES` is one of the sets making up the
+ * keys being checked — shape 2 of `ci/sweepPopulation.test.ts`'s taxonomy, a check derived from its own
+ * subject. No error code could ever fail it.
  *
  * Written down, `aut/invalid_token` is in neither set and fails. And the equality below keeps the list
  * from rotting: a sixth non-capability domain is a diff a human reads, which is the moment to ask
@@ -154,7 +147,7 @@ const KIT_DOMAINS = new Set<string>([...CAPABILITY_DOMAINS, ...ERROR_ONLY_DOMAIN
  * Every screen under both template trees: a `.tsx` that is not itself a test, sorted.
  *
  * Through the one walk in `./sourceFiles`, never a private one — `sourceFiles.test.ts` fails any module
- * that writes its own, and the reason is #185's: a tripwire with its own traversal is a tripwire that
+ * that writes its own: a tripwire with its own traversal is a tripwire that
  * flakes, and a flaking tripwire gets muted. `keep` is stated because the default is `.ts` only, and a
  * screen is `.tsx`.
  */
@@ -441,7 +434,7 @@ const ENGLISH = new Map<string, string>([
  * names, and the screens, which are copied into an adopter's repository rather than imported. A
  * capability holds its own domain, in every language it is written in — `@pithy-sh/email` carries its
  * `email/` Spanish beside its English, because the send Worker is a separate deploy that has to be
- * *built* with the words or else be sent them as configuration on every provision run (#442).
+ * *built* with the words or else be sent them as configuration on every provision run.
  *
  * Read as a union rather than from one of them, because which package a sentence lives in is a fact
  * about how it reaches a Worker, and this file is asking a different question: whether the sentence
@@ -472,9 +465,8 @@ describe("the catalogs cover what the kit says", () => {
     // The anti-vacuity guard, and it is five numbers rather than one because each source can fail to
     // arrive on its own: a moved template tree, a capability whose contribution no longer resolves, a
     // union that did not import. Floors rather than equalities for the ones that grow with ordinary
-    // work — a screen gaining a line must not edit this file — and they are near-exact, measured at 71
-    // screen keys and 51 contributed keys on 2026-08-23. The taxonomy is pinned exactly because it is
-    // the one that must not grow quietly.
+    // work — a screen gaining a line must not edit this file. The taxonomy is pinned exactly because it
+    // is the one that must not grow quietly.
     expect(templateFiles().length).toBeGreaterThanOrEqual(14);
     expect(new Set(SCREENS.map(({ key }) => key)).size).toBeGreaterThanOrEqual(71);
     expect(CONTRIBUTED_EN.length).toBeGreaterThanOrEqual(51);
@@ -533,16 +525,15 @@ describe("the catalogs cover what the kit says", () => {
 describe("every capability that writes sentences is found, not remembered", () => {
   test("the sweep finds the capability packages at all", () => {
     // The guard over the derivation. A sweep that found no capability file would report no
-    // contributions, and no contributions is what "nobody writes messages" looks like — which is
-    // exactly the state this file's previous version was frozen in.
+    // contributions, and no contributions is what "nobody writes messages" looks like.
     expect(CAPABILITIES.packages.length).toBeGreaterThan(15);
     expect(CAPABILITIES.packages).toContain("email");
     expect(CAPABILITIES.packages).toContain("turnstile");
   });
 
   test("every contribution this sweep found could actually be loaded", () => {
-    // A contribution the gate cannot read is a contribution the gate is not checking, and silence is
-    // what that looked like before: the English set was simply smaller than the kit.
+    // A contribution the gate cannot read is a contribution the gate is not checking, and it fails
+    // silently: the English set is simply smaller than the kit.
     expect(LOAD_PROBLEMS).toEqual([]);
   });
 
@@ -635,8 +626,8 @@ describe("every key is namespaced to the domain that owns it", () => {
   });
 
   test("every key is spellable as a `MessageKey`", () => {
-    // No exception any more. `core` widened the domain segment to admit `_` so `rate_limit/exceeded`
-    // — a code since long before the catalog grammar existed — is a key an adopter can override.
+    // No exceptions: `core`'s domain segment admits `_`, so `rate_limit/exceeded` is a key an adopter
+    // can override like any other.
     const unspellable = [...SOURCE_KEYS, ...SHIPPED.flatMap(({ keys }) => keys)].filter(
       (key) => !MessageKey.safeParse(key).success,
     );

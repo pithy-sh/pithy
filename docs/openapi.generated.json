@@ -14027,7 +14027,7 @@
           "consent"
         ],
         "operationId": "getConsentControlPlanePurposes",
-        "summary": "List every consent purpose, with counts of current grants and withdrawals per notice version.",
+        "summary": "List every consent purpose, with counts of current grants, withdrawals and expired grants per notice version.",
         "responses": {
           "200": {
             "description": "Counts of current grants and withdrawals, per purpose and notice version.",
@@ -14117,6 +14117,12 @@
                                   "minimum": -9007199254740991,
                                   "maximum": 9007199254740991,
                                   "description": "Subjects whose latest row is a withdrawal under this version."
+                                },
+                                "expired": {
+                                  "description": "Of `grants`, the subjects whose grant carried an expiry that has passed, so `grants - expired` still stand on expiry. Absent from a Worker on a release that cannot say.",
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
                                 }
                               },
                               "required": [
@@ -14142,6 +14148,171 @@
                     "purposes"
                   ],
                   "description": "Counts of current grants and withdrawals, per purpose and notice version."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "consent:read"
+        ]
+      }
+    },
+    "/consent/control-plane/expiring": {
+      "get": {
+        "tags": [
+          "consent"
+        ],
+        "operationId": "getConsentControlPlaneExpiring",
+        "summary": "List the signed grants that have expired or expire within a window, soonest first.",
+        "parameters": [
+          {
+            "name": "within",
+            "in": "query",
+            "required": false,
+            "description": "How many days ahead to look, from 1 to 366. Defaults to 30. A grant already expired is listed whatever the window.",
+            "schema": {
+              "default": 30,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 366
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many grants to return. Bounded, because a verified client can still have a bug.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed grants that have expired or expire soon, one page of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "grants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "recordId": {
+                            "type": "string",
+                            "description": "The id of the grant's row in the consent record."
+                          },
+                          "subject": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "account",
+                                  "visitor"
+                                ],
+                                "description": "Whose consent: an account, or an anonymous visitor."
+                              },
+                              "id": {
+                                "type": "string",
+                                "description": "The user id, or the anonymous device id."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "description": "Whose grant this is. A visitor merged into an account is named as that account, as the counts name it."
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "description": "The purpose id."
+                          },
+                          "noticeVersion": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "The notice version the grant was given under."
+                          },
+                          "method": {
+                            "type": "string",
+                            "enum": [
+                              "click",
+                              "typed",
+                              "drawn",
+                              "provider"
+                            ],
+                            "description": "How the consent was given or withdrawn."
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "description": "When the grant stops counting, ISO-8601."
+                          },
+                          "expired": {
+                            "type": "boolean",
+                            "description": "Whether the expiry has passed, so `hasConsent` already answers no."
+                          },
+                          "documentHash": {
+                            "description": "The SHA-256 of the exact document agreed to, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "recordId",
+                          "subject",
+                          "purpose",
+                          "noticeVersion",
+                          "method",
+                          "expiresAt",
+                          "expired",
+                          "documentHash"
+                        ],
+                        "description": "A subject's latest grant for a purpose, with an expiry that has passed or soon will."
+                      },
+                      "description": "The grants expired or expiring within the window, soonest expiry first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque; pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "grants",
+                    "nextCursor"
+                  ],
+                  "description": "The signed grants that have expired or expire soon, one page of them."
                 }
               }
             }
@@ -24547,6 +24718,97 @@
         "x-pithy-verification": [
           "bearer",
           "session"
+        ]
+      }
+    },
+    "/matchmaking/admin/games": {
+      "get": {
+        "tags": [
+          "matchmaking"
+        ],
+        "operationId": "getMatchmakingAdminGames",
+        "summary": "List every configured game, with the key each per-game management route takes.",
+        "description": "Read from the resolved config, so it needs no binding and answers the same on an empty database.",
+        "responses": {
+          "200": {
+            "description": "The configured matchmaking games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "games": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "The game's key. What every other management route takes as `:game`."
+                          },
+                          "players": {
+                            "type": "integer",
+                            "minimum": 2,
+                            "maximum": 9007199254740991,
+                            "description": "How many players form a match in this game."
+                          },
+                          "skillPool": {
+                            "description": "The @pithy-sh/rating pool the open queue matches on, or null when it buckets by region only.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "roomCodesEnabled": {
+                            "type": "boolean",
+                            "description": "Whether a host may open a room and share a join code for this game."
+                          },
+                          "queueEnabled": {
+                            "type": "boolean",
+                            "description": "Whether players may join this game's open queue."
+                          },
+                          "maxWaitSeconds": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "After this wait, in seconds, a queued player's skill band is unbounded and they match anyone."
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "players",
+                          "skillPool",
+                          "roomCodesEnabled",
+                          "queueEnabled",
+                          "maxWaitSeconds"
+                        ],
+                        "description": "One configured matchmaking game: its roster, its rating pool, and which ways in are open."
+                      },
+                      "description": "Every game this Worker matches, in config order."
+                    }
+                  },
+                  "required": [
+                    "games"
+                  ],
+                  "description": "The configured matchmaking games."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "matchmaking:queues:read"
         ]
       }
     },
@@ -44087,6 +44349,63 @@
         ],
         "x-pithy-scopes": [
           "organization:members:write"
+        ]
+      }
+    },
+    "/organizations/admin/roles": {
+      "get": {
+        "tags": [
+          "organization"
+        ],
+        "operationId": "getOrganizationsAdminRoles",
+        "summary": "List the roles a roster write may name, and the owning role it refuses.",
+        "description": "Every role the project's catalog declares, in its order, and the role `ownership` confers, or null where the project wires none. Read from config: it names no account and no person.",
+        "responses": {
+          "200": {
+            "description": "The roles a management client may offer for a membership, and the one it must not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Every role the project's catalog declares, in the catalog's order. What the roster writes take as `role`."
+                    },
+                    "owningRole": {
+                      "description": "The role the roster writes refuse, because it moves only through the ownership route: the role the project's `ownership` confers. Null where the project wires no `ownership`, and the roster writes refuse no role. A client offers `roles` without it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "roles",
+                    "owningRole"
+                  ],
+                  "description": "The roles a management client may offer for a membership, and the one it must not."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "organization:members:read"
         ]
       }
     },

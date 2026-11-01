@@ -96,7 +96,7 @@ Where consent is the legal basis, the controller has to be able to demonstrate i
 
 **It records and gates, and decides no law.** Which jurisdiction applies, whether a purpose needs consent at all, and refusing to write a classed field without it are yours. The processing record reports the gap instead.
 
-The counts per purpose and version and a subject's record are `GET /consent/control-plane/purposes` and `GET /consent/control-plane/subjects/:kind/:subjectId`, behind `consent:read` ([`CONTROL-PLANE.md` §13](CONTROL-PLANE.md#13-capabilities-contribute-their-own-admin-routes)).
+The counts per purpose and version, the expired among them, the grants whose expiry has passed or falls soon, and a subject's record are `GET /consent/control-plane/purposes`, `GET /consent/control-plane/expiring` and `GET /consent/control-plane/subjects/:kind/:subjectId`, behind `consent:read` ([`CONTROL-PLANE.md` §13](CONTROL-PLANE.md#13-capabilities-contribute-their-own-admin-routes)).
 
 ## The record of processing
 

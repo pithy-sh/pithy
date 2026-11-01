@@ -12,20 +12,33 @@ import type { ConsentDatabase } from "../data/tables";
  * A visitor merged into an account is counted as that account, exactly as `hasConsent` reads it: the visitor's rows
  * and the account's are one history, and the latest of them decides. So a visitor who granted, signed in, and
  * withdrew from settings is one withdrawal, never a grant beside it. A visitor not merged is its own subject.
+ *
+ * `expired` is the part of `grants` whose expiry has passed at `now`, read the way `hasConsent` reads it: an expiry
+ * at or before `now` has passed.
  */
 export interface ConsentVersionCount {
   readonly purpose: string;
   readonly noticeVersion: number;
   readonly grants: number;
   readonly withdrawals: number;
+  readonly expired: number;
 }
 
-/** One SQL pass: the latest row per subject (a merged visitor under its account) and purpose, grouped by purpose, version and action. */
-export async function consentCounts(db: ConsentDatabase): Promise<ConsentVersionCount[]> {
-  const { rows } = await sql<{ purpose: string; noticeVersion: number; action: string; subjects: number }>`
-    SELECT purpose, notice_version AS "noticeVersion", action, COUNT(*) AS subjects
+/** One SQL pass: the latest row per subject (a merged visitor under its account) and purpose, grouped by purpose, version, action and expiry. */
+export async function consentCounts(db: ConsentDatabase, now: Date): Promise<ConsentVersionCount[]> {
+  const at = now.getTime();
+  const { rows } = await sql<{
+    purpose: string;
+    noticeVersion: number;
+    action: string;
+    expired: number;
+    subjects: number;
+  }>`
+    SELECT purpose, notice_version AS "noticeVersion", action,
+      CASE WHEN expires_at IS NOT NULL AND expires_at <= ${at} THEN 1 ELSE 0 END AS expired,
+      COUNT(*) AS subjects
     FROM (
-      SELECT record.purpose, record.notice_version, record.action,
+      SELECT record.purpose, record.notice_version, record.action, record.expires_at,
         ROW_NUMBER() OVER (
           PARTITION BY
             CASE WHEN merge.user_id IS NULL THEN record.subject_kind ELSE 'account' END,
@@ -38,7 +51,7 @@ export async function consentCounts(db: ConsentDatabase): Promise<ConsentVersion
         ON record.subject_kind = 'visitor' AND merge.visitor_id = record.subject_id
     )
     WHERE position = 1
-    GROUP BY purpose, notice_version, action
+    GROUP BY purpose, notice_version, action, expired
     ORDER BY purpose, notice_version
   `.execute(db);
   const counts = new Map<string, ConsentVersionCount>();
@@ -49,11 +62,13 @@ export async function consentCounts(db: ConsentDatabase): Promise<ConsentVersion
       noticeVersion: Number(row.noticeVersion),
       grants: 0,
       withdrawals: 0,
+      expired: 0,
     };
     counts.set(key, {
       ...current,
       grants: current.grants + (row.action === "grant" ? Number(row.subjects) : 0),
       withdrawals: current.withdrawals + (row.action === "withdraw" ? Number(row.subjects) : 0),
+      expired: current.expired + (row.action === "grant" && Number(row.expired) === 1 ? Number(row.subjects) : 0),
     });
   }
   return [...counts.values()];

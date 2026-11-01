@@ -11,9 +11,8 @@ import { esScreens } from "./screens";
 /**
  * The Spanish screens and email copy, against the invariants that hold **inside** this package.
  *
- * **Until #441's verification pass these 122 keys were checked by nothing.** `esErrors` had
- * `errors.test.ts` beside it, holding it to `KitErrorPayload`; its two siblings had no file at all, and
- * a dropped key, a blank entry or a value left in English shipped green.
+ * `errors.test.ts` holds `esErrors` to `KitErrorPayload`; this file holds the rest, so a dropped key, a
+ * blank entry or a value left in English fails here.
  *
  * ## What is here, and what is deliberately not
  *
@@ -77,12 +76,9 @@ const ENGLISH_WORD = new RegExp(`\\b(?:${ENGLISH_ONLY.join("|")})\\b`, "i");
 describe("the catalogs are the size they are", () => {
   test("each file carries what it is for, so every comparison below has something in it", () => {
     // The anti-vacuity guard, per file rather than in total: either can empty on its own, and a total
-    // would hide one going to zero while the other grew. Near-exact, measured on 2026-08-24 — 71
-    // screen keys — and a floor rather than an equality for the one that grows with ordinary work. The
-    // error catalog is pinned exactly, because it answers to a closed taxonomy.
-    //
-    // The email copy is counted by `@pithy-sh/email`'s own suite now, not here: it moved beside that
-    // capability's English in #442, so the send Worker is built with it rather than sent it.
+    // would hide one going to zero while the other grew. A floor rather than an equality for the screens,
+    // which grow with ordinary work. The error catalog is pinned exactly, because it answers to a closed
+    // taxonomy. The email copy is counted by `@pithy-sh/email`'s own suite, beside its English.
     expect(Object.keys(esScreens).length).toBeGreaterThanOrEqual(71);
     // The fourth hand-written copy of the taxonomy size — the other three are
     // packages/core/src/error/payload.test.ts, packages/cli/src/ci/catalogCoverage.test.ts and
@@ -92,7 +88,7 @@ describe("the catalogs are the size they are", () => {
     expect(
       Object.keys(esErrors),
       "the taxonomy size moved: update all four hand-written counts — core/src/error/payload.test.ts, cli/src/ci/catalogCoverage.test.ts, i18n/src/catalogs/es/errors.test.ts and this one — plus the Spanish sentence in i18n/src/catalogs/es/errors.ts, then run `bun run docs-catalog`",
-    ).toHaveLength(165);
+    ).toHaveLength(167);
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 
@@ -194,21 +190,18 @@ describe("placeholders are spelled the way `interpolate` spells them", () => {
   });
 
   test("the catalogs really do carry placeholders, so that sweep is not over nothing", () => {
-    // Re-measured on 2026-08-24 at 14, down from 30: the email copy moved to `@pithy-sh/email` in
-    // #442 and took most of the interpolated sentences with it. Their placeholder parity against the
-    // English is held by `packages/cli/src/ci/catalogCoverage.test.ts`, which reads both homes —
-    // not by `@pithy-sh/email`'s own suite, which has no `es` gate of its own.
+    // The email copy's placeholder parity against the English is held by
+    // `packages/cli/src/ci/catalogCoverage.test.ts`, which reads both homes — not by `@pithy-sh/email`'s
+    // own suite, which has no `es` gate of its own.
     const withParams = ENTRIES.filter(({ message }) => message.includes("{")).length;
     expect(withParams).toBeGreaterThanOrEqual(13);
   });
 
   test("an error entry carries one only where the kit guarantees the value", () => {
     // The full gate — both directions, with the population check — is `errors.test.ts`. Stated here
-    // because this file is where the sweep runs, and because the sentence it replaces was the same
-    // false premise: "no throw site in the kit passes `params` yet" stopped being true when
-    // `@pithy-sh/cloudflare`'s `cloudflareRefusal` landed (#534). What matters on every path is
-    // unchanged: `interpolate` leaves an unsupplied placeholder written out, so a locale may name only
-    // a param a throw site promises on every path — `core`'s `GUARANTEED_ERROR_PARAMS`.
+    // because this file is where the sweep runs. `interpolate` leaves an unsupplied placeholder written
+    // out, so a locale may name only a param a throw site promises on every path — `core`'s
+    // `GUARANTEED_ERROR_PARAMS`.
     const unfilled = Object.entries(esErrors).filter(([key, message]) =>
       [...message.matchAll(PLACEHOLDER)].some(([, name]) => !guaranteedErrorParams(key).includes(name ?? "")),
     );
@@ -235,8 +228,7 @@ describe("a plural family is complete", () => {
   });
 
   test("there are plural families at all", () => {
-    // Two, and pinned at two rather than at 95% of it: four of the six lived in the email copy, which
-    // moved out in #442, and a population this small has no slack to give. It can only grow.
+    // Pinned at two rather than at 95% of it: a population this small has no slack to give.
     expect(Object.keys(es).filter((key) => key.endsWith(".other")).length).toBeGreaterThanOrEqual(2);
   });
 });

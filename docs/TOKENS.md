@@ -157,7 +157,7 @@ pithy token mint runtime --env prod
 Two things to know before you mint it:
 
 - **The minter must hold every runtime permission too.** Cloudflare refuses to delegate a permission the caller does not hold, so the bootstrap token needs the groups, or the signed-in session needs their scopes. `pithy cloudflare connect` asks for every scope the composition needs, so a session made after you add media can mint it. A session made before cannot: connect again.
-- **A token that already exists needs a rotate, not a mint.** Compose media after `runtime` was minted for secrets alone, and the token lacks Images Write, Stream Write and Account Analytics Read. Compose turnstile after it, and the token lacks Account Analytics Read. A mint hands back a fresh value with the old policies. `pithy token list` reports it as missing a grant and names the rotate.
+- **A token that already exists needs a rotate, not a mint.** Compose media after `runtime` was minted for secrets alone, and the token lacks Images Write, Stream Write and Account Analytics Read. Compose turnstile after it, and the token lacks Account Analytics Read. A mint hands back a fresh value with the old policies. `pithy token list` reports it as missing a grant and names the rotate. Until it is rotated, an analytics read on it answers `media/analytics_forbidden` or `turnstile/analytics_forbidden`, 409, naming Account Analytics Read and the rotate that adds it.
 
 ### Upgrading to one token
 

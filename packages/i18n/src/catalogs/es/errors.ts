@@ -23,9 +23,7 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
  * nobody supplied written out as `{apiAnswer}`, so writing one here is a claim about a *call site*:
  * that every throw of this code passes that name, on the degraded paths too. `core`'s
  * `GUARANTEED_ERROR_PARAMS` is where a throw site makes that promise, and `./errors.test.ts` holds this
- * file to it — a placeholder no code guarantees fails there. For a year the sound gate was the absence
- * of placeholders, because no throw site passed `params` at all; `@pithy-sh/cloudflare`'s
- * `cloudflareRefusal` is the first that does (#534), which is why the pin changed rather than relaxed.
+ * file to it — a placeholder no code guarantees fails there.
  *
  * `cloudflare/request_failed` is that sentence. Cloudflare's own words are English we did not write and
  * cannot translate, but its numeric code is what an operator quotes into a search, and dropping it left
@@ -96,6 +94,7 @@ export const esErrors: MessageCatalog = {
   "turnstile/config": "La verificación de seguridad no está disponible ahora.",
   "turnstile/analytics_window": "Ese periodo queda fuera de lo que Cloudflare conserva.",
   "turnstile/analytics_unavailable": "Cloudflare no ofrece estas estadísticas a esta cuenta.",
+  "turnstile/analytics_forbidden": "Al token de Cloudflare de este Worker le falta el permiso Account Analytics Read.",
 
   // Audit.
   "audit/invalid_event": "El evento de auditoría no es válido.",
@@ -109,6 +108,7 @@ export const esErrors: MessageCatalog = {
   "media/enrichment_failed": "No se ha podido analizar el archivo.",
   "media/analytics_window": "Ese periodo queda fuera de lo que Cloudflare conserva.",
   "media/analytics_unavailable": "Cloudflare no ofrece estas estadísticas a esta cuenta.",
+  "media/analytics_forbidden": "Al token de Cloudflare de este Worker le falta el permiso Account Analytics Read.",
 
   // Leaderboards.
   "leaderboard/board_not_found": "Esa clasificación no existe.",

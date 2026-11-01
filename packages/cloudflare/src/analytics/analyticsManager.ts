@@ -5,16 +5,17 @@ import { z } from "zod";
 import { CloudflareInvalidResponseError, cloudflareRefusal, cloudflareRequest, decodeResponse } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 import { type AnalyticsDataset, IMAGE_REQUESTS, STREAM_MINUTES, TURNSTILE_EVENTS } from "./datasets";
+import { ANALYTICS_PERMISSION, GRAPHQL_AUTH_CODES } from "./forbidden";
 
 /**
- * **Cloudflare's GraphQL Analytics API, for the account-level datasets the kit reads (#728).**
+ * **Cloudflare's GraphQL Analytics API, for the account-level datasets the kit reads.**
  *
  * One endpoint, `POST /graphql`, reached through the SDK's raw `post` like every other call the typed SDK
  * does not cover — never a hand-rolled `fetch` (CLAUDE.md §Cloudflare access). It answers HTTP 200 with
  * `{ data, errors }` even when it refuses, so `errors` is read on every answer and a non-empty one is a
  * refusal in Cloudflare's own words.
  *
- * The token it runs on is the application's one `runtime` token, carrying "Account Analytics Read", whose grain is
+ * The token it runs on is the application's one `runtime` token, carrying {@link ANALYTICS_PERMISSION}, whose grain is
  * the whole account. This manager narrows nothing on its own: every query takes the keys it is about, and
  * the caller decides which keys those are.
  */
@@ -145,19 +146,26 @@ export class CloudflareAnalyticsManager extends CloudflareManager {
     const raw = await cloudflareRequest(
       operation,
       () => this.getClient().post<unknown>("/graphql", { body: { query, variables } }),
-      { permission: "Account Analytics Read" },
+      { permission: ANALYTICS_PERMISSION },
     );
     const answer = decodeResponse(GraphQLAnswer, raw, operation);
     const errors = answer.errors ?? [];
     if (errors.length > 0) {
+      const codes = errors.map((error) => error.extensions?.code);
+      // Every refusal answers 200, so the status handed on is the one the GraphQL code means: a spent rate
+      // budget is the 429 worth asking again, and `authz` is the 403 whose action line names the grant.
+      const status = codes.some((code) => code === RATE_BUDGET_CODE)
+        ? 429
+        : codes.some((code) => code !== undefined && GRAPHQL_AUTH_CODES.has(code))
+          ? 403
+          : undefined;
       throw cloudflareRefusal({
         problem: `Cloudflare request failed: ${operation}.`,
         apiErrors: errors.map((error) => ({ ...(error.message === undefined ? {} : { message: error.message }) })),
-        permission: "Account Analytics Read",
-        // A spent rate budget answers 200 too, with `extensions.code: "budget"` (measured 2026-10-17). It
-        // is the one GraphQL refusal that is worth asking again, so it is handed on as the 429 it means.
-        ...(errors.some((error) => error.extensions?.code === RATE_BUDGET_CODE) ? { status: 429 } : {}),
+        permission: ANALYTICS_PERMISSION,
+        ...(status === undefined ? {} : { status }),
         detail: JSON.stringify(errors),
+        cause: errors,
       });
     }
     return answer.data;
@@ -267,7 +275,7 @@ export class CloudflareAnalyticsManager extends CloudflareManager {
   }
 
   /**
-   * Turnstile events per sitekey and event type inside the window, for the sitekeys given (#731). The sitekey
+   * Turnstile events per sitekey and event type inside the window, for the sitekeys given. The sitekey
    * filter is what scopes the account-wide dataset to the widgets the caller is about. Absent means none.
    */
   async turnstileEvents(
