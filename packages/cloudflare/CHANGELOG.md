@@ -1,5 +1,11 @@
 # @pithy-sh/cloudflare
 
+## 0.9.1
+
+### Patch Changes
+
+- [#914](https://github.com/pithy-sh/pithy/pull/914) [`bdc24ee`](https://github.com/pithy-sh/pithy/commit/bdc24ee06d0612d44ddd568c4271cc1e0787f1eb) Thanks [@kingmesal](https://github.com/kingmesal)! - A bucket or KV namespace your own app declares now gets its permission on the CI token and the sign-in, so `pithy provision` can create it.
+
 ## 0.9.0
 
 ### Minor Changes
