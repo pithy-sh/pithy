@@ -57,6 +57,34 @@ describe("deriveSessionScopes", () => {
   });
 });
 
+describe("bindings an app declares itself", () => {
+  const scopesFor = (capabilities: Parameters<typeof resolveTokenProfiles>[0]) =>
+    deriveSessionScopes({
+      environments: ["dev", "staging"],
+      profilesFor: () => resolveTokenProfiles(capabilities),
+      declaresDomain: () => false,
+      override: () => undefined,
+    });
+
+  test("an app's own r2 bucket asks the sign-in for R2, with no R2 capability composed", () => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "r2", name: "X" }] });
+    const scopes = scopesFor([app]);
+    expect(scopes).toContain("workers-r2.write");
+    expect(scopes).not.toContain("workers-r2.read");
+  });
+
+  test("an app's own kv namespace asks the sign-in for KV", () => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "kv", name: "CACHE" }] });
+    expect(scopesFor([app])).toContain("workers-kv-storage.write");
+  });
+
+  test("a project binding neither asks for neither", () => {
+    const scopes = scopesFor([defineCapability({ name: "app", requiredBindings: [{ type: "d1", name: "DB" }] })]);
+    expect(scopes).not.toContain("workers-r2.write");
+    expect(scopes).not.toContain("workers-kv-storage.write");
+  });
+});
+
 describe("the runtime token's scopes (#728)", () => {
   const scopesFor = (capabilities: Parameters<typeof resolveTokenProfiles>[0]) =>
     deriveSessionScopes({

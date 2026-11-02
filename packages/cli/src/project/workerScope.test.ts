@@ -199,6 +199,24 @@ describe("projectCapabilities", () => {
     expect(projectCapabilities([resolved("api", [audit]), resolved("collab", [auditAgain])])[0]).toBe(audit);
   });
 
+  test("the adopter's own app is in the union, with the bindings it declares itself", async () => {
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [
+        { type: "r2", name: "PRIVACY_ARCHIVE", optional: true },
+        { type: "kv", name: "CACHE" },
+      ] satisfies BindingSpecInput[],
+    });
+    const workers = await resolveWorkers({
+      projectDir: "/proj",
+      discoverWorkers: async () => [target("board")],
+      loadConfig: configs({ "/proj/apps/board": { capabilities: [], app } as WorkerConfig }),
+    });
+
+    const bindings = projectCapabilities(workers).flatMap((capability) => capability.requiredBindings);
+    expect(bindings.map((binding) => `${binding.type}:${binding.name}`)).toEqual(["r2:PRIVACY_ARCHIVE", "kv:CACHE"]);
+  });
+
   test("a project with no capabilities anywhere yields an empty list", () => {
     expect(projectCapabilities([resolved("api", [])])).toEqual([]);
   });
@@ -234,7 +252,7 @@ describe("resolveSingleWorker", () => {
 
     expect(error).toBeInstanceOf(InputRequiredError);
     // The action line tells an agent exactly what to pass, and which names are valid — and so does the
-    // payload, as data: `input/required` names the flag and its choices (#697).
+    // payload, as data: `input/required` names the flag and its choices.
     const payload = (error as InputRequiredError).payload;
     expect(payload.action).toMatch(/--worker <name>.*api, collab/s);
     expect(payload.flag).toBe("--worker");
@@ -278,7 +296,7 @@ describe("resolveSingleWorker", () => {
   });
 
   /**
-   * **The choices are what `--worker` is documented to take: the apps/ directory (#697).** `docs/CLI.md` §3.3's
+   * **The choices are what `--worker` is documented to take: the apps/ directory.** `docs/CLI.md` §3.3's
    * sample shows `["api", "admin"]`, and every remedy in the kit names the directory; a script name such as
    * `demo-api` is accepted too, but a Worker renamed in `wrangler.jsonc` is still `apps/api`.
    */
@@ -327,7 +345,7 @@ describe("resolveSingleWorker", () => {
 
 describe("resolveWorkersReporting", () => {
   test("reports a discovered Worker whose pithy.config.ts is absent, rather than swallowing it", async () => {
-    // `#454`'s guard closes "a config throws", not "a config is absent". A Worker whose `pithy.config.ts`
+    // A config that throws is reported; so is one that is absent. A Worker whose `pithy.config.ts`
     // was deleted on the branch is a `wrangler.jsonc` with nothing to compose — so the resolved set is
     // *incomplete*, not merely smaller. `feature destroy`'s reconcile backstop scans the union's bindings,
     // so a silently missing Worker leaks every resource it declared while the run exits 0.
@@ -393,9 +411,8 @@ describe("resolveWorkerSet", () => {
   });
 
   test("**an absent config is unknowable too, and says *absent* — naming the worker**", async () => {
-    // `#454`'s guard closes "a config throws", not "a config is absent", and reporting the second as the
-    // first points the reader at a file that does not exist. The names come from `skipped`, which
-    // `resolveWorkersReporting` already computed.
+    // An absent config is not a config that throws, and reporting it as one points the reader at a file
+    // that does not exist. The names come from `skipped`, which `resolveWorkersReporting` already computed.
     const answered = await resolveWorkerSet({
       projectDir: "/proj",
       discoverWorkers: async () => [target("api"), target("collab")],
@@ -438,7 +455,7 @@ describe("projectCapabilitySet", () => {
     expect(isUnknown(answered)).toBe(true);
   });
 
-  test("a project with no Workers answers [], not unknowable — review of #454", async () => {
+  test("a project with no Workers answers [], not unknowable", async () => {
     expect(await projectCapabilitySet("/proj", { discoverWorkers: async () => [] })).toEqual([]);
   });
 

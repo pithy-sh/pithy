@@ -61,6 +61,47 @@ describe("resolveTokenProfiles — ci-system aggregation", () => {
     expect(resolveTokenProfiles([app])[RUNTIME_PROFILE]).toBeUndefined();
   });
 
+  test("an app's own r2 binding puts r2:write on ci-system, and no read key, with no capability declaring it", () => {
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [{ type: "r2", name: "PRIVACY_ARCHIVE", optional: true }],
+    });
+    const perms = resolveTokenProfiles([app])[CI_SYSTEM_PROFILE]?.permissions ?? [];
+    expect(perms).toContain("r2:write");
+    expect(perms).not.toContain("r2:read");
+    expect(resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions).not.toContain("r2:write");
+    expect(resolveTokenProfiles([app])[RUNTIME_PROFILE]).toBeUndefined();
+  });
+
+  test("an app's own kv binding puts kv:write on ci-system, once however many bind it", () => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "kv", name: "CACHE" }] });
+    const other = defineCapability({ name: "other", requiredBindings: [{ type: "kv", name: "SESSIONS" }] });
+    const perms = resolveTokenProfiles([app, other])[CI_SYSTEM_PROFILE]?.permissions ?? [];
+    expect(perms.filter((p) => p === "kv:write")).toEqual(["kv:write"]);
+    expect(resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions).not.toContain("kv:write");
+  });
+
+  test("a vectorize binding puts vectorize:write on ci-system, and no read key, because its provisioner creates the index", () => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "vectorize", name: "INDEX" }] });
+    const perms = resolveTokenProfiles([app])[CI_SYSTEM_PROFILE]?.permissions ?? [];
+    expect(perms).toContain("vectorize:write");
+    expect(perms).not.toContain("vectorize:read");
+  });
+
+  test("a d1 binding adds nothing the base does not already carry", () => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "d1", name: "DB" }] });
+    expect(resolveTokenProfiles([app])[CI_SYSTEM_PROFILE]?.permissions).toEqual(
+      resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions,
+    );
+  });
+
+  test.each(["secret", "workflow"] as const)("a %s binding adds nothing the base does not already carry", (type) => {
+    const app = defineCapability({ name: "app", requiredBindings: [{ type, name: "X" }] });
+    expect(resolveTokenProfiles([app])[CI_SYSTEM_PROFILE]?.permissions).toEqual(
+      resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions,
+    );
+  });
+
   test("an unknown ciPermissions key fails loudly", () => {
     const bad = defineCapability({ name: "bad", requiredBindings: [], ciPermissions: ["d1:destroy"] });
     expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);
