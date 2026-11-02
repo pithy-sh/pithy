@@ -599,8 +599,8 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
 
     /**
      * CONTROL-PLANE READ. Every declared sink beside its own delivery row: one primary-key lookup per sink, bounded
-     * by the config. Not audited, unlike the trail's reads: it reads delivery state, never the trail, and a pane
-     * polling it would otherwise append to the trail, and ship to every sink, on each poll.
+     * by the config. Records no audit action of its own, unlike the trail's reads: it reads delivery state, never
+     * the trail, so the gate's `controlplane/call_allowed` row is its only record.
      */
     app.get(
       `${base}/control-plane/sinks`,
