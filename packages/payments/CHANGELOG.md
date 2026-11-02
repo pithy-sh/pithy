@@ -1,5 +1,14 @@
 # @pithy-sh/payments
 
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+  - @pithy-sh/ledger@0.6.2
+  - @pithy-sh/secrets@0.6.4
+
 ## 0.7.1
 
 ### Patch Changes

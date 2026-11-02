@@ -1,5 +1,12 @@
 # @pithy-sh/artifacts
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+
 ## 0.3.1
 
 ### Patch Changes

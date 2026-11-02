@@ -1,5 +1,18 @@
 # @pithy-sh/organization
 
+## 0.10.0
+
+### Minor Changes
+
+- [#908](https://github.com/pithy-sh/pithy/pull/908) [`4925b32`](https://github.com/pithy-sh/pithy/commit/4925b32f09a4e74ca0e049f44f9e82f5de07166b) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can read an organization's roles, and which one owns, so it never offers a role the Worker refuses.
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+  - @pithy-sh/auth@0.12.2
+  - @pithy-sh/email@0.8.2
+
 ## 0.9.1
 
 ### Patch Changes

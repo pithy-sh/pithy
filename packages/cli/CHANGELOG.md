@@ -1,5 +1,20 @@
 # @pithy-sh/cli
 
+## 0.21.0
+
+### Minor Changes
+
+- [#910](https://github.com/pithy-sh/pithy/pull/910) [`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9) Thanks [@kingmesal](https://github.com/kingmesal)! - The media and turnstile analytics reads name the permission their token is missing, so a dashboard can say which grant to add.
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+  - @pithy-sh/cloudflare@0.9.0
+  - @pithy-sh/turnstile@0.8.0
+  - @pithy-sh/email@0.8.2
+  - @pithy-sh/secrets@0.6.4
+
 ## 0.20.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @pithy-sh/matchmaking
 
+## 0.6.0
+
+### Minor Changes
+
+- [#907](https://github.com/pithy-sh/pithy/pull/907) [`3e26392`](https://github.com/pithy-sh/pithy/commit/3e26392b07ea5df34c6975bfd7bd5487401c249e) Thanks [@kingmesal](https://github.com/kingmesal)! - A management client can list a Worker's matchmaking games, so it never has to guess one.
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+  - @pithy-sh/auth@0.12.2
+  - @pithy-sh/rating@0.6.2
+
 ## 0.5.1
 
 ### Patch Changes

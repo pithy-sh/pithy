@@ -1,5 +1,17 @@
 # @pithy-sh/audit
 
+## 0.8.0
+
+### Minor Changes
+
+- [#911](https://github.com/pithy-sh/pithy/pull/911) [`47a4b08`](https://github.com/pithy-sh/pithy/commit/47a4b086be33ba3cd46f004f6ea4dcf3eb11c0a6) Thanks [@kingmesal](https://github.com/kingmesal)! - See every sink the trail ships to, each with its backlog, last delivery and dead letters.
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+  - @pithy-sh/secrets@0.6.4
+
 ## 0.7.1
 
 ### Patch Changes

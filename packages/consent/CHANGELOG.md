@@ -1,5 +1,16 @@
 # @pithy-sh/consent
 
+## 0.2.0
+
+### Minor Changes
+
+- [#909](https://github.com/pithy-sh/pithy/pull/909) [`b6ceb77`](https://github.com/pithy-sh/pithy/commit/b6ceb77f2882311899e6ec33bc43c5a2f30cf0f7) Thanks [@kingmesal](https://github.com/kingmesal)! - See which consents given with an expiry have expired and which expire soon, per purpose, without opening each record.
+
+### Patch Changes
+
+- Updated dependencies [[`6a5d5ef`](https://github.com/pithy-sh/pithy/commit/6a5d5ef729b693894e8cc09e298439364bb15cd9)]:
+  - @pithy-sh/core@0.16.0
+
 ## 0.1.1
 
 ### Patch Changes
