@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { CloudflareNotConfiguredError } from "../client/errors";
 import { accountResource, type TokenPermission, zoneResources } from "./accountTokensManager";
+import { bindingPermissions } from "./bindingPermissions";
 import {
   isPermissionKey,
   isZoneScopedPermission,
@@ -22,8 +23,7 @@ import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "./runtime";
  * - `dev-vars` — `<config>/<project>/tokens.json`, keyed by environment and outside every checkout.
  *   **Read by an operator, never by a command** — nothing resolves a credential from it. The store for
  *   the `ci-system` token: mint it here, read the value
- *   out, and set it as CI's `CLOUDFLARE_API_TOKEN`. It wrote `.dev.vars.<env>` *inside* the project until
- *   #182; the name stays because it is a public `--store` flag value.
+ *   out, and set it as CI's `CLOUDFLARE_API_TOKEN`. The name is a public `--store` flag value.
  * - `ephemeral` — nothing is written; the value is used in-process and discarded. The one-step CI
  *   path — CI can't read the CF Secrets Store, so it mints and uses the token in the same job.
  */
@@ -108,29 +108,18 @@ function assertPermissionKeys(keys: readonly string[], where: string): Permissio
 
 /**
  * Build the aggregating `ci-system` profile: the base permissions ∪ every capability's `ciPermissions` ∪
- * `queues:write` where a composed capability binds a queue ∪ `artifacts:write` where one binds Artifacts.
- *
- * **The queue permission is derived from the binding, not declared (#662).** `pithy provision` creates the queue
- * behind every `queue` binding it composes, the adopter's own app's included, and the app has no `ciPermissions`
- * anyone would think to write. A permission read off the binding cannot be forgotten by whoever declares it.
+ * what every composed binding needs, from `BINDING_PERMISSIONS`. The adopter's own app counts as a
+ * capability, so a resource it binds brings its permission with no declaration.
  */
 function ciSystemProfile(capabilities: readonly Capability[]): TokenProfile {
   const permissions: PermissionKey[] = [...CI_SYSTEM_BASE];
+  const add = (key: PermissionKey) => {
+    if (!permissions.includes(key)) permissions.push(key);
+  };
   for (const capability of capabilities) {
-    for (const key of assertPermissionKeys(capability.ciPermissions ?? [], `Capability "${capability.name}"`)) {
-      if (!permissions.includes(key)) permissions.push(key);
-    }
+    for (const key of assertPermissionKeys(capability.ciPermissions ?? [], `Capability "${capability.name}"`)) add(key);
   }
-  const bindsQueue = capabilities.some((capability) =>
-    capability.requiredBindings.some((binding) => binding.type === "queue"),
-  );
-  if (bindsQueue && !permissions.includes("queues:write")) permissions.push("queues:write");
-  // **And `artifacts:write` where one binds Artifacts (#673)**, for the same reason: `pithy feature destroy` reaps
-  // every repo in the feature's namespace under this token, and the app that binds it declares no `ciPermissions`.
-  const bindsArtifacts = capabilities.some((capability) =>
-    capability.requiredBindings.some((binding) => binding.type === "artifacts"),
-  );
-  if (bindsArtifacts && !permissions.includes("artifacts:write")) permissions.push("artifacts:write");
+  for (const key of bindingPermissions(capabilities)) add(key);
   return {
     name: CI_SYSTEM_PROFILE,
     permissions,
@@ -214,7 +203,7 @@ export function resolveProfile(
 /**
  * Refuse a zone-scoped key anywhere a policy is being built **account-scoped**.
  *
- * A zone-level permission group handed the account resource is the quiet failure (#651): Cloudflare
+ * A zone-level permission group handed the account resource is the quiet failure: Cloudflare
  * mints the token without complaint and then answers "No access to the specified resource" at the call,
  * which is a CI failure hours later with nothing in it naming the scope. Which zones a token gets is
  * never a typed choice — it is the project's declared `domains`, resolved at mint time — so a key naming
@@ -243,17 +232,16 @@ export function permissionsForKeys(keys: PermissionKey[], accountId: string): To
  *
  * This is the second policy on the `ci-system` token, beside the account-scoped one every profile
  * builds. It exists because `pithy deploy` of an environment with a declared domain calls
- * `POST /zones/<zone>/workers/routes`, the one deploy step the CI credential could not make (#651) — and
+ * `POST /zones/<zone>/workers/routes`, which no account-scoped group reaches — and
  * it is a policy of its own rather than a permission on the profile because its resources are zones,
  * which a profile cannot name: they are resolved from the domains at mint time.
  *
  * **This limits the route, not the token.** The account policy beside it carries Workers Scripts Write,
- * which attaches a custom domain on any zone the account holds (measured, #709; `docs/TOKENS.md`). Only
+ * which attaches a custom domain on any zone the account holds (measured; `docs/TOKENS.md`). Only
  * the route calls are held to the declared zones.
  *
  * **Empty for an empty zone list, deliberately.** A project that declares no domain attaches no route,
- * so it mints exactly the token it minted before this existed. No new permission for a project that
- * needs none.
+ * so it gets no zone permission.
  */
 export function routePermissions(zoneIds: readonly string[]): TokenPermission[] {
   if (zoneIds.length === 0) return [];

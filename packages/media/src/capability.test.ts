@@ -147,9 +147,10 @@ describe("media() — the runtime token (#728)", () => {
     expect("claimsTokenProfiles" in media({})).toBe(false);
   });
 
-  test("adds nothing to the CI token — media's Cloudflare calls run in the Worker, never in CI", () => {
+  test("declares nothing for the CI token: its bucket brings R2, and its Cloudflare calls run in the Worker", () => {
     expect(media({}).ciPermissions).toBeUndefined();
-    expect(resolveTokenProfiles([media({})])["ci-system"]).toEqual(resolveTokenProfiles([])["ci-system"]);
+    const base = resolveTokenProfiles([])["ci-system"]?.permissions ?? [];
+    expect(resolveTokenProfiles([media({})])["ci-system"]?.permissions).toEqual([...base, "r2:write"]);
   });
 
   test("a project storing both types in R2 declares nothing for the token, and reads no token", () => {
