@@ -536,7 +536,6 @@
     "packages/cli/src/dashboard/api.test.ts": 1,
     "packages/cli/src/dashboard/api.ts": 5,
     "packages/cli/src/dashboard/connect.ts": 34,
-    "packages/cli/src/dashboard/contract.ts": 1,
     "packages/cli/src/dashboard/deployOffer.test.ts": 1,
     "packages/cli/src/dashboard/deployOffer.ts": 3,
     "packages/cli/src/dashboard/grant.ts": 2,
