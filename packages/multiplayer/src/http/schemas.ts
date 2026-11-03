@@ -3,6 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
+import { LiveSessionPhase } from "../data/session";
 
 /**
  * The HTTP-boundary shapes for the multiplayer routes. Declared on the route line with
@@ -51,7 +52,7 @@ export const MultiplayerSessionParams = z
 export type MultiplayerSessionParams = z.output<typeof MultiplayerSessionParams>;
 
 /*
- * ## The management routes (#820)
+ * ## The management routes
  *
  * The `Admin*` shapes belong to the control-plane routes under `admin/`. Reads take filters and a place to resume;
  * the two acts take an idempotency key and a reason, and nothing else — a `strictObject`, so a field the route does
@@ -81,10 +82,17 @@ const GameFilter = MultiplayerGameParams.shape.game
     "Restrict the listing to one game. An unconfigured key is `multiplayer/game_not_found`, so an operator who mistypes is told rather than shown an empty pane.",
   );
 
-/** The sessions-in-flight query: which game, and where to resume. */
+/** The sessions-in-flight query: which game, which phase, and where to resume. */
 export const AdminSessionsQuery = z
-  .object({ game: GameFilter, cursor: Cursor, limit: Limit })
-  .describe("The sessions-in-flight query: which game, and where to resume.");
+  .object({
+    game: GameFilter,
+    phase: LiveSessionPhase.optional().describe(
+      "Restrict the listing to one phase: `open` while a roster fills, `active` once play is underway. Both when absent.",
+    ),
+    cursor: Cursor,
+    limit: Limit,
+  })
+  .describe("The sessions-in-flight query: which game, which phase, and where to resume.");
 export type AdminSessionsQuery = z.output<typeof AdminSessionsQuery>;
 
 /** The results query: which game, whether voided, and where to resume. */

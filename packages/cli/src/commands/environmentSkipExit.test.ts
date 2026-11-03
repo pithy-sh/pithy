@@ -237,6 +237,7 @@ vi.mock("../capabilities/supportProvisioner", async (importOriginal) => ({
     async ensureRoutingRule() {
       return step("support:routingRule", null, { created: true, skipped: false });
     }
+    readonly routes = [];
   },
 }));
 

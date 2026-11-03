@@ -1,5 +1,11 @@
 # @pithy-sh/core
 
+## 0.16.1
+
+### Patch Changes
+
+- [#916](https://github.com/pithy-sh/pithy/pull/916) [`af0c2d6`](https://github.com/pithy-sh/pithy/commit/af0c2d6b6756471612ae8b4c9ee992299f12102e) Thanks [@kingmesal](https://github.com/kingmesal)! - A null the CLI writes to a deployed database is stored as a null, not an empty string.
+
 ## 0.16.0
 
 ### Minor Changes

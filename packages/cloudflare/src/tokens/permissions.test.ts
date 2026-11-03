@@ -4,6 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import {
+  INBOUND_ROUTING_PERMISSIONS,
   isPermissionKey,
   isZoneScopedPermission,
   OAUTH_SCOPES,
@@ -61,22 +62,32 @@ describe("zone-scoped permission keys", () => {
     expect(resolvePermissionKeys(["routes:write"])).toEqual(["Workers Routes Write"]);
   });
 
-  test("routes:write is the only zone-scoped key; every other key scopes to the account", () => {
-    expect([...ZONE_SCOPED_PERMISSIONS]).toEqual(["routes:write"]);
-    expect(isZoneScopedPermission("routes:write")).toBe(true);
+  test("the zone-level groups are the zone-scoped keys; every other key scopes to the account", () => {
+    // Workers Routes, Email Routing Rules, Zone Read and Zone Settings Read are published under
+    // `com.cloudflare.api.account.zone`: on the account resource they grant nothing.
+    expect([...ZONE_SCOPED_PERMISSIONS]).toEqual(["routes:write", "email:routing", "zone:read", "zone-settings:read"]);
     for (const key of Object.keys(PERMISSION_GROUPS)) {
-      if (key === "routes:write") continue;
-      expect(isZoneScopedPermission(key), key).toBe(false);
+      expect(isZoneScopedPermission(key), key).toBe(ZONE_SCOPED_PERMISSIONS.includes(key as never));
     }
+  });
+
+  test("inbound routing takes the zone read, the settings read and the rule write, all zone-scoped", () => {
+    expect(resolvePermissionKeys([...INBOUND_ROUTING_PERMISSIONS])).toEqual([
+      "Zone Read",
+      "Zone Settings Read",
+      "Email Routing Rules Write",
+    ]);
+    expect(INBOUND_ROUTING_PERMISSIONS.every(isZoneScopedPermission)).toBe(true);
+    expect(oauthScopesFor(["zone-settings:read"])).toEqual(["zone-settings.read"]);
   });
 
   test("no key in the catalog grants a group that can alter a zone", () => {
     // Routes *on* a zone, never the zone: a zone is the adopter's relationship with their registrar.
-    // "Zone Read" is the one zone word the catalog is allowed to say.
+    // Reading a zone, and reading its settings, are the zone words the catalog is allowed to say.
     const zoneWords = Object.values(PERMISSION_GROUPS)
       .flat()
       .filter((name) => name.startsWith("Zone "));
-    expect(zoneWords).toEqual(["Zone Read"]);
+    expect(zoneWords).toEqual(["Zone Read", "Zone Settings Read"]);
   });
 });
 

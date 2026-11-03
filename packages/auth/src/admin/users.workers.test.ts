@@ -230,6 +230,94 @@ describe("listUsers", () => {
   });
 });
 
+describe("listUsers filters", () => {
+  /** Write a user's lifecycle columns, as minutes relative to `NOW`. */
+  async function setLifecycle(
+    id: string,
+    columns: { suspendedAt?: number; suspendedUntil?: number; deletedAt?: number },
+  ): Promise<void> {
+    const at = (minutes: number | undefined) => (minutes === undefined ? null : NOW.getTime() + minutes * 60_000);
+    await db()
+      .updateTable("pithyAuthUsers")
+      .set({
+        suspendedAt: at(columns.suspendedAt),
+        suspendedUntil: at(columns.suspendedUntil),
+        deletedAt: at(columns.deletedAt),
+        purgeAfter: columns.deletedAt === undefined ? null : at(columns.deletedAt + 30 * 24 * 60),
+      })
+      .where("id", "=", id)
+      .execute();
+  }
+
+  async function seedStandings(): Promise<void> {
+    await seedUser("u-active", "active@example.test", 10);
+    await seedUser("u-lapsed", "lapsed@example.test", 20);
+    await setLifecycle("u-lapsed", { suspendedAt: -60, suspendedUntil: -1 });
+    await seedUser("u-suspended", "suspended@example.test", 30);
+    await setLifecycle("u-suspended", { suspendedAt: -60 });
+    await seedUser("u-timed", "timed@example.test", 40);
+    await setLifecycle("u-timed", { suspendedAt: -60, suspendedUntil: 60 });
+    await seedUser("u-deleted", "deleted@example.test", 50);
+    await setLifecycle("u-deleted", { suspendedAt: -60, deletedAt: -30 });
+  }
+
+  const ids = (page: { items: { id: string }[] }) => page.items.map((user) => user.id);
+
+  test("state reads the columns as enforcement does: a lapsed suspension is active, deleted outranks suspended", async () => {
+    await seedStandings();
+    expect(ids(await listUsers(db(), { state: "active", now: NOW }))).toEqual(["u-active", "u-lapsed"]);
+    expect(ids(await listUsers(db(), { state: "suspended", now: NOW }))).toEqual(["u-suspended", "u-timed"]);
+    expect(ids(await listUsers(db(), { state: "deleted", now: NOW }))).toEqual(["u-deleted"]);
+  });
+
+  test("a suspension ends at the instant its end names, not after it", async () => {
+    await seedUser("u-edge", "edge@example.test", 10);
+    await setLifecycle("u-edge", { suspendedAt: -60, suspendedUntil: 0 });
+    expect(ids(await listUsers(db(), { state: "active", now: NOW }))).toEqual(["u-edge"]);
+    expect(ids(await listUsers(db(), { state: "suspended", now: NOW }))).toEqual([]);
+  });
+
+  test("verified narrows to the users whose address is verified, or to those whose is not", async () => {
+    await seedUser("u-yes", "yes@example.test", 10);
+    await seedUser("u-no", "no@example.test", 20);
+    await db().updateTable("pithyAuthUsers").set({ emailVerified: 0 }).where("id", "=", "u-no").execute();
+
+    expect(ids(await listUsers(db(), { verified: true }))).toEqual(["u-yes"]);
+    expect(ids(await listUsers(db(), { verified: false }))).toEqual(["u-no"]);
+  });
+
+  test("since is inclusive and until exclusive, on when the account was created", async () => {
+    await seedUser("u-30", "thirty@example.test", 30);
+    await seedUser("u-20", "twenty@example.test", 20);
+    await seedUser("u-10", "ten@example.test", 10);
+    const minutesAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
+
+    expect(ids(await listUsers(db(), { since: minutesAgo(20) }))).toEqual(["u-10", "u-20"]);
+    expect(ids(await listUsers(db(), { until: minutesAgo(20) }))).toEqual(["u-30"]);
+    expect(ids(await listUsers(db(), { since: minutesAgo(30), until: minutesAgo(10) }))).toEqual(["u-20", "u-30"]);
+  });
+
+  test("a filtered listing pages with the cursor and never repeats or skips a row", async () => {
+    await seedStandings();
+    for (let i = 0; i < 3; i++) await seedUser(`u-more-${i}`, `more${i}@example.test`, 60 + i);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const result = await listUsers(db(), { state: "active", limit: 2, cursor, now: NOW });
+      seen.push(...ids(result));
+      cursor = result.nextCursor ?? undefined;
+      if (!cursor) break;
+    }
+    expect(seen).toEqual(["u-active", "u-lapsed", "u-more-0", "u-more-1", "u-more-2"]);
+  });
+
+  test("filters combine with each other and with search", async () => {
+    await seedStandings();
+    expect(ids(await listUsers(db(), { state: "suspended", search: "timed", now: NOW }))).toEqual(["u-timed"]);
+  });
+});
+
 describe("getUser and userProviders", () => {
   test("getUser answers null for an id nothing matches", async () => {
     expect(await getUser(db(), "nobody")).toBeNull();

@@ -264,6 +264,25 @@ export const AdminListQuery = z
   .describe("The bound on a management listing. No cursor: this surface says which account to look at.");
 export type AdminListQuery = z.output<typeof AdminListQuery>;
 
+/** The tenant listing query: which standing to narrow to, how many, and where to resume. */
+export const AdminOrganizationsQuery = z
+  .object({
+    state: z
+      .enum(["active", "suspended", "deleted"])
+      .optional()
+      .describe(
+        "Narrow to where the organization stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as every door reads it.",
+      ),
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: AdminListQuery.shape.limit,
+  })
+  .describe("The tenant listing query: which standing to narrow to, how many to return, and where to resume.");
+export type AdminOrganizationsQuery = z.output<typeof AdminOrganizationsQuery>;
+
 /**
  * The path parameters of the management route that names one tenant.
  *
@@ -300,7 +319,7 @@ export const InvitationTokenParam = z
 export type InvitationTokenParam = z.output<typeof InvitationTokenParam>;
 
 /**
- * ## Membership administration, below (#624)
+ * ## Membership administration, below
  *
  * What an **operator** may send through the control plane to change somebody else's account. Every body
  * and every query here carries a {@link OperatorReason}, required, because the trail's answer to *why*
@@ -456,7 +475,7 @@ export const AdminInvitationsQuery = AdminListQuery.extend({
 export type AdminInvitationsQuery = z.output<typeof AdminInvitationsQuery>;
 
 /**
- * ## The organization's own lifecycle, below (#623)
+ * ## The organization's own lifecycle, below
  *
  * Suspend, reinstate, delete and restore — an operator acting on the account itself. Each takes a reason, under
  * the same rule as every operator write here. `members` is the one choice that reaches beyond the account, and

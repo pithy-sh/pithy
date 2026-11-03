@@ -410,11 +410,20 @@ export interface Capability<
   inapplicableSecrets?: InapplicableSecretSeam;
   /**
    * Extra CF permissions this capability needs the **CI system token** to hold, as short catalog keys
-   * (e.g. `email:routing` for email provisioning, `kv:write` for a module that seeds KV in CI). They
-   * union into the one `ci-system` token `pithy token mint ci-system` produces — so a new capability
-   * extends what CI can do without the adopter hand-editing token scopes. Additive and optional.
+   * (e.g. `kv:write` for a module that seeds KV in CI). They union into the one `ci-system` token
+   * `pithy token mint ci-system` produces — so a new capability extends what CI can do without the adopter
+   * hand-editing token scopes. Account-level keys only: a zone-level one is granted on zones, through
+   * {@link inboundRouting} or a Worker's `domains`. Additive and optional.
    */
   ciPermissions?: readonly string[];
+  /**
+   * That this capability's provisioning routes inbound mail through Cloudflare Email Routing, and the addresses
+   * it routes, as composed for the environment. The `ci-system` token is granted Zone Read, Zone Settings Read and
+   * Email Routing Rules Write on the zones that hold those addresses, and a signed-in session asks for the same
+   * scopes whenever any capability declares this, addresses or none. Build it from the resolved config.
+   * Additive and optional.
+   */
+  inboundRouting?: { readonly addresses: readonly string[] };
   /**
    * The CF permissions this capability's **deployed Workers** call Cloudflare with, as short catalog keys
    * (`secrets:write`, `images:write`, `analytics:read`). The runtime counterpart of {@link ciPermissions}.

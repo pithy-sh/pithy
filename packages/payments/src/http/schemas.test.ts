@@ -1,9 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { inputOf } from "@pithy-sh/core/src/controlPlane/discovery/routeInput";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { describe, expect, test } from "vitest";
 import { SubscriptionCancelTiming } from "../data/subscription";
-import { SubscriptionCancelRequest, SubscriptionChangeRequest, SubscriptionPreviewRequest } from "./schemas";
+import {
+  AdminPurchasesQuery,
+  AdminReconcileRunsQuery,
+  SubscriptionCancelRequest,
+  SubscriptionChangeRequest,
+  SubscriptionPreviewRequest,
+} from "./schemas";
 
 /**
  * The subscription request schemas, held to the one rule that makes them safe: there is almost nothing
@@ -102,5 +110,26 @@ describe("the subscription cancel request", () => {
     expect(SubscriptionCancelRequest.parse({ timing: "at_period_end", ...smuggled })).toEqual({
       timing: "at_period_end",
     });
+  });
+});
+
+describe("the admin listing filters", () => {
+  test("type is recurring or one_time, and nothing else", () => {
+    expect(AdminPurchasesQuery.parse({ type: "one_time" }).type).toBe("one_time");
+    expect(AdminPurchasesQuery.safeParse({ type: "subscription" }).success).toBe(false);
+  });
+
+  test("outcome is failed, drifted or clean, and nothing else", () => {
+    expect(AdminReconcileRunsQuery.parse({ outcome: "drifted" }).outcome).toBe("drifted");
+    expect(AdminReconcileRunsQuery.safeParse({ outcome: "repaired" }).success).toBe(false);
+  });
+
+  test("both reach the manifest's route input, so a client can discover them", () => {
+    const fields = (schema: Parameters<typeof validate>[1]) =>
+      Object.keys(
+        (inputOf([validate("query", schema)]).properties as { query: { properties: object } }).query.properties,
+      );
+    expect(fields(AdminPurchasesQuery)).toContain("type");
+    expect(fields(AdminReconcileRunsQuery)).toContain("outcome");
   });
 });
