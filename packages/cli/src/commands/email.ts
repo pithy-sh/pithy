@@ -282,7 +282,7 @@ const provision = withContract(
       "routing-zone": {
         type: "string",
         description:
-          "Cloudflare Zone ID of the (sub)domain receiving the mail — Email Routing must already be enabled on it (its MX points to Cloudflare). Use a subdomain zone (e.g. bounce.example.com), never your apex, so your primary MX is untouched. Find it on the zone's Overview page.",
+          "Cloudflare Zone ID of the zone that contains the address's domain. For a subdomain (bounce.example.com) that is the parent zone (example.com), where Email Routing for the subdomain is set up. Email Routing must already be enabled for the domain; use a subdomain, never your apex, so your primary MX is untouched. Find the id on the zone's Overview page.",
       },
       "inbound-address": {
         type: "string",

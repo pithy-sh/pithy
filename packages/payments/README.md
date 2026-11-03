@@ -42,14 +42,14 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `POST /payments/entitlements/overrides/unrestricted` | Grant one subject the whole product, or take it back | control-plane: `payments:overrides:unrestricted` |
 | `POST /payments/entitlements/overrides/clear` | Unpin names for one subject, or clear its override | control-plane: `payments:overrides:clear` |
 | `GET /payments/admin/catalog` | What this project sells, what each entitlement buys, and the keys it comps by hand | control-plane: `payments:catalog:read` |
-| `GET /payments/admin/purchases` | The purchase log, paged | control-plane: `payments:purchases:read` |
+| `GET /payments/admin/purchases` | The purchase log, paged, narrowed by subject, rail, status, environment or `type` (`recurring`, `one_time`) | control-plane: `payments:purchases:read` |
 | `GET /payments/admin/subscriptions` | The purchases that renew | control-plane: `payments:subscriptions:read` |
 | `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements, override and resolved allowances | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/overrides` | Every subject's override, and who is unrestricted | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/usage-runs` | The usage-reporting passes this deployment has run | control-plane: `payments:usage:read` |
 | `GET /payments/admin/webhook-events` | Every notification a store sent — projected, pending with its attempts, or abandoned — and the purchase and subscription rows it changed. Never the payload; an error crosses as its code | control-plane: `payments:webhooks:read` |
-| `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
+| `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run, narrowed by rail, environment or `outcome` | control-plane: `payments:reconcile:read` |
 | `POST /payments/admin/reconcile-runs` | Start a pass now, rather than waiting for the nightly one | control-plane: `payments:reconcile:run` |
 
 **Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgment call.

@@ -31,7 +31,9 @@ import {
   ChainExportResponse,
   ChainVerifyResponse,
   ControlPlaneReachResponse,
-  ControlPlaneUsageResponse,
+  type ControlPlaneUsageAllResponse,
+  ControlPlaneUsageReadResponse,
+  type ControlPlaneUsageResponse,
 } from "./responses";
 import {
   AccessHistoryQuery,
@@ -47,6 +49,7 @@ import {
   auditEventDetailView,
   auditEventView,
   auditSinkViews,
+  controlPlaneConnectionUsageViews,
   controlPlaneReachSubjectView,
   controlPlaneReachView,
   controlPlaneUsageView,
@@ -61,7 +64,7 @@ import {
  *                                                       (control-plane: audit:events:read)        query: AccessHistoryQuery
  *   GET /audit/control-plane/reach → what one credential reached, by tenant, route and outcome
  *                                                       (control-plane: audit:events:read)        query: ControlPlaneReachQuery
- *   GET /audit/control-plane/usage → one connection's calls, counted by scope and key
+ *   GET /audit/control-plane/usage → one connection's calls, or every connection's, counted by scope and key
  *                                                       (control-plane: audit:events:read)        query: ControlPlaneUsageQuery
  *   GET /audit/control-plane/verify → whether one tenant's hash chain is whole, or where it breaks
  *                                                       (control-plane: audit:events:export)      query: ChainVerifyQuery
@@ -412,17 +415,19 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
 
     /**
      * CONTROL-PLANE READ. Which scopes one connection exercised and was refused, by key, over a window —
-     * counted in one SQL statement, never by paging events here. Behind the listing scope, not the detail one: the
-     * answer is the scope, the key, and the last allowed call's method and path, and never an IP, a user-agent or any
-     * other metadata key.
+     * counted in one SQL statement, never by paging events here. With no `connectionId`, every connection that called
+     * in the window, each with its own scopes and keys, from the same one statement. Behind the listing
+     * scope, not the detail one: the answer is the connection, the scope, the key, and the last allowed call's method
+     * and path, and never an IP, a user-agent or any other metadata key.
      */
     app.get(
       `${base}/control-plane/usage`,
       describeRoute({
-        summary: "Count which scopes one control-plane connection exercised and was refused, by key, over a window.",
+        summary:
+          "Count which scopes one control-plane connection, or every one, exercised and was refused, by key, over a window.",
         verification: "control-plane",
         scopes: [AUDIT_TRAIL_READ_SCOPE],
-        responses: { 200: ControlPlaneUsageResponse },
+        responses: { 200: ControlPlaneUsageReadResponse },
       }),
       requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
       validate("query", ControlPlaneUsageQuery),
@@ -430,32 +435,51 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
         const operator = caller(c);
         const query = c.req.valid("query");
         const window = { since: query.since, until: query.until ?? new Date() };
-        const result = await controlPlaneUsage(database(c), { connectionId: query.connectionId, ...window });
-        // Audited like the listing, and against the connection whose usage was read: "who reviewed this
-        // connection's grants" is a question the trail should answer about that connection.
+        const named = query.connectionId;
+        const result = await controlPlaneUsage(database(c), {
+          ...(named !== undefined ? { connectionId: named } : {}),
+          ...window,
+        });
+        const connections = named === undefined ? controlPlaneConnectionUsageViews(result.usage) : undefined;
+        // Audited like the listing, once. Named, against the connection whose usage was read: "who reviewed this
+        // connection's grants" is a question the trail should answer about that connection. Unnamed, against no
+        // one connection: `query.connectionId` is null, which is "every connection", and `connections` names each
+        // one the answer covered, so the same question still finds this read from any of them.
         await c.var.emit({
           action: AuditTrailActions.usageRead,
           outcome: "success",
           actorType: "control-plane",
           actorId: operator.subject,
           resourceType: "controlplane_connection",
-          resourceId: query.connectionId,
+          ...(named !== undefined ? { resourceId: named } : {}),
           requestId: c.req.header("cf-ray"),
           ip: c.req.header("cf-connecting-ip"),
           userAgent: c.req.header("user-agent"),
           metadata: {
             connectionId: operator.connectionId,
             query: {
-              connectionId: query.connectionId,
+              connectionId: named ?? null,
               since: window.since.toISOString(),
               until: window.until.toISOString(),
             },
+            ...(connections !== undefined ? { connections: connections.map((entry) => entry.connectionId) } : {}),
             returned: result.usage.length,
           },
         });
+        if (named === undefined) {
+          return c.json(
+            {
+              since: window.since.toISOString(),
+              until: window.until.toISOString(),
+              connections: connections ?? [],
+              oldestEventAt: result.oldestEventAt?.toISOString() ?? null,
+            } satisfies ControlPlaneUsageAllResponse,
+            200,
+          );
+        }
         return c.json(
           {
-            connectionId: query.connectionId,
+            connectionId: named,
             since: window.since.toISOString(),
             until: window.until.toISOString(),
             usage: result.usage.map(controlPlaneUsageView),

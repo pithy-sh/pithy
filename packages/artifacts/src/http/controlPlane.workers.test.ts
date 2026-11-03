@@ -342,6 +342,29 @@ describe("GET /artifacts/admin/repos", () => {
     expect(second.nextCursor).toBeNull();
   });
 
+  test("narrows on remote access and on the owner, server-side", async () => {
+    await seedRepo("r-closed", { remoteAccess: false, createdAt: new Date(NOW.getTime() - 2000) });
+    await seedRepo("r-org", { ownerKind: "org", ownerId: "alice", createdAt: new Date(NOW.getTime() - 1000) });
+    await seedRepo("r-open");
+    const app = makeApp();
+    const names = async (query: string) =>
+      (
+        await conforming(await call(app, `/artifacts/admin/repos?${query}`, ARTIFACTS_REPOS_READ_SCOPE), AdminRepoList)
+      ).repos.map((repo) => repo.name);
+
+    expect(await names("remoteAccess=false")).toEqual(["r-closed"]);
+    expect(await names("ownerKind=org")).toEqual(["r-org"]);
+    expect(await names("ownerKind=user&ownerId=alice")).toEqual(["r-open", "r-closed"]);
+  });
+
+  test("an owner id without its kind, an unknown kind, or a remoteAccess that is not a boolean is a 400", async () => {
+    const app = makeApp();
+    for (const query of ["ownerId=alice", "ownerKind=team", "remoteAccess=yes"]) {
+      const response = await call(app, `/artifacts/admin/repos?${query}`, ARTIFACTS_REPOS_READ_SCOPE);
+      expect(response.status, query).toBe(400);
+    }
+  });
+
   test("a repository Cloudflare cannot answer for costs its last push, not the page", async () => {
     await seedRepo("fine");
     await seedRepo("broken", { createdAt: new Date(NOW.getTime() - 1000), infoFails: true });

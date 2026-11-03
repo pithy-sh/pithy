@@ -857,6 +857,41 @@ describe("GET /payments/admin/purchases", () => {
     expect(sandbox.purchases).toEqual([]);
   });
 
+  test("type narrows to the purchases that renew, or to the ones bought once", async () => {
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+    await purchase({ holder: user("grace"), sku: "com.acme.coins.100", transaction: "t2", at: new Date("2026-06-02") });
+    await purchase({
+      holder: user("alan"),
+      sku: "com.acme.pro.monthly",
+      transaction: "t3",
+      at: new Date("2026-06-03"),
+    });
+    const app = makeApp([PAYMENTS_PURCHASES_READ_SCOPE]);
+    const read = async (query: string) =>
+      PaymentsAdminPurchasesResponse.parse(
+        await (await call(app, `/payments/admin/purchases?${query}`, PAYMENTS_PURCHASES_READ_SCOPE)).json(),
+      );
+
+    expect((await read("type=recurring")).purchases.map((p) => p.providerTransactionId)).toEqual(["t3", "t1"]);
+    expect((await read("type=one_time")).purchases.map((p) => p.providerTransactionId)).toEqual(["t2"]);
+
+    const first = await read("type=recurring&limit=1");
+    expect(first.purchases.map((p) => p.providerTransactionId)).toEqual(["t3"]);
+    const second = await read(`type=recurring&limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+    expect(second.purchases.map((p) => p.providerTransactionId)).toEqual(["t1"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("a type that is neither recurring nor one-time is a 400", async () => {
+    const response = await call(
+      makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
+      "/payments/admin/purchases?type=subscription",
+      PAYMENTS_PURCHASES_READ_SCOPE,
+    );
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
+  });
+
   test("a filter value outside the kit's own vocabulary is a 400 naming the accepted set", async () => {
     // The deliberate difference from a currency or a product id. A rail is payments' own enum, so an
     // unknown one is a malformed request rather than a missing resource — and an empty pane would read to
@@ -1505,6 +1540,35 @@ describe("the reconciliation run log", () => {
     // Same `startedAt`, so the id is the tiebreak and it descends — the keyset's own order, not an accident.
     expect((await readRuns("?rail=apple")).runs.map((run) => run.id)).toEqual(["sandbox-run", RUN.id]);
     expect((await readRuns("?environment=sandbox")).runs.map((run) => run.id)).toEqual(["sandbox-run"]);
+  });
+
+  test("outcome narrows to the passes that failed, drifted, or came back clean", async () => {
+    const at = (day: number) => new Date(`2026-06-${String(day).padStart(2, "0")}T04:00:00.000Z`);
+    const tally = (drifted: number, failed: number) => ({ ...RUN.report, drifted, failed });
+    await recordReconcileRun(env.DB, { ...RUN, id: "clean", startedAt: at(1), report: tally(0, 0) }, { now: NOW });
+    await recordReconcileRun(env.DB, { ...RUN, id: "drifted", startedAt: at(2), report: tally(2, 0) }, { now: NOW });
+    await recordReconcileRun(env.DB, { ...RUN, id: "failed", startedAt: at(3), report: tally(0, 1) }, { now: NOW });
+    await recordReconcileRun(env.DB, { ...RUN, id: "both", startedAt: at(4), report: tally(3, 1) }, { now: NOW });
+    await recordReconcileRun(env.DB, { ...RUN, id: "drifted-2", startedAt: at(5), report: tally(1, 0) }, { now: NOW });
+
+    const ids = async (query: string) => (await readRuns(query)).runs.map((run) => run.id);
+    expect(await ids("?outcome=clean")).toEqual(["clean"]);
+    expect(await ids("?outcome=failed")).toEqual(["both", "failed"]);
+    expect(await ids("?outcome=drifted")).toEqual(["drifted-2", "drifted"]);
+
+    const first = await readRuns("?outcome=drifted&limit=1");
+    expect(first.runs.map((run) => run.id)).toEqual(["drifted-2"]);
+    const second = await readRuns(`?outcome=drifted&limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+    expect(second.runs.map((run) => run.id)).toEqual(["drifted"]);
+  });
+
+  test("an outcome outside failed, drifted and clean is a 400", async () => {
+    const response = await call(
+      makeApp([PAYMENTS_RECONCILE_READ_SCOPE]),
+      "/payments/admin/reconcile-runs?outcome=repaired",
+      PAYMENTS_RECONCILE_READ_SCOPE,
+    );
+    expect(response.status).toBe(400);
   });
 
   /** Every fact one `RUN` legitimately discloses, plus the envelope's own null end-of-page. */

@@ -56,7 +56,7 @@ Every route takes a required `reason` in its JSON body, at most 500 characters a
 
 **Restore** clears both columns inside the window. Its memberships were never removed, so every member sees it again. A suspension it was under is still in force, and the response says `state: "suspended"`. Once `purge_after` has passed it is a 409 naming the date. After the purge there is no organization: a 404, whose action says the data is gone.
 
-The management listing, `GET {base}/admin/organizations`, says where each tenant stands: `state`, `suspendedUntil` and `purgeAfter`.
+The management listing, `GET {base}/admin/organizations`, says where each tenant stands: `state`, `suspendedUntil` and `purgeAfter`. It narrows on it with `?state=active`, `suspended` or `deleted`, judged as every door judges it, and pages on `nextCursor`.
 
 ## The record
 

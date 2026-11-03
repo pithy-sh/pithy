@@ -73,11 +73,11 @@ export interface SendDeps {
   /** This worker's environment name, stamped on each send (X-Pithy-Env) so the single inbound worker can route. */
   environment?: string;
   /**
-   * When this pass began — **stable across a Workflow resume** (pithy-sh/pithy#327).
+   * When this pass began — **stable across a Workflow resume**.
    *
    * Everything that dates the work reads this: `sentAt`, the redaction stamp, the events, and how long a
    * tracked link stays valid. A driver body re-executes from the top on a resume, so a clock read there
-   * answers with the resume — and a batch that backed off overnight dated its remaining jobs, and the
+   * answers with the resume — a batch that backed off overnight would date its remaining jobs, and the
    * expiry of every link in them, a day late. `runSendBatch` journals this in a step so a resume reads
    * back the instant the batch began.
    *
@@ -294,7 +294,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
 
     return { jobId, status: "sent", messageId: result.messageId };
   } catch (err) {
-    const classified = classifySendError(err);
+    const classified = classifySendError(err, { fromAddress: job.fromAddress });
 
     if (classified.suppressed) {
       await patchJob(deps, jobId, { status: "suppressed", error: classified.code, bounceCode: classified.code });
@@ -313,10 +313,9 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
       throw classified.error;
     }
 
-    // **`detail`, not `code`.** The column is described as "the last error code/message", and it held only
-    // the code — so a magic link that failed five times recorded `E_UNKNOWN` five times, and the one
-    // sentence naming the cause was discarded with the error object (pithy-sh/pithy#555, and #534's
-    // family). `detail` leads with the code, so nothing a reader had before is lost.
+    // **`detail`, not `code`.** The column is "the last error code/message", and the bare code says nothing
+    // about why — `detail` leads with the code and adds the provider's words and, for a domain that cannot
+    // send, the domain. The job keeps its own sender: nothing is retried as another one.
     await patchJob(deps, jobId, { status: "failed", error: classified.detail });
     await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: classified.detail }, deps.passStartedAt);
     return { jobId, status: "failed" };

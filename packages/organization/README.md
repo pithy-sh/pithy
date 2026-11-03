@@ -182,7 +182,7 @@ They are two settings because they are two things: one is where this capability'
 | `POST {base}/ownership/accept` | Accept ownership, and become the one who pays | session | — |
 | `GET {base}/marks/organization/:organizationId` | An organization's stored mark, cacheable | session | — (membership) |
 | `GET {base}/members/:membershipId/image` | A member's stored image | session | `organization:read` |
-| `GET {base}/admin/organizations` | Every tenant, with how many people are in each | control-plane | `organization:accounts:read` |
+| `GET {base}/admin/organizations` | Every tenant, with how many people are in each, paged on a cursor and narrowed by `state` | control-plane | `organization:accounts:read` |
 | `GET {base}/admin/organizations/:organizationId/members` | One tenant's roster, with addresses | control-plane | `organization:members:read` |
 | `GET {base}/admin/roles` | Every role the catalog declares, in its order, and the owning role the roster writes refuse | control-plane | `organization:members:read` |
 | `PATCH {base}/admin/organizations/:organizationId` | Rename a tenant, give it a free short name, set its seat limit | control-plane | `organization:accounts:write` |

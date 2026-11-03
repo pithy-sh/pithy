@@ -46,6 +46,7 @@ import {
   ChainExportResponse,
   ChainVerifyResponse,
   ControlPlaneReachResponse,
+  ControlPlaneUsageAllResponse,
   ControlPlaneUsageResponse,
 } from "./responses";
 import { registerAuditRoutes } from "./routes";
@@ -301,6 +302,34 @@ describe("GET /audit/events", () => {
       events: { actorId: string }[];
     }>();
     expect(byTime.events.map((e) => e.actorId)).toEqual(["u-2"]);
+  });
+
+  test("filters by action prefix, and pages the narrowed trail on the cursor", async () => {
+    await seed({ action: "auth/login", outcome: "success", actorType: "user", actorId: "ada" }, new Date(1_000));
+    await seed({ action: "authority/granted", outcome: "success", actorType: "system" }, new Date(2_000));
+    await seed({ action: "auth/logout", outcome: "success", actorType: "user", actorId: "ada" }, new Date(3_000));
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const read = async (query: string) => {
+      const response = await call(app, `${BASE}/events?${query}`, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status).toBe(200);
+      return await response.json<{ events: { action: string }[]; nextCursor: string | null }>();
+    };
+
+    expect((await read("actionPrefix=auth")).events.map((e) => e.action)).toEqual(["auth/logout", "auth/login"]);
+    expect((await read("actionPrefix=auth/")).events.map((e) => e.action)).toEqual(["auth/logout", "auth/login"]);
+    const first = await read("actionPrefix=auth&limit=1");
+    expect(first.events.map((e) => e.action)).toEqual(["auth/logout"]);
+    const second = await read(`actionPrefix=auth&limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+    expect(second.events.map((e) => e.action)).toEqual(["auth/login"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("an action prefix that is not one lowercase domain is a 400", async () => {
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    for (const prefix of ["Auth", "auth/log", "a%25", ""]) {
+      const response = await call(app, `${BASE}/events?actionPrefix=${prefix}`, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status, prefix).toBe(400);
+    }
   });
 
   test("filters by tenant, and by no tenant at all", async () => {
@@ -1023,6 +1052,7 @@ describe("GET /audit/control-plane/access-history", () => {
 describe("GET /audit/control-plane/usage", () => {
   const USAGE = `${BASE}/control-plane/usage`;
   const TARGET = "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
+  const ANOTHER = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
 
   /** An admitted call by the target connection, carrying everything the gate records — IP and user-agent included. */
   function callAllowed(scope: string, path: string): AuditEventInput {
@@ -1113,6 +1143,25 @@ describe("GET /audit/control-plane/usage", () => {
     });
   });
 
+  test("a named connection is answered byte for byte as it was before every connection could be read", async () => {
+    await seed({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u-1" }, new Date(500));
+    await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
+    await seed(callDenied("payments:overrides:set"), new Date(3_000));
+    await seed({ ...callAllowed("audit:events:read", "/elsewhere"), resourceId: ANOTHER }, new Date(2_000));
+
+    const response = await call(
+      makeApp([AUDIT_TRAIL_READ_SCOPE]),
+      query({ connectionId: TARGET, since: "1970-01-01T00:00:00.000Z", until: "1970-01-01T01:00:00.000Z" }),
+      AUDIT_TRAIL_READ_SCOPE,
+    );
+
+    // The exact bytes of the one-connection answer, key order included: a client that names a connection parses
+    // the same document whether or not the route can also answer every connection.
+    expect(await response.text()).toBe(
+      '{"connectionId":"0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d","since":"1970-01-01T00:00:00.000Z","until":"1970-01-01T01:00:00.000Z","usage":[{"scope":"audit:events:read","keyId":"key-target","allowed":1,"denied":0,"lastAllowedAt":"1970-01-01T00:00:01.000Z","lastAllowedMethod":"GET","lastAllowedPath":"/audit/events","lastDeniedAt":null},{"scope":"payments:overrides:set","keyId":"key-target","allowed":0,"denied":1,"lastAllowedAt":null,"lastAllowedMethod":null,"lastAllowedPath":null,"lastDeniedAt":"1970-01-01T00:00:03.000Z"}],"oldestEventAt":"1970-01-01T00:00:00.500Z"}',
+    );
+  });
+
   test("carries no IP, no user-agent, and no metadata key beyond scope, key, method and path", async () => {
     await seed(callAllowed("audit:events:read", "/audit/events"), new Date(1_000));
 
@@ -1163,14 +1212,13 @@ describe("GET /audit/control-plane/usage", () => {
     expect(await response.json()).toMatchObject({ usage: [], oldestEventAt: null });
   });
 
-  test("a missing connectionId or since, or a window that ends before it starts, is refused before any query", async () => {
+  test("a missing since, or a window that ends before it starts, is refused before any query", async () => {
     let queried = 0;
     const app = makeApp([AUDIT_TRAIL_READ_SCOPE], BASE, () => {
       queried += 1;
       return auditDatabase(env.DB);
     });
     const refused: Record<string, string>[] = [
-      { since: "1970-01-01T00:00:00.000Z" },
       { connectionId: TARGET },
       { connectionId: TARGET, since: "yesterday" },
       { connectionId: TARGET, since: "1970-01-02T00:00:00.000Z", until: "1970-01-01T00:00:00.000Z" },
@@ -1225,6 +1273,235 @@ describe("GET /audit/control-plane/usage", () => {
       )
     ).json();
     expect(ControlPlaneUsageResponse.parse(body)).toEqual(body);
+  });
+});
+
+describe("GET /audit/control-plane/usage, with no connection named", () => {
+  const USAGE = `${BASE}/control-plane/usage`;
+  const BOARD = "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
+  const AGENT = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+  const IDLE = "f0e1d2c3-b4a5-4968-8776-655443322110";
+  const WINDOW = { since: "1970-01-01T00:00:00.000Z", until: "1970-01-01T01:00:00.000Z" };
+
+  /** Seed under a project and a Worker whose names differ, as a deployed `replay-board` Worker writes them. */
+  async function seedOn(event: AuditEventInput, occurredAt: Date): Promise<void> {
+    await recordAuditEvent(
+      auditDatabase(env.DB) as AuditDatabase,
+      { ...event, occurredAt },
+      { origin: { project: "replay", environment: ENVIRONMENT, worker: "board", version: "build-9" } },
+    );
+  }
+
+  function callAllowed(connection: string, scope: string, keyId: string, path: string): AuditEventInput {
+    return {
+      action: "controlplane/call_allowed",
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "usr_ops",
+      resourceType: "controlplane_connection",
+      resourceId: connection,
+      ip: "198.51.100.4",
+      userAgent: "Agent/2.0",
+      metadata: {
+        connectionId: connection,
+        connectionEnvironment: "prod-secret-env",
+        scope,
+        keyId,
+        method: "GET",
+        path,
+        email: "grace@example.test",
+      },
+    };
+  }
+
+  function callDenied(connection: string, required: string, keyId: string): AuditEventInput {
+    return {
+      action: "controlplane/call_denied",
+      outcome: "denied",
+      severity: "warning",
+      actorType: "control-plane",
+      actorId: "usr_ops",
+      resourceType: "controlplane_connection",
+      resourceId: connection,
+      ip: "198.51.100.4",
+      userAgent: "Agent/2.0",
+      metadata: { reason: "controlplane/insufficient_scope", required, method: "POST", path: "/x", keyId },
+    };
+  }
+
+  const query = (params: Record<string, string>) => `${USAGE}?${new URLSearchParams(params).toString()}`;
+
+  async function seedTwoConnections(): Promise<void> {
+    await seedOn({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u-1" }, new Date(500));
+    await seedOn(callAllowed(BOARD, "audit:events:read", "key-board", "/audit/events"), new Date(1_000));
+    await seedOn(callAllowed(BOARD, "audit:events:read", "key-board", "/audit/events?limit=5"), new Date(2_000));
+    await seedOn(callAllowed(BOARD, "audit:events:read", "key-board-next", "/audit/events?next"), new Date(2_500));
+    await seedOn(callDenied(BOARD, "payments:overrides:set", "key-board"), new Date(3_000));
+    await seedOn(callAllowed(AGENT, "auth:users:read", "key-agent", "/admin/users/u-1"), new Date(4_000));
+    await seedOn(callDenied(AGENT, "audit:events:read_detail", "key-agent"), new Date(5_000));
+    // Outside the window: a connection that called only before it is not in the answer.
+    await seedOn(callAllowed(IDLE, "audit:events:read", "key-idle", "/audit/events"), new Date(7_200_000));
+  }
+
+  test("answers every connection that called in the window, each with its scopes and keys, and no other", async () => {
+    await seedTwoConnections();
+
+    const response = await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), query(WINDOW), AUDIT_TRAIL_READ_SCOPE);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      since: WINDOW.since,
+      until: WINDOW.until,
+      connections: [
+        {
+          connectionId: BOARD,
+          usage: [
+            {
+              scope: "audit:events:read",
+              keyId: "key-board",
+              allowed: 2,
+              denied: 0,
+              lastAllowedAt: "1970-01-01T00:00:02.000Z",
+              lastAllowedMethod: "GET",
+              lastAllowedPath: "/audit/events?limit=5",
+              lastDeniedAt: null,
+            },
+            {
+              scope: "audit:events:read",
+              keyId: "key-board-next",
+              allowed: 1,
+              denied: 0,
+              lastAllowedAt: "1970-01-01T00:00:02.500Z",
+              lastAllowedMethod: "GET",
+              lastAllowedPath: "/audit/events?next",
+              lastDeniedAt: null,
+            },
+            {
+              scope: "payments:overrides:set",
+              keyId: "key-board",
+              allowed: 0,
+              denied: 1,
+              lastAllowedAt: null,
+              lastAllowedMethod: null,
+              lastAllowedPath: null,
+              lastDeniedAt: "1970-01-01T00:00:03.000Z",
+            },
+          ],
+        },
+        {
+          connectionId: AGENT,
+          usage: [
+            {
+              scope: "audit:events:read_detail",
+              keyId: "key-agent",
+              allowed: 0,
+              denied: 1,
+              lastAllowedAt: null,
+              lastAllowedMethod: null,
+              lastAllowedPath: null,
+              lastDeniedAt: "1970-01-01T00:00:05.000Z",
+            },
+            {
+              scope: "auth:users:read",
+              keyId: "key-agent",
+              allowed: 1,
+              denied: 0,
+              lastAllowedAt: "1970-01-01T00:00:04.000Z",
+              lastAllowedMethod: "GET",
+              lastAllowedPath: "/admin/users/u-1",
+              lastDeniedAt: null,
+            },
+          ],
+        },
+      ].sort((a, b) => a.connectionId.localeCompare(b.connectionId)),
+      oldestEventAt: "1970-01-01T00:00:00.500Z",
+    });
+    expect(ControlPlaneUsageAllResponse.parse(body)).toEqual(body);
+    expect(JSON.stringify(body)).not.toContain(IDLE);
+  });
+
+  test("an empty window answers no connections, beside the trail's reach", async () => {
+    const response = await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), query(WINDOW), AUDIT_TRAIL_READ_SCOPE);
+    expect(await response.json()).toEqual({ ...WINDOW, connections: [], oldestEventAt: null });
+  });
+
+  test("carries no IP, no user-agent, and no metadata key beyond scope, key, method and path", async () => {
+    await seedTwoConnections();
+    const body = await (await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), query(WINDOW), AUDIT_TRAIL_READ_SCOPE)).text();
+    for (const leak of ["198.51.100.4", "Agent/2.0", "grace@example.test", "prod-secret-env", "usr_ops", "replay"]) {
+      expect(body).not.toContain(leak);
+    }
+    const parsed = JSON.parse(body) as { connections: { usage: Record<string, unknown>[] }[] } & Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(parsed).sort()).toEqual(["connections", "oldestEventAt", "since", "until"]);
+    for (const connection of parsed.connections) {
+      expect(Object.keys(connection).sort()).toEqual(["connectionId", "usage"]);
+      for (const row of connection.usage) {
+        expect(Object.keys(row).sort()).toEqual([
+          "allowed",
+          "denied",
+          "keyId",
+          "lastAllowedAt",
+          "lastAllowedMethod",
+          "lastAllowedPath",
+          "lastDeniedAt",
+          "scope",
+        ]);
+      }
+    }
+  });
+
+  test("the window is still required, and one that ends before it starts is still refused, before any query", async () => {
+    let queried = 0;
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE], BASE, () => {
+      queried += 1;
+      return auditDatabase(env.DB);
+    });
+    const refused: Record<string, string>[] = [
+      {},
+      { until: WINDOW.until },
+      { since: "yesterday" },
+      { since: "1970-01-02T00:00:00.000Z", until: "1970-01-01T00:00:00.000Z" },
+      { connectionId: "", since: WINDOW.since },
+    ];
+    for (const params of refused) {
+      const response = await call(app, query(params), AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status, JSON.stringify(params)).toBe(400);
+      expect(await errorCode(response)).toBe("validation/invalid_input");
+    }
+    expect(queried).toBe(0);
+  });
+
+  test("needs audit:events:read, and the detail scope does not stand in for it", async () => {
+    const params = query({ since: WINDOW.since });
+    const ungranted = await call(makeApp([]), params, AUDIT_TRAIL_READ_SCOPE);
+    expect(ungranted.status).toBe(403);
+    expect(await errorCode(ungranted)).toBe("controlplane/insufficient_scope");
+    const detailOnly = await call(makeApp([AUDIT_EVENT_DETAIL_READ_SCOPE]), params, AUDIT_EVENT_DETAIL_READ_SCOPE);
+    expect(detailOnly.status).toBe(403);
+  });
+
+  test("audits the read once: every connection was asked for, and the answer names each one it covered", async () => {
+    await seedTwoConnections();
+    await call(makeApp([AUDIT_TRAIL_READ_SCOPE]), query(WINDOW), AUDIT_TRAIL_READ_SCOPE);
+    const reads = emitted.filter((event) => event.action === "audit/usage_read");
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({
+      outcome: "success",
+      actorType: "control-plane",
+      actorId: "operator-1",
+      resourceType: "controlplane_connection",
+      metadata: {
+        connectionId: CONNECTION_ID,
+        query: { connectionId: null, since: WINDOW.since, until: WINDOW.until },
+        connections: [AGENT, BOARD].sort(),
+        returned: 5,
+      },
+    });
+    expect(reads[0]?.resourceId ?? null).toBeNull();
   });
 });
 

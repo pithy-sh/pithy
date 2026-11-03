@@ -623,6 +623,12 @@ export const AdminPurchasesQuery = z
     environment: PurchaseEnvironment.optional().describe(
       "Restrict the listing to one store environment. Unfiltered by default: hiding sandbox transactions by default would hide the thing an operator most needs to notice.",
     ),
+    type: z
+      .enum(["recurring", "one_time"])
+      .optional()
+      .describe(
+        "Restrict the listing to the purchases that renew (`recurring`, a subscription) or to the ones bought once (`one_time`, a consumable or a non-consumable).",
+      ),
     cursor: Cursor,
     limit: Limit,
   })
@@ -680,6 +686,12 @@ export const AdminReconcileRunsQuery = z
     environment: PurchaseEnvironment.optional().describe(
       "Restrict to one store environment — the sandbox host and the production host each keep their own passes.",
     ),
+    outcome: z
+      .enum(["failed", "drifted", "clean"])
+      .optional()
+      .describe(
+        "Restrict to what the pass came to: `failed`, a store refused to answer for at least one purchase; `drifted`, none failed and at least one was repaired; `clean`, neither. A pass that drifted and failed reads `failed`.",
+      ),
     cursor: Cursor,
     limit: Limit,
   })

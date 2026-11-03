@@ -5,12 +5,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareEmailSendManager } from "./emailSendManager";
 
 const mockSend = vi.fn();
+const mockSubdomains = vi.fn();
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
-    emailSending = { send: mockSend };
+    emailSending = { send: mockSend, subdomains: { list: mockSubdomains } };
   },
 }));
+
+/** The SDK's paginated list, as an async iterable over the given entries. */
+function listed(entries: { name: string; enabled: boolean }[]) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const entry of entries) yield { tag: "t", ...entry };
+    },
+  };
+}
 
 /** The SDK's send result. Every field is required on the wire. */
 const sendResult = {
@@ -129,6 +139,46 @@ describe("CloudflareEmailSendManager", () => {
 
       vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
       expect(await manager.validateServiceAccess()).toBe(false);
+    });
+  });
+
+  describe("sendsFrom", () => {
+    it("is true for a domain listed and enabled in its zone", async () => {
+      mockSubdomains.mockReturnValue(listed([{ name: "help.example.com", enabled: true }]));
+
+      expect(await manager.sendsFrom("zone-1", "help.example.com")).toBe(true);
+      expect(mockSubdomains).toHaveBeenCalledWith({ zone_id: "zone-1" });
+    });
+
+    it("matches a domain case-insensitively", async () => {
+      mockSubdomains.mockReturnValue(listed([{ name: "Help.Example.com", enabled: true }]));
+      expect(await manager.sendsFrom("zone-1", "help.example.COM")).toBe(true);
+    });
+
+    it("is false for a domain listed with sending disabled", async () => {
+      mockSubdomains.mockReturnValue(listed([{ name: "help.example.com", enabled: false }]));
+      expect(await manager.sendsFrom("zone-1", "help.example.com")).toBe(false);
+    });
+
+    it("is false for a domain not listed, even beside one that is", async () => {
+      mockSubdomains.mockReturnValue(listed([{ name: "mail.example.com", enabled: true }]));
+      expect(await manager.sendsFrom("zone-1", "help.example.com")).toBe(false);
+    });
+
+    it("a leftmost wildcard covers the names below it, and not its own parent", async () => {
+      mockSubdomains.mockReturnValue(listed([{ name: "*.example.com", enabled: true }]));
+      expect(await manager.sendsFrom("zone-1", "help.example.com")).toBe(true);
+      mockSubdomains.mockReturnValue(listed([{ name: "*.example.com", enabled: true }]));
+      expect(await manager.sendsFrom("zone-1", "example.com")).toBe(false);
+    });
+
+    it("an API failure is a cloudflare/request_failed, never a false", async () => {
+      mockSubdomains.mockImplementation(() => {
+        throw Object.assign(new Error("forbidden"), { status: 403 });
+      });
+      await expect(manager.sendsFrom("zone-1", "help.example.com")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      );
     });
   });
 });

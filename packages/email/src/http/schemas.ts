@@ -3,7 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
-import { EmailJobStatus, SuppressionReason } from "../data/enums";
+import { EmailJobStatus, SuppressionReason, TemplateCategory } from "../data/enums";
 
 /**
  * The request schemas for every email route — the three public callbacks and the six control-plane
@@ -137,10 +137,21 @@ export const JobsQuery = z
     status: EmailJobStatus.optional().describe(
       "Filter to one lifecycle state — `failed` is the pane this capability exists for. Absent lists every state.",
     ),
+    template: z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .describe(
+        "Filter to one template id, exactly (`magicLink`, `newsletter`). A shape check only: the template set is the project's, and one nothing has sent is an empty page.",
+      ),
+    category: TemplateCategory.optional().describe(
+      "Filter to one category: `transactional` or `marketing`. Absent lists both.",
+    ),
     cursor: Cursor,
     limit: Limit,
   })
-  .describe("The send-log query: which state to filter by, and where to resume.");
+  .describe("The send-log query: which state, template and category to filter by, and where to resume.");
 export type JobsQuery = z.output<typeof JobsQuery>;
 
 /**
@@ -159,6 +170,14 @@ export const SuppressionsQuery = z
     email: AddressFilter.optional().describe(
       "Look one address up, exactly. Answers `is this person blocked` without disclosing anybody else.",
     ),
+    active: z
+      .enum(["true", "false"])
+      .describe("`true` or `false`.")
+      .transform((value) => value === "true")
+      .optional()
+      .describe(
+        "`true` for the blocks in force now, `false` for the ones whose expiry has passed. Judged as each row's `active` is. Both when absent.",
+      ),
     cursor: Cursor,
     limit: Limit,
   })

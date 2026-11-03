@@ -10,6 +10,8 @@ pithy add email
 
 **Documentation: [pithy.sh/docs/capabilities/email](https://pithy.sh/docs/capabilities/email).** Overview, adding it, using it, and the reference: the job model, send modes, templates.
 
+**A per-message sender.** `enqueue` sends every message as `fromAddress` and `fromName`, and refuses a `from` with `email/invalid_payload`. `enqueueAs(addresses)` is how a capability declares the addresses it sends as: bound once, at compose, it accepts `from: { address, name? }` for those addresses and refuses any other. It is a convention that keeps a capability to its own addresses, not a security boundary: any code in the Worker can call it, and what limits sending is Cloudflare, which sends only from domains onboarded onto Email Service. The sender is stored on the job. A send Email Service refuses because the domain is not onboarded or not verified fails the job with the domain named in `error`, and is never retried as another sender.
+
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
 ## Consent

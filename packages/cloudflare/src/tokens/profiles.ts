@@ -6,6 +6,7 @@ import { CloudflareNotConfiguredError } from "../client/errors";
 import { accountResource, type TokenPermission, zoneResources } from "./accountTokensManager";
 import { bindingPermissions } from "./bindingPermissions";
 import {
+  INBOUND_ROUTING_PERMISSIONS,
   isPermissionKey,
   isZoneScopedPermission,
   PERMISSION_GROUPS,
@@ -246,6 +247,22 @@ export function permissionsForKeys(keys: PermissionKey[], accountId: string): To
 export function routePermissions(zoneIds: readonly string[]): TokenPermission[] {
   if (zoneIds.length === 0) return [];
   return [{ permissionGroupNames: [...PERMISSION_GROUPS["routes:write"]], resources: zoneResources(zoneIds) }];
+}
+
+/**
+ * The **zone-scoped** policy inbound mail requires: {@link INBOUND_ROUTING_PERMISSIONS} on exactly the zones that hold
+ * the composition's inbound addresses, and nothing else. The second zone policy on `ci-system`, beside
+ * {@link routePermissions}, for the same reason: every group it carries is zone-level, so on the account resource it
+ * grants nothing. Empty for an empty zone list: a project that receives no mail gets no Email Routing grant.
+ */
+export function inboundRoutingPermissions(zoneIds: readonly string[]): TokenPermission[] {
+  if (zoneIds.length === 0) return [];
+  return [
+    {
+      permissionGroupNames: resolvePermissionKeys([...INBOUND_ROUTING_PERMISSIONS]),
+      resources: zoneResources(zoneIds),
+    },
+  ];
 }
 
 /**

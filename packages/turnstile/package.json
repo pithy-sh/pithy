@@ -34,8 +34,8 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "peerDependencies": {
-    "@pithy-sh/cloudflare": "^0.9.1",
-    "@pithy-sh/core": "^0.16.0",
+    "@pithy-sh/cloudflare": "^0.9.2",
+    "@pithy-sh/core": "^0.16.1",
     "@pithy-sh/secrets": "^0.6.4",
     "hono": "^4.13.2",
     "zod": "^4.4.0"

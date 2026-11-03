@@ -426,8 +426,15 @@ export const AdminOrganizationsResponse = z
       .describe(
         "True when more accounts exist than the bound allowed. A client must say so rather than imply a total.",
       ),
+    nextCursor: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "The cursor for the next page, or null at the end. Absent when the Worker that answered predates paging, and then `truncated` is all a client can say.",
+      ),
   })
-  .describe("The tenant list, bounded, with an honest flag where it was cut short.");
+  .describe("The tenant list, a page at a time, with an honest flag where it was cut short.");
 export type AdminOrganizationsResponse = z.output<typeof AdminOrganizationsResponse>;
 
 /**
