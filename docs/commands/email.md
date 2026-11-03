@@ -114,7 +114,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `routing` | object | What happened to the inbound Email Routing rule |
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when the routing flags were absent or incomplete, so no rule was made |
+| `routing.skipped` | boolean | True when none of the three routing flags was given, so no rule was made. A partial set is refused rather than skipped |
 | `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
 **One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`. `email provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
