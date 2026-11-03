@@ -104,7 +104,8 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
   app.get(
     `${base}/admin/repos`,
     describeRoute({
-      summary: "Page every repository, newest first, with its owner, remote access and last push.",
+      summary:
+        "Page every repository, newest first, with its owner, remote access and last push, optionally narrowed by either.",
       description:
         "Every owner's, not the caller's: a management client is nobody's. The last push is what Cloudflare holds, and is absent for a repository it could not answer for.",
       verification: "control-plane",
@@ -115,10 +116,7 @@ export function registerArtifactsAdminRoutes(app: Hono<PithyHonoEnv>, config: Ar
     validate("query", AdminReposQuery),
     async (c) => {
       const query = c.req.valid("query");
-      const page = await storeOf(c).listRepos({
-        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
-        ...(query.limit !== undefined ? { limit: query.limit } : {}),
-      });
+      const page = await storeOf(c).listRepos(query);
       const binding = artifactsBinding(c.env, config.binding);
       // One repository Cloudflare cannot answer for costs that row its last push, never the whole page.
       const repos = await Promise.all(

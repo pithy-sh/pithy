@@ -203,6 +203,30 @@ describe("artifactsStore", () => {
     ]);
   });
 
+  test("narrows the listing to remote access, to an owner kind, and to one owner, and pages what is left", async () => {
+    const older = (ms: number) => new Date(at.getTime() - ms);
+    await store().insertRepo(repo("a", { displayName: "a", createdAt: older(4000) }));
+    await store().insertRepo(repo("b", { displayName: "b", remoteAccess: false, createdAt: older(3000) }));
+    await store().insertRepo(
+      repo("c", { displayName: "c", ownerKind: "org", ownerId: "alice", createdAt: older(2000) }),
+    );
+    await store().insertRepo(repo("d", { displayName: "d", ownerId: "bob", createdAt: older(1000) }));
+    await store().insertRepo(repo("e", { displayName: "e", ownerKind: "org", ownerId: "acme" }));
+    const names = (page: { items: { name: string }[] }) => page.items.map((entry) => entry.name);
+
+    expect(names(await store().listRepos({ remoteAccess: false }))).toEqual(["b"]);
+    expect(names(await store().listRepos({ remoteAccess: true }))).toEqual(["e", "d", "c", "a"]);
+    expect(names(await store().listRepos({ ownerKind: "org" }))).toEqual(["e", "c"]);
+    // The pair: `user:alice` is not `org:alice`, though the id is the same.
+    expect(names(await store().listRepos({ ownerKind: "user", ownerId: "alice" }))).toEqual(["b", "a"]);
+
+    const first = await store().listRepos({ ownerKind: "user", limit: 2 });
+    expect(names(first)).toEqual(["d", "b"]);
+    const second = await store().listRepos({ ownerKind: "user", limit: 2, cursor: first.nextCursor ?? undefined });
+    expect(names(second)).toEqual(["a"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   test("lists a repository's grants by user, skipping a value the catalog does not know", async () => {
     await store().insertRepo(repo("r1"));
     await store().setGrant("r1", "carol", "write", at);

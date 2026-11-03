@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { inputOf } from "@pithy-sh/core/src/controlPlane/discovery/routeInput";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { describe, expect, test } from "vitest";
 import { MAX_REASON } from "../lifecycle/reason";
 import {
   DeleteAccountBody,
   DeleteUserBody,
   ExportUserQuery,
+  ListUsersQuery,
   ReinstateUserBody,
   RestoreUserBody,
   SuspendUserBody,
@@ -113,5 +116,38 @@ describe("DeleteAccountBody (#622)", () => {
 
   test("names no account: whatever else the body says, the subject is the session's own", () => {
     expect(DeleteAccountBody.parse({ confirm: true, userId: "somebody-else" })).toEqual({ confirm: true });
+  });
+});
+
+describe("ListUsersQuery", () => {
+  test("decodes the filters: verified to a boolean, the window to dates", () => {
+    expect(
+      ListUsersQuery.parse({
+        state: "suspended",
+        verified: "false",
+        since: "2026-06-01T00:00:00Z",
+        until: "2026-06-02T00:00:00Z",
+      }),
+    ).toEqual({
+      state: "suspended",
+      verified: false,
+      since: new Date("2026-06-01T00:00:00Z"),
+      until: new Date("2026-06-02T00:00:00Z"),
+    });
+  });
+
+  test("refuses an unknown state, a verified that is not a boolean, and a window that ends before it starts", () => {
+    expect(ListUsersQuery.safeParse({ state: "banned" }).success).toBe(false);
+    expect(ListUsersQuery.safeParse({ verified: "1" }).success).toBe(false);
+    expect(ListUsersQuery.safeParse({ since: "2026-06-02T00:00:00Z", until: "2026-06-01T00:00:00Z" }).success).toBe(
+      false,
+    );
+  });
+
+  test("every filter reaches the manifest's route input, so a client can discover it", () => {
+    const query = inputOf([validate("query", ListUsersQuery)]).properties as { query: { properties: object } };
+    expect(Object.keys(query.query.properties)).toEqual(
+      expect.arrayContaining(["state", "verified", "since", "until"]),
+    );
   });
 });

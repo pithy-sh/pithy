@@ -6,7 +6,7 @@ import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { z } from "zod";
 import { EmailJob } from "../data/emailJob";
-import type { EmailJobStatus } from "../data/enums";
+import type { EmailJobStatus, TemplateCategory } from "../data/enums";
 import type { EmailDatabase } from "../data/tables";
 
 /**
@@ -37,6 +37,10 @@ import type { EmailDatabase } from "../data/tables";
 export interface JobListFilter {
   /** One lifecycle state, or every state when absent. */
   status?: EmailJobStatus;
+  /** One template id, exactly, or every template when absent. */
+  template?: string;
+  /** One category, or both when absent. */
+  category?: TemplateCategory;
   /** The previous page's `nextCursor`. A malformed one is a first page. */
   cursor?: string;
   /** How many rows to return, clamped into range. */
@@ -65,7 +69,7 @@ function jobCursor(raw: string | undefined): { sort: number; id: string } | unde
   return { sort: cursor.sort, id: String(cursor.id) };
 }
 
-/** One page of jobs, newest first, optionally filtered to one status. */
+/** One page of jobs, newest first, optionally filtered to one status, template and category. */
 export async function listJobs(db: EmailDatabase, filter: JobListFilter): Promise<JobPage> {
   const limit = pageLimit(filter.limit);
   const after = jobCursor(filter.cursor);
@@ -80,6 +84,8 @@ export async function listJobs(db: EmailDatabase, filter: JobListFilter): Promis
     .limit(limit + 1);
 
   if (filter.status) query = query.where("status", "=", filter.status);
+  if (filter.template !== undefined) query = query.where("template", "=", filter.template);
+  if (filter.category !== undefined) query = query.where("category", "=", filter.category);
   if (after) {
     query = query.where((eb) =>
       eb.or([eb("createdAt", "<", after.sort), eb.and([eb("createdAt", "=", after.sort), eb("id", "<", after.id)])]),
@@ -109,8 +115,7 @@ export async function getJob(db: EmailDatabase, jobId: string): Promise<EmailJob
  *
  * ## Two axes, because a template is not always one message
  *
- * It was `(to, template)` alone, and that could not finish its only intended consumer (pithy-sh/pithy#382).
- * Six account notices ride one `operationalNotice` to the same addresses, so the template id does not
+ * `(to, template)` alone cannot answer every send decision. Six account notices ride one `operationalNotice` to the same addresses, so the template id does not
  * separate them; `correlation` is the enqueue-side discriminator that does. See {@link SentSubject} for
  * why the two are a union and not three optional fields.
  *
@@ -133,8 +138,8 @@ export async function getJob(db: EmailDatabase, jobId: string): Promise<EmailJob
  * - **`subject`.** Rendered content, and the temptation is specific: it is the only per-row string that
  *   distinguishes two messages sharing a template, so a caller needing that discrimination would match
  *   on it. That match breaks on a copy edit, silently, in the direction of sending again. Discriminating
- *   two notices was the enqueue side's problem and now has an enqueue-side answer — `correlation`
- *   (#382) — rather than a rendered string exported to be string-matched.
+ *   two notices is the enqueue side's problem and has an enqueue-side answer, `correlation`, rather than
+ *   a rendered string exported to be string-matched.
  * - **`messageId`, `error`, `bounceCode`.** The provider's own words. A provider error routinely embeds
  *   the recipient, which is why the list view carries `failed` rather than the text.
  *
@@ -165,11 +170,11 @@ export type SentSummary = z.output<typeof SentSummary>;
  * Which messages are being asked about — one of the two indexed axes, and the type admits no third
  * answer.
  *
- * **`(to, template)`** is the original question: has this template already gone to this person. It runs
+ * **`(to, template)`** is the plain question: has this template already gone to this person. It runs
  * on `(recipientKey, template, createdAt)`.
  *
- * **`correlation`** is the question a template carrying more than one kind of message needs
- * (pithy-sh/pithy#382): has *this thing* already been said. Six account notices ride one
+ * **`correlation`** is the question a template carrying more than one kind of message needs:
+ * has *this thing* already been said. Six account notices ride one
  * `operationalNotice` to the same addresses, so the template id cannot separate them and the address is
  * a proxy for the account only while one person belongs to one account. It runs on
  * `(correlation, createdAt)`.

@@ -36,6 +36,20 @@ export interface RepoPage {
   nextCursor: string | null;
 }
 
+/** What a page of every repository may be narrowed by, and where it resumes. */
+export interface RepoListQuery {
+  /** Only the repositories a git client may reach (`true`), or only those it may not (`false`). */
+  remoteAccess?: boolean;
+  /** Only an organization's repositories, or only a person's. */
+  ownerKind?: ArtifactsOwnerKind;
+  /** Only one owner's. Read with `ownerKind`, because an id names an owner only under its kind. */
+  ownerId?: string;
+  /** Where to resume, from the previous page's `nextCursor`. A malformed one is a first page. */
+  cursor?: string;
+  /** How many rows to return, clamped by `pageLimit`. */
+  limit?: number;
+}
+
 /**
  * The only reader and writer of the capability's tables. Reads decode through the
  * table's Zod object and writes encode through it, so a raw `0/1` or epoch never appears here.
@@ -62,7 +76,7 @@ export interface ArtifactsStore {
   /** Every grant on a repository, by user id. A value the catalog does not know is left out, never asserted. */
   listGrants(repo: string): Promise<ArtifactsGrantRecord[]>;
   /** Every repository the kit knows, newest first, a keyset page at a time. A malformed cursor is a first page. */
-  listRepos(query: { cursor?: string; limit?: number }): Promise<RepoPage>;
+  listRepos(query: RepoListQuery): Promise<RepoPage>;
   /** Record tokens the kit minted. Never their plaintext. A second record of one id is refused. */
   recordTokens(records: readonly ArtifactsTokenRecord[]): Promise<void>;
   /** Every token record on a repository, oldest first. */
@@ -237,6 +251,15 @@ export function artifactsStore(db: ArtifactsDatabase): ArtifactsStore {
         .orderBy("name", "desc")
         // One more than asked for: the extra row answers "is there another page" without a COUNT.
         .limit(limit + 1);
+      if (query.remoteAccess !== undefined) {
+        selection = selection.where(
+          "remoteAccess",
+          "=",
+          ArtifactsRepoRecord.shape.remoteAccess.encode(query.remoteAccess),
+        );
+      }
+      if (query.ownerKind !== undefined) selection = selection.where("ownerKind", "=", query.ownerKind);
+      if (query.ownerId !== undefined) selection = selection.where("ownerId", "=", query.ownerId);
       // A cursor that is not one of ours — wrong types, a hand-built guess — is a first page, never an error.
       if (cursor && typeof cursor.sort === "number" && typeof cursor.id === "string") {
         const sort = ArtifactsRepoRecord.shape.createdAt.encode(new Date(cursor.sort));

@@ -14,10 +14,11 @@ import { LOG_LEVEL_ORDER, type LogFields, type LogLevel, type LogRecord } from "
  * logger; never reach for `console`.
  *
  * The reserved `error` field on any call may carry a `PithyError` or `ErrorPayload` — the engine lifts
- * it into the record's `error`, `detail` and all. A log is internal; this is the inverse of the HTTP
- * codec, which strips `detail`. The logger must never be wired to a client-facing surface.
+ * it into the record's `error`, `detail` and all, and a `PithyError`'s `cause` stays in the fields as `cause`. Any
+ * other `Error`, in any field, serializes as its name, message, stack and cause. A log is internal; this is the
+ * inverse of the HTTP codec, which strips `detail`. The logger must never be wired to a client-facing surface.
  *
- * **A value marked with a privacy class does not compile here** (#132). Every method takes `F & Loggable<F>`,
+ * **A value marked with a privacy class does not compile here**. Every method takes `F & Loggable<F>`,
  * so a field holding a `pii()`/`phi()`/`secret()`/`pci()` value — the value itself, or one inside an object or
  * an array, to the depth `privacy/types.ts` states — is refused at that key, and `redact(Schema, value)` is the
  * way through. The message and a child's name take `UnmarkedString`, so `log.info(user.email)` is refused too. `LogFields` the schema stays permissive: a record that reaches a sink at runtime still parses,
@@ -97,6 +98,8 @@ function makeLogger(state: LoggerState): Logger {
     if (carried instanceof PithyError) {
       error = carried.payload;
       delete merged.error;
+      // The payload has no room for what the error wrapped, so the cause rides as a field.
+      if (carried.cause !== undefined && !("cause" in merged)) merged.cause = carried.cause;
     } else if (isErrorPayloadLike(carried)) {
       error = carried;
       delete merged.error;

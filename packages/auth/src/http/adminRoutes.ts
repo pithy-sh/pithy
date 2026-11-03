@@ -354,7 +354,8 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
     app.get(
       `${base}/admin/users`,
       describeRoute({
-        summary: "Page through the users, newest first, optionally searching by email or name.",
+        summary:
+          "Page through the users, newest first, optionally searching by email or name and narrowing by standing, verification or signup window.",
         verification: "control-plane",
         scopes: [AUTH_USERS_READ_SCOPE],
         responses: { 200: AdminUsersResponse },
@@ -364,7 +365,9 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
       async (c) => {
         const query = c.req.valid("query");
         const caller = controlPlaneCaller(c);
-        const page = await listUsers(db(c, wiring), query);
+        // One instant for the page, so the filter and every user on it are judged at the same moment.
+        const now = new Date();
+        const page = await listUsers(db(c, wiring), { ...query, now });
         await emitControlPlaneAction(c.var.emit, {
           action: AuthAuditActions.adminUsersListed,
           subject: caller.subject,
@@ -376,10 +379,17 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           // recording the term would copy the personal data the caller already saw into a second store
           // with a different retention policy. That it was a search, and how much came back, is what
           // makes an exfiltration pattern visible; the string itself adds nothing to that.
-          metadata: { searched: query.search !== undefined, returned: page.items.length },
+          metadata: {
+            searched: query.search !== undefined,
+            returned: page.items.length,
+            filters: {
+              state: query.state ?? null,
+              verified: query.verified ?? null,
+              since: query.since?.toISOString() ?? null,
+              until: query.until?.toISOString() ?? null,
+            },
+          },
         });
-        // One instant for the page, so every user on it is judged at the same moment.
-        const now = new Date();
         return c.json({
           users: page.items.map((user) => userView(user, now)),
           nextCursor: page.nextCursor,

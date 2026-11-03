@@ -208,6 +208,7 @@ async function presentAttachments(
         sha256: attachment.sha256,
         inline: attachment.inline,
         url,
+        messageId: attachment.messageId,
       };
     }),
   );

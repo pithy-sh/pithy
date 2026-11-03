@@ -200,8 +200,11 @@ export const ReplyInput = z
       .string()
       .min(1)
       .max(80)
+      .regex(/^[^@<>"]*$/, "A name may not contain @, <, > or a double quote.")
       .optional()
-      .describe("Who is answering, signed at the bottom. Omitted rather than guessed."),
+      .describe(
+        "Who is answering, signed at the bottom and written into the reply's From line. Omitted rather than guessed. May not contain `@`, `<`, `>` or `\"`, so the display name cannot pass for an address.",
+      ),
   })
   .describe("An answer to send to the customer.");
 export type ReplyInput = z.infer<typeof ReplyInput>;

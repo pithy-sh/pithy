@@ -132,11 +132,12 @@ describe.skipIf(!hasCreds)("migration groups — LIVE against real D1 over REST"
       const forward = await migrateProject({ ...options, group: RELEASE });
       expect(moved(forward)).toEqual([
         ["0200_email_0001_init", "Up"],
+        ["0200_email_0002_job_filters", "Up"],
         ["1000_app_0001_things", "Up"],
         ["0100_email_0001_suppressions", "Up"],
       ]);
       expect((await readMigrationGroups(remoteApp)).map((entry) => [entry.group, entry.migrations])).toEqual([
-        [RELEASE, ["0200_email_0001_init", "1000_app_0001_things"]],
+        [RELEASE, ["0200_email_0001_init", "0200_email_0002_job_filters", "1000_app_0001_things"]],
       ]);
       // The same value in the other database: one run is one group, however many databases it spans.
       expect((await readMigrationGroups(remoteSuppressions)).map((entry) => [entry.group, entry.migrations])).toEqual([
@@ -151,7 +152,11 @@ describe.skipIf(!hasCreds)("migration groups — LIVE against real D1 over REST"
       expect(refused.payload.action).toBe(
         `Reverse it. \`pithy migrate --env staging --rollback --group ${RELEASE}\` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.`,
       );
-      expect(await ledgerOf(remoteApp)).toEqual(["0200_email_0001_init", "1000_app_0001_things"]);
+      expect(await ledgerOf(remoteApp)).toEqual([
+        "0200_email_0001_init",
+        "0200_email_0002_job_filters",
+        "1000_app_0001_things",
+      ]);
       expect(await ledgerOf(remoteSuppressions)).toEqual(["0100_email_0001_suppressions"]);
 
       // Back, by name: every migration in the group, per database, in reverse chain order.
@@ -163,6 +168,7 @@ describe.skipIf(!hasCreds)("migration groups — LIVE against real D1 over REST"
       });
       expect(moved(back)).toEqual([
         ["1000_app_0001_things", "Down"],
+        ["0200_email_0002_job_filters", "Down"],
         ["0200_email_0001_init", "Down"],
         ["0100_email_0001_suppressions", "Down"],
       ]);

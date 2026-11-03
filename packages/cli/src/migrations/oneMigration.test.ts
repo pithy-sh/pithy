@@ -153,7 +153,12 @@ describe("one migration per capability per database, while unpublished", () => {
     // The case the rule must not break, asserted from the other direction: the one package whose pair of
     // `0001`s is correct. If this ever fails, the two tests above are checking something else.
     const email = scanned.find((pkg) => pkg.name === "email");
-    expect(email?.files.map((file) => basename(file.path)).sort()).toEqual(["0001_init.ts", "0001_suppressions.ts"]);
+    expect(
+      email?.files
+        .map((file) => basename(file.path))
+        .filter((name) => name.startsWith("0001_"))
+        .sort(),
+    ).toEqual(["0001_init.ts", "0001_suppressions.ts"]);
     expect(email?.databases).toBe(2);
   });
 });

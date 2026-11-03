@@ -214,6 +214,12 @@ export const SupportAttachmentView = z
       .describe(
         "A signed URL valid for a few minutes, or null when no credentials were available to sign one. The `storageKey` is never here: it is server-derived precisely so a client cannot name an object or guess the one beside it.",
       ),
+    messageId: z
+      .string()
+      .optional()
+      .describe(
+        "The id of the message it arrived on, so a client can show each file under the message that carried it. Absent from a Worker that predates it.",
+      ),
   })
   .describe("One attachment as a client receives it — metadata and a signed URL, never the storage key.");
 export type SupportAttachmentView = z.output<typeof SupportAttachmentView>;
@@ -407,7 +413,9 @@ export const SupportThreadResponse = z
   .object({
     thread: SupportThreadView.describe("The conversation."),
     messages: z.array(SupportMessageView).describe("Its messages, oldest first — a conversation reads downward."),
-    attachments: z.array(SupportAttachmentView).describe("Its attachments, across every message."),
+    attachments: z
+      .array(SupportAttachmentView)
+      .describe("Its attachments, across every message, each naming the message it arrived on in `messageId`."),
     sender: SenderContextView.describe("What the app already knows about the sender."),
     replies: z.array(SupportReplyView).describe("The canned replies, ordered for this thread's category."),
     // Optional (#450): absent from a Worker that predates assignment.

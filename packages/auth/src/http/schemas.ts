@@ -128,6 +128,9 @@ const PageCursorParam = z
   .optional()
   .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.");
 
+/** A signup-window bound, as ISO-8601, decoded to a `Date` by the schema so the handler takes a typed value. */
+const SignupBound = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
+
 /** The user listing query. */
 export const ListUsersQuery = z
   .object({
@@ -139,10 +142,29 @@ export const ListUsersQuery = z
       .describe(
         "Free text matched against email and display name. `%` and `_` are escaped rather than treated as wildcards, so an address containing an underscore matches itself and nothing else.",
       ),
+    state: z
+      .enum(["active", "suspended", "deleted"])
+      .optional()
+      .describe(
+        "Narrow to where the account stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as enforcement reads it.",
+      ),
+    verified: z
+      .enum(["true", "false"])
+      .describe("`true` or `false`.")
+      .transform((value) => value === "true")
+      .optional()
+      .describe("`true` for the users whose address is verified, `false` for those whose is not. Both when absent."),
+    since: SignupBound.optional().describe("Created at or after this instant, ISO-8601. Inclusive."),
+    until: SignupBound.optional().describe("Created before this instant, ISO-8601. Exclusive."),
     cursor: PageCursorParam,
     limit: PageLimit,
   })
-  .describe("The user listing query: what to search for, how many to return, and where to resume.");
+  .refine((query) => query.since === undefined || query.until === undefined || query.since < query.until, {
+    message: "`since` must be before `until`. A window that ends before it starts holds nothing.",
+  })
+  .describe(
+    "The user listing query: what to search for, which standing, verification and signup window to narrow to, how many to return, and where to resume.",
+  );
 export type ListUsersQuery = z.output<typeof ListUsersQuery>;
 
 /** The device-registry listing query. */
@@ -165,7 +187,7 @@ export type ListDevicesQuery = z.output<typeof ListDevicesQuery>;
 const WindowBound = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
 
 /**
- * The verification ledger read's query (#829): a window of issue times, what to narrow it to, and where to resume.
+ * The verification ledger read's query: a window of issue times, what to narrow it to, and where to resume.
  * Both bounds are optional — the last 30 days, ending now — and a window that ends before it starts is refused by
  * the handler, which is where the default is known.
  */
@@ -205,7 +227,7 @@ export const RevokeSessionBody = z
 export type RevokeSessionBody = z.output<typeof RevokeSessionBody>;
 
 /**
- * Why an account's access is changing — required on both lifecycle routes (#621).
+ * Why an account's access is changing — required on both lifecycle routes.
  *
  * Trimmed, then bounded by the same constant the transition enforces, so a reason the transition would refuse
  * is a 400 here rather than a conflict later. Required rather than defaulted: a suspension nobody explained is
@@ -249,7 +271,7 @@ export const ReinstateUserBody = z
 export type ReinstateUserBody = z.output<typeof ReinstateUserBody>;
 
 /**
- * How a deletion runs (#622). `soft` is the default and the only thing an omission reaches: the account is shut
+ * How a deletion runs. `soft` is the default and the only thing an omission reaches: the account is shut
  * now and erased once the window closes, restorable until then. `hard` starts the purge at once, with no
  * window, and is reached only by naming it — a typo is a 400, never either mode.
  */
@@ -297,7 +319,7 @@ export const ExportUserQuery = z
 export type ExportUserQuery = z.output<typeof ExportUserQuery>;
 
 /**
- * The body of `DELETE /account`, the signed-in person deleting their own account (#622).
+ * The body of `DELETE /account`, the signed-in person deleting their own account.
  *
  * The confirmation is the literal `true`, so a client must say it on purpose: a stray `DELETE` with an empty
  * body, or a form posting `"false"`, deletes nothing. There is no field naming an account — the subject is the

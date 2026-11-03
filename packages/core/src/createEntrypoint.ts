@@ -35,7 +35,7 @@ export interface PithyEntrypoint {
    * A Worker carries one `scheduled` entry for all of its `triggers.crons`, and the runtime names the one
    * that fired on `controller.cron`, verbatim as `wrangler.jsonc` declares it. Only the jobs whose
    * `schedule` is that string start: a daily job composed beside an hourly one must not run every hour,
-   * and the hourly one must not run an extra time at the daily job's minute (#622). An event that names
+   * and the hourly one must not run an extra time at the daily job's minute. An event that names
    * no cron, or one no job declares, starts nothing.
    *
    * **Present only when at least one job carries a cron.** The reason differs from `email`'s: an
@@ -57,7 +57,7 @@ export interface PithyEntrypoint {
    */
   scheduled?: (controller: unknown, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
   /**
-   * The Worker `queue` handler — hands each composed capability the messages of a batch that name it (#824).
+   * The Worker `queue` handler — hands each composed capability the messages of a batch that name it.
    * **Present only when at least one capability consumes a queue**, for `email`'s reason: an inert handler would
    * acknowledge every message delivered to it and drop it.
    */
@@ -76,13 +76,19 @@ function firedCron(controller: unknown): string | undefined {
  * the next sees an empty stream. When more than one capability handles inbound mail we buffer the
  * body once and hand each handler a proxy whose `raw` yields a fresh stream over that buffer; every
  * other property/method delegates to (and stays bound to) the real message.
+ *
+ * Every read and write goes to the real message with the message as `this`. Its `to`, `from`, `rawSize` and
+ * `headers` are native accessors, and workerd throws `Illegal invocation` when one runs on the proxy.
  */
 function replayable(message: ForwardableEmailMessage, raw: ArrayBuffer): ForwardableEmailMessage {
   return new Proxy(message, {
-    get(target, prop, receiver) {
+    get(target, prop) {
       if (prop === "raw") return new Response(raw.slice(0)).body as ReadableStream<Uint8Array>;
-      const value = Reflect.get(target, prop, receiver);
+      const value = Reflect.get(target, prop);
       return typeof value === "function" ? value.bind(target) : value;
+    },
+    set(target, prop, value) {
+      return Reflect.set(target, prop, value);
     },
   });
 }
@@ -92,7 +98,8 @@ function replayable(message: ForwardableEmailMessage, raw: ArrayBuffer): Forward
  * `createBackend` directly when any capability handles inbound email (e.g. `@pithy-sh/email`'s bounce
  * handler). `fetch` is the same Hono app `createBackend` returns; `email` fans each incoming message
  * to every capability's `email` handler, replaying the single-use raw stream so each sees the full
- * message. Handlers run sequentially in registration order.
+ * message. Handlers run sequentially in registration order. A handler that throws is logged by capability and the
+ * next one still runs; `email` throws only when every handler did.
  */
 export function createEntrypoint<
   const Caps extends readonly Capability[],
@@ -100,18 +107,20 @@ export function createEntrypoint<
 >(options: CreateBackendOptions<Caps, App>): PithyEntrypoint {
   const app = createBackend(options);
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
-  const handlers: CapabilityEmailHandler[] = all.flatMap((cap) => (cap.email ? [cap.email] : []));
+  const handlers: { capability: string; handle: CapabilityEmailHandler }[] = all.flatMap((cap) =>
+    cap.email ? [{ capability: cap.name, handle: cap.email }] : [],
+  );
 
   // The last gate before this Worker can take a request, and the first one the CLI never reaches: only a
   // Worker's own entry calls `createEntrypoint`, while `createBackend` is assembled by tooling too. A
-  // capability that must load for the adopter's toolchain and must not serve refuses here (#500).
+  // capability that must load for the adopter's toolchain and must not serve refuses here.
   for (const cap of all) cap.boot?.({ capabilities: all });
 
   const registry = composeWorkflows(all);
   const scheduled = scheduledWorkflows(registry);
 
   // Under `pithy dev`, a service binding's local stand-in goes into the env before anything reads it — the
-  // binding check included (#617). Anywhere else this hands back the env it was given.
+  // binding check included. Anywhere else this hands back the env it was given.
   const entrypoint: PithyEntrypoint = {
     fetch: (request, env, ctx) => app.fetch(request, withLocalServices(env), ctx),
   };
@@ -154,14 +163,27 @@ export function createEntrypoint<
     entrypoint.email = async (message, given, ctx) => {
       const env = withLocalServices(given);
       if (handlers.length === 1) {
-        await handlers[0]?.(message, env, ctx);
+        await handlers[0]?.handle(message, env, ctx);
         return;
       }
-      // Multiple consumers: buffer the raw body once, then replay it per handler.
+      // Multiple consumers: buffer the raw body once, then replay it per handler. One handler's failure must not
+      // stop the next. A throw out of `email()` bounces the message to its sender, so it is rethrown only when
+      // every handler failed: mail another handler may have stored is never bounced.
       const raw = await new Response(message.raw).arrayBuffer();
-      for (const handler of handlers) {
-        await handler(replayable(message, raw), env, ctx);
+      const log = createWorkerLogger({
+        name: "inbound",
+        fields: { env: typeof env.ENVIRONMENT === "string" ? env.ENVIRONMENT : "unknown" },
+      });
+      const failures: unknown[] = [];
+      for (const { capability, handle } of handlers) {
+        try {
+          await handle(replayable(message, raw), env, ctx);
+        } catch (error) {
+          failures.push(error);
+          log.error("inbound mail handler failed", { capability, error });
+        }
       }
+      if (failures.length === handlers.length) throw failures[0];
     };
   }
   return entrypoint;

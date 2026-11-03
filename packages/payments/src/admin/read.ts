@@ -126,6 +126,8 @@ export interface PurchasesQuery {
   status?: PurchaseStatus;
   /** Restrict to one store environment — the filter that separates real money from test transactions. */
   environment?: PurchaseEnvironment;
+  /** Restrict to the purchases that renew (`subscription`), or to the ones bought once (every other product type). */
+  type?: "recurring" | "one_time";
   /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
   cursor?: string;
   /** How many rows to return, clamped by `pageLimit`. */
@@ -187,8 +189,8 @@ export async function listPurchases(
 /**
  * The purchases that renew, newest first.
  *
- * A separate function rather than a `type` filter {@link listPurchases} would accept, because a caller
- * that could name the type could hold `payments:subscriptions:read` and read the whole purchase log
+ * A separate function rather than the `type` filter {@link listPurchases} takes, because a caller holding
+ * only `payments:subscriptions:read` must not be able to name the type and read the whole purchase log
  * through it. The narrowing is applied here, where no request reaches it.
  */
 export async function listSubscriptions(
@@ -228,6 +230,9 @@ async function purchasePage(
   if (query.rail !== undefined) selection = selection.where("rail", "=", query.rail);
   if (query.status !== undefined) selection = selection.where("status", "=", query.status);
   if (query.environment !== undefined) selection = selection.where("environment", "=", query.environment);
+  if (query.type !== undefined) {
+    selection = selection.where("type", query.type === "recurring" ? "=" : "!=", "subscription");
+  }
   if (after) {
     selection = selection.where((eb) =>
       eb.or([
@@ -487,6 +492,12 @@ export interface ReconcileRunsQuery {
   rail?: PaymentsRail;
   /** Restrict to one store environment. */
   environment?: PurchaseEnvironment;
+  /**
+   * Restrict to what the pass came to: `failed` — a store refused to answer for at least one purchase;
+   * `drifted` — none failed and at least one was repaired; `clean` — neither. A pass that both drifted and
+   * failed reads `failed`, because the failure is the part an operator has to act on.
+   */
+  outcome?: "failed" | "drifted" | "clean";
   /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
   cursor?: string;
   /** How many rows to return, clamped by `pageLimit`. */
@@ -520,6 +531,9 @@ export async function listReconcileRuns(
 
   if (query.rail !== undefined) selection = selection.where("rail", "=", query.rail);
   if (query.environment !== undefined) selection = selection.where("environment", "=", query.environment);
+  if (query.outcome === "failed") selection = selection.where("failed", ">", 0);
+  if (query.outcome === "drifted") selection = selection.where("failed", "=", 0).where("drifted", ">", 0);
+  if (query.outcome === "clean") selection = selection.where("failed", "=", 0).where("drifted", "=", 0);
   if (after) {
     selection = selection.where((eb) =>
       eb.or([eb("startedAt", "<", after.sort), eb.and([eb("startedAt", "=", after.sort), eb("id", "<", after.id)])]),
@@ -611,7 +625,7 @@ export interface WebhookEventsQuery {
 }
 
 /**
- * Every notification a store sent, newest received first (#830).
+ * Every notification a store sent, newest received first.
  *
  * Ordered on `receivedAt` — when the delivery reached us — with the id as the tiebreak, on the index
  * `payments_0003_webhook_targets` creates for exactly this. Named columns and never `payload`: the provider's

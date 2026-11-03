@@ -383,6 +383,44 @@ describe("GET /auth/admin/users", () => {
     expect((await response.json<{ users: { id: string }[] }>()).users.map((u) => u.id)).toEqual(["u-2"]);
   });
 
+  test("state, verified and the signup window narrow the listing on the server", async () => {
+    await seedUser("u-old", "old@example.test", 300);
+    await seedUser("u-suspended", "suspended@example.test", 200);
+    await seedUser("u-unverified", "unverified@example.test", 100);
+    await db()
+      .updateTable("pithyAuthUsers")
+      .set({ suspendedAt: NOW.getTime() })
+      .where("id", "=", "u-suspended")
+      .execute();
+    await db().updateTable("pithyAuthUsers").set({ emailVerified: 0 }).where("id", "=", "u-unverified").execute();
+
+    const ids = async (path: string) => {
+      await grant(ALL_SCOPES);
+      const response = await call("GET", path, AUTH_USERS_READ_SCOPE);
+      expect(response.status).toBe(200);
+      return (await response.json<{ users: { id: string }[] }>()).users.map((u) => u.id);
+    };
+    expect(await ids("/auth/admin/users?state=suspended")).toEqual(["u-suspended"]);
+    expect(await ids("/auth/admin/users?state=active")).toEqual(["u-unverified", "u-old"]);
+    expect(await ids("/auth/admin/users?verified=false")).toEqual(["u-unverified"]);
+    const since = new Date(NOW.getTime() - 250 * 60_000).toISOString();
+    const until = new Date(NOW.getTime() - 150 * 60_000).toISOString();
+    expect(await ids(`/auth/admin/users?since=${since}&until=${until}`)).toEqual(["u-suspended"]);
+  });
+
+  test("an unknown state, a verified that is not a boolean, or a backwards window is a 400", async () => {
+    for (const query of [
+      "state=banned",
+      "verified=yes",
+      "since=yesterday",
+      "since=2026-06-02T00:00:00Z&until=2026-06-01T00:00:00Z",
+    ]) {
+      await grant(ALL_SCOPES);
+      const response = await call("GET", `/auth/admin/users?${query}`, AUTH_USERS_READ_SCOPE);
+      expect(response.status, query).toBe(400);
+    }
+  });
+
   test("a devices-read credential cannot list users", async () => {
     // The whole point of five scopes. A fleet-inventory tool must not carry every customer's address.
     await grant([AUTH_DEVICES_READ_SCOPE]);

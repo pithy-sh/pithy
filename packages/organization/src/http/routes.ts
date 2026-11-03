@@ -69,6 +69,7 @@ import {
   type UserLifecycleWiring,
 } from "../lifecycle/cascade";
 import type { MembershipActor, OrganizationLifecycleHooks, OrganizationMembershipHooks } from "../lifecycle/hooks";
+import { listOrganizations } from "../lifecycle/listing";
 import { organizationStanding } from "../lifecycle/state";
 import {
   absent,
@@ -157,6 +158,7 @@ import {
   AdminListQuery,
   AdminMembershipParam,
   AdminOrganizationParam,
+  AdminOrganizationsQuery,
   AdminReason,
   AdminSuspendOrganization,
   AdminUpdateOrganization,
@@ -222,7 +224,7 @@ import {
  * | `POST   {base}/ownership/accept`               | session        | —                     | none                           |
  * | `GET    {base}/marks/organization/:id`         | session        | — (membership)        | param `OrganizationMarkParam`  |
  * | `GET    {base}/members/:membershipId/image`    | session        | `organization:read`   | param `MemberMarkParam`        |
- * | `GET    {base}/admin/organizations`            | control-plane  | scope                 | query `AdminListQuery`         |
+ * | `GET    {base}/admin/organizations`            | control-plane  | scope                 | query `AdminOrganizationsQuery` |
  * | `GET    {base}/admin/organizations/:id/members`| control-plane  | scope                 | param + query                  |
  * | `GET    {base}/admin/roles`                    | control-plane  | `members:read`        | none                           |
  * | `PATCH  {base}/admin/organizations/:id`        | control-plane  | `accounts:write`      | param + json `AdminUpdateOrganization` |
@@ -2189,34 +2191,29 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     app.get(
       `${base}/admin/organizations`,
       describeRoute({
-        summary: "List the tenants.",
+        summary: "List the tenants, newest first, a page at a time, optionally narrowed by standing.",
         verification: "control-plane",
         scopes: [ORGANIZATION_ACCOUNTS_READ_SCOPE],
         responses: { 200: AdminOrganizationsResponse },
       }),
       gate(ORGANIZATION_ACCOUNTS_READ_SCOPE),
-      validate("query", AdminListQuery),
+      validate("query", AdminOrganizationsQuery),
       async (c) => {
         const database = db(c);
-        const limit = c.req.valid("query").limit ?? MAX_PAGE_SIZE;
-        // One past the bound, so the flag is a fact rather than an inference from a full page.
-        const rows = await database
-          .selectFrom(ORGANIZATIONS_TABLE)
-          .selectAll()
-          .orderBy("createdAt", "desc")
-          .orderBy("id", "desc")
-          .limit(limit + 1)
-          .execute();
-        const page = rows.slice(0, limit).map((row) => Organization.parse(row));
+        const query = c.req.valid("query");
+        // One instant for the page, so the filter and every view on it are judged at the same moment.
+        const now = clock();
+        const page = await listOrganizations(database, { ...query, limit: query.limit ?? MAX_PAGE_SIZE, now });
         const counts = await memberCounts(
           database,
-          page.map((organization) => organization.id),
+          page.items.map((organization) => organization.id),
         );
         return c.json({
-          organizations: page.map((organization) =>
-            adminOrganizationView(organization, counts.get(organization.id) ?? 0, clock()),
+          organizations: page.items.map((organization) =>
+            adminOrganizationView(organization, counts.get(organization.id) ?? 0, now),
           ),
-          truncated: rows.length > limit,
+          truncated: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
         } satisfies AdminOrganizationsResponse);
       },
     );

@@ -205,6 +205,34 @@ describe("reaching the account", () => {
     expect(findBucketByName).toHaveBeenCalledTimes(4);
   });
 
+  test("a sending domain is asked of its active zone's sending list, once per domain, and no zone is no", async () => {
+    const findZoneForHostname = vi.fn(async (hostname: string) =>
+      hostname.endsWith("example.com") ? { id: "zone-1", name: "example.com", status: "active" } : null,
+    );
+    const sendsFrom = vi.fn(async (_zone: string, hostname: string) => hostname === "help.example.com");
+    const answer = await settingsAccountConnection({
+      projectDir: dir,
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      homedir: dir,
+      connect: async () =>
+        ({ zones: () => ({ findActiveZoneForHostname: findZoneForHostname }), email: () => ({ sendsFrom }) }) as never,
+      probe: async () => ({ probe: async () => true, carries: async () => true }),
+    });
+    if (answer.state !== "reachable") throw new Error("expected reachable");
+
+    const { sendingDomain } = answer.reader;
+    if (!sendingDomain) throw new Error("expected the reader to ask about sending domains");
+    expect(await sendingDomain("help.example.com")).toBe(true);
+    expect(await sendingDomain("help.example.com")).toBe(true);
+    expect(await sendingDomain("mail.example.com")).toBe(false);
+    expect(await sendingDomain("elsewhere.test")).toBe(false);
+    expect(sendsFrom).toHaveBeenCalledTimes(2);
+    expect(sendsFrom).toHaveBeenCalledWith("zone-1", "help.example.com");
+  });
+
   test("a Secrets Store entry is asked of the project's store, by the name it was created under", async () => {
     const exists = vi.fn(async (name: string) => name === "acme-prod-email-link-signing-key");
     const stores: string[] = [];

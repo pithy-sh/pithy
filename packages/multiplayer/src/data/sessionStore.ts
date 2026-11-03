@@ -3,13 +3,15 @@
 
 import { decodeCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import { sql } from "kysely";
-import { MultiplayerSessionEntry } from "./session";
+import { type LiveSessionPhase, MultiplayerSessionEntry } from "./session";
 import { MULTIPLAYER_SESSIONS_TABLE, type MultiplayerDatabase } from "./tables";
 
 /** What a page of the index is asked for with. */
 export interface SessionIndexQuery {
   /** Restrict to one game. Already resolved against config by the handler. */
   gameKey?: string;
+  /** Restrict to one phase: `open` while a roster fills, `active` once play is underway. */
+  phase?: LiveSessionPhase;
   /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
   cursor?: string;
   /** How many rows to return, clamped by `pageLimit`. */
@@ -23,7 +25,7 @@ export interface SessionIndexPage {
 }
 
 /**
- * Reads and writes over `pithy_multiplayer_sessions`, the index of sessions in flight (#820).
+ * Reads and writes over `pithy_multiplayer_sessions`, the index of sessions in flight.
  *
  * Only a session's own Durable Object writes it: {@link SessionIndex.put} when it opens and whenever its roster or
  * phase moves, {@link SessionIndex.remove} when it ends. Both are idempotent, so a retried transition writes the same
@@ -82,6 +84,7 @@ export function sessionIndex(db: MultiplayerDatabase): SessionIndex {
         .orderBy("id", "desc")
         .limit(limit + 1);
       if (query.gameKey !== undefined) selection = selection.where("gameKey", "=", query.gameKey);
+      if (query.phase !== undefined) selection = selection.where("phase", "=", query.phase);
       if (after !== undefined && typeof after.sort === "number" && typeof after.id === "number") {
         const { sort, id } = after;
         selection = selection.where((eb) =>

@@ -261,6 +261,34 @@ describe("GET /admin/sessions", () => {
   });
 });
 
+describe("GET /admin/sessions?phase", () => {
+  test("narrows to the sessions still filling, or to the ones in play", async () => {
+    const app = makeApp();
+    const playing = await opened(app, "ada", "bo");
+    const filling = await opened(app, "cy");
+    const ids = async (query: string) =>
+      (
+        await conforming(
+          await manage(app, "GET", `/multiplayer/admin/sessions?${query}`, MULTIPLAYER_SESSIONS_READ_SCOPE),
+          AdminSessionList,
+        )
+      ).sessions.map((session) => session.sessionId);
+
+    expect(await ids("phase=open")).toEqual([filling]);
+    expect(await ids("phase=active")).toEqual([playing]);
+  });
+
+  test("a phase that is neither open nor active is a 400", async () => {
+    const res = await manage(
+      makeApp(),
+      "GET",
+      "/multiplayer/admin/sessions?phase=ended",
+      MULTIPLAYER_SESSIONS_READ_SCOPE,
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /admin/sessions/:id", () => {
   test("reads the session from its Durable Object, and never the game's state", async () => {
     const app = makeApp();

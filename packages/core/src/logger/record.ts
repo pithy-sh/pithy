@@ -53,10 +53,59 @@ export const LogRecord = z
   .describe("One structured log record: an adapter's sink serializes or renders exactly this shape.");
 export type LogRecord = z.output<typeof LogRecord>;
 
+/** How many of an `AggregateError`'s `errors` one log line carries; the rest are counted. */
+const MAX_LOGGED_ERRORS = 10;
+
+/** How many causes deep one log line follows a chain; the rest are counted. */
+const MAX_LOGGED_CAUSES = 5;
+
 /**
- * A JSON replacer that keeps serialization total: `BigInt` becomes a string, and a repeated object
- * reference (a cycle) becomes `"[Circular]"`. A logger must never throw — an unserializable field in a
- * log call must not crash the caller — so both adapters serialize through {@link serializeRecord}.
+ * An `Error` as the plain object a log line can carry. `JSON.stringify` writes an `Error` as `{}`, because its
+ * `name`, `message`, `stack` and `cause` are not own enumerable properties. Own enumerable ones follow them, which
+ * is how a `PithyError`'s `payload` (`detail` included — a log is internal) and a Node error's `code` survive.
+ *
+ * Bounded so one line stays one line: an `AggregateError` writes its first {@link MAX_LOGGED_ERRORS} errors, and a
+ * cause chain is followed {@link MAX_LOGGED_CAUSES} causes deep. `seen` is the replacer's, so a cycle through a
+ * cause is still `"[Circular]"`.
+ */
+function errorFields(error: Error, seen: WeakSet<object>, depth = 0): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: error.name, message: error.message };
+  if (error.stack !== undefined) out.stack = error.stack;
+  for (const [key, value] of Object.entries(error)) if (!(key in out)) out[key] = value;
+  if (error.cause !== undefined) out.cause = causeField(error.cause, seen, depth + 1);
+  if (error instanceof AggregateError) {
+    const errors: unknown[] = Array.isArray(error.errors) ? error.errors : [];
+    out.errors = errors.slice(0, MAX_LOGGED_ERRORS).map((item) => causeField(item, seen, depth + 1));
+    if (errors.length > MAX_LOGGED_ERRORS) out.errorsOmitted = errors.length - MAX_LOGGED_ERRORS;
+  }
+  return out;
+}
+
+/** A cause (or an aggregated error) at `depth`: an `Error` is expanded until the depth runs out, then counted. */
+function causeField(cause: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (!(cause instanceof Error)) return cause;
+  if (seen.has(cause)) return "[Circular]";
+  if (depth > MAX_LOGGED_CAUSES) return `[${chainLength(cause)} more causes]`;
+  seen.add(cause);
+  return errorFields(cause, seen, depth);
+}
+
+/** How many errors a cause chain holds from `error` down, walked without recursion and stopped by a cycle. */
+function chainLength(error: Error): number {
+  const walked = new Set<unknown>();
+  let node: unknown = error;
+  while (node instanceof Error && !walked.has(node)) {
+    walked.add(node);
+    node = node.cause;
+  }
+  return walked.size;
+}
+
+/**
+ * A JSON replacer that keeps serialization total and legible: `BigInt` becomes a string, a repeated object
+ * reference (a cycle) becomes `"[Circular]"`, and an `Error` becomes its {@link errorFields}. A logger must never
+ * throw — an unserializable field in a log call must not crash the caller — so every sink serializes through
+ * {@link serializeRecord} or {@link serializeLogValue}.
  */
 function safeReplacer(): (key: string, value: unknown) => unknown {
   const seen = new WeakSet<object>();
@@ -65,6 +114,7 @@ function safeReplacer(): (key: string, value: unknown) => unknown {
     if (typeof value === "object" && value !== null) {
       if (seen.has(value)) return "[Circular]";
       seen.add(value);
+      if (value instanceof Error) return errorFields(value, seen);
     }
     return value;
   };
@@ -79,5 +129,17 @@ export function serializeRecord(record: LogRecord): string {
     return JSON.stringify(record, safeReplacer());
   } catch {
     return JSON.stringify({ level: record.level, msg: record.msg, time: record.time });
+  }
+}
+
+/**
+ * Serialize one field value to compact JSON by the same rules as {@link serializeRecord}, for a sink that renders
+ * fields one at a time. A value JSON has no text for (`undefined`, a function) renders as `String(value)`.
+ */
+export function serializeLogValue(value: unknown): string {
+  try {
+    return JSON.stringify(value, safeReplacer()) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
