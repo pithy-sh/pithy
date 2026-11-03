@@ -306,6 +306,14 @@ export const SupportReplyConfig = z
       .describe(
         "The `Reply-To` a reply carries — the address the customer's answer comes back to, which must be one of `inboundAddresses` or the conversation ends there. Defaults to the inbox address the thread arrived on, which is almost always what you want.",
       ),
+    fromName: z
+      .string()
+      .min(1)
+      .max(120)
+      .default("{agent}")
+      .describe(
+        "The display name a mailed reply is sent under, with `{agent}` replaced by the answering agent's name: `{agent} at Acme` sends `\"Jim Scott at Acme\" <support@help.example.com>`. The address is the inbox the thread arrived at, or `reply.replyToAddress` for a thread that arrived at none. With no agent name the email capability's `fromName` is used instead.",
+      ),
     deliverInApp: z
       .boolean()
       .default(false)
@@ -403,7 +411,7 @@ export function supportSemantic(search: SupportSearchConfig): SupportSemanticCon
 
 /** The full support configuration. */
 /**
- * **Who of the app's own signed-in users works the inbox (#816).** Off until named.
+ * **Who of the app's own signed-in users works the inbox.** Off until named.
  *
  * The inbox holds every customer's correspondence, so a signed-in user reaches it only through a power the
  * adopter names in their own role catalog, held in the organization the request acts for — the same seam
@@ -489,10 +497,10 @@ export type SupportConfigInput = z.input<typeof SupportConfig>;
  * All three default `true`, so the ordinary project is unaffected by this predicate existing.
  *
  * Two callers, and they must agree: `capability.ts` declares the binding only when this is true, and
- * `pithy support provision` creates the bucket only when this is true. They disagreed before #440 —
- * the provisioner asked about `enabled` and `retainRaw` and never about submissions, so a project that
- * wanted uploads but no mail attachments got a binding pointing at a bucket nothing had created, and
- * every submitted file was dropped with a warning. One predicate is what makes that unrepresentable.
+ * `pithy support provision` creates the bucket only when this is true. Were they to ask different
+ * questions, a project that wanted uploads but no mail attachments would get a binding pointing at a
+ * bucket nothing had created, and every submitted file would be dropped with a warning. One predicate is
+ * what makes that unrepresentable.
  */
 export function supportNeedsBucket(config: SupportConfig): boolean {
   return config.attachments.enabled || config.attachments.retainRaw || config.submission.attachments.enabled;

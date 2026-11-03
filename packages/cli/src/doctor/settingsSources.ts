@@ -20,7 +20,7 @@ import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsC
 
 /**
  * Where `pithy doctor`'s settings check gets the two things it cannot invent: the environments a capability
- * is judged against, and the account it may ask (#411).
+ * is judged against, and the account it may ask.
  *
  * Split from `settings.ts` on purpose. That module is the runner — pure, seam-driven, and testable with no
  * project and no network. This one is the wiring: it reads the adopter's config off disk and opens a
@@ -41,7 +41,7 @@ import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsC
  * declared set is the root config's, and without it there is no answer at all — which the runner turns
  * into an unchecked capability rather than into a clean pass.
  *
- * **Each environment's origin is read from its own composition (#586).** A `pithy.config.ts` may name its
+ * **Each environment's origin is read from its own composition.** A `pithy.config.ts` may name its
  * domains from the environment it is composed for, and the loader without the primitive took the module
  * cache — whichever environment doctor composed last — so every environment was handed that one's host.
  */
@@ -54,7 +54,7 @@ export async function settingsEnvironments(projectDir: string, workerDir: string
   for (const name of declared) {
     // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
     // nobody could import, or that throws for this environment, is exactly the one that might have declared one.
-    // The `catch` is the load's alone; a refused declaration throws and `pithy doctor` says so (#665).
+    // The `catch` is the load's alone; a refused declaration throws and `pithy doctor` says so.
     const workerConfig = await composeFor(name, async (load) => load(workerDir)).catch(() => undefined);
     const domains = workerConfig === undefined ? undefined : loadWorkerDomains(workerConfig);
     const address = resolveWorkerAddress({ environment: name, domains, stanza: config?.env?.[name] });
@@ -90,7 +90,7 @@ async function appDatabaseId(projectDir: string, workerDirectory: string, enviro
 
 /** What it takes to reach the account, all of it injectable so a unit test never calls out. */
 export interface SettingsAccountOptions {
-  /** The project root — what a refusal reads to name the Workers `pithy add secrets` runs in (#711). */
+  /** The project root — what a refusal reads to name the Workers `pithy add secrets` runs in. */
   projectDir: string;
   /** The account this project belongs to, from its own root `pithy.config.ts`. */
   account: CloudflareAccountSelection | null;
@@ -106,7 +106,7 @@ export interface SettingsAccountOptions {
   connect?: (credentials: { accountId: string; apiToken: string }) => Promise<CloudflareClients>;
   /**
    * Secret-probe seam — the manager Workflow that answers whether a `d1` secret has a value, and whether a `json`
-   * one still carries a field (#728).
+   * one still carries a field.
    */
   probe?: (
     credentials: { accountId: string; apiToken: string },
@@ -156,6 +156,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
   const storeEntries = new Map<string, Promise<boolean>>();
   const accountTokens = new Map<string, Promise<boolean>>();
   const bucketLocks = new Map<string, Promise<"locked" | "unlocked" | "missing">>();
+  const sendingDomains = new Map<string, Promise<boolean>>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -186,7 +187,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       if (!storeId) {
         throw new InternalError({
           message: "The Secrets Store id is not recorded, so no entry can be asked about.",
-          // The command that records it, from the one builder every such refusal uses (#711).
+          // The command that records it, from the one builder every such refusal uses.
           action: addAction(addSecretsPlan(options.projectDir), (add) => `Run ${add} to record SECRETS_STORE_ID.`),
           detail: `store entry ${name} asked with no SECRETS_STORE_ID`,
         });
@@ -247,7 +248,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       return answer;
     },
     // The bucket first, by its exact name, so a bucket nobody created is `missing` rather than an API error; then
-    // its lock rules, read and judged by the same rule `pithy audit lock` writes (#822). Memoized like the rest.
+    // its lock rules, read and judged by the same rule `pithy audit lock` writes. Memoized like the rest.
     r2BucketLock: async ({ bucket, prefix }) => {
       const key = `${bucket}\u0000${prefix}`;
       const existing = bucketLocks.get(key);
@@ -258,6 +259,19 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
         return (await r2.prefixLockedIndefinitely(bucket, prefix)) ? ("locked" as const) : ("unlocked" as const);
       });
       bucketLocks.set(key, answer);
+      return answer;
+    },
+    // The zone that covers the domain, then that zone's sending domains. No zone is no: nothing on this account
+    // can send from it. Memoized like the rest.
+    sendingDomain: async (domain) => {
+      const key = domain.trim().toLowerCase();
+      const existing = sendingDomains.get(key);
+      if (existing) return existing;
+      const answer = clients
+        .zones()
+        .findZoneForHostname(key)
+        .then((zone) => (zone === null ? false : clients.email().sendsFrom(zone.id, key)));
+      sendingDomains.set(key, answer);
       return answer;
     },
     // Refused, not answered, for anything that is not a kit table and a plain column: the question reads
@@ -331,7 +345,7 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
   // Once per Worker. The runner asks per capability, doctor hands each Worker over once per environment, and
   // every answer composes each declared environment again — the same question, asked that many times.
   const environments = new Map<string, Promise<SettingsEnvironment[]>>();
-  // The Worker by its name, as every finding states it, and by its directory, which is what `--worker` takes (#711).
+  // The Worker by its name, as every finding states it, and by its directory, which is what `--worker` takes.
   return checkCapabilitySettings({
     project,
     workers: options.workers.map((worker) => ({

@@ -588,3 +588,51 @@ describe("the full-text index, which this path no longer writes", () => {
     expect(results.map((row) => row.message_id)).toEqual(["out-1"]);
   });
 });
+
+describe("the sender a reply goes out as", () => {
+  test("from the inbox the thread arrived at, under the answering agent's name", async () => {
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "first@mail.example.com" });
+    const { deps, sent } = harness();
+
+    await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    expect(sent[0]?.from).toEqual({ address: INBOX, name: "Jim Scott" });
+    expect(sent[0]?.replyTo).toBe(INBOX);
+  });
+
+  test("with no agent name, no display name is passed, so the email capability's fromName is used", async () => {
+    const { deps, sent } = harness();
+
+    await sendReply(deps, { threadId: "t1", body: BODY, viewer: "ada@ops" });
+
+    expect(sent[0]?.from).toEqual({ address: INBOX });
+  });
+
+  test("`reply.fromName` is the pattern the agent's name is written into", async () => {
+    const { deps, sent } = harness({ config: { inboundAddresses: [INBOX], reply: { fromName: "{agent} at Acme" } } });
+
+    await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    expect(sent[0]?.from).toEqual({ address: INBOX, name: "Jim Scott at Acme" });
+  });
+
+  test("a configured reply-to moves the Reply-To and leaves the From on the thread's inbox", async () => {
+    const other = "answers@help.example.com";
+    const { deps, sent } = harness({ config: { inboundAddresses: [INBOX, other], reply: { replyToAddress: other } } });
+
+    await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    expect(sent[0]?.from).toEqual({ address: INBOX, name: "Jim Scott" });
+    expect(sent[0]?.replyTo).toBe(other);
+  });
+
+  test("the outbound row records the address and name it was sent as", async () => {
+    const { deps } = harness();
+
+    await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    const rows = await outbound();
+    expect(rows[0]?.fromAddress).toBe(INBOX);
+    expect(rows[0]?.fromName).toBe("Jim Scott");
+  });
+});

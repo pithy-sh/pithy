@@ -10,6 +10,8 @@ pithy add email
 
 **Documentation: [pithy.sh/docs/capabilities/email](https://pithy.sh/docs/capabilities/email).** Overview, adding it, using it, and the reference: the job model, send modes, templates.
 
+**A per-message sender.** `enqueue` sends every message as `fromAddress` and `fromName`. A capability that receives mail at its own addresses binds `enqueueAs(addresses)` once, at compose, and may then pass `from: { address, name? }` for one of those addresses; any other `from` is refused at enqueue with `email/invalid_payload`, and so is any `from` passed to `enqueue` itself. The sender is stored on the job. A send Email Service refuses because the domain is not onboarded or not verified fails the job with the domain named in `error`, and is never retried as another sender.
+
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
 ## Consent
