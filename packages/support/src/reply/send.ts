@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -10,6 +11,7 @@ import { SupportMessage } from "../data/message";
 import { SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, type SupportDatabase } from "../data/tables";
 import { SupportNotFoundError, SupportReplyFailedError } from "../error/errors";
 import { buildReferencesHeader, replySubject } from "../mime/threading";
+import { claimedSenders, replyFromName } from "./fromName";
 
 /**
  * Sending a reply — through `@pithy-sh/email`'s durable send path, never directly.
@@ -79,6 +81,12 @@ export interface ReplyDeps {
     template: string;
     payload: unknown;
     replyTo?: string;
+    /**
+     * Who the reply is sent as: the thread's inbox, under `reply.fromName` with the agent's name written in.
+     * `name` is absent when no agent name was given, and the email capability's `fromName` is used. The seam
+     * `compose` binds refuses an address support does not claim.
+     */
+    from?: { address: string; name?: string };
     /** The language to write the shell in — the reporter's, taken off their submission context. */
     locale?: string;
     inReplyTo?: string;
@@ -100,7 +108,7 @@ export interface ReplyInput {
   threadId: string;
   /** The reply text, as a human wrote and edited it. */
   body: string;
-  /** Who is answering, signed at the bottom. Optional. */
+  /** Who is answering: signed at the bottom, and written into the From line through `reply.fromName`. Optional. */
   agentName?: string;
   /** The verified control-plane subject sending it — the audit actor. */
   viewer: string;
@@ -194,6 +202,16 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
   // **Both can be absent, and only on an `app` thread**: a project collecting in-app feedback with no
   // mail configured has no address a thread arrived at and none to answer from.
   const replyTo = deps.config.reply.replyToAddress ?? thread.inboxAddress;
+  // The reply leaves from the inbox the customer wrote to, under the name of whoever answered — or from
+  // `reply.replyToAddress` when that inbox is not one support claims, or there is none. A domain that cannot send
+  // fails the job naming it; nothing falls back to another sender then.
+  const claimed = claimedSenders(deps.config);
+  const inboxClaimed =
+    typeof thread.inboxAddress === "string" && claimed.includes(normalizeAddress(thread.inboxAddress));
+  const fromAddress = inboxClaimed
+    ? thread.inboxAddress
+    : (deps.config.reply.replyToAddress ?? thread.inboxAddress ?? null);
+  const fromName = replyFromName(deps.config.reply.fromName, input.agentName);
   const enqueue = deps.enqueue;
 
   // The one decision in this function. An `app` thread has a second destination — the submitter's own
@@ -225,12 +243,22 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
         detail: `thread ${input.threadId} has no inboxAddress and no reply.replyToAddress is configured`,
       });
     }
+    if (fromAddress && !claimed.includes(normalizeAddress(fromAddress))) {
+      // The seam would refuse it too. Said here, because only support knows why: the thread arrived at an inbox
+      // this configuration no longer claims.
+      throw new SupportReplyFailedError({
+        message: `This thread's inbox, ${fromAddress}, is no longer an address support claims, so it cannot be answered from it.`,
+        action: `Add ${fromAddress} back to \`inboundAddresses\`, or set \`reply.replyToAddress\` to an address support claims, then retry.`,
+        detail: `thread ${input.threadId} arrived at ${fromAddress}, which is not among the claimed senders`,
+      });
+    }
     try {
       const enqueued = await enqueue({
         to: thread.fromAddress,
         template: "supportReply",
         payload: { subject, body: input.body, ...(input.agentName ? { agentName: input.agentName } : {}) },
         replyTo,
+        ...(fromAddress ? { from: { address: fromAddress, ...(fromName ? { name: fromName } : {}) } } : {}),
         locale: replyLocale,
         inReplyTo: parent?.mimeMessageId ? `<${parent.mimeMessageId}>` : undefined,
         references: references.length > 0 ? references : undefined,
@@ -260,8 +288,8 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     // No envelope on an in-app answer. `replyTo` may even be set — a project that chose in-app
     // delivery can have perfectly good mail — but writing it here would claim a send that did not
     // happen.
-    fromAddress: inApp ? null : replyTo,
-    fromName: null,
+    fromAddress: inApp ? null : (fromAddress ?? replyTo),
+    fromName: inApp ? null : (fromName ?? null),
     toAddress: inApp ? null : thread.fromAddress,
     subject,
     textBody: input.body,
