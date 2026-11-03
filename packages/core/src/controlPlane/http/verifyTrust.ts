@@ -51,7 +51,8 @@ export interface ControlPlaneTrustVerifyDeps {
   /**
    * The connection in this environment that the call's trust is checked against, or null when the environment holds
    * no connection at all. A call names only its trust, so the connection is the one holding that trust live, which
-   * {@link trustConnection} picks from the environment's connections and refuses when none or several do.
+   * {@link trustConnection} picks from the environment's connections that could hold it, refusing when none or
+   * several do.
    */
   loadEnvironmentConnection: (trustId: string, now: Date) => Promise<ControlPlaneConnection | null>;
   /** This Worker's environment name, checked against the connection's. */
@@ -90,17 +91,16 @@ function deny(step: string): never {
 }
 
 /**
- * The connection a call under `trustId` is checked against, from every connection in `environment`: the one holding
- * the trust live at `now`. Null when the environment holds no connection. Refused when no connection holds it live,
- * and refused when more than one does, because a trust id names one connection.
+ * The connection a call under `trustId` is checked against, from the connections in `environment` that could hold it:
+ * the one holding the trust live at `now`. Refused when none holds it live, and refused when more than one does,
+ * because a trust id names one connection.
  */
 export function trustConnection(
   connections: readonly ControlPlaneConnection[],
   trustId: string,
   environment: string,
   now: Date,
-): ControlPlaneConnection | null {
-  if (connections.length === 0) return null;
+): ControlPlaneConnection {
   const holders = connections.filter((connection) => findVerifyingTrust(connection.trusts ?? [], trustId, now));
   if (holders.length > 1) {
     deny(

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Context } from "hono";
+import { sql } from "kysely";
 import type { Migration } from "kysely/migration";
 import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
@@ -181,9 +182,9 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // Worker's sets and this Worker holds only its own, so `pending` and `undeclared` can differ there.
   let migrationDatabases: readonly ComposedMigrationDatabase[] = [];
 
-  // Every capability this Worker composed, kept so the privacy inventory can walk their storage schemas
-  // lazily, on the first control-plane read, and once for the isolate. Capturing the list costs
-  // nothing; walking it is deferred, so a Worker whose control plane is never called never walks.
+  // Every capability this Worker composed. The privacy inventory walks their storage schemas on the first
+  // control-plane read, once for the isolate. Capturing the list costs nothing, and a Worker whose control plane
+  // is never called never walks it.
   let composedCapabilities: readonly Capability[] = [];
 
   // Every presence room kind this Worker composed, with the declaration serving it, filled by the same hook.
@@ -306,15 +307,27 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
               },
               {
                 loadEnvironmentConnection: async (trustId, at) => {
-                  const rows = await db
+                  // Only a row whose stored trusts contain the id is decoded, so an unreadable row elsewhere in the
+                  // environment cannot refuse a call it has no part in. The decision is made on the decoded rows.
+                  const candidates = await db
                     .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
                     .selectAll()
                     .where("environment", "=", environment)
+                    .where(sql<number>`instr(trusts, ${trustId})`, ">", 0)
                     .orderBy("createdAt")
                     .orderBy("id")
                     .execute();
+                  if (candidates.length === 0) {
+                    const any = await db
+                      .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
+                      .select("id")
+                      .where("environment", "=", environment)
+                      .limit(1)
+                      .executeTakeFirst();
+                    if (!any) return null;
+                  }
                   return trustConnection(
-                    rows.map((row) => parseConnectionRow(row)),
+                    candidates.map((row) => parseConnectionRow(row)),
                     trustId,
                     environment,
                     at,

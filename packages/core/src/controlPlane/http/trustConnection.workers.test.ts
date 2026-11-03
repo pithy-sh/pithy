@@ -220,3 +220,36 @@ describe.each(ORDERS)("one trust id on two connections, %s", (_, order) => {
     expect(allowedOn()).toBe(second.connectionId);
   });
 });
+
+describe.each(ORDERS)("an unreadable connection row beside a healthy one, %s", (_, order) => {
+  /** Overwrite one row's stored trusts with text no decoder accepts. */
+  async function corrupt(connectionId: string, trusts: string): Promise<void> {
+    await env.DB.prepare("UPDATE pithy_controlplane_connections SET trusts = ? WHERE id = ?")
+      .bind(trusts, connectionId)
+      .run();
+  }
+
+  test("does not stop a call under a trust the healthy row holds", async () => {
+    const [broken, healthy] = order;
+    for (const held of order) await connect(held.connectionId, [trust(held.trustId)]);
+    await corrupt(broken.connectionId, "not json");
+    const response = await call(healthy.trustId);
+    expect(response.status).toBe(200);
+    expect(allowedOn()).toBe(healthy.connectionId);
+  });
+
+  test("still refuses a call under a trust the unreadable row names", async () => {
+    const [broken] = order;
+    for (const held of order) await connect(held.connectionId, [trust(held.trustId)]);
+    await corrupt(broken.connectionId, `[{"trustId":"${broken.trustId}"`);
+    const response = await call(broken.trustId);
+    expect(response.status).not.toBe(200);
+    expect(allowedOn()).toBeUndefined();
+  });
+});
+
+test("an environment holding no connection is not connected", async () => {
+  const response = await call(AUDITOR.trustId);
+  expect(response.status).toBe(403);
+  expect(await response.text()).toContain("controlplane/not_connected");
+});

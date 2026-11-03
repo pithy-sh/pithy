@@ -330,12 +330,12 @@ describe("the connection a trust call is checked against", () => {
   });
 
   test("is the one holding the trust, wherever it sits among the environment's", () => {
-    expect(trustConnection([other, connection()], TRUST_ID, "prod", NOW)?.id).toBe(connection().id);
-    expect(trustConnection([connection(), other], TRUST_ID, "prod", NOW)?.id).toBe(connection().id);
+    expect(trustConnection([other, connection()], TRUST_ID, "prod", NOW).id).toBe(connection().id);
+    expect(trustConnection([connection(), other], TRUST_ID, "prod", NOW).id).toBe(connection().id);
   });
 
-  test("is none when the environment holds no connection", () => {
-    expect(trustConnection([], TRUST_ID, "prod", NOW)).toBeNull();
+  test("is refused when no connection could hold the trust", () => {
+    expect(() => trustConnection([], TRUST_ID, "prod", NOW)).toThrow(ControlPlaneInvalidCredentialError);
   });
 
   test("is refused when no connection holds the trust live", () => {
@@ -360,6 +360,6 @@ describe("the connection a trust call is checked against", () => {
       id: "9d1c2b3a-0000-4000-8000-00000000e005",
       trusts: [{ ...trust, revokedAt: new Date("2026-10-20T00:00:00.000Z") }],
     });
-    expect(trustConnection([revoked, connection()], TRUST_ID, "prod", NOW)?.id).toBe(connection().id);
+    expect(trustConnection([revoked, connection()], TRUST_ID, "prod", NOW).id).toBe(connection().id);
   });
 });
