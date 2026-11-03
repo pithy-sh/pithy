@@ -126,6 +126,7 @@ describe("controlplane capability", () => {
       "0003_connection_principal",
       "0004_connection_trusts",
       "0005_holds",
+      "0006_connection_nulls",
     ]);
     expect(Object.keys(app?.tables ?? {})).toEqual([
       CONTROL_PLANE_CONNECTIONS_TABLE,

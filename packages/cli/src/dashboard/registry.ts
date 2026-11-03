@@ -5,7 +5,11 @@ import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { type ControlPlaneAuditAction, ControlPlaneAuditActions } from "@pithy-sh/core/src/controlPlane/audit/actions";
-import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
+import {
+  ControlPlaneConnection,
+  parseConnectionRow,
+  type RegisteredKey,
+} from "@pithy-sh/core/src/controlPlane/data/connection";
 import {
   type ConnectionForWrite,
   type ConnectionListing,
@@ -48,7 +52,7 @@ import { createCliLogger } from "../terminal/logger";
  * one pane and absent from another. So the row is keyed on `environment`, and a Worker is only how the
  * CLI *finds* the database.
  *
- * Two rules this module does not get to bend. Every read is `ControlPlaneConnection.parse` and every
+ * Two rules this module does not get to bend. Every read is `parseConnectionRow` and every
  * write is `.encode` — the row holds dates as ms-epoch and scopes and keys as JSON, and the codecs are
  * the only thing that knows that. And a key is appended through core's `appendKey`, never by touching
  * the array here: the ordering that keeps a failed rotation from locking the adopter out is a property
@@ -370,7 +374,7 @@ export function connectionRegistry(
       .where("environment", "=", env)
       .executeTakeFirst();
     if (!row) return null;
-    return { connection: ControlPlaneConnection.parse(row), storedKeys: row.keys, storedTrusts: row.trusts };
+    return { connection: parseConnectionRow(row), storedKeys: row.keys, storedTrusts: row.trusts };
   }
 
   async function read(): Promise<ControlPlaneConnection | null> {

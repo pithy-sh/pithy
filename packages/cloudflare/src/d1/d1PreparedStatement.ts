@@ -42,14 +42,21 @@ function mapMeta(restMeta?: QueryResult.Meta): D1Meta & Record<string, unknown> 
  */
 export const D1_QUERY_REQUEST = { maxRetries: 0 } as const;
 
-/** The REST `params` array is strings; coerce each bound value the way the D1 REST API expects. */
-function toStringParams(params: unknown[]): string[] {
-  return params.map((value) => {
-    if (value === null || value === undefined) return "";
+/**
+ * Encode each bound value for the REST `params` array: a string as itself, a number or boolean as its
+ * string, and a null as JSON `null`, which D1 binds as SQL NULL. `""` would bind as text, and a nullable
+ * column would hold a value no reader takes for absent. Numbers stay strings because a JSON number binds
+ * as `real`, and the column's affinity converts the string.
+ */
+function toRestParams(params: unknown[]): string[] {
+  const encoded = params.map((value): string | null => {
+    if (value === null || value === undefined) return null;
     if (typeof value === "string") return value;
     if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
     return JSON.stringify(value);
   });
+  // The SDK types `params` as strings only; the API takes a null in the array.
+  return encoded as string[];
 }
 
 export class D1PreparedStatementREST<T = Record<string, unknown>> implements D1PreparedStatement {
@@ -97,7 +104,7 @@ export class D1PreparedStatementREST<T = Record<string, unknown>> implements D1P
   async raw<U = unknown[]>(options: { columnNames: true }): Promise<[string[], ...U[]]>;
   async raw<U = unknown[]>(options?: { columnNames?: false }): Promise<U[]>;
   async raw<U = unknown[]>(options?: { columnNames?: boolean }): Promise<U[] | [string[], ...U[]]> {
-    const params = this.boundParams.length > 0 ? toStringParams(this.boundParams) : undefined;
+    const params = this.boundParams.length > 0 ? toRestParams(this.boundParams) : undefined;
     const response = await cloudflareRequest("D1 raw query", () =>
       this.client.d1.database.raw(
         this.databaseId,
@@ -115,7 +122,7 @@ export class D1PreparedStatementREST<T = Record<string, unknown>> implements D1P
   }
 
   private async executeQuery<U>(): Promise<D1Result<U>> {
-    const params = this.boundParams.length > 0 ? toStringParams(this.boundParams) : undefined;
+    const params = this.boundParams.length > 0 ? toRestParams(this.boundParams) : undefined;
     const response = await cloudflareRequest("D1 query", () =>
       this.client.d1.database.query(
         this.databaseId,
