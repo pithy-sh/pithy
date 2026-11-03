@@ -3,7 +3,7 @@
 
 import { createLogger, type Logger } from "./logger";
 import type { LogLevel, LogRecord } from "./record";
-import { serializeRecord } from "./record";
+import { serializeLogValue, serializeRecord } from "./record";
 
 /**
  * Mode 1 — local diagnostics. One unified diagnostic layer for the `pithy` CLI process and a Worker
@@ -42,12 +42,7 @@ export interface LocalLoggerOptions {
 
 /** Render one field value: strings verbatim, everything else as compact JSON — never throwing on a cycle/BigInt. */
 function renderValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+  return typeof value === "string" ? value : serializeLogValue(value);
 }
 
 /** `key=value key=value` for the record's fields, in insertion order. */

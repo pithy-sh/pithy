@@ -54,9 +54,24 @@ export const LogRecord = z
 export type LogRecord = z.output<typeof LogRecord>;
 
 /**
- * A JSON replacer that keeps serialization total: `BigInt` becomes a string, and a repeated object
- * reference (a cycle) becomes `"[Circular]"`. A logger must never throw — an unserializable field in a
- * log call must not crash the caller — so both adapters serialize through {@link serializeRecord}.
+ * An `Error` as the plain object a log line can carry. `JSON.stringify` writes an `Error` as `{}`, because its
+ * `name`, `message`, `stack` and `cause` are not own enumerable properties. Own enumerable ones follow them, which
+ * is how a `PithyError`'s `payload` (`detail` included — a log is internal) and a Node error's `code` survive.
+ */
+function errorFields(error: Error): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: error.name, message: error.message };
+  if (error.stack !== undefined) out.stack = error.stack;
+  for (const [key, value] of Object.entries(error)) if (!(key in out)) out[key] = value;
+  if (error.cause !== undefined) out.cause = error.cause;
+  if (error instanceof AggregateError) out.errors = error.errors;
+  return out;
+}
+
+/**
+ * A JSON replacer that keeps serialization total and legible: `BigInt` becomes a string, a repeated object
+ * reference (a cycle) becomes `"[Circular]"`, and an `Error` becomes its {@link errorFields}. A logger must never
+ * throw — an unserializable field in a log call must not crash the caller — so every sink serializes through
+ * {@link serializeRecord} or {@link serializeLogValue}.
  */
 function safeReplacer(): (key: string, value: unknown) => unknown {
   const seen = new WeakSet<object>();
@@ -65,6 +80,7 @@ function safeReplacer(): (key: string, value: unknown) => unknown {
     if (typeof value === "object" && value !== null) {
       if (seen.has(value)) return "[Circular]";
       seen.add(value);
+      if (value instanceof Error) return errorFields(value);
     }
     return value;
   };
@@ -79,5 +95,17 @@ export function serializeRecord(record: LogRecord): string {
     return JSON.stringify(record, safeReplacer());
   } catch {
     return JSON.stringify({ level: record.level, msg: record.msg, time: record.time });
+  }
+}
+
+/**
+ * Serialize one field value to compact JSON by the same rules as {@link serializeRecord}, for a sink that renders
+ * fields one at a time. A value JSON has no text for (`undefined`, a function) renders as `String(value)`.
+ */
+export function serializeLogValue(value: unknown): string {
+  try {
+    return JSON.stringify(value, safeReplacer()) ?? String(value);
+  } catch {
+    return String(value);
   }
 }
