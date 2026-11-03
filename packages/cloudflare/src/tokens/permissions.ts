@@ -22,6 +22,8 @@ export const PERMISSION_GROUPS = {
   "workers:write": ["Workers Scripts Write"],
   "secrets:read": ["Secrets Store Read"],
   "secrets:write": ["Secrets Store Write"],
+  // **Zone-scoped**, like the two keys below it: a rule lives on the zone that holds the address. Granted on the zones
+  // holding the composition's inbound addresses, never named in a profile.
   "email:routing": ["Email Routing Rules Write"],
   "kv:write": ["Workers KV Storage Write"],
   "r2:read": ["Workers R2 Storage Read"],
@@ -34,6 +36,10 @@ export const PERMISSION_GROUPS = {
   // so `pithy init` and `pithy worker add` can offer the account's real zones instead of asking someone
   // to paste an id off a dashboard page.
   "zone:read": ["Zone Read"],
+  // Read-only, like Zone Read. Email Routing's settings and its DNS check (`GET /zones/<zone>/email/routing` and
+  // `/email/routing/dns`) answer to this group, and support provisioning reads both before it makes a rule: routing
+  // is never enabled here, only checked. Zone-scoped, granted where `email:routing` is.
+  "zone-settings:read": ["Zone Settings Read"],
   // *Attaching* the route, which is the other half of the sentence above and the half nothing could do
   // (#651). `pithy deploy` of an environment with a declared domain calls
   // `POST /zones/<zone>/workers/routes`, and no group in this catalog reached it — a `ci-system` token
@@ -110,6 +116,7 @@ export const OAUTH_SCOPES = {
   "vectorize:write": ["vectorize.write"],
   "ai:read": ["ai.read"],
   "zone:read": ["zone.read"],
+  "zone-settings:read": ["zone-settings.read"],
   "routes:write": ["workers-routes.write"],
   "analytics:read": ["account-analytics.read"],
   "images:write": ["images.write"],
@@ -142,7 +149,23 @@ export function oauthScopesFor(keys: readonly string[]): string[] {
  * token and refuses the call, which is exactly the failure #651 opened with. The zones themselves are
  * never picked by hand — they are the zones the project's declared domains sit in.
  */
-export const ZONE_SCOPED_PERMISSIONS: readonly PermissionKey[] = ["routes:write"];
+export const ZONE_SCOPED_PERMISSIONS: readonly PermissionKey[] = [
+  "routes:write",
+  "email:routing",
+  "zone:read",
+  "zone-settings:read",
+];
+
+/**
+ * What routing inbound mail takes, on each zone that holds an inbound address: find the zone (Zone Read), check
+ * Email Routing is enabled for the domain (Zone Settings Read), and create, update or remove the rule (Email Routing
+ * Rules Write). Every one is zone-scoped, so `ci-system` carries them as a policy over those zones.
+ */
+export const INBOUND_ROUTING_PERMISSIONS: readonly PermissionKey[] = [
+  "zone:read",
+  "zone-settings:read",
+  "email:routing",
+];
 
 /** Narrow an arbitrary string to a {@link PermissionKey}. */
 export function isPermissionKey(key: string): key is PermissionKey {
