@@ -205,7 +205,7 @@ describe("reaching the account", () => {
     expect(findBucketByName).toHaveBeenCalledTimes(4);
   });
 
-  test("a sending domain is asked of its zone's sending list, once per domain, and no zone is no", async () => {
+  test("a sending domain is asked of its active zone's sending list, once per domain, and no zone is no", async () => {
     const findZoneForHostname = vi.fn(async (hostname: string) =>
       hostname.endsWith("example.com") ? { id: "zone-1", name: "example.com", status: "active" } : null,
     );
@@ -217,7 +217,8 @@ describe("reaching the account", () => {
       offline: false,
       env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
       homedir: dir,
-      connect: async () => ({ zones: () => ({ findZoneForHostname }), email: () => ({ sendsFrom }) }) as never,
+      connect: async () =>
+        ({ zones: () => ({ findActiveZoneForHostname: findZoneForHostname }), email: () => ({ sendsFrom }) }) as never,
       probe: async () => ({ probe: async () => true, carries: async () => true }),
     });
     if (answer.state !== "reachable") throw new Error("expected reachable");

@@ -261,7 +261,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       bucketLocks.set(key, answer);
       return answer;
     },
-    // The zone that covers the domain, then that zone's sending domains. No zone is no: nothing on this account
+    // The active zone that covers the domain, then that zone's sending domains. No zone is no: nothing on this account
     // can send from it. Memoized like the rest.
     sendingDomain: async (domain) => {
       const key = domain.trim().toLowerCase();
@@ -269,7 +269,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       if (existing) return existing;
       const answer = clients
         .zones()
-        .findZoneForHostname(key)
+        .findActiveZoneForHostname(key)
         .then((zone) => (zone === null ? false : clients.email().sendsFrom(zone.id, key)));
       sendingDomains.set(key, answer);
       return answer;

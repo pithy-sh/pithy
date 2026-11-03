@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -10,7 +11,7 @@ import { SupportMessage } from "../data/message";
 import { SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, type SupportDatabase } from "../data/tables";
 import { SupportNotFoundError, SupportReplyFailedError } from "../error/errors";
 import { buildReferencesHeader, replySubject } from "../mime/threading";
-import { replyFromName } from "./fromName";
+import { claimedSenders, replyFromName } from "./fromName";
 
 /**
  * Sending a reply — through `@pithy-sh/email`'s durable send path, never directly.
@@ -201,9 +202,15 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
   // **Both can be absent, and only on an `app` thread**: a project collecting in-app feedback with no
   // mail configured has no address a thread arrived at and none to answer from.
   const replyTo = deps.config.reply.replyToAddress ?? thread.inboxAddress;
-  // The reply leaves from the inbox the customer wrote to, under the name of whoever answered. A domain that
-  // cannot send fails the job naming it; nothing falls back to another sender.
-  const fromAddress = thread.inboxAddress ?? deps.config.reply.replyToAddress ?? null;
+  // The reply leaves from the inbox the customer wrote to, under the name of whoever answered — or from
+  // `reply.replyToAddress` when that inbox is not one support claims, or there is none. A domain that cannot send
+  // fails the job naming it; nothing falls back to another sender then.
+  const claimed = claimedSenders(deps.config);
+  const inboxClaimed =
+    typeof thread.inboxAddress === "string" && claimed.includes(normalizeAddress(thread.inboxAddress));
+  const fromAddress = inboxClaimed
+    ? thread.inboxAddress
+    : (deps.config.reply.replyToAddress ?? thread.inboxAddress ?? null);
   const fromName = replyFromName(deps.config.reply.fromName, input.agentName);
   const enqueue = deps.enqueue;
 
@@ -234,6 +241,15 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
         message: "This deployment has no address a reply can come back to.",
         action: "Set `inboundAddresses` or `reply.replyToAddress` on the support capability, then retry.",
         detail: `thread ${input.threadId} has no inboxAddress and no reply.replyToAddress is configured`,
+      });
+    }
+    if (fromAddress && !claimed.includes(normalizeAddress(fromAddress))) {
+      // The seam would refuse it too. Said here, because only support knows why: the thread arrived at an inbox
+      // this configuration no longer claims.
+      throw new SupportReplyFailedError({
+        message: `This thread's inbox, ${fromAddress}, is no longer an address support claims, so it cannot be answered from it.`,
+        action: `Add ${fromAddress} back to \`inboundAddresses\`, or set \`reply.replyToAddress\` to an address support claims, then retry.`,
+        detail: `thread ${input.threadId} arrived at ${fromAddress}, which is not among the claimed senders`,
       });
     }
     try {

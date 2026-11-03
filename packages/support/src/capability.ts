@@ -9,7 +9,6 @@ import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
-import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import type { SupportClientProjection } from "./client/projection";
 import {
@@ -30,7 +29,7 @@ import { SUPPORT_MIGRATIONS } from "./migrations/set";
 import { supportPresence } from "./presence/room";
 import { supportSendingSettings } from "./provision/sendingCheck";
 import { supportUserPurge } from "./purge/contribution";
-import { claimedSenders } from "./reply/fromName";
+import { replySender } from "./reply/sender";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
@@ -308,8 +307,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     compose: ({ capabilities }) => {
       // A staff block no request could be served by safely is refused here, at boot. See `staff/staff.ts`.
       assertStaffComposition(resolved.staff, capabilities);
-      const email = capabilities.find(isEmailCapability);
-      wiring.enqueueEmail = email?.enqueueAs(claimedSenders(resolved));
+      wiring.enqueueEmail = replySender(capabilities, resolved);
       // Auth and payments, found rather than imported, and refused here when this Worker's config needs
       // one it cannot reach. See `link/peers.ts`.
       wiring.peers = senderPeers(capabilities, resolved);

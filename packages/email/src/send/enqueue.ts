@@ -116,9 +116,10 @@ export interface EnqueueInput {
   /**
    * The sender of this one message, when it is not the capability's `fromAddress` and `fromName`.
    *
-   * Refused unless `address` is one the composing capability claims: {@link EnqueueDeps.claimedFrom}, which
-   * only {@link import("../capability").EmailCapability.enqueueAs} fills. The plain `enqueue` claims nothing,
-   * so no caller can send as an address it merely names. `name` falls back to the capability's `fromName`.
+   * Refused unless `address` is one the composing capability declared: {@link EnqueueDeps.claimedFrom}, which
+   * only {@link import("../capability").EmailCapability.enqueueAs} fills, and the plain `enqueue` leaves empty.
+   * That keeps a capability to the addresses it declared; it is not a boundary against Worker code, which can
+   * call `enqueueAs` itself. Cloudflare sends only from onboarded domains. `name` falls back to `fromName`.
    *
    * The job is sent from exactly this address. A domain Email Service cannot send from fails the job with
    * the domain named; no other sender is tried.

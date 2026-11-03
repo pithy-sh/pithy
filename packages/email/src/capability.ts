@@ -142,12 +142,15 @@ export interface EmailCapability extends Capability {
    */
   enqueue: (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
   /**
-   * `enqueue`, able to send as the addresses a composing capability claims and no others.
+   * `enqueue`, able to send as the addresses a composing capability declares and no others.
    *
-   * The one way a per-message `from` is accepted. `enqueue` claims nothing, so an override passed to it is
+   * The one way a per-message `from` is accepted. `enqueue` declares none, so an override passed to it is
    * refused; a capability that receives mail at its own addresses binds this once, at compose, with exactly
    * those addresses, and an override outside them is refused at enqueue. `@pithy-sh/support` binds its
    * `inboundAddresses` and `reply.replyToAddress`.
+   *
+   * A convention that keeps each capability to its own addresses, not a security boundary: trusted Worker code
+   * can call this with any list. What limits sending is Cloudflare, which sends only from onboarded domains.
    */
   enqueueAs: (claimed: readonly string[]) => (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
   /**

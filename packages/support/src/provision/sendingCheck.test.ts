@@ -63,6 +63,18 @@ describe("whether each inbound address's domain can send", () => {
     expect(findings?.[0]?.action).toContain("trust.example.com");
   });
 
+  test("asks about reply.replyToAddress too, since a thread with no inbox is sent from it", async () => {
+    const asked: string[] = [];
+    const findings = await check({
+      inboundAddresses: ["support@help.example.com"],
+      reply: { replyToAddress: "answers@reply.example.com" },
+    }).account?.(context(reader(["help.example.com"], asked)));
+    expect(asked).toEqual(["help.example.com", "reply.example.com"]);
+    expect(findings).toHaveLength(1);
+    expect(findings?.[0]).toMatchObject({ setting: "reply.replyToAddress", environment: null });
+    expect(findings?.[0]?.problem).toContain("answers@reply.example.com");
+  });
+
   test("asks nothing when replies are off or nothing is claimed", async () => {
     const asked: string[] = [];
     expect(

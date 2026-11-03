@@ -9,12 +9,13 @@ export const AGENT_PLACEHOLDER = "{agent}";
 /**
  * The display name a reply is sent under: `reply.fromName` with the agent's name written in.
  *
- * Undefined when no agent name is given, so the email capability's own `fromName` is used. Line breaks and
- * control characters are folded to spaces, because the result is a header value.
+ * A pattern with no placeholder is a fixed name, used whoever answered. A pattern with one is undefined when no
+ * agent name is given, so the email capability's own `fromName` is used. Line breaks and control characters are
+ * folded to spaces, because the result is a header value.
  */
 export function replyFromName(pattern: string, agentName: string | undefined): string | undefined {
-  const agent = agentName?.trim();
-  if (!agent) return undefined;
+  const agent = agentName?.trim() ?? "";
+  if (pattern.includes(AGENT_PLACEHOLDER) && !agent) return undefined;
   const name = pattern
     .split(AGENT_PLACEHOLDER)
     .join(agent)

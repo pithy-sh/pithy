@@ -178,8 +178,8 @@ export interface SettingsAccountReader {
   r2BucketLock?(request: { bucket: string; prefix: string }): Promise<"locked" | "unlocked" | "missing">;
   /**
    * **Whether Email Service can send from this domain**: an enabled sending domain of that name, or a wildcard
-   * above it, in the zone that covers it. `false` when no zone on the account covers it. Asked by support of each
-   * inbound address, since a reply is sent from the inbox it answers. Optional, like {@link r2BucketLock}; a
+   * above it, in the active zone that covers it. `false` when no active zone on the account covers it. Asked by
+   * support of each address a reply is sent from. Optional, like {@link r2BucketLock}; a
    * check asking a reader without it reports the question unanswered.
    */
   sendingDomain?(domain: string): Promise<boolean>;

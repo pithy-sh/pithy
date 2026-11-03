@@ -312,7 +312,7 @@ export const SupportReplyConfig = z
       .max(120)
       .default("{agent}")
       .describe(
-        "The display name a mailed reply is sent under, with `{agent}` replaced by the answering agent's name: `{agent} at Acme` sends `\"Jim Scott at Acme\" <support@help.example.com>`. The address is the inbox the thread arrived at, or `reply.replyToAddress` for a thread that arrived at none. With no agent name the email capability's `fromName` is used instead.",
+        "The display name a mailed reply is sent under, with `{agent}` replaced by the answering agent's name: `{agent} at Acme` sends `\"Jim Scott at Acme\" <support@help.example.com>`. The address is the inbox the thread arrived at, or `reply.replyToAddress` for a thread whose inbox is not in `inboundAddresses` or that arrived at none. With no agent name the email capability's `fromName` is used instead; a name with no `{agent}`, such as `Acme Support`, is used for every reply.",
       ),
     deliverInApp: z
       .boolean()

@@ -6,7 +6,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SupportConfig } from "../config/config";
 
 /**
- * Whether each inbound address's domain can send, as `pithy doctor` asks it.
+ * Whether each address a reply is sent from can send, as `pithy doctor` asks it.
  *
  * A mailed reply is sent from the inbox the thread arrived at, so an inbox on a domain Email Service cannot send
  * from receives mail and cannot answer it: every reply fails at send with the domain named. Asked once per domain,
@@ -29,11 +29,21 @@ export function supportSendingSettings(config: SupportConfig): CapabilitySetting
     local: () => [],
     account: async (context) => {
       if (!config.reply.enabled) return [];
-      const byDomain = new Map<string, string[]>();
-      for (const address of config.inboundAddresses) {
+      // Every address a reply is sent from, under the setting that names it: the inbox a thread arrived at, and
+      // `reply.replyToAddress` for a thread that arrived at none.
+      const senders = [
+        ...config.inboundAddresses.map((address) => ({ address, setting: "inboundAddresses" })),
+        ...(config.reply.replyToAddress
+          ? [{ address: config.reply.replyToAddress, setting: "reply.replyToAddress" }]
+          : []),
+      ];
+      const byDomain = new Map<string, { setting: string; addresses: string[] }>();
+      for (const { address, setting } of senders) {
         const domain = domainOf(address);
         if (domain === null) continue;
-        byDomain.set(domain, [...(byDomain.get(domain) ?? []), address]);
+        const entry = byDomain.get(domain) ?? { setting, addresses: [] };
+        if (!entry.addresses.includes(address)) entry.addresses.push(address);
+        byDomain.set(domain, entry);
       }
       if (byDomain.size === 0) return [];
       const ask = context.account.sendingDomain;
@@ -44,10 +54,10 @@ export function supportSendingSettings(config: SupportConfig): CapabilitySetting
         });
       }
       const findings: SettingsFinding[] = [];
-      for (const [domain, addresses] of byDomain) {
+      for (const [domain, { setting, addresses }] of byDomain) {
         if (await ask.call(context.account, domain)) continue;
         findings.push({
-          setting: "inboundAddresses",
+          setting,
           environment: null,
           problem: `${domain} cannot send on Email Service, so a reply from ${addresses.join(", ")} fails.`,
           action: `Onboard ${domain} for sending in the Cloudflare dashboard under Email Service, then rerun doctor.`,

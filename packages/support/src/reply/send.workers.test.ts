@@ -6,6 +6,9 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { email } from "@pithy-sh/email/src/capability";
+import { emailDatabase } from "@pithy-sh/email/src/data/tables";
+import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { SUPPORT_MIGRATION_ORDER } from "../capability";
@@ -16,6 +19,7 @@ import { SupportThread } from "../data/thread";
 import { support_0001_threads } from "../migrations/0001_threads";
 import { createSearchIndex } from "../store/searchIndex";
 import { type ReplyDeps, sendReply } from "./send";
+import { replySender } from "./sender";
 
 /**
  * The reply path against real D1, with the email capability's `enqueue` injected as a fake.
@@ -634,5 +638,71 @@ describe("the sender a reply goes out as", () => {
     const rows = await outbound();
     expect(rows[0]?.fromAddress).toBe(INBOX);
     expect(rows[0]?.fromName).toBe("Jim Scott");
+  });
+});
+
+describe("through the email capability's own seam", () => {
+  const mail = email({ fromAddress: "noreply@example.com", fromName: "Acme", baseUrl: "https://example.com" });
+
+  beforeEach(async () => {
+    for (const table of ["pithy_email_jobs", "pithy_email_events"]) {
+      await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+    await email_0001_init.up(emailDatabase(env.DB));
+  });
+
+  /** The enqueue compose binds, called over this test's env. */
+  function wired(config: SupportConfigInput): ReplyDeps["enqueue"] {
+    const enqueue = replySender([mail], SupportConfig.parse(config));
+    if (!enqueue) throw new Error("expected a sender");
+    return (input) => enqueue(env as never, input);
+  }
+
+  test("a claimed inbox sends as itself, under the agent's name", async () => {
+    const config = { inboundAddresses: [INBOX] };
+    const { deps } = harness({ config, enqueue: wired(config) });
+
+    const result = await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    if (result.channel !== "email") throw new Error("expected a mailed reply");
+    const job = await env.DB.prepare("select from_address, from_name, reply_to from pithy_email_jobs where id = ?")
+      .bind(result.jobId)
+      .first<{ from_address: string; from_name: string; reply_to: string }>();
+    expect(job).toEqual({ from_address: INBOX, from_name: "Jim Scott", reply_to: INBOX });
+  });
+
+  test("an inbox support no longer claims is refused, naming the inbox and the fix", async () => {
+    const config = { inboundAddresses: ["help@help.example.com"] };
+    const { deps } = harness({ config, enqueue: wired(config) });
+
+    const refusal = sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    await expect(refusal).rejects.toMatchObject({
+      payload: {
+        code: "support/reply_failed",
+        message: expect.stringContaining(INBOX),
+        action: expect.stringContaining("inboundAddresses"),
+      },
+    });
+    await expect(refusal).rejects.toMatchObject({
+      payload: { action: expect.stringContaining("reply.replyToAddress") },
+    });
+    const jobs = await env.DB.prepare("select count(*) as n from pithy_email_jobs").first<{ n: number }>();
+    expect(jobs?.n).toBe(0);
+    expect(await outbound()).toHaveLength(0);
+  });
+
+  test("an inbox no longer claimed is answered from reply.replyToAddress, when one is set", async () => {
+    const other = "help@help.example.com";
+    const config = { inboundAddresses: [other], reply: { replyToAddress: other } };
+    const { deps } = harness({ config, enqueue: wired(config) });
+
+    const result = await sendReply(deps, { threadId: "t1", body: BODY, agentName: "Jim Scott", viewer: "ada@ops" });
+
+    if (result.channel !== "email") throw new Error("expected a mailed reply");
+    const job = await env.DB.prepare("select from_address, reply_to from pithy_email_jobs where id = ?")
+      .bind(result.jobId)
+      .first<{ from_address: string; reply_to: string }>();
+    expect(job).toEqual({ from_address: other, reply_to: other });
   });
 });
