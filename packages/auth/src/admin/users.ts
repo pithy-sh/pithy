@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { boundParameterBudget, MAX_BOUND_PARAMETERS } from "@pithy-sh/core/src/data/boundParameters";
+import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { decodeCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
+import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { type SqlBool, sql } from "kysely";
+import { type Expression, type ExpressionBuilder, type SqlBool, sql } from "kysely";
 import { Session, User } from "../data/betterAuth";
 import { Device, type DevicePlatform } from "../data/device";
-import type { AuthDatabase } from "../data/tables";
+import type { AuthDatabase, AuthTables } from "../data/tables";
+import type { AccountStanding } from "../lifecycle/state";
 
 /**
  * The reads a management dashboard's user panes resolve to, and the lookups its revocations need.
@@ -89,10 +92,39 @@ function likePattern(term: string): string {
 export interface ListUsersOptions {
   /** Free text matched against email and display name. Absent lists everyone, newest first. */
   search?: string;
+  /** Where the account stands, judged at `now` exactly as `accountStanding` judges it. */
+  state?: AccountStanding["state"];
+  /** Whether the address is verified. */
+  verified?: boolean;
+  /** Created at or after this instant. Inclusive. */
+  since?: Date;
+  /** Created before this instant. Exclusive. */
+  until?: Date;
+  /** The instant `state` is judged at. Defaults to the moment of the read. */
+  now?: Date;
   /** The previous page's `nextCursor`. A malformed one is a first page, never an error. */
   cursor?: string;
   /** How many rows to return, clamped into `[1, MAX_PAGE_SIZE]` by `pageLimit`. */
   limit?: number;
+}
+
+/**
+ * The rows `accountStanding` reads as `state` at `now`, as one predicate: deleted outranks suspended, and a
+ * suspension ends at the instant its `suspendedUntil` names.
+ */
+export function standingPredicate(
+  state: AccountStanding["state"],
+  now: Date,
+): (eb: ExpressionBuilder<DatabaseSchema<AuthTables>, "pithyAuthUsers">) => Expression<SqlBool> {
+  const at = SQLiteDate.encode(now);
+  return (eb) => {
+    if (state === "deleted") return eb("deletedAt", "is not", null);
+    const inForce = eb.and([
+      eb("suspendedAt", "is not", null),
+      eb.or([eb("suspendedUntil", "is", null), eb("suspendedUntil", ">", at)]),
+    ]);
+    return eb.and([eb("deletedAt", "is", null), state === "suspended" ? inForce : eb.not(inForce)]);
+  };
 }
 
 /**
@@ -122,6 +154,12 @@ export async function listUsers(db: AuthDatabase, options: ListUsersOptions = {}
     // names are already their physical (single-word) names, so `CamelCasePlugin` has nothing to do here.
     query = query.where(sql<SqlBool>`(email like ${pattern} escape '\\' or name like ${pattern} escape '\\')`);
   }
+
+  if (options.state !== undefined) query = query.where(standingPredicate(options.state, options.now ?? new Date()));
+  if (options.verified !== undefined) query = query.where("emailVerified", "=", SQLiteBoolean.encode(options.verified));
+  // ISO-8601 text on both sides, as the cursor below compares it.
+  if (options.since !== undefined) query = query.where("createdAt", ">=", options.since.toISOString());
+  if (options.until !== undefined) query = query.where("createdAt", "<", options.until.toISOString());
 
   const cursor = decodeCursor(options.cursor);
   if (cursor) {

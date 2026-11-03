@@ -41,6 +41,7 @@ import {
   AdminMemberResponse,
   AdminMembersResponse,
   AdminOrganizationResponse,
+  AdminOrganizationsResponse,
   AdminOwnershipResponse,
   AdminRemovedMemberResponse,
   AdminRoleCatalog,
@@ -1583,6 +1584,45 @@ describe("the management surface", () => {
     expect(body.organizations.map((organization) => organization.id).sort()).toEqual([ACME, BETA].sort());
     expect(body.organizations.find((organization) => organization.id === ACME)?.members).toBe(3);
     expect(body.truncated).toBe(false);
+  });
+
+  test("the account list narrows by standing on the server", async () => {
+    await db().updateTable(ORGANIZATIONS_TABLE).set({ suspendedAt: NOW.getTime() }).where("id", "=", BETA).execute();
+    const managed = buildApp({ verifier: verifierFor([ORGANIZATION_ACCOUNTS_READ_SCOPE]) });
+    const ids = async (query: string) => {
+      const response = await call("GET", `${BASE}/admin/organizations?${query}`, { app: managed });
+      expect(response.status).toBe(200);
+      return AdminOrganizationsResponse.parse(await response.json()).organizations.map(
+        (organization) => organization.id,
+      );
+    };
+    expect(await ids("state=suspended")).toEqual([BETA]);
+    expect(await ids("state=active")).toEqual([ACME]);
+    expect(await ids("state=deleted")).toEqual([]);
+  });
+
+  test("the account list pages on a cursor, and a page that reaches the end says so", async () => {
+    const managed = buildApp({ verifier: verifierFor([ORGANIZATION_ACCOUNTS_READ_SCOPE]) });
+    const read = async (query: string) =>
+      AdminOrganizationsResponse.parse(
+        await (await call("GET", `${BASE}/admin/organizations?${query}`, { app: managed })).json(),
+      );
+    const first = await read("limit=1");
+    expect(first.organizations).toHaveLength(1);
+    expect(first.truncated).toBe(true);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await read(`limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+    expect(second.organizations).toHaveLength(1);
+    expect(second.truncated).toBe(false);
+    expect(second.nextCursor).toBeNull();
+    expect([...first.organizations, ...second.organizations].map((organization) => organization.id).sort()).toEqual(
+      [ACME, BETA].sort(),
+    );
+  });
+
+  test("an unknown state is a 400", async () => {
+    const managed = buildApp({ verifier: verifierFor([ORGANIZATION_ACCOUNTS_READ_SCOPE]) });
+    expect((await call("GET", `${BASE}/admin/organizations?state=archived`, { app: managed })).status).toBe(400);
   });
 
   test("the roster is a second scope, and holding the first confers nothing about it", async () => {

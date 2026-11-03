@@ -6,7 +6,7 @@ import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { auditDatabase } from "./data/tables";
 import { audit_0001_init } from "./migrations/0001_init";
-import { queryAuditEvents } from "./query";
+import { pageAuditEvents, queryAuditEvents } from "./query";
 import { recordAuditEvent } from "./recorder";
 
 const T0 = 1_700_000_000_000;
@@ -58,6 +58,39 @@ describe("queryAuditEvents", () => {
     const events = await queryAuditEvents(auditDatabase(env.DB), { action: "auth/login" });
     expect(events).toHaveLength(2);
     expect(events.every((e) => e.action === "auth/login")).toBe(true);
+  });
+
+  test("filters by action prefix — every action under one domain, and none under a domain that merely starts the same", async () => {
+    const db = auditDatabase(env.DB);
+    await recordAuditEvent(db, {
+      action: "authority/granted",
+      outcome: "success",
+      actorType: "service",
+      actorId: "ci",
+      occurredAt: new Date(T0 + 3000),
+    });
+    await recordAuditEvent(db, {
+      action: "auth/logout",
+      outcome: "success",
+      actorType: "user",
+      actorId: "user-1",
+      occurredAt: new Date(T0 + 4000),
+    });
+
+    const events = await queryAuditEvents(db, { actionPrefix: "auth" });
+    expect(events.map((e) => e.action)).toEqual(["auth/logout", "auth/login", "auth/login"]);
+    expect((await queryAuditEvents(db, { actionPrefix: "admin" })).map((e) => e.action)).toEqual([
+      "admin/config_changed",
+    ]);
+  });
+
+  test("an action-prefix page resumes on the cursor without repeating or skipping a row", async () => {
+    const db = auditDatabase(env.DB);
+    const first = await pageAuditEvents(db, { actionPrefix: "auth", limit: 1 });
+    expect(first.events.map((e) => e.actorId)).toEqual(["user-2"]);
+    const second = await pageAuditEvents(db, { actionPrefix: "auth", limit: 1, cursor: first.nextCursor ?? undefined });
+    expect(second.events.map((e) => e.actorId)).toEqual(["user-1"]);
+    expect(second.nextCursor).toBeNull();
   });
 
   test("filters by actor (type and id)", async () => {

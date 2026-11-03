@@ -227,8 +227,8 @@ describe("pithy setup on a fresh clone", () => {
 
     const outcome = await pithy(["doctor"], dir, config);
 
-    // Thirteen pending: auth's migrations through `0008_last_active` among them.
-    expect(outcome.stdout).toContain("dev: 13 pending — run: pithy setup");
+    // Fourteen pending: auth's migrations through `0008_last_active` among them, and email's `0002_job_filters`.
+    expect(outcome.stdout).toContain("dev: 14 pending — run: pithy setup");
     expect(outcome.stdout).toContain("Run `pithy setup` — it mints one into");
     expect(outcome.stdout).not.toContain("pithy add secrets");
   }, 300_000);

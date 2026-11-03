@@ -81,7 +81,19 @@ export const ListAuditEventsQuery = z
     ),
     action: AuditAction.max(MAX_FILTER_LENGTH)
       .optional()
-      .describe("Filter to one exact `domain/reason` action code. Exact, never a prefix — the taxonomy is federated."),
+      .describe("Filter to one exact `domain/reason` action code. Exact; `actionPrefix` is the domain-wide filter."),
+    actionPrefix: z
+      .string()
+      .regex(
+        /^[a-z][a-z0-9]*\/?$/,
+        "An action prefix is one domain, lowercase, with or without its trailing `/` (e.g. `auth` or `auth/`).",
+      )
+      .max(MAX_FILTER_LENGTH)
+      .transform((value) => value.replace(/\/$/, ""))
+      .optional()
+      .describe(
+        "Filter to every action under one domain — `auth` or `auth/` matches `auth/login` and `auth/logout`, never `authority/granted`. The domain is the only prefix: a reason is never matched by its start.",
+      ),
     outcome: AuditOutcome.optional().describe(
       "Filter to one outcome. `denied` is the one worth watching: a run of denials is what a credential being probed looks like.",
     ),

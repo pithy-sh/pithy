@@ -30,6 +30,8 @@ export interface AuditQuery {
   actorKind?: ControlPlaneActorKind;
   /** Match an exact `domain/reason` action code. */
   action?: string;
+  /** Match every action under one domain — `auth` matches `auth/login`, never `authority/granted`. */
+  actionPrefix?: string;
   /** Match the outcome (`success` | `failure` | `denied`). */
   outcome?: AuditOutcome;
   /** Match the severity (`info` | `warning` | `critical`). */
@@ -100,6 +102,11 @@ function auditEventQuery(db: AuditDatabase, filter: AuditQuery) {
   if (filter.actorId !== undefined) query = query.where("actorId", "=", filter.actorId);
   if (filter.actorKind !== undefined) query = query.where("actorKind", "=", filter.actorKind);
   if (filter.action !== undefined) query = query.where("action", "=", filter.action);
+  // A range rather than `LIKE`, so `pithyAuditEventsActionIdx` serves it: every `domain/…` code sorts at or after
+  // `domain/` and before `domain0`, because `0` is the character after `/`.
+  if (filter.actionPrefix !== undefined) {
+    query = query.where("action", ">=", `${filter.actionPrefix}/`).where("action", "<", `${filter.actionPrefix}0`);
+  }
   if (filter.outcome !== undefined) query = query.where("outcome", "=", filter.outcome);
   if (filter.severity !== undefined) query = query.where("severity", "=", filter.severity);
   if (filter.resourceType !== undefined) query = query.where("resourceType", "=", filter.resourceType);
