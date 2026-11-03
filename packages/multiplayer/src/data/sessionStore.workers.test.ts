@@ -58,6 +58,24 @@ describe("sessionIndex", () => {
     expect(duels.items.map((row) => row.sessionId)).toEqual(["s4", "s2", "s0"]);
   });
 
+  test("list narrows to one phase, and pages the narrowed index on the cursor", async () => {
+    for (let i = 0; i < 5; i++) {
+      await index().put({
+        sessionId: `s${i}`,
+        gameKey: "duel",
+        phase: i % 2 === 0 ? "active" : "open",
+        players: [],
+        openedAt: at((i + 1) * 1_000),
+      });
+    }
+    expect((await index().list({ phase: "open" })).items.map((row) => row.sessionId)).toEqual(["s3", "s1"]);
+    const first = await index().list({ phase: "active", limit: 2 });
+    expect(first.items.map((row) => row.sessionId)).toEqual(["s4", "s2"]);
+    const second = await index().list({ phase: "active", limit: 2, cursor: first.nextCursor ?? undefined });
+    expect(second.items.map((row) => row.sessionId)).toEqual(["s0"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   test("a malformed cursor is a first page, not an error", async () => {
     await index().put({ sessionId: "s1", gameKey: "duel", phase: "open", players: [], openedAt: at(1) });
     expect((await index().list({ cursor: "not-a-cursor" })).items).toHaveLength(1);

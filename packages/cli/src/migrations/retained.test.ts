@@ -523,7 +523,7 @@ describe("a database other environments bind (#588)", () => {
       // an explanation of damage: nothing in it was reversed, in either database.
       expect(refused.payload.message).toContain(RELEASE);
       expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
-      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init"]);
+      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init", "0200_email_0002_job_filters"]);
 
       // Narrowed to the database only staging binds, that portion of the group comes down and the rest
       // of the group stays applied.
@@ -535,7 +535,7 @@ describe("a database other environments bind (#588)", () => {
         confirmRollback: rollbackConfirmPhrase("staging"),
       });
       expect(runs[0]?.databases.map((d) => [d.binding, d.results.map((r) => r.migrationName)])).toEqual([
-        ["DB", ["0200_email_0001_init"]],
+        ["DB", ["0200_email_0002_job_filters", "0200_email_0001_init"]],
       ]);
       expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
       expect(await rowsIn(byId("global-suppressions"), "pithy_email_suppressions")).toBe(0);
@@ -596,7 +596,7 @@ describe("a database other environments bind (#588)", () => {
       // report has carried for a database another environment binds.
       expect(runs[0]?.databases.find((d) => d.binding === "EMAIL_SUPPRESSIONS")?.boundBy).toEqual(["prod"]);
       expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
-      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init"]);
+      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init", "0200_email_0002_job_filters"]);
     } finally {
       await mf.dispose();
     }

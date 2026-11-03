@@ -270,6 +270,37 @@ describe("GET /email/jobs", () => {
     expect(jobs.map((j) => j.id)).toEqual([failed.id]);
   });
 
+  test("filters by template and by category, and pages the filtered log on the cursor", async () => {
+    await seedJob();
+    const first = await seedJob({ template: "newsletter", category: "marketing" });
+    await seedJob({ template: "welcome" });
+    const second = await seedJob({ template: "newsletter", category: "marketing" });
+    const app = makeApp([EMAIL_JOBS_READ_SCOPE]);
+    const read = async (query: string) => {
+      const response = await call(app, "GET", `/email/jobs?${query}`, EMAIL_JOBS_READ_SCOPE);
+      expect(response.status).toBe(200);
+      return await response.json<{ jobs: { id: string }[]; nextCursor: string | null }>();
+    };
+
+    expect((await read("template=newsletter")).jobs.map((j) => j.id)).toEqual([second.id, first.id]);
+    expect((await read("category=transactional")).jobs.map((j) => j.id)).toEqual(["job-3", "job-1"]);
+
+    const page1 = await read("category=marketing&limit=1");
+    expect(page1.jobs.map((j) => j.id)).toEqual([second.id]);
+    const page2 = await read(`category=marketing&limit=1&cursor=${encodeURIComponent(page1.nextCursor ?? "")}`);
+    expect(page2.jobs.map((j) => j.id)).toEqual([first.id]);
+    expect(page2.nextCursor).toBeNull();
+  });
+
+  test("a category outside transactional and marketing, or an empty template, is a 400", async () => {
+    const app = makeApp([EMAIL_JOBS_READ_SCOPE]);
+    for (const query of ["category=promotional", "template="]) {
+      const response = await call(app, "GET", `/email/jobs?${query}`, EMAIL_JOBS_READ_SCOPE);
+      expect(response.status, query).toBe(400);
+      expect(await errorCode(response)).toBe("validation/invalid_input");
+    }
+  });
+
   test("pages on a cursor, never an offset — a row inserted mid-scroll does not shift the next page", async () => {
     // The whole reason keyset paging is mandatory here. With OFFSET, the send that lands between the
     // two requests below pushes a row from page one onto page two and the reader sees it twice.
@@ -541,6 +572,47 @@ describe("the suppression list", () => {
     );
     const { suppressions } = await response.json<{ suppressions: { email: string }[] }>();
     expect(suppressions.map((s) => s.email)).toEqual(["left@example.com"]);
+  });
+
+  test("active narrows to the blocks in force, or to the ones whose expiry has passed", async () => {
+    const db = emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS);
+    const ago = (ms: number) => new Date(NOW.getTime() - ms);
+    await suppress(db, { email: "forever@example.com", reason: "hard_bounce" }, ago(4000));
+    await suppress(db, { email: "lapsed@example.com", reason: "manual", expiresAt: ago(1) }, ago(3000));
+    await suppress(db, { email: "boundary@example.com", reason: "manual", expiresAt: NOW }, ago(2000));
+    await suppress(
+      db,
+      { email: "later@example.com", reason: "manual", expiresAt: new Date(NOW.getTime() + 60_000) },
+      ago(1000),
+    );
+    const app = makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]);
+    const read = async (query: string) => {
+      const response = await call(app, "GET", `/email/suppressions?${query}`, EMAIL_SUPPRESSIONS_READ_SCOPE);
+      expect(response.status).toBe(200);
+      return await response.json<{ suppressions: { email: string; active: boolean }[]; nextCursor: string | null }>();
+    };
+
+    const active = await read("active=true");
+    expect(active.suppressions.map((s) => s.email)).toEqual(["later@example.com", "forever@example.com"]);
+    expect(active.suppressions.every((s) => s.active)).toBe(true);
+    const expired = await read("active=false");
+    expect(expired.suppressions.map((s) => s.email)).toEqual(["boundary@example.com", "lapsed@example.com"]);
+    expect(expired.suppressions.some((s) => s.active)).toBe(false);
+
+    const page1 = await read("active=true&limit=1");
+    expect(page1.suppressions.map((s) => s.email)).toEqual(["later@example.com"]);
+    const page2 = await read(`active=true&limit=1&cursor=${encodeURIComponent(page1.nextCursor ?? "")}`);
+    expect(page2.suppressions.map((s) => s.email)).toEqual(["forever@example.com"]);
+  });
+
+  test("an active that is not true or false is a 400", async () => {
+    const response = await call(
+      makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
+      "GET",
+      "/email/suppressions?active=yes",
+      EMAIL_SUPPRESSIONS_READ_SCOPE,
+    );
+    expect(response.status).toBe(400);
   });
 
   test("the read is audited, and records whether it was a lookup or a walk", async () => {

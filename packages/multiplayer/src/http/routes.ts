@@ -256,6 +256,7 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
         const query = c.req.valid("query");
         const page = await sessionIndex(multiplayerDatabase(dbBinding(c))).list({
           gameKey: filteredGame(games, query.game),
+          phase: query.phase,
           cursor: query.cursor,
           limit: query.limit,
         });
