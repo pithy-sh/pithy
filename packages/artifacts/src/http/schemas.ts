@@ -3,7 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
-import { ArtifactsGrant } from "../data/records";
+import { ArtifactsGrant, ArtifactsOwnerKind } from "../data/records";
 
 /**
  * What the repository routes accept. Declared on the route line with `validate(target, Schema)`, after the guards,
@@ -124,8 +124,28 @@ export const AdminReposQuery = z
       .optional()
       .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
     limit: LIMIT.optional().describe(`How many repositories to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to 25.`),
+    remoteAccess: z
+      .enum(["true", "false"])
+      .describe("`true` or `false`.")
+      .transform((value) => value === "true")
+      .optional()
+      .describe("`true` for the repositories a git client may reach, `false` for those it may not. Both when absent."),
+    ownerKind: ArtifactsOwnerKind.optional().describe(
+      "Only an organization's repositories (`org`), or only a person's (`user`).",
+    ),
+    ownerId: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe(
+        "Only one owner's repositories, the organization's id or the person's user id. Send it with `ownerKind`: an id alone names whichever organization or person happens to carry it.",
+      ),
   })
-  .describe("The query of the control-plane repository listing.");
+  .refine((query) => query.ownerId === undefined || query.ownerKind !== undefined, {
+    message: "Send `ownerId` with `ownerKind`. An id names an owner only under its kind.",
+  })
+  .describe("The query of the control-plane repository listing: what to narrow it to, and where to resume.");
 export type AdminReposQuery = z.output<typeof AdminReposQuery>;
 
 export const AdminRepoQuery = z

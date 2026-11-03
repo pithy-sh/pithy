@@ -44,7 +44,7 @@ export const DEFAULT_DASHBOARD_ORIGIN = "https://app.pithy.sh";
  * **Both URIs are http(s) or nothing.** They arrive over the wire from whatever origin `--origin` named,
  * and the CLI offers to hand one of them to the desktop's own opener. A bare `z.url()` accepts
  * `javascript:`, `file:` and `vscode:` alike, so the scheme is narrowed here — at the boundary the value
- * crosses — rather than at the opener alone (#607).
+ * crosses — rather than at the opener alone.
  */
 export const DeviceAuthorization = z
   .object({
@@ -63,7 +63,7 @@ export const DeviceAuthorization = z
       .url({ protocol: /^https?$/ })
       .optional()
       .describe(
-        "The same page with the user code already in it. Opened when present; never printed, because it carries the code.",
+        "The same page with the user code already in it. Printed and opened when present, with the code shown beside it to compare.",
       ),
     expiresInSeconds: z
       .number()

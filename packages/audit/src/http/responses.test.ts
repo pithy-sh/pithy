@@ -17,6 +17,8 @@ import {
   ControlPlaneReachResponse,
   ControlPlaneReachSubjectView,
   ControlPlaneReachView,
+  ControlPlaneUsageAllResponse,
+  ControlPlaneUsageReadResponse,
   ControlPlaneUsageResponse,
   ControlPlaneUsageView,
 } from "./responses";
@@ -24,6 +26,7 @@ import {
   accessChangeView,
   auditEventDetailView,
   auditEventView,
+  controlPlaneConnectionUsageViews,
   controlPlaneReachSubjectView,
   controlPlaneReachView,
   controlPlaneUsageView,
@@ -321,6 +324,7 @@ describe("the reach response schemas (#828)", () => {
 
 describe("the control-plane usage view (#812)", () => {
   const USED: ControlPlaneUsageRow = {
+    connectionId: "6f1d2e40-7b3a-4c9e-8d51-2a4b6c8e0f13",
     scope: "audit:events:read",
     keyId: "key-1",
     allowed: 3,
@@ -361,6 +365,35 @@ describe("the control-plane usage view (#812)", () => {
       usage: [controlPlaneUsageView(USED), controlPlaneUsageView(ONLY_DENIED)],
       oldestEventAt: null,
     });
+  });
+
+  test("every connection's rows fold into one entry per connection, keeping the aggregate's order", () => {
+    const OTHER = "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
+    const views = controlPlaneConnectionUsageViews([USED, ONLY_DENIED, { ...USED, connectionId: OTHER }]);
+    expect(views).toEqual([
+      { connectionId: USED.connectionId, usage: [controlPlaneUsageView(USED), controlPlaneUsageView(ONLY_DENIED)] },
+      { connectionId: OTHER, usage: [controlPlaneUsageView(USED)] },
+    ]);
+    expect(controlPlaneConnectionUsageViews([])).toEqual([]);
+  });
+
+  test("the every-connection envelope accepts what the route returns, and the read schema takes both", () => {
+    const every = {
+      since: "2026-06-01T00:00:00.000Z",
+      until: "2026-06-11T00:00:00.000Z",
+      connections: controlPlaneConnectionUsageViews([USED, ONLY_DENIED]),
+      oldestEventAt: null,
+    };
+    accepts(ControlPlaneUsageAllResponse, every);
+    expect(ControlPlaneUsageReadResponse.parse(every)).toEqual(every);
+    const one = {
+      connectionId: USED.connectionId,
+      since: every.since,
+      until: every.until,
+      usage: [controlPlaneUsageView(USED)],
+      oldestEventAt: null,
+    };
+    expect(ControlPlaneUsageReadResponse.parse(one)).toEqual(one);
   });
 
   test("the row carries no network identifier and no metadata bag", () => {

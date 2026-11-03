@@ -14,6 +14,7 @@ import type {
   AuditEventDetailView,
   AuditEventView,
   AuditSinkView,
+  ControlPlaneConnectionUsageView,
   ControlPlaneReachSubjectView,
   ControlPlaneReachView,
   ControlPlaneUsageView,
@@ -210,6 +211,22 @@ export function controlPlaneUsageView(row: ControlPlaneUsageRow): ControlPlaneUs
     lastAllowedPath: row.lastAllowedPath,
     lastDeniedAt: row.lastDeniedAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * Fold every connection's usage rows into one entry per connection, in the order the aggregate returned them —
+ * by connection, then scope, then key — so each connection's rows keep the order a named read gives them.
+ */
+export function controlPlaneConnectionUsageViews(
+  rows: readonly ControlPlaneUsageRow[],
+): ControlPlaneConnectionUsageView[] {
+  const byConnection = new Map<string, ControlPlaneUsageView[]>();
+  for (const row of rows) {
+    const usage = byConnection.get(row.connectionId) ?? [];
+    usage.push(controlPlaneUsageView(row));
+    byConnection.set(row.connectionId, usage);
+  }
+  return [...byConnection].map(([connectionId, usage]) => ({ connectionId, usage }));
 }
 
 /**

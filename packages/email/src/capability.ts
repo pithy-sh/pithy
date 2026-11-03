@@ -25,6 +25,7 @@ import { emailAdminRoutes } from "./http/guards";
 import { registerEmailAdminRoutes } from "./http/routes";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
+import { email_0002_job_filters } from "./migrations/0002_job_filters";
 import { EMAIL_PROCESSING } from "./processing/activities";
 import { DevMailDelivery } from "./provision/devDelivery";
 import { emailHostCatalogs } from "./provision/hostCatalogs";
@@ -288,7 +289,7 @@ export function email(config: EmailConfigInput): EmailCapability {
         binding: "DB",
         tables: emailTables,
         migrationOrder: EMAIL_MIGRATION_ORDER,
-        migrations: { "0001_init": email_0001_init },
+        migrations: { "0001_init": email_0001_init, "0002_job_filters": email_0002_job_filters },
       },
       emailSuppressions: {
         binding: "EMAIL_SUPPRESSIONS",

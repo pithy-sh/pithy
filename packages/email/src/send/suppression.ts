@@ -129,6 +129,10 @@ export interface SuppressionListFilter {
   reason?: SuppressionReason;
   /** Look one address up exactly, rather than paging the list. */
   email?: string;
+  /** The blocks in force at `now` (`true`), or the ones whose expiry has passed (`false`). Every row when absent. */
+  active?: boolean;
+  /** The instant `active` is judged at. Defaults to the moment of the read. */
+  now?: Date;
   /** The previous page's `nextCursor`. A malformed one is a first page. */
   cursor?: string;
   /** How many rows to return, clamped into range. */
@@ -182,6 +186,15 @@ export async function listSuppressions(
   // neighbors would be a way to enumerate the list one query at a time while looking like a question
   // about a single address.
   if (filter.email) query = query.where("email", "=", normalizeAddress(filter.email));
+  if (filter.active !== undefined) {
+    // The expiry is exclusive, as `suppressionView` reads it: at the instant it names, the block is over.
+    const at = SQLiteDate.encode(filter.now ?? new Date());
+    query = query.where((eb) =>
+      filter.active
+        ? eb.or([eb("expiresAt", "is", null), eb("expiresAt", ">", at)])
+        : eb.and([eb("expiresAt", "is not", null), eb("expiresAt", "<=", at)]),
+    );
+  }
   if (after) {
     query = query.where((eb) =>
       eb.or([eb("createdAt", "<", after.sort), eb.and([eb("createdAt", "=", after.sort), eb("id", "<", after.id)])]),
