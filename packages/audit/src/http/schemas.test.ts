@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import { inputOf } from "@pithy-sh/core/src/controlPlane/discovery/routeInput";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { describe, expect, test } from "vitest";
 import {
   AccessHistoryQuery,
   ChainExportQuery,
   ChainVerifyQuery,
   ControlPlaneReachQuery,
+  ListAuditEventsQuery,
   MAX_EXPORT_PAGE,
 } from "./schemas";
 
@@ -136,5 +139,23 @@ describe("ChainExportQuery's page size (#822)", () => {
     }
     expect(ChainExportQuery.parse({ tenant: "acme", limit: "1" }).limit).toBe(1);
     expect(ChainExportQuery.parse({ tenant: "acme", limit: String(MAX_EXPORT_PAGE) }).limit).toBe(MAX_EXPORT_PAGE);
+  });
+});
+
+describe("ListAuditEventsQuery.actionPrefix", () => {
+  test("takes one domain, with or without its slash, and hands the query the bare domain", () => {
+    expect(ListAuditEventsQuery.parse({ actionPrefix: "auth" }).actionPrefix).toBe("auth");
+    expect(ListAuditEventsQuery.parse({ actionPrefix: "auth/" }).actionPrefix).toBe("auth");
+  });
+
+  test("refuses a reason, a capital, a wildcard and an empty value", () => {
+    for (const actionPrefix of ["auth/login", "Auth", "auth%", ""]) {
+      expect(ListAuditEventsQuery.safeParse({ actionPrefix }).success, actionPrefix).toBe(false);
+    }
+  });
+
+  test("reaches the manifest's route input, so a client can discover it", () => {
+    const input = inputOf([validate("query", ListAuditEventsQuery)]).properties as { query: { properties: object } };
+    expect(Object.keys(input.query.properties)).toContain("actionPrefix");
   });
 });
