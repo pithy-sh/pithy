@@ -28,34 +28,31 @@ import { SUPPORT_CAPABILITY, supportWorkflowRegistry } from "../workflows/specs"
  * orchestration (order, idempotency, per-env fan-out) is unit-tested without touching Cloudflare.
  * Every step is idempotent; re-running is a no-op.
  *
- * ## The routing rule is opt-in, and that is a safety decision
+ * ## The routing rule never enables Email Routing
  *
- * `ensureRoutingRule` returns `skipped: true` when no routing config is supplied, exactly as
- * `@pithy-sh/email`'s does — because **enabling Email Routing on a zone points its MX at Cloudflare.**
- * Creating a rule on the wrong zone would move an adopter's real inbound mail off their existing
- * provider, which is not a mistake a provisioning command gets to make on their behalf. So the zone,
- * the address, and the target worker are all explicit flags, and a project that has not decided yet
- * provisions everything else and adds the rule later.
+ * **Enabling Email Routing for a domain points its MX at Cloudflare**, so it stays the adopter's act. The CLI's
+ * routing step finds the zone that holds each environment's inbound address, refuses a domain Email Routing is
+ * not enabled for, and only then creates or updates the exact-address rule that sends it to that environment's
+ * app worker. It never enables routing and never touches DNS.
  *
- * The rule name is `<project>-global-support-inbound`, deliberately distinct from `@pithy-sh/email`'s
- * `<project>-global-email-bounce`. Idempotency in `ensureWorkerRoute` keys on the rule *name*, so
- * sharing one would make whichever capability provisioned second silently believe its rule already
- * existed — and the project segment is what stops two Pithy projects on one zone doing the same to
- * each other, with the loser's customer mail delivered to the winner's Worker.
+ * A rule is per environment, named `<project>-<env>-support-inbound`: each environment's address goes to its own
+ * app worker. The project-global `<project>-global-support-inbound` is what the explicit `--routing-zone`,
+ * `--inbound-address` and `--app-worker` override creates, distinct from `@pithy-sh/email`'s
+ * `<project>-global-email-bounce`, because that path keys idempotency on the rule's name.
  */
 
 /**
- * The name of the Email Routing rule this capability creates, for one project. Distinct from the
- * bounce handler's, and `global` in the environment slot because there is one rule per zone: the
- * environments are separated by which app Worker the rule is pointed at, not by the rule.
+ * The name of an Email Routing rule this capability creates, for one project: `<project>-<env>-support-inbound`
+ * for one environment's address, or `<project>-global-support-inbound` for the override that routes one address
+ * for the whole project. Distinct from the bounce handler's either way.
  *
  * **Still on the generic composer**, and deliberately: an Email Routing rule is not a namespace
  * `@pithy-sh/core/src/naming/limits` carries a verified Cloudflare cap for, and the facade exists so a
  * kind of thing brings its own number rather than borrowing one. It takes the conservative default
  * until that namespace lands — the same call `@pithy-sh/email`'s bounce rule makes.
  */
-export function supportRoutingRuleName(project: string): string {
-  return resourceName({ project, env: GLOBAL_SCOPE, thing: `${SUPPORT_CAPABILITY}-inbound` });
+export function supportRoutingRuleName(project: string, env?: ManagedEnvironment): string {
+  return resourceName({ project, env: env ?? GLOBAL_SCOPE, thing: `${SUPPORT_CAPABILITY}-inbound` });
 }
 
 /**
@@ -132,8 +129,9 @@ export interface SupportProvisioner {
    */
   settleSemanticIndex(env: ManagedEnvironment, created: boolean): Promise<{ dropped: boolean; backfilled: boolean }>;
   /**
-   * Ensure the inbound Email Routing rule that delivers the support address to the app worker.
-   * Idempotent, keyed on the rule name. Returns `skipped: true` when no routing config was supplied.
+   * Ensure the inbound Email Routing rules that deliver the support addresses to the app worker: each provisioned
+   * environment's own, or the one the override names. Idempotent. Returns `skipped: true` when there was nothing
+   * to route.
    */
   ensureRoutingRule(): Promise<{ created: boolean; skipped: boolean }>;
 }
@@ -217,8 +215,9 @@ export interface SupportDeprovisioner {
   /** Delete the env's classification worker. Idempotent. */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
-   * Remove the inbound routing rule, so mail stops being delivered here. Idempotent. Called only when the teardown
-   * was asked to remove it (`removeRouting`).
+   * Remove the project-global inbound routing rule the override created, so mail stops being delivered here.
+   * Idempotent. Called only when the teardown was asked to remove it (`removeRouting`). An environment's own rule
+   * is the CLI's to remove, with that environment.
    */
   removeRoutingRule(): Promise<{ removed: boolean }>;
   /**

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -12,14 +12,20 @@ import {
   CloudflareSupportDeprovisioner,
   CloudflareSupportProvisioner,
   loadSupport,
+  removeEnvironmentRoutes,
   SUPPORT_VECTORIZE_BINDING,
   type SupportEnvResources,
+  type SupportEnvRouting,
+  type SupportModule,
+  SupportRoute,
+  SupportRouteRemoval,
 } from "../capabilities/supportProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { applyAppBindings, removeAppVectorize } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
+import { composeFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
@@ -33,6 +39,7 @@ import {
   SkippedEnvironment,
   writeProvisionReport,
 } from "../project/environmentReadiness";
+import { serviceScripts } from "../project/serviceStanzas";
 import { confineTeardown } from "../project/teardown";
 import { workerDirName } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -40,14 +47,14 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 /**
  * `pithy support provision` / `deprovision` — the command the support manifest and wrangler
  * template have always pointed at. It creates the `SUPPORT_BUCKET` R2 bucket, deploys the prebuilt
- * classification worker for every managed environment, and creates the Email Routing rule that delivers
- * the support address to the app worker.
+ * classification worker for every managed environment, and routes each environment's inbound address to
+ * that environment's app worker.
  *
- * **The routing flags are all-or-nothing, and deliberately explicit.** Enabling Email Routing on a zone
- * points its MX at Cloudflare, so a rule created on the wrong zone moves an adopter's real inbound mail
- * off their existing provider. That is not a mistake a provisioning command gets to make on somebody's
- * behalf, so the zone, the address, and the target worker are each named or the rule is not created —
- * everything else provisions, and the rule is added when the operator has decided.
+ * **The route is derived, and Email Routing is never enabled here.** Each environment's composition names
+ * its `inboundAddresses`; the zone is the one holding the address's domain; the Worker is the one `pithy
+ * deploy` names for the environment. Enabling Email Routing points a domain's MX at Cloudflare, so a domain
+ * it is not enabled for is refused by name and left to the operator. The three routing flags, together,
+ * replace the derivation with the one project-global rule they describe.
  *
  * **No secret is written, and nothing else writes the one support needs either.** The classification
  * worker reads a message and writes a label over the `AI` binding, so it carries no credential. The R2
@@ -103,9 +110,8 @@ function buildResolveEnv(readiness: EnvironmentReadiness): (env: ManagedEnvironm
 /**
  * The three routing flags, together or not at all.
  *
- * A partial set is rejected rather than quietly treated as "no routing": an operator who passed two of
- * three asked for a rule, and silently provisioning everything but the one step that delivers the mail
- * would look like success and receive nothing.
+ * A partial set is rejected rather than quietly treated as "no override": an operator who passed two of three
+ * asked for a rule, and routing something else in its place would look like success and deliver elsewhere.
  */
 function resolveRouting(
   zoneId: string | undefined,
@@ -118,6 +124,66 @@ function resolveRouting(
     message: "The inbound routing options are incomplete.",
     action: "Pass --routing-zone, --inbound-address, and --app-worker together, or none of them.",
   });
+}
+
+/**
+ * One environment's routing, from that environment's own composition: the addresses support claims there, and the
+ * script the app Worker deploys as there. A composition that cannot be read for the environment is a refusal for it,
+ * with the composition's own sentence, and never a failed run.
+ */
+async function environmentRouting(options: {
+  projectDir: string;
+  project: string;
+  env: ManagedEnvironment;
+  worker: string | undefined;
+  isSupportCapability: SupportModule["isSupportCapability"];
+}): Promise<SupportEnvRouting> {
+  const { projectDir, project, env } = options;
+  try {
+    const { worker, capability } = await composeFor(env, (load) =>
+      resolveCapabilityWorker({
+        projectDir,
+        ...(options.worker !== undefined ? { worker: options.worker } : {}),
+        name: "support",
+        is: options.isSupportCapability,
+        loadConfig: load,
+      }),
+    );
+    const app = workerDirName(worker);
+    const scripts = await serviceScripts(project, [{ app, dir: worker.dir, deployedAs: worker.name }]);
+    return { env, addresses: capability.supportConfig.inboundAddresses, workerName: scripts(app, env) };
+  } catch (error) {
+    if (!(error instanceof PithyError)) throw error;
+    return { env, addresses: [], workerName: null, refused: error.payload.message };
+  }
+}
+
+/** One settled route, as the human report says it. */
+function routeLine(route: SupportRoute): string {
+  const prefix = route.env === null ? "" : `${route.env}: `;
+  const on = route.zone === null ? "" : `, on ${route.zone}`;
+  switch (route.outcome) {
+    case "created":
+      return `${prefix}${route.address} now routes to ${route.worker}${on}.`;
+    case "updated":
+      return `${prefix}${route.address} now routes to ${route.worker}${on}. Its rule sent it elsewhere.`;
+    case "unchanged":
+      return `${prefix}${route.address} already routes to ${route.worker}${on}.`;
+    default:
+      return `${prefix}No routing rule. ${route.reason ?? ""}`.trimEnd();
+  }
+}
+
+/** One environment's removed route, as the human report says it. */
+function removalLine(removal: SupportRouteRemoval): string {
+  switch (removal.outcome) {
+    case "removed":
+      return `${removal.env}: ${removal.address} no longer routes to ${removal.worker}.`;
+    case "absent":
+      return `${removal.env}: no rule sent ${removal.address} to ${removal.worker}.`;
+    default:
+      return `${removal.env}: routing left alone. ${removal.reason ?? ""}`.trimEnd();
+  }
 }
 
 /**
@@ -191,10 +257,15 @@ const SupportProvisionPayload = z
       ),
     routing: z
       .object({
-        created: z.boolean().describe("Whether this run created the inbound routing rule."),
-        skipped: z.boolean().describe("Whether routing was not configured."),
+        created: z.boolean().describe("Whether this run created or updated an inbound routing rule."),
+        skipped: z.boolean().describe("Whether there was nothing to route: every environment claims no address."),
       })
-      .describe("The inbound routing rule."),
+      .describe("The inbound routing rules, in sum. `inboundRoutes` has each one."),
+    inboundRoutes: z
+      .array(SupportRoute)
+      .describe(
+        "Each inbound routing rule this run settled: one per address per provisioned environment, or the one the three routing flags name.",
+      ),
     skippedEnvironments: Skipped,
     exitCode: ProvisionReportExitCode,
   })
@@ -206,7 +277,15 @@ const SupportDeprovisionPayload = z
     command: z.literal("support deprovision").describe('`"support deprovision"`.'),
     env: z.string().describe("The environment torn down."),
     storageDeleted: z.boolean().describe("Whether the support bucket was deleted with it."),
-    routingZone: z.string().nullable().describe("The zone whose routing rule was removed, or `null` when it was left."),
+    routingZone: z
+      .string()
+      .nullable()
+      .describe(
+        "The zone whose project-global routing rule (the one the three routing flags create) was removed, or `null` when it was left.",
+      ),
+    inboundRoutes: z
+      .array(SupportRouteRemoval)
+      .describe("This environment's own inbound routing rules: one per address its composition claims."),
   })
   .describe("What `pithy support deprovision` removed.");
 
@@ -214,7 +293,8 @@ const provision = withContract(
   defineCommand({
     meta: {
       name: "provision",
-      description: "Create the support bucket, deploy the classification workers, and route the inbound address",
+      description:
+        "Create the support bucket, deploy the classification workers, and route each environment's inbound address",
     },
     args: {
       json: { type: "boolean", default: false, description: "Machine-readable output" },
@@ -226,17 +306,17 @@ const provision = withContract(
       "routing-zone": {
         type: "string",
         description:
-          "Cloudflare Zone ID of the (sub)domain receiving the mail — Email Routing must already be enabled on it (its MX points to Cloudflare). Use a subdomain zone (e.g. help.example.com), never your apex, so your primary MX is untouched. Find it on the zone's Overview page.",
+          "Override: the Cloudflare Zone ID of the zone that contains the address's domain. For a subdomain (help.example.com) that is the parent zone (example.com), where Email Routing for the subdomain is set up. Email Routing must already be enabled for the domain. With --inbound-address and --app-worker, it replaces the routes derived from each environment's inboundAddresses with one rule.",
       },
       "inbound-address": {
         type: "string",
         description:
-          "The exact recipient address the rule matches (e.g. support@help.example.com); mail sent to it is delivered to the app worker's email() handler. It must also be listed in support()'s inboundAddresses, which is what claims it.",
+          "Override: the exact recipient address the rule matches (e.g. support@help.example.com). It must also be listed in support()'s inboundAddresses, which is what claims it. Pass it with --routing-zone and --app-worker.",
       },
       "app-worker": {
         type: "string",
         description:
-          "Deployed name of your production app worker — the one running createEntrypoint with the support capability composed (e.g. pithy-app-prod).",
+          "Override: the deployed name of the app worker the rule delivers to, the one running createEntrypoint with support composed (e.g. acme-prod-api). Pass it with --routing-zone and --inbound-address.",
       },
     },
     run: ({ args }) =>
@@ -279,13 +359,27 @@ const provision = withContract(
           apiToken,
           supportConfig,
           resolveEnv: buildResolveEnv(readiness),
-          ...(routing !== undefined ? { routing } : {}),
+          ...(routing !== undefined
+            ? { routing }
+            : {
+                environmentRouting: await Promise.all(
+                  readiness.ready.map((env) =>
+                    environmentRouting({
+                      projectDir,
+                      project,
+                      env,
+                      worker: workerDirName(appWorker),
+                      isSupportCapability,
+                    }),
+                  ),
+                ),
+              }),
           audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
         });
 
-        // The ready list, not the declaration. The bucket and the routing rule are project-global and are
-        // created whatever else skips; a skipped environment simply never reaches `deployWorker`.
+        // The ready list, not the declaration. The bucket is project-global and is created whatever else skips; a
+        // skipped environment never reaches `deployWorker`, and has no route.
         const result = await provisionSupport(provisioner, readiness.ready);
         const search = new Map(result.search.map((entry) => [entry.env, entry]));
         // The app Worker binds the message index too — the search route embeds a query and asks it — and an
@@ -312,6 +406,7 @@ const provision = withContract(
             {
               command: "support provision",
               ...result,
+              inboundRoutes: provisioner.routes,
               skippedEnvironments: readiness.skipped,
             },
             readiness,
@@ -353,13 +448,9 @@ const provision = withContract(
         if (result.search.every((entry) => !entry.created && !entry.dropped && !entry.repaired)) {
           process.stdout.write("Search index already matches your config.\n");
         }
-        // Say plainly when no rule was made. Everything else can be right and the inbox still receive
-        // nothing, so this is the line an operator needs to read.
-        process.stdout.write(
-          routing
-            ? `Inbound mail for ${routing.address} routes to ${routing.appWorkerName}.\n`
-            : "No routing rule. Pass --routing-zone, --inbound-address, and --app-worker to create one.\n",
-        );
+        // One line per rule, and a refusal said as plainly as a route. Everything else can be right and the inbox
+        // still receive nothing, so these are the lines an operator needs to read.
+        for (const route of provisioner.routes) process.stdout.write(`${routeLine(route)}\n`);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -374,7 +465,7 @@ const provision = withContract(
       {
         kind: "allOrNone",
         flags: ["--routing-zone", "--inbound-address", "--app-worker"],
-        rule: "Inbound mail is routed only when --routing-zone, --inbound-address and --app-worker are given together.",
+        rule: "The routing override is --routing-zone, --inbound-address and --app-worker together, or none of them.",
       },
     ],
   },
@@ -385,7 +476,7 @@ const deprovision = withContract(
     meta: {
       name: "deprovision",
       description:
-        "Remove one environment's classification worker (and, with the last, the routing rule or the bucket)",
+        "Remove one environment's classification worker and its inbound routing rule (and, with the last, the bucket)",
     },
     args: {
       json: { type: "boolean", default: false, description: "Machine-readable output" },
@@ -405,7 +496,7 @@ const deprovision = withContract(
       "routing-zone": {
         type: "string",
         description:
-          "Cloudflare Zone ID the inbound rule lives on. Without it the rule is left in place and mail keeps arriving, because a rule is addressed through its zone and this command will not sweep your domains looking for one. Every environment shares the rule, so only the last environment's teardown may remove it.",
+          "Cloudflare Zone ID of the project-global rule that provision's --routing-zone, --inbound-address and --app-worker created. Without it that rule is left in place. Every environment shares it, so only the last environment's teardown may remove it. This environment's own rule is removed either way.",
       },
       "r2-access-key-id": {
         type: "string",
@@ -430,7 +521,7 @@ const deprovision = withContract(
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
         const env = requireTeardownEnvironment(args.env, declared);
-        const { deprovisionSupport } = await loadSupport(projectDir);
+        const { deprovisionSupport, isSupportCapability } = await loadSupport(projectDir);
         const { account, accountId, apiToken, r2Raw } = commandCredentials(await projectCloudflareAccount(projectDir));
         // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
         // without it, so discovering it is missing at the bucket step would leave the workers gone and the
@@ -438,15 +529,17 @@ const deprovision = withContract(
         const r2Credentials = args.storage
           ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
           : undefined;
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const audit = await buildAudit(projectDir, accountId, apiToken, args.worker);
         const deprovisioner = new CloudflareSupportDeprovisioner({
           account,
-          cf: await cloudflareClients({ accountId, apiToken }),
+          cf,
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
           projectDir,
           project,
           ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),
           ...(r2Credentials !== undefined ? { r2Credentials } : {}),
-          audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
+          audit,
         });
 
         // The limits are held here, not by the orchestrator. It is the project's installed copy, and one from before
@@ -469,6 +562,14 @@ const deprovision = withContract(
                 : "refused",
           },
         });
+        // This environment's own rules go first, once nothing is left to refuse: new mail stops arriving before the
+        // worker that would have handled it is removed.
+        const routes = await removeEnvironmentRoutes({
+          cf,
+          account,
+          routing: await environmentRouting({ projectDir, project, env, worker: args.worker, isSupportCapability }),
+          audit,
+        });
         await deprovisionSupport(
           confined,
           { environment: env, declared },
@@ -482,6 +583,7 @@ const deprovision = withContract(
               env,
               storageDeleted: args.storage,
               routingZone: args["routing-zone"] ?? null,
+              inboundRoutes: routes,
             })}\n`,
           );
           return;
@@ -489,9 +591,7 @@ const deprovision = withContract(
         process.stdout.write(
           `${env}: classification worker removed${args.storage ? ", with the bucket and everything in it" : ""}.\n`,
         );
-        if (!args["routing-zone"]) {
-          process.stdout.write("The routing rule was left in place. Pass --routing-zone to remove it.\n");
-        }
+        for (const removal of routes) process.stdout.write(`${removalLine(removal)}\n`);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),

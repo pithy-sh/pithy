@@ -623,7 +623,7 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "commands/storage.ts":
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/support.ts":
-    "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
+    "Reads the capability's config once, unstamped, for the bucket and the classification hosts; each environment's inbound addresses are read from its own composition, through composeFor. A config that varies anything else by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/testers.ts":
     "Reads the capability's config as one project-wide declaration, for its roster subcommands too; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/turnstile.ts":

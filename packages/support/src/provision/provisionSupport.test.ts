@@ -361,6 +361,12 @@ describe("names", () => {
     expect(supportRoutingRuleName("acme")).not.toBe(supportRoutingRuleName("globex"));
   });
 
+  test("an environment's own rule carries the environment, so each environment's address has its own", () => {
+    expect(supportRoutingRuleName("acme", "prod")).toBe("acme-prod-support-inbound");
+    expect(supportRoutingRuleName("acme", "staging")).not.toBe(supportRoutingRuleName("acme", "prod"));
+    expect(supportRoutingRuleName("acme", "prod")).not.toBe(supportRoutingRuleName("acme"));
+  });
+
   test("the worker name comes off core's facade, under the Worker namespace's own limit", () => {
     expect(supportWorkerName("acme", "prod")).toBe(resourceNames("acme").env("prod").worker("support"));
   });

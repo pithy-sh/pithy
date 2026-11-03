@@ -7,15 +7,18 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { statusOf } from "@pithy-sh/cloudflare/src/client/errors";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { ZoneInfo } from "@pithy-sh/cloudflare/src/zones/zonesManager";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
+import { z } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { answerOnConfirmedAccount, type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { describeUnconfirmedCloudflareAccount, UNCONFIRMED_CLOUDFLARE_ACCOUNT_ACTION } from "../cloudflare/config";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
@@ -36,13 +39,13 @@ import { deleteR2BucketWithContents } from "./r2Bucket";
  *
  * **No secret is written here, and that is the whole shape of this file.** The classification worker reads
  * a message and writes a label over the `AI` binding, so it holds no credential at all — which is why
- * provisioning support is three steps (a bucket, a worker per environment, a routing rule) where media is
+ * provisioning support is three steps (a bucket, a worker per environment, a routing rule per environment) where media is
  * five. The one credential support does use, the R2 key pair its attachment presigning needs, is read
  * through `@pithy-sh/storage`'s `ObjectStore` under support's **own** secret name — `support-r2-credentials`,
  * per `support/src/http/resolve.ts` — and no command in the kit writes it. `pithy storage provision` writes
- * `storage-r2-credentials`, a different secret naming a different bucket, so it is not the answer here
- * (#513 review). The operator writes support's, and `pithy doctor`'s `shared:` section says so when the
- * bucket the signature addresses has to move.
+ * `storage-r2-credentials`, a different secret naming a different bucket, so it is not the answer here.
+ * The operator writes support's, and `pithy doctor`'s `shared:` section says so when the bucket the
+ * signature addresses has to move.
  */
 
 /** The support runtime surface provisioning needs, loaded from the project's own install. */
@@ -188,7 +191,10 @@ export interface SupportEnvResources {
 /** Resolve the per-environment resources for the support worker (from the app Worker's wrangler config). */
 export type ResolveSupportEnv = (env: ManagedEnvironment) => Promise<SupportEnvResources>;
 
-/** The inbound routing a rule is created for: the zone, the address it matches, and the Worker it feeds. */
+/**
+ * The inbound routing the three routing flags name: the zone, the address it matches, and the Worker it feeds. One
+ * project-global rule, created exactly as described.
+ */
 export interface SupportRouting {
   /** Zone the rule lives on. Email Routing must already be enabled on it — enabling it moves the zone's MX. */
   zoneId: string;
@@ -196,6 +202,86 @@ export interface SupportRouting {
   address: string;
   /** The deployed app worker the matched mail is delivered to — the one running the `email()` handler. */
   appWorkerName: string;
+}
+
+/** One environment's inbound routing, derived from its own composition. */
+export interface SupportEnvRouting {
+  /** The environment. */
+  env: ManagedEnvironment;
+  /** The addresses support's `inboundAddresses` claims in this environment's composition. */
+  addresses: readonly string[];
+  /** The app Worker this environment deploys as, `<project>-<env>-<worker>` unless its stanza names another. */
+  workerName: string | null;
+  /** Why this environment's routing could not be derived. Set, every address of it is refused with this reason. */
+  refused?: string;
+}
+
+/** One inbound routing rule a provision settled. `docs/commands/support.md`. */
+export const SupportRoute = z
+  .object({
+    env: z
+      .string()
+      .nullable()
+      .describe(
+        "The environment this rule routes, or `null` for the project-global rule the three routing flags name.",
+      ),
+    address: z
+      .string()
+      .nullable()
+      .describe("The exact address the rule matches. `null` when the environment's composition claims none."),
+    zone: z
+      .string()
+      .nullable()
+      .describe(
+        "The zone the rule lives on, by name: the zone holding the address's domain, the parent zone for a subdomain. `null` when no zone the token can list holds it.",
+      ),
+    zoneId: z.string().nullable().describe("That zone's id. `null` when no zone holds the address's domain."),
+    worker: z
+      .string()
+      .nullable()
+      .describe(
+        "The app Worker the rule sends the mail to, as `pithy deploy` names it for the environment. `null` when it could not be resolved.",
+      ),
+    outcome: z
+      .enum(["created", "updated", "unchanged", "skipped", "refused"])
+      .describe(
+        "`created`: this run made the rule. `updated`: the sole enabled rule for the address sent it elsewhere, and now sends it to the Worker. `unchanged`: a rule already did. `skipped`: the environment claims no address. `refused`: no rule was made, and `reason` says why.",
+      ),
+    reason: z.string().nullable().describe("Why the route was skipped or refused. `null` otherwise."),
+  })
+  .describe("One inbound routing rule `pithy support provision` settled.");
+export type SupportRoute = z.infer<typeof SupportRoute>;
+
+/** One environment's inbound rule a deprovision settled. `docs/commands/support.md`. */
+export const SupportRouteRemoval = z
+  .object({
+    env: z.string().describe("The environment torn down."),
+    address: z.string().nullable().describe("The address the rule matched. `null` when the composition claims none."),
+    zone: z.string().nullable().describe("The zone the rule lived on, by name. `null` when no zone holds the domain."),
+    worker: z
+      .string()
+      .nullable()
+      .describe("The app Worker the rule sent mail to. `null` when it could not be resolved."),
+    outcome: z
+      .enum(["removed", "absent", "skipped"])
+      .describe(
+        "`removed`: this run deleted the environment's rule for the address. `absent`: no rule sent it to the Worker. `skipped`: nothing could be looked up, and `reason` says why.",
+      ),
+    reason: z.string().nullable().describe("Why the removal was skipped. `null` otherwise."),
+  })
+  .describe("One environment's inbound routing rule `pithy support deprovision` settled.");
+export type SupportRouteRemoval = z.infer<typeof SupportRouteRemoval>;
+
+/** The part of an address after its last `@`, lowercased. */
+function domainOf(address: string): string {
+  return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+}
+
+/** Where an operator turns Email Routing on for `domain`. */
+function enableRoutingAction(domain: string, zone: string): string {
+  return domain === zone
+    ? `Turn it on in the Cloudflare dashboard under ${zone} > Email > Email Routing, and the next run routes it.`
+    : `Turn it on for the subdomain in the Cloudflare dashboard under ${zone} > Email > Email Routing > Settings > Subdomains, and the next run routes it.`;
 }
 
 export interface CloudflareSupportProvisionerOptions {
@@ -232,11 +318,15 @@ export interface CloudflareSupportProvisionerOptions {
   /** Resolve the per-env app DB id — injected so it is testable + decoupled from where the config lives. */
   resolveEnv: ResolveSupportEnv;
   /**
-   * Optional inbound routing. Absent → the routing step is skipped, because **enabling Email Routing points
-   * a zone's MX at Cloudflare**: a rule on the wrong zone moves an adopter's real mail off their provider,
-   * which is not a mistake a provisioning command gets to make on their behalf.
+   * The rule the three routing flags name, created exactly as described. Set, it is the only rule this run makes.
    */
   routing?: SupportRouting;
+  /**
+   * Each provisioned environment's routing, derived from its own composition. Routed when {@link routing} is
+   * absent: the zone is found from each address, a domain Email Routing is not enabled for is refused, and routing
+   * is never enabled here, because enabling it moves the domain's MX.
+   */
+  environmentRouting?: readonly SupportEnvRouting[];
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
@@ -279,8 +369,10 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #supportConfig: SupportConfig;
   readonly #resolveEnv: ResolveSupportEnv;
   readonly #routing: SupportRouting | undefined;
+  readonly #environmentRouting: readonly SupportEnvRouting[];
   readonly #audit: CliAuditEmit;
   readonly #workflows: Pick<CloudflareWorkflowsClient, "createInstance"> | undefined;
+  readonly #routes: SupportRoute[] = [];
 
   constructor(options: CloudflareSupportProvisionerOptions) {
     this.#projectDir = options.projectDir;
@@ -291,8 +383,14 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     this.#supportConfig = options.supportConfig;
     this.#resolveEnv = options.resolveEnv;
     this.#routing = options.routing;
+    this.#environmentRouting = options.environmentRouting ?? [];
     this.#audit = options.audit ?? (async () => {});
     this.#workflows = options.workflows;
+  }
+
+  /** Every inbound rule the last {@link ensureRoutingRule} settled, in order. Empty before it runs. */
+  get routes(): readonly SupportRoute[] {
+    return this.#routes;
   }
 
   /**
@@ -428,7 +526,13 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     if (!supportNeedsBucket(this.#supportConfig)) {
       return { bucket: name, created: false, skipped: true };
     }
-    const existing = await this.#cf.r2Provisioner().findBucketByName(name);
+    // On a confirmed account only: a miss read on an account nothing claims would create the bucket in whichever
+    // account the shell named.
+    const existing = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} bucket`,
+      find: () => this.#cf.r2Provisioner().findBucketByName(name),
+    });
     if (existing) return { bucket: existing.name, created: false, skipped: false };
     const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
@@ -547,42 +651,294 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   }
 
   /**
-   * Create the inbound routing rule that actually delivers the support address to the app worker, when
-   * routing was supplied; otherwise skip.
+   * Route inbound mail to the app worker: the rule the three flags name, or else each environment's own addresses.
+   * Every rule settled is in {@link routes}.
    *
-   * The rule name is support's own (`<project>-global-support-inbound`), never `@pithy-sh/email`'s, and it
-   * carries the project. Idempotency keys on the name, so a shared one would make whichever capability —
-   * or whichever project on the same zone — provisioned second silently believe its rule already existed,
-   * and its mail would go to the other one's Worker.
+   * An environment's address is routed on the zone that holds its domain, the longest-suffix match over the
+   * account's zones, so a subdomain's rule lives on its parent zone. A domain Email Routing is not enabled for is
+   * refused for that environment, by name, and nothing is enabled here. An address two environments both claim is
+   * refused for both, because one exact-address rule can send it to one Worker. A refusal is recorded, never
+   * thrown, so every other environment is still routed.
    */
   async ensureRoutingRule(): Promise<{ created: boolean; skipped: boolean }> {
-    if (!this.#routing) return { created: false, skipped: true };
+    this.#routes.length = 0;
+    if (this.#routing) {
+      this.#routes.push(await this.#ensureFlaggedRule(this.#routing));
+    } else {
+      await this.#ensureEnvironmentRules();
+    }
+    return {
+      created: this.#routes.some((route) => route.outcome === "created" || route.outcome === "updated"),
+      skipped: this.#routes.every((route) => route.outcome === "skipped"),
+    };
+  }
+
+  /**
+   * The one project-global rule the flags describe, keyed on support's own `<project>-global-support-inbound`, on the
+   * zone they name. Held to what a derived route is: a confirmed account, a zone the token can list, and Email
+   * Routing enabled for the address's domain.
+   */
+  async #ensureFlaggedRule(routing: SupportRouting): Promise<SupportRoute> {
     const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
     const ruleName = supportRoutingRuleName(this.#project);
-    const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
-      zoneId: this.#routing.zoneId,
-      address: this.#routing.address,
-      workerName: this.#routing.appWorkerName,
+    return this.#routeOne({
+      env: null,
+      address: routing.address,
+      workerName: routing.appWorkerName,
       ruleName,
-    });
-    if (created) {
-      await this.#audit({
-        environment: "global",
-        action: "support/routing_rule_created",
-        outcome: "success",
-        severity: "info",
-        resourceType: "cf_email_routing_rule",
-        resourceId: this.#routing.address,
-        metadata: {
-          zoneId: this.#routing.zoneId,
-          address: this.#routing.address,
-          workerName: this.#routing.appWorkerName,
+      what: `the zone ${routing.zoneId}`,
+      locate: async () => (await this.#cf.zones().listZones()).find((zone) => zone.id === routing.zoneId) ?? null,
+      missing: `No zone this token can list has the id ${routing.zoneId}: the account does not hold it, or the token is not granted Zone Read on it.`,
+      write: async (zone) => {
+        const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
+          zoneId: zone.id,
+          address: routing.address,
+          workerName: routing.appWorkerName,
           ruleName,
-        },
+        });
+        return { outcome: created ? "created" : "unchanged" };
+      },
+    });
+  }
+
+  async #ensureEnvironmentRules(): Promise<void> {
+    const claimedBy = new Map<string, ManagedEnvironment[]>();
+    for (const routing of this.#environmentRouting) {
+      if (routing.refused !== undefined) continue;
+      for (const address of new Set(routing.addresses.map((candidate) => candidate.toLowerCase()))) {
+        claimedBy.set(address, [...(claimedBy.get(address) ?? []), routing.env]);
+      }
+    }
+    const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
+    for (const routing of this.#environmentRouting) {
+      const base = { env: routing.env, worker: routing.workerName };
+      const workerName = routing.workerName;
+      if (routing.refused !== undefined || workerName === null) {
+        this.#routes.push({
+          ...base,
+          address: null,
+          zone: null,
+          zoneId: null,
+          outcome: "refused",
+          reason: routing.refused ?? `The ${routing.env} app Worker could not be resolved.`,
+        });
+        continue;
+      }
+      if (routing.addresses.length === 0) {
+        this.#routes.push({
+          ...base,
+          address: null,
+          zone: null,
+          zoneId: null,
+          outcome: "skipped",
+          reason: `support() claims no inboundAddresses in ${routing.env}.`,
+        });
+        continue;
+      }
+      for (const address of routing.addresses) {
+        const sharers = claimedBy.get(address.toLowerCase()) ?? [];
+        if (sharers.length > 1) {
+          this.#routes.push({
+            ...base,
+            address,
+            zone: null,
+            zoneId: null,
+            outcome: "refused",
+            reason: `${address} is claimed by ${sharers.join(" and ")}, and one rule sends an address to one Worker. Give each environment its own address, or pass --routing-zone, --inbound-address and --app-worker.`,
+          });
+          continue;
+        }
+        const domain = domainOf(address);
+        const ruleName = supportRoutingRuleName(this.#project, routing.env);
+        this.#routes.push(
+          await this.#routeOne({
+            env: routing.env,
+            address,
+            workerName,
+            ruleName,
+            what: `the zone holding ${domain}`,
+            locate: () => this.#cf.zones().findActiveZoneForHostname(domain),
+            missing: `No zone this token can list holds ${domain}: the account does not hold it, or the token is not granted Zone Read on it.`,
+            write: async (zone) => {
+              const routed = await this.#cf
+                .emailRouting()
+                .routeAddressToWorker({ zoneId: zone.id, address, workerName, ruleName });
+              if (routed.outcome !== "conflict") return { outcome: routed.outcome };
+              return {
+                outcome: "refused",
+                reason: `More than one enabled rule claims ${address} on ${zone.name}, and not all send it to ${workerName}: ${routed.rules.join(", ")}. Disable or delete the ones that should not, and the next run routes it.`,
+              };
+            },
+          }),
+        );
+      }
+    }
+  }
+
+  /**
+   * Route one address, or say why not. Every refusal is recorded, never thrown: an account nothing claims, a zone the
+   * token cannot list, Email Routing off for the domain, a rule this will not override, and any Cloudflare failure,
+   * which names the permissions routing takes when Cloudflare refused the token.
+   */
+  async #routeOne(route: {
+    env: ManagedEnvironment | null;
+    address: string;
+    workerName: string;
+    ruleName: string;
+    what: string;
+    locate: () => Promise<ZoneInfo | null>;
+    missing: string;
+    write: (zone: ZoneInfo) => Promise<{ outcome: SupportRoute["outcome"]; reason?: string }>;
+  }): Promise<SupportRoute> {
+    const domain = domainOf(route.address);
+    const base = { env: route.env, address: route.address, worker: route.workerName };
+    let zone: ZoneInfo | null = null;
+    let step = "list the account's zones";
+    try {
+      const answer = await answerOnConfirmedAccount({ ...this.#account, what: route.what, find: route.locate });
+      if (answer.state === "unconfirmed") {
+        return {
+          ...base,
+          zone: null,
+          zoneId: null,
+          outcome: "refused",
+          reason: `${describeUnconfirmedCloudflareAccount(answer.accountId)} No routing rule was made. ${UNCONFIRMED_CLOUDFLARE_ACCOUNT_ACTION}`,
+        };
+      }
+      zone = answer.state === "found" ? answer.value : null;
+      if (!zone) return { ...base, zone: null, zoneId: null, outcome: "refused", reason: route.missing };
+      const located = { ...base, zone: zone.name, zoneId: zone.id };
+      step = `read Email Routing's settings for ${domain}`;
+      const status = await this.#cf.emailRouting().routingEnabledFor({ zoneId: zone.id, zoneName: zone.name, domain });
+      if (!status.enabled) {
+        return { ...located, outcome: "refused", reason: `${status.reason} ${enableRoutingAction(domain, zone.name)}` };
+      }
+      step = `write the routing rule for ${route.address}`;
+      const written = await route.write(zone);
+      if (written.outcome === "created" || written.outcome === "updated") {
+        await this.#audit({
+          environment: route.env ?? "global",
+          action: written.outcome === "created" ? "support/routing_rule_created" : "support/routing_rule_updated",
+          outcome: "success",
+          severity: "info",
+          resourceType: "cf_email_routing_rule",
+          resourceId: route.address,
+          metadata: { zoneId: zone.id, address: route.address, workerName: route.workerName, ruleName: route.ruleName },
+        });
+      }
+      return { ...located, outcome: written.outcome, reason: written.reason ?? null };
+    } catch (error) {
+      return {
+        ...base,
+        zone: zone?.name ?? null,
+        zoneId: zone?.id ?? null,
+        outcome: "refused",
+        reason: routingFailure(step, zone?.name ?? domain, error),
+      };
+    }
+  }
+}
+
+/**
+ * Why a Cloudflare call in the routing step failed, as a refusal reason. A 401 or 403 is the token's grant, so the
+ * reason names the three permissions routing takes on the zone; anything else is said as Cloudflare said it.
+ */
+function routingFailure(step: string, zone: string, error: unknown): string {
+  const status = statusOf(error instanceof Error ? error.cause : undefined);
+  if (status === 401 || status === 403) {
+    return `Cloudflare refused to ${step} (${status}). Routing takes ${ROUTING_PERMISSION_NAMES} on ${zone}; this token does not hold them all.`;
+  }
+  const message = error instanceof PithyError ? error.payload.message : String(error);
+  return `Cloudflare could not ${step}: ${message}`;
+}
+
+/** The permission groups routing takes on a zone, as an operator reads them. */
+const ROUTING_PERMISSION_NAMES = "Zone Read, Zone Settings Read and Email Routing Rules Write";
+
+/**
+ * Remove one environment's inbound rules: each rule that sends one of its addresses to its app worker, on the zone
+ * that holds the address's domain. A rule for the address that sends it anywhere else is left, and so is every other
+ * environment's. Read-only towards Email Routing itself: nothing is disabled and no DNS is touched.
+ */
+export async function removeEnvironmentRoutes(options: {
+  cf: CloudflareClients;
+  /** The account the rules are removed from. Unconfirmed, the removal is refused before anything is deleted. */
+  account: ConfirmedAccount;
+  routing: SupportEnvRouting;
+  audit?: CliAuditEmit;
+}): Promise<SupportRouteRemoval[]> {
+  const { cf, routing, account } = options;
+  const audit = options.audit ?? (async () => {});
+  const base = { env: routing.env, worker: routing.workerName };
+  if (routing.refused !== undefined || routing.workerName === null) {
+    return [
+      {
+        ...base,
+        address: null,
+        zone: null,
+        outcome: "skipped",
+        reason: routing.refused ?? `The ${routing.env} app Worker could not be resolved.`,
+      },
+    ];
+  }
+  if (routing.addresses.length === 0) {
+    return [
+      {
+        ...base,
+        address: null,
+        zone: null,
+        outcome: "skipped",
+        reason: `support() claims no inboundAddresses in ${routing.env}.`,
+      },
+    ];
+  }
+  const removals: SupportRouteRemoval[] = [];
+  for (const address of routing.addresses) {
+    const domain = domainOf(address);
+    try {
+      const zone = await findOnConfirmedAccount({
+        ...account,
+        what: `the zone holding ${domain}`,
+        find: () => cf.zones().findActiveZoneForHostname(domain),
+      });
+      if (!zone) {
+        removals.push({
+          ...base,
+          address,
+          zone: null,
+          outcome: "skipped",
+          reason: `No zone this token can list holds ${domain}: the account does not hold it, or the token is not granted Zone Read on it.`,
+        });
+        continue;
+      }
+      const { removed } = await cf
+        .emailRouting()
+        .unrouteAddressFromWorker({ zoneId: zone.id, address, workerName: routing.workerName });
+      if (removed > 0) {
+        await audit({
+          environment: routing.env,
+          action: "support/routing_rule_removed",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_email_routing_rule",
+          resourceId: address,
+          metadata: { zoneId: zone.id, address, workerName: routing.workerName },
+        });
+      }
+      removals.push({ ...base, address, zone: zone.name, outcome: removed > 0 ? "removed" : "absent", reason: null });
+    } catch (error) {
+      // An account nothing claims is refused before anything is deleted, as every teardown's is.
+      if (error instanceof PithyError && error.payload.code === "core/conflict") throw error;
+      removals.push({
+        ...base,
+        address,
+        zone: null,
+        outcome: "skipped",
+        reason: `${routingFailure(`remove the routing rule for ${address}`, domain, error)} The rule was left in place.`,
       });
     }
-    return { created, skipped: false };
   }
+  return removals;
 }
 
 /** The directory of the prebuilt support worker inside the installed `@pithy-sh/support` package (holds wrangler.jsonc). */
@@ -607,10 +963,8 @@ export interface CloudflareSupportDeprovisionerOptions {
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
-   * The zone the inbound rule lives on. Needed to remove it, and there is no honest way to derive it: a
-   * rule is addressed through its zone, and sweeping every zone on the account looking for a name is a
-   * search this command should not be making across an adopter's domains. Omitted → the rule is left, and
-   * the command says so rather than reporting mail stopped when it has not.
+   * The zone the project-global rule the routing flags created lives on. Omitted, that rule is left. An
+   * environment's own rule is found from its address instead, by {@link removeEnvironmentRoutes}.
    */
   routingZoneId?: string;
   /**
@@ -707,7 +1061,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   }
 
   /**
-   * Remove the inbound rule, so mail stops being delivered here. Matched on support's own rule name, so a
+   * Remove the project-global inbound rule the routing flags created. Matched on support's own rule name, so a
    * teardown can never take the bounce handler's rule — or an operator's hand-written one — with it.
    */
   async removeRoutingRule(): Promise<{ removed: boolean }> {

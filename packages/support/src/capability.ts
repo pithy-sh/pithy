@@ -281,8 +281,9 @@ export function support(options: SupportOptions = {}): SupportCapability {
     inapplicableSecrets: inapplicableAttachmentSecrets(resolved),
     workflows: supportWorkflows,
     requiredBindings,
-    // Provisioning creates the routing rule that delivers mail to this Worker.
-    ciPermissions: ["email:routing"],
+    // Provisioning finds the zone each inbound address lives in, checks Email Routing is enabled for it, and routes
+    // the address to this Worker; the CI token is granted that on those zones.
+    inboundRouting: { addresses: resolved.inboundAddresses },
     // `pithy doctor` asks whether each inbound address's domain can send, since a reply is sent from it.
     settings: supportSendingSettings(resolved),
     databases: {

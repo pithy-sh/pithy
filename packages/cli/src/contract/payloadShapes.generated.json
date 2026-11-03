@@ -2518,7 +2518,15 @@
         "$.command": "\"support deprovision\"",
         "$.env": "string",
         "$.storageDeleted": "boolean",
-        "$.routingZone": "null | string"
+        "$.routingZone": "null | string",
+        "$.inboundRoutes": "array",
+        "$.inboundRoutes[]": "object",
+        "$.inboundRoutes[].env": "string",
+        "$.inboundRoutes[].address": "null | string",
+        "$.inboundRoutes[].zone": "null | string",
+        "$.inboundRoutes[].worker": "null | string",
+        "$.inboundRoutes[].outcome": "\"absent\" | \"removed\" | \"skipped\"",
+        "$.inboundRoutes[].reason": "null | string"
       }
     },
     "support provision": {
@@ -2548,6 +2556,15 @@
         "$.routing": "object",
         "$.routing.created": "boolean",
         "$.routing.skipped": "boolean",
+        "$.inboundRoutes": "array",
+        "$.inboundRoutes[]": "object",
+        "$.inboundRoutes[].env": "null | string",
+        "$.inboundRoutes[].address": "null | string",
+        "$.inboundRoutes[].zone": "null | string",
+        "$.inboundRoutes[].zoneId": "null | string",
+        "$.inboundRoutes[].worker": "null | string",
+        "$.inboundRoutes[].outcome": "\"created\" | \"refused\" | \"skipped\" | \"unchanged\" | \"updated\"",
+        "$.inboundRoutes[].reason": "null | string",
         "$.skippedEnvironments": "array",
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",

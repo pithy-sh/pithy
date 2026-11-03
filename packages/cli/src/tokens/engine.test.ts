@@ -815,6 +815,21 @@ describe("mintProfileToken — route zones", () => {
     }
   });
 
+  test("a composition routing inbound mail mints ci-system with Email Routing on the zones holding its addresses", async () => {
+    const tokens = fakeControl();
+    await mintProfileToken(
+      engineWith(dir, tokens, { inboundZones: vi.fn(async () => ["zone-mail"]) }),
+      "ci-system",
+      "staging",
+    );
+    expect(tokens.policies[0]?.[1]).toEqual({
+      permissionGroupNames: ["Zone Read", "Zone Settings Read", "Email Routing Rules Write"],
+      resources: { "com.cloudflare.api.account.zone.zone-mail": "*" },
+    });
+    // Never on the account resource, where a zone-level group grants nothing.
+    expect(tokens.policies[0]?.[0]?.permissionGroupNames).not.toContain("Email Routing Rules Write");
+  });
+
   test("a project declaring no domain mints exactly what it minted before", async () => {
     const withNone = fakeControl();
     await mintProfileToken(engineWith(dir, withNone, { routeZones: vi.fn(async () => []) }), "ci-system", "staging");

@@ -23,7 +23,7 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 | Flag | Default | Purpose |
 |---|---|---|
 | `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and public address. Required when a project has several |
-| `--routing-zone <zone-id>` | — | Cloudflare Zone ID of the (sub)domain receiving the mail. Email Routing must already be enabled on it |
+| `--routing-zone <zone-id>` | — | Cloudflare Zone ID of the zone that contains the address's domain: for `bounce.example.com`, the parent zone `example.com`, where Email Routing for the subdomain is set up. Email Routing must already be enabled for the domain |
 | `--inbound-address <address>` | — | The exact recipient address the rule matches, e.g. `bounce@bounce.example.com` |
 | `--app-worker <name>` | — | Deployed name of the production app worker running `createEntrypoint` with the `email()` bounce handler |
 | `--json` | `false` | Machine-readable output — one line, one object |
@@ -46,7 +46,9 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 | `--from <address>` | the configured `fromAddress` | Override the sending address for this one message |
 | `--json` | `false` | Machine-readable output |
 
-**The three routing flags are wired only when all three are given.** A partial set is treated as no routing at all: everything else provisions and `routing.skipped` is `true`. Enabling Email Routing on a zone points its MX at Cloudflare, so the zone, the address, and the target worker are an operator's decision rather than something derived. Use a subdomain zone, never your apex, so your primary MX is untouched.
+**The three routing flags are all or nothing.** Pass all three and the rule is created; pass none and everything else provisions with `routing.skipped` `true`. Pass one or two and the run is refused, naming the flags still missing, before anything is created. Enabling Email Routing for a domain points its MX at Cloudflare, so the zone, the address, and the target worker are an operator's decision rather than something derived. Use a subdomain, never your apex, so your primary MX is untouched. A subdomain is usually not a zone of its own: its Email Routing is set up on the parent zone, and that zone's id is what `--routing-zone` takes.
+
+**The CI token holds no Email Routing grant for this rule.** Email Routing Rules Write is a zone-level permission, and `ci-system` is granted it only on the zones holding an address a capability declares; email declares none, since the flags name it. Create the bounce rule from a signed-in session (`pithy cloudflare connect`), or from a token you scoped to that zone yourself.
 
 ## What it does
 

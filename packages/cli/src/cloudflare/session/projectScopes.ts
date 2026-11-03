@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { sessionScopes } from "@pithy-sh/cloudflare/src/oauth/scopes";
-import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { INBOUND_ROUTING_PERMISSIONS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
   type ProfileOverride,
   resolveTokenProfiles,
@@ -14,6 +14,7 @@ import { resolveWorkerSetFor } from "../../project/composeFor";
 import { loadProject, loadProjectEnvironments } from "../../project/config";
 import { isUnknown } from "../../project/workerScope";
 import { tokenOverrideResolver } from "../../tokens/config";
+import { routesInboundMail } from "../../tokens/inboundZones";
 import { declaredRouteZones } from "../../tokens/routeZones";
 import { tokenProfiles } from "../../tokens/workerProfiles";
 
@@ -25,6 +26,8 @@ export interface ScopeFacts {
   profilesFor: (environment: string) => Record<string, TokenProfile>;
   /** Whether any Worker declares a domain in that environment, so `ci-system` carries route writes there. */
   declaresDomain: (environment: string) => boolean;
+  /** Whether a capability composed in that environment routes inbound mail, so `ci-system` carries Email Routing. */
+  routesInbound: (environment: string) => boolean;
   /** The adopter's override of a profile, from `tokens.overrides` in the root config. */
   override: (profile: string) => ProfileOverride | undefined;
 }
@@ -35,8 +38,9 @@ export interface ScopeFacts {
  * A session can mint only what it could do itself — Cloudflare refuses a mint whose permission groups the
  * session's scopes do not cover — so the request is the union, over every environment and every profile
  * the project composes there, of the permissions those tokens carry. An adopter's override counts as
- * written, because that is what the mint will ask for. `routes:write` is added where a domain is declared,
- * because that is the one permission the mint adds outside a profile (#651).
+ * written, because that is what the mint will ask for. `routes:write` is added where a domain is declared, and the
+ * inbound routing keys where a capability routes inbound mail, because those are the permissions the mint adds
+ * outside a profile, on zones.
  *
  * Nothing is listed by hand, so a capability the project does not compose contributes nothing — to the
  * request, or to the consent screen the adopter reads.
@@ -51,6 +55,7 @@ export function deriveSessionScopes(facts: ScopeFacts): string[] {
       for (const key of facts.override(name)?.permissions ?? profile.permissions) add(key);
     }
     if (facts.declaresDomain(environment)) add("routes:write");
+    if (facts.routesInbound(environment)) for (const key of INBOUND_ROUTING_PERMISSIONS) add(key);
   }
   return sessionScopes(keys);
 }
@@ -81,6 +86,7 @@ export async function projectSessionScopes(
         environments: [LOCAL_ENVIRONMENT],
         profilesFor: () => profiles,
         declaresDomain: () => false,
+        routesInbound: () => false,
         override: () => undefined,
       }),
       project: false,
@@ -103,6 +109,10 @@ export async function projectSessionScopes(
       declaresDomain: (environment) => {
         const set = setFor(environment);
         return !isUnknown(set) && declaredRouteZones(set, environment).length > 0;
+      },
+      routesInbound: (environment) => {
+        const set = setFor(environment);
+        return !isUnknown(set) && routesInboundMail(set);
       },
       override: tokenOverrideResolver(config),
     }),

@@ -272,9 +272,9 @@ export function email(config: EmailConfigInput): EmailCapability {
         if (Array.isArray(locales)) supportedLocales = locales.filter((tag) => typeof tag === "string");
       }
     },
-    // Email provisioning wires inbound bounce routing (Email Routing rules), so the CI credential that
-    // provisions email needs that scope — contributed into the one `ci-system` token.
-    ciPermissions: ["email:routing"],
+    // Email provisioning can route the bounce address, which its flags name: no address is declared, so a session asks
+    // for the Email Routing scopes and the CI token is granted them on no zone.
+    inboundRouting: { addresses: [] },
     requiredBindings: [
       { type: "d1", name: "DB" },
       { type: "d1", name: "EMAIL_SUPPRESSIONS" },
