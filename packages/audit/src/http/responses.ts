@@ -368,6 +368,51 @@ export const ControlPlaneUsageResponse = z
   .describe("Which scopes one control-plane connection exercised and was refused, by key, over a window.");
 export type ControlPlaneUsageResponse = z.output<typeof ControlPlaneUsageResponse>;
 
+/** One connection's scopes and keys, in the every-connection usage answer. */
+export const ControlPlaneConnectionUsageView = z
+  .object({
+    connectionId: z.string().describe("The connection that made the calls."),
+    usage: z
+      .array(ControlPlaneUsageView)
+      .describe("One row per scope and key this connection exercised, ordered by scope then key. Never empty."),
+  })
+  .describe("One control-plane connection's usage, by scope and key.");
+export type ControlPlaneConnectionUsageView = z.output<typeof ControlPlaneConnectionUsageView>;
+
+/**
+ * `GET {base}/control-plane/usage` with no `connectionId`: every connection that called in the window.
+ *
+ * A shape of its own, beside {@link ControlPlaneUsageResponse}, so the answer to a named connection is unchanged and
+ * a client that names one parses what it always did. Told apart by its keys: `connections` here, `connectionId` and
+ * `usage` there.
+ */
+export const ControlPlaneUsageAllResponse = z
+  .object({
+    since: z.iso.datetime().describe("The window's inclusive start, ISO-8601."),
+    until: z.iso.datetime().describe("The window's inclusive end, ISO-8601 — now, when the query named none."),
+    connections: z
+      .array(ControlPlaneConnectionUsageView)
+      .describe(
+        "One entry per connection that made a call in the window, ordered by connection id. A connection that made none is absent: join against the connection listing for it.",
+      ),
+    oldestEventAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "The oldest event the trail holds, for any connection, or null on an empty trail. A window starting before it was not fully covered: retention removed what came before.",
+      ),
+  })
+  .describe("Which scopes every control-plane connection exercised and was refused, by key, over a window.");
+export type ControlPlaneUsageAllResponse = z.output<typeof ControlPlaneUsageAllResponse>;
+
+/** What the usage route answers: one connection's usage when the query names one, every connection's when not. */
+export const ControlPlaneUsageReadResponse = z
+  .union([ControlPlaneUsageResponse, ControlPlaneUsageAllResponse])
+  .describe(
+    "One connection's usage when `connectionId` is named, as `ControlPlaneUsageResponse`; every connection's when it is not, as `ControlPlaneUsageAllResponse`.",
+  );
+export type ControlPlaneUsageReadResponse = z.output<typeof ControlPlaneUsageReadResponse>;
+
 /** `GET {base}/control-plane/verify`. */
 export const ChainVerifyResponse = z
   .object({
