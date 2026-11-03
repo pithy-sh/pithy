@@ -37715,6 +37715,10 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "messageId": {
+                            "description": "The id of the message it arrived on, so a client can show each file under the message that carried it. Absent from a Worker that predates it.",
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -37728,7 +37732,7 @@
                         ],
                         "description": "One attachment as a client receives it — metadata and a signed URL, never the storage key."
                       },
-                      "description": "Its attachments, across every message."
+                      "description": "Its attachments, across every message, each naming the message it arrived on in `messageId`."
                     },
                     "sender": {
                       "type": "object",
@@ -39808,6 +39812,10 @@
                                     "string",
                                     "null"
                                   ]
+                                },
+                                "messageId": {
+                                  "description": "The id of the message it arrived on, so a client can show each file under the message that carried it. Absent from a Worker that predates it.",
+                                  "type": "string"
                                 }
                               },
                               "required": [
