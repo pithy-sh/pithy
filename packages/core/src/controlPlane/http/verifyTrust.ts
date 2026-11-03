@@ -14,7 +14,7 @@ import {
 import { type ControlPlaneRequirement, ControlPlaneScope, scopeCovers } from "../scope/scope";
 
 /**
- * Verify one call made under an OIDC trust (#722, `docs/AGENT-ACCESS.md` §6.2) — the second credential kind's
+ * Verify one call made under an OIDC trust (`docs/AGENT-ACCESS.md` §6.2) — the second credential kind's
  * half of the decision `verify.ts` makes for a key.
  *
  * ## Per call, and the call still names its scope
@@ -49,10 +49,11 @@ import { type ControlPlaneRequirement, ControlPlaneScope, scopeCovers } from "..
 /** What the trust path needs from the outside world. Every one is injectable, so every step is testable. */
 export interface ControlPlaneTrustVerifyDeps {
   /**
-   * This environment's connection, or null when none is registered. One per environment (`docs/CONTROL-PLANE.md`
-   * §15), so a call names only the trust, and the connection is the one the Worker's own environment owns.
+   * The connection in this environment that the call's trust is checked against, or null when the environment holds
+   * no connection at all. A call names only its trust, so the connection is the one holding that trust live, which
+   * {@link trustConnection} picks from the environment's connections and refuses when none or several do.
    */
-  loadEnvironmentConnection: () => Promise<ControlPlaneConnection | null>;
+  loadEnvironmentConnection: (trustId: string, now: Date) => Promise<ControlPlaneConnection | null>;
   /** This Worker's environment name, checked against the connection's. */
   environment: string;
   /** The clock. */
@@ -88,6 +89,29 @@ function deny(step: string): never {
   throw new ControlPlaneInvalidCredentialError({ detail: step });
 }
 
+/**
+ * The connection a call under `trustId` is checked against, from every connection in `environment`: the one holding
+ * the trust live at `now`. Null when the environment holds no connection. Refused when no connection holds it live,
+ * and refused when more than one does, because a trust id names one connection.
+ */
+export function trustConnection(
+  connections: readonly ControlPlaneConnection[],
+  trustId: string,
+  environment: string,
+  now: Date,
+): ControlPlaneConnection | null {
+  if (connections.length === 0) return null;
+  const holders = connections.filter((connection) => findVerifyingTrust(connection.trusts ?? [], trustId, now));
+  if (holders.length > 1) {
+    deny(
+      `trust ${trustId} is live on ${holders.length} connections in environment ${environment}: ${holders.map((holder) => holder.id).join(", ")}`,
+    );
+  }
+  const [holder] = holders;
+  if (!holder) deny(`trust ${trustId} is not a live trust on any connection in environment ${environment}`);
+  return holder;
+}
+
 /** Verify one call under an OIDC trust, or throw. Returns the context the handler runs under. */
 export async function verifyControlPlaneTrustCall(
   call: ControlPlaneTrustCall,
@@ -100,9 +124,9 @@ export async function verifyControlPlaneTrustCall(
   const scope = ControlPlaneScope.safeParse(call.scope);
   if (!scope.success) deny("an OIDC call named no well-formed scope");
 
-  // 2. The environment's connection, and the trust it names. Lookups, not grants.
+  // 2. The connection holding the trust the call names, and that trust. Lookups, not grants.
   const now = deps.now();
-  const connection = await deps.loadEnvironmentConnection();
+  const connection = await deps.loadEnvironmentConnection(call.trustId, now);
   if (!connection) {
     throw new ControlPlaneNotConnectedError({ detail: `no connection registered in environment ${deps.environment}` });
   }
