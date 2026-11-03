@@ -20,8 +20,19 @@ export interface FakeZone {
   id: string;
   /** The zone name, e.g. `example.com`. */
   name: string;
-  /** The domains under this zone that Email Routing is enabled for: the apex, a subdomain, or both. */
-  routingEnabled: string[];
+  /** The zone's lifecycle status. Defaults to `active`. */
+  status?: string;
+  /** Whether the zone's own Email Routing is enabled — what its settings answer with. */
+  zoneRouting: boolean;
+  /** The subdomains Email Routing is set up for, whose DNS check lists no missing record. */
+  routedSubdomains: string[];
+  /**
+   * How the DNS check answers for a subdomain: `object` is the documented `{ errors, record }`; `array` and `null` are
+   * the other shape the endpoint has, a bare record list or a null `result`. Defaults to `object`.
+   */
+  dnsShape?: "object" | "array" | "null";
+  /** Answer every Email Routing read on this zone with a 403, as a token without Zone Settings Read gets. */
+  forbidSettings?: boolean;
 }
 
 /** One stored rule, in the shape the API returns. */
@@ -112,9 +123,18 @@ export function startFakeEmailRoutingApi(options: {
 
       if (req.method === "GET" && path === "/zones") {
         const page = Number(url.searchParams.get("page") ?? "1");
+        const perPage = Number(url.searchParams.get("per_page") ?? "20");
         const owned = url.searchParams.get("account.id") === options.accountId ? options.zones : [];
-        const result = page === 1 ? owned.map(({ id, name }) => ({ id, name, status: "active" })) : [];
-        ok(res, result, { page, per_page: 20, count: result.length, total_count: owned.length, total_pages: 1 });
+        const result = owned
+          .slice((page - 1) * perPage, page * perPage)
+          .map(({ id, name, status }) => ({ id, name, status: status ?? "active" }));
+        ok(res, result, {
+          page,
+          per_page: perPage,
+          count: result.length,
+          total_count: owned.length,
+          total_pages: Math.max(1, Math.ceil(owned.length / perPage)),
+        });
         return;
       }
 
@@ -127,8 +147,18 @@ export function startFakeEmailRoutingApi(options: {
       const [, , sub, ruleId] = zoneMatch;
       const zoneRules = rules.get(zone.id) ?? [];
 
+      if (zone.forbidSettings && req.method === "GET" && sub !== "/rules") {
+        send(res, 403, {
+          success: false,
+          errors: [{ code: 10000, message: "Authentication error" }],
+          messages: [],
+          result: null,
+        });
+        return;
+      }
+
       if (sub === undefined && req.method === "GET") {
-        const enabled = zone.routingEnabled.includes(zone.name);
+        const enabled = zone.zoneRouting;
         ok(res, {
           id: `${zone.id}-settings`,
           tag: `${zone.id}-settings`,
@@ -145,7 +175,15 @@ export function startFakeEmailRoutingApi(options: {
       if (sub === "/dns" && req.method === "GET") {
         const domain = url.searchParams.get("subdomain") ?? zone.name;
         const record = { type: "MX", name: domain, content: "route1.mx.cloudflare.net", priority: 13, ttl: 1 };
-        const enabled = zone.routingEnabled.includes(domain);
+        if (zone.dnsShape === "array") {
+          ok(res, [record]);
+          return;
+        }
+        if (zone.dnsShape === "null") {
+          ok(res, null);
+          return;
+        }
+        const enabled = zone.routedSubdomains.includes(domain);
         ok(res, { errors: enabled ? [] : [{ code: "mx.missing", missing: record }], record: [record] });
         return;
       }

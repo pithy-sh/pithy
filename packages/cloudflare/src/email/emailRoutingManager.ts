@@ -51,17 +51,21 @@ const RuleEnvelope = z.object({
 });
 
 /**
- * The DNS check for one domain on a zone. `result.errors` lists the records Email Routing is still missing for it,
- * so an empty list is a domain Email Routing is set up for. The apex form answers with a bare record list instead.
+ * The DNS check for one subdomain on a zone, in the one shape that answers the question: a `result` object whose
+ * `errors` lists the records Email Routing is still missing there. The endpoint has a second shape, a bare record list
+ * or a null `result`, which says nothing about the subdomain, so it is read as no answer rather than a pass.
  */
-const DnsCheck = z.object({
-  result: z
-    .union([
-      z.object({ errors: z.array(z.unknown()).nullish(), record: z.array(z.unknown()).nullish() }),
-      z.array(z.unknown()),
-    ])
-    .nullish(),
+const SubdomainCheck = z.object({
+  result: z.object({ errors: z.array(z.unknown()), record: z.array(z.unknown()).nullish() }),
 });
+
+/** Whether Email Routing serves a domain, and why not when it does not. */
+export type RoutingStatus = { enabled: true } | { enabled: false; reason: string };
+
+/** What routing an address found: a rule made or changed, one already in place, or claims it will not override. */
+export type AddressRouting =
+  | { outcome: "created" | "updated" | "unchanged" }
+  | { outcome: "conflict"; rules: string[] };
 
 /** The one action a rule sending mail to `workerName` carries. */
 function sendsTo(rule: ListedRule, workerName: string): boolean {
@@ -120,48 +124,71 @@ export class CloudflareEmailRoutingManager extends CloudflareManager {
   }
 
   /**
-   * Whether Email Routing is set up for `domain` on the zone that holds it. Read-only: enabling routing moves the
-   * domain's MX, which stays the adopter's act.
+   * Whether Email Routing serves `domain` on the zone that holds it. Read-only: enabling routing moves the domain's
+   * MX, which stays the adopter's act. Both reads answer to Zone Settings Read.
    *
-   * The apex answers from the zone's Email Routing settings. A subdomain answers from the zone's DNS check for that
-   * subdomain, which lists the records routing still needs there; none missing is a subdomain routing serves.
+   * The zone's own Email Routing must be enabled, for the apex and a subdomain alike. A subdomain must also pass the
+   * zone's DNS check for it, which lists the records routing still needs there: none missing is a subdomain routing
+   * serves. A check that answers in any other shape is refused, never read as a pass.
    */
-  async routingEnabledFor(options: { zoneId: string; zoneName: string; domain: string }): Promise<boolean> {
-    const { zoneId, zoneName, domain } = options;
+  async routingEnabledFor(options: { zoneId: string; zoneName: string; domain: string }): Promise<RoutingStatus> {
+    const { zoneId, zoneName } = options;
+    const domain = options.domain.toLowerCase();
     return cloudflareRequest("Email Routing read settings", async () => {
-      if (domain.toLowerCase() !== zoneName.toLowerCase()) {
-        const check = DnsCheck.parse(
-          await this.getClient().emailRouting.dns.get({ zone_id: zoneId, subdomain: domain.toLowerCase() }),
-        );
-        if (check.result && !Array.isArray(check.result)) return (check.result.errors ?? []).length === 0;
-      }
       const settings = await this.getClient().emailRouting.get({ zone_id: zoneId });
-      return settings.enabled === true;
+      if (settings.enabled !== true) {
+        return { enabled: false, reason: `Email Routing is not enabled on the ${zoneName} zone.` };
+      }
+      if (domain === zoneName.toLowerCase()) return { enabled: true };
+      const check = SubdomainCheck.safeParse(
+        await this.getClient().emailRouting.dns.get({ zone_id: zoneId, subdomain: domain }),
+      );
+      if (!check.success) {
+        return {
+          enabled: false,
+          reason: `Cloudflare's Email Routing DNS check for ${domain} did not say whether routing is set up for it.`,
+        };
+      }
+      const missing = check.data.result.errors.length;
+      if (missing > 0) {
+        return {
+          enabled: false,
+          reason: `Email Routing is not enabled for ${domain}: Cloudflare lists ${missing} missing record${missing === 1 ? "" : "s"} for it.`,
+        };
+      }
+      return { enabled: true };
     });
   }
 
   /**
-   * Send mail addressed to exactly `address` to the Worker `workerName`. A rule that already claims the address and
-   * sends it there, enabled, is left alone whatever it is named. One that claims the address and does anything else is
-   * updated to send it there, keeping its name. With none, a rule named `ruleName` is created.
+   * Send mail addressed to exactly `address` to the Worker `workerName`. Only enabled rules claim mail, so only they are
+   * weighed, and a disabled one is never re-enabled:
+   *
+   * - Every enabled rule claiming the address sends it to the Worker: `unchanged`, whatever the rules are named.
+   * - One enabled rule claims it and sends it elsewhere: it is the sole claim, so it is taken over, keeping its name.
+   * - More than one enabled rule claims it and any sends it elsewhere: `conflict`, naming them, and nothing changes.
+   * - None does: a rule named `ruleName` is created, enabled.
    */
   async routeAddressToWorker(options: {
     zoneId: string;
     address: string;
     workerName: string;
     ruleName: string;
-  }): Promise<{ outcome: "created" | "updated" | "unchanged" }> {
+  }): Promise<AddressRouting> {
     const { zoneId, address, workerName, ruleName } = options;
     return cloudflareRequest("Email Routing route address", async () => {
-      const matching = (await this.#listRules(zoneId)).filter((rule) => claims(rule, address));
-      if (matching.some((rule) => rule.enabled === true && sendsTo(rule, workerName))) return { outcome: "unchanged" };
+      const enabled = (await this.#listRules(zoneId)).filter((rule) => rule.enabled === true && claims(rule, address));
+      if (enabled.length > 0 && enabled.every((rule) => sendsTo(rule, workerName))) return { outcome: "unchanged" };
+      if (enabled.length > 1) {
+        return { outcome: "conflict", rules: enabled.map((rule) => rule.name || rule.id || "an unnamed rule") };
+      }
       const matchers = [{ type: "literal" as const, field: "to" as const, value: address }];
       const actions = [{ type: "worker" as const, value: [workerName] }];
-      const stale = matching.find((rule) => rule.id !== undefined);
-      if (stale?.id) {
-        await this.getClient().emailRouting.rules.update(stale.id, {
+      const [sole] = enabled;
+      if (sole?.id) {
+        await this.getClient().emailRouting.rules.update(sole.id, {
           zone_id: zoneId,
-          name: stale.name || ruleName,
+          name: sole.name || ruleName,
           enabled: true,
           matchers,
           actions,

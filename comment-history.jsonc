@@ -413,7 +413,7 @@
     "packages/cli/src/cloudflare/session/dispatch.ts": 1,
     "packages/cli/src/cloudflare/session/keepFresh.ts": 1,
     "packages/cli/src/cloudflare/session/kind.ts": 2,
-    "packages/cli/src/cloudflare/session/projectScopes.ts": 2,
+    "packages/cli/src/cloudflare/session/projectScopes.ts": 1,
     "packages/cli/src/cloudflare/session/refresh.ts": 2,
     "packages/cli/src/cloudflare/session/store.ts": 2,
     "packages/cli/src/cloudflare/storeId.test.ts": 4,

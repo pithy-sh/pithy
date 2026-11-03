@@ -7,7 +7,8 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { statusOf } from "@pithy-sh/cloudflare/src/client/errors";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { ZoneInfo } from "@pithy-sh/cloudflare/src/zones/zonesManager";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -232,7 +233,7 @@ export const SupportRoute = z
       .string()
       .nullable()
       .describe(
-        "The zone the rule lives on, by name: the zone holding the address's domain, the parent zone for a subdomain. `null` when no zone holds it, and for the flags, which name the zone by id.",
+        "The zone the rule lives on, by name: the zone holding the address's domain, the parent zone for a subdomain. `null` when no zone the token can list holds it.",
       ),
     zoneId: z.string().nullable().describe("That zone's id. `null` when no zone holds the address's domain."),
     worker: z
@@ -244,7 +245,7 @@ export const SupportRoute = z
     outcome: z
       .enum(["created", "updated", "unchanged", "skipped", "refused"])
       .describe(
-        "`created`: this run made the rule. `updated`: a rule for the address sent it elsewhere, and now sends it to the Worker. `unchanged`: a rule already did. `skipped`: the environment claims no address. `refused`: no rule was made, and `reason` says why.",
+        "`created`: this run made the rule. `updated`: the sole enabled rule for the address sent it elsewhere, and now sends it to the Worker. `unchanged`: a rule already did. `skipped`: the environment claims no address. `refused`: no rule was made, and `reason` says why.",
       ),
     reason: z.string().nullable().describe("Why the route was skipped or refused. `null` otherwise."),
   })
@@ -525,7 +526,13 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     if (!supportNeedsBucket(this.#supportConfig)) {
       return { bucket: name, created: false, skipped: true };
     }
-    const existing = await this.#cf.r2Provisioner().findBucketByName(name);
+    // On a confirmed account only: a miss read on an account nothing claims would create the bucket in whichever
+    // account the shell named.
+    const existing = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} bucket`,
+      find: () => this.#cf.r2Provisioner().findBucketByName(name),
+    });
     if (existing) return { bucket: existing.name, created: false, skipped: false };
     const created = await this.#cf.r2Provisioner().createBucket(name);
     await this.#audit({
@@ -666,36 +673,32 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     };
   }
 
-  /** The one project-global rule the flags describe, keyed on support's own `<project>-global-support-inbound`. */
+  /**
+   * The one project-global rule the flags describe, keyed on support's own `<project>-global-support-inbound`, on the
+   * zone they name. Held to what a derived route is: a confirmed account, a zone the token can list, and Email
+   * Routing enabled for the address's domain.
+   */
   async #ensureFlaggedRule(routing: SupportRouting): Promise<SupportRoute> {
     const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
     const ruleName = supportRoutingRuleName(this.#project);
-    const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
-      zoneId: routing.zoneId,
+    return this.#routeOne({
+      env: null,
       address: routing.address,
       workerName: routing.appWorkerName,
       ruleName,
+      what: `the zone ${routing.zoneId}`,
+      locate: async () => (await this.#cf.zones().listZones()).find((zone) => zone.id === routing.zoneId) ?? null,
+      missing: `No zone this token can list has the id ${routing.zoneId}: the account does not hold it, or the token is not granted Zone Read on it.`,
+      write: async (zone) => {
+        const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
+          zoneId: zone.id,
+          address: routing.address,
+          workerName: routing.appWorkerName,
+          ruleName,
+        });
+        return { outcome: created ? "created" : "unchanged" };
+      },
     });
-    if (created) {
-      await this.#audit({
-        environment: "global",
-        action: "support/routing_rule_created",
-        outcome: "success",
-        severity: "info",
-        resourceType: "cf_email_routing_rule",
-        resourceId: routing.address,
-        metadata: { zoneId: routing.zoneId, address: routing.address, workerName: routing.appWorkerName, ruleName },
-      });
-    }
-    return {
-      env: null,
-      address: routing.address,
-      zone: null,
-      zoneId: routing.zoneId,
-      worker: routing.appWorkerName,
-      outcome: created ? "created" : "unchanged",
-      reason: null,
-    };
   }
 
   async #ensureEnvironmentRules(): Promise<void> {
@@ -709,7 +712,8 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
     for (const routing of this.#environmentRouting) {
       const base = { env: routing.env, worker: routing.workerName };
-      if (routing.refused !== undefined || routing.workerName === null) {
+      const workerName = routing.workerName;
+      if (routing.refused !== undefined || workerName === null) {
         this.#routes.push({
           ...base,
           address: null,
@@ -745,66 +749,111 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
           continue;
         }
         const domain = domainOf(address);
-        const answer = await answerOnConfirmedAccount({
-          ...this.#account,
-          what: `the zone holding ${domain}`,
-          find: () => this.#cf.zones().findZoneForHostname(domain),
-        });
-        if (answer.state === "unconfirmed") {
-          this.#routes.push({
-            ...base,
-            address,
-            zone: null,
-            zoneId: null,
-            outcome: "refused",
-            reason: `${describeUnconfirmedCloudflareAccount(answer.accountId)} No routing rule was made. ${UNCONFIRMED_CLOUDFLARE_ACCOUNT_ACTION}`,
-          });
-          continue;
-        }
-        const zone = answer.state === "found" ? answer.value : null;
-        if (!zone) {
-          this.#routes.push({
-            ...base,
-            address,
-            zone: null,
-            zoneId: null,
-            outcome: "refused",
-            reason: `No zone on this Cloudflare account holds ${domain}. Add the domain to this account, and the next run routes it.`,
-          });
-          continue;
-        }
-        const located = { ...base, address, zone: zone.name, zoneId: zone.id };
-        if (!(await this.#cf.emailRouting().routingEnabledFor({ zoneId: zone.id, zoneName: zone.name, domain }))) {
-          this.#routes.push({
-            ...located,
-            outcome: "refused",
-            reason: `Email Routing is not enabled for ${domain}. ${enableRoutingAction(domain, zone.name)}`,
-          });
-          continue;
-        }
         const ruleName = supportRoutingRuleName(this.#project, routing.env);
-        const { outcome } = await this.#cf.emailRouting().routeAddressToWorker({
-          zoneId: zone.id,
-          address,
-          workerName: routing.workerName,
-          ruleName,
-        });
-        if (outcome !== "unchanged") {
-          await this.#audit({
-            environment: routing.env,
-            action: outcome === "created" ? "support/routing_rule_created" : "support/routing_rule_updated",
-            outcome: "success",
-            severity: "info",
-            resourceType: "cf_email_routing_rule",
-            resourceId: address,
-            metadata: { zoneId: zone.id, address, workerName: routing.workerName, ruleName },
-          });
-        }
-        this.#routes.push({ ...located, outcome, reason: null });
+        this.#routes.push(
+          await this.#routeOne({
+            env: routing.env,
+            address,
+            workerName,
+            ruleName,
+            what: `the zone holding ${domain}`,
+            locate: () => this.#cf.zones().findActiveZoneForHostname(domain),
+            missing: `No zone this token can list holds ${domain}: the account does not hold it, or the token is not granted Zone Read on it.`,
+            write: async (zone) => {
+              const routed = await this.#cf
+                .emailRouting()
+                .routeAddressToWorker({ zoneId: zone.id, address, workerName, ruleName });
+              if (routed.outcome !== "conflict") return { outcome: routed.outcome };
+              return {
+                outcome: "refused",
+                reason: `More than one enabled rule claims ${address} on ${zone.name}, and not all send it to ${workerName}: ${routed.rules.join(", ")}. Disable or delete the ones that should not, and the next run routes it.`,
+              };
+            },
+          }),
+        );
       }
     }
   }
+
+  /**
+   * Route one address, or say why not. Every refusal is recorded, never thrown: an account nothing claims, a zone the
+   * token cannot list, Email Routing off for the domain, a rule this will not override, and any Cloudflare failure,
+   * which names the permissions routing takes when Cloudflare refused the token.
+   */
+  async #routeOne(route: {
+    env: ManagedEnvironment | null;
+    address: string;
+    workerName: string;
+    ruleName: string;
+    what: string;
+    locate: () => Promise<ZoneInfo | null>;
+    missing: string;
+    write: (zone: ZoneInfo) => Promise<{ outcome: SupportRoute["outcome"]; reason?: string }>;
+  }): Promise<SupportRoute> {
+    const domain = domainOf(route.address);
+    const base = { env: route.env, address: route.address, worker: route.workerName };
+    let zone: ZoneInfo | null = null;
+    let step = "list the account's zones";
+    try {
+      const answer = await answerOnConfirmedAccount({ ...this.#account, what: route.what, find: route.locate });
+      if (answer.state === "unconfirmed") {
+        return {
+          ...base,
+          zone: null,
+          zoneId: null,
+          outcome: "refused",
+          reason: `${describeUnconfirmedCloudflareAccount(answer.accountId)} No routing rule was made. ${UNCONFIRMED_CLOUDFLARE_ACCOUNT_ACTION}`,
+        };
+      }
+      zone = answer.state === "found" ? answer.value : null;
+      if (!zone) return { ...base, zone: null, zoneId: null, outcome: "refused", reason: route.missing };
+      const located = { ...base, zone: zone.name, zoneId: zone.id };
+      step = `read Email Routing's settings for ${domain}`;
+      const status = await this.#cf.emailRouting().routingEnabledFor({ zoneId: zone.id, zoneName: zone.name, domain });
+      if (!status.enabled) {
+        return { ...located, outcome: "refused", reason: `${status.reason} ${enableRoutingAction(domain, zone.name)}` };
+      }
+      step = `write the routing rule for ${route.address}`;
+      const written = await route.write(zone);
+      if (written.outcome === "created" || written.outcome === "updated") {
+        await this.#audit({
+          environment: route.env ?? "global",
+          action: written.outcome === "created" ? "support/routing_rule_created" : "support/routing_rule_updated",
+          outcome: "success",
+          severity: "info",
+          resourceType: "cf_email_routing_rule",
+          resourceId: route.address,
+          metadata: { zoneId: zone.id, address: route.address, workerName: route.workerName, ruleName: route.ruleName },
+        });
+      }
+      return { ...located, outcome: written.outcome, reason: written.reason ?? null };
+    } catch (error) {
+      return {
+        ...base,
+        zone: zone?.name ?? null,
+        zoneId: zone?.id ?? null,
+        outcome: "refused",
+        reason: routingFailure(step, zone?.name ?? domain, error),
+      };
+    }
+  }
 }
+
+/**
+ * Why a Cloudflare call in the routing step failed, as a refusal reason. A 401 or 403 is the token's grant, so the
+ * reason names the three permissions routing takes on the zone; anything else is said as Cloudflare said it.
+ */
+function routingFailure(step: string, zone: string, error: unknown): string {
+  const status = statusOf(error instanceof Error ? error.cause : undefined);
+  if (status === 401 || status === 403) {
+    return `Cloudflare refused to ${step} (${status}). Routing takes ${ROUTING_PERMISSION_NAMES} on ${zone}; this token does not hold them all.`;
+  }
+  const message = error instanceof PithyError ? error.payload.message : String(error);
+  return `Cloudflare could not ${step}: ${message}`;
+}
+
+/** The permission groups routing takes on a zone, as an operator reads them. */
+const ROUTING_PERMISSION_NAMES = "Zone Read, Zone Settings Read and Email Routing Rules Write";
 
 /**
  * Remove one environment's inbound rules: each rule that sends one of its addresses to its app worker, on the zone
@@ -846,36 +895,48 @@ export async function removeEnvironmentRoutes(options: {
   const removals: SupportRouteRemoval[] = [];
   for (const address of routing.addresses) {
     const domain = domainOf(address);
-    const zone = await findOnConfirmedAccount({
-      ...account,
-      what: `the zone holding ${domain}`,
-      find: () => cf.zones().findZoneForHostname(domain),
-    });
-    if (!zone) {
+    try {
+      const zone = await findOnConfirmedAccount({
+        ...account,
+        what: `the zone holding ${domain}`,
+        find: () => cf.zones().findActiveZoneForHostname(domain),
+      });
+      if (!zone) {
+        removals.push({
+          ...base,
+          address,
+          zone: null,
+          outcome: "skipped",
+          reason: `No zone this token can list holds ${domain}: the account does not hold it, or the token is not granted Zone Read on it.`,
+        });
+        continue;
+      }
+      const { removed } = await cf
+        .emailRouting()
+        .unrouteAddressFromWorker({ zoneId: zone.id, address, workerName: routing.workerName });
+      if (removed > 0) {
+        await audit({
+          environment: routing.env,
+          action: "support/routing_rule_removed",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_email_routing_rule",
+          resourceId: address,
+          metadata: { zoneId: zone.id, address, workerName: routing.workerName },
+        });
+      }
+      removals.push({ ...base, address, zone: zone.name, outcome: removed > 0 ? "removed" : "absent", reason: null });
+    } catch (error) {
+      // An account nothing claims is refused before anything is deleted, as every teardown's is.
+      if (error instanceof PithyError && error.payload.code === "core/conflict") throw error;
       removals.push({
         ...base,
         address,
         zone: null,
         outcome: "skipped",
-        reason: `No zone on this Cloudflare account holds ${domain}.`,
-      });
-      continue;
-    }
-    const { removed } = await cf
-      .emailRouting()
-      .unrouteAddressFromWorker({ zoneId: zone.id, address, workerName: routing.workerName });
-    if (removed > 0) {
-      await audit({
-        environment: routing.env,
-        action: "support/routing_rule_removed",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_email_routing_rule",
-        resourceId: address,
-        metadata: { zoneId: zone.id, address, workerName: routing.workerName },
+        reason: `${routingFailure(`remove the routing rule for ${address}`, domain, error)} The rule was left in place.`,
       });
     }
-    removals.push({ ...base, address, zone: zone.name, outcome: removed > 0 ? "removed" : "absent", reason: null });
   }
   return removals;
 }

@@ -1,6 +1,8 @@
 ---
 "@pithy-sh/cli": minor
 "@pithy-sh/cloudflare": minor
+"@pithy-sh/core": minor
+"@pithy-sh/email": minor
 "@pithy-sh/support": minor
 ---
 

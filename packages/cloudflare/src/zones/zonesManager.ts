@@ -86,6 +86,19 @@ export class CloudflareZonesManager extends CloudflareManager {
   async findZoneForHostname(hostname: string): Promise<ZoneInfo | null> {
     return zoneForHostname(await this.listZones(), hostname);
   }
+
+  /** {@link findZoneForHostname} over the zones Cloudflare is serving: a pending zone holds nothing that can be routed. */
+  async findActiveZoneForHostname(hostname: string): Promise<ZoneInfo | null> {
+    return activeZoneForHostname(await this.listZones(), hostname);
+  }
+}
+
+/** {@link zoneForHostname} over the `active` zones alone. */
+export function activeZoneForHostname(zones: readonly ZoneInfo[], hostname: string): ZoneInfo | null {
+  return zoneForHostname(
+    zones.filter((zone) => zone.status === "active"),
+    hostname,
+  );
 }
 
 /**

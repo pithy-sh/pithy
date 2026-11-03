@@ -46,6 +46,7 @@ import {
   type TokenListItem,
   type TokenResult,
 } from "../tokens/engine";
+import { declaredInboundAddresses, resolveInboundZoneIds } from "../tokens/inboundZones";
 import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
 import { type StoredTokenField, supersededNotice, supersededStoredToken } from "../tokens/superseded";
 import { tokenProfiles } from "../tokens/workerProfiles";
@@ -277,6 +278,9 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
       exactly what it minted before.
     */
     routeZones: () => resolveRouteZones(declaredRouteZones(workers, env), cf.zones()),
+    // The zones holding this environment's inbound addresses, from the same composition. Lazy, and no call at all
+    // when nothing composed routes an address.
+    inboundZones: () => resolveInboundZoneIds(declaredInboundAddresses(workers), cf.zones()),
     // The media token an operator supplied before `runtime` replaced it (#728), asked of this environment's
     // manager only when this environment composes media. Lazy, so a mint never reaches a manager.
     storedSuperseded: async () => {

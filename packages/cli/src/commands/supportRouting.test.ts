@@ -96,8 +96,15 @@ vi.mock("../capabilities/supportProvisioner", async (importOriginal) => {
 });
 
 const ZONES: FakeZone[] = [
-  { id: "zone-example", name: "example.com", routingEnabled: ["help.example.com"] },
-  { id: "zone-help-other", name: "other.test", routingEnabled: [] },
+  { id: "zone-example", name: "example.com", zoneRouting: true, routedSubdomains: ["help.example.com"] },
+  { id: "zone-off", name: "off.test", zoneRouting: false, routedSubdomains: ["help.off.test"] },
+  {
+    id: "zone-forbidden",
+    name: "forbidden.test",
+    zoneRouting: true,
+    routedSubdomains: ["help.forbidden.test"],
+    forbidSettings: true,
+  },
 ];
 
 let api: FakeEmailRoutingApi;
@@ -252,7 +259,7 @@ describe("pithy support provision, with no routing flag", () => {
     addresses.byEnv.staging = ["staging@mail.example.com"];
     const report = await provisionJson();
     expect(report.inboundRoutes[0]).toMatchObject({ env: "staging", zone: "example.com", outcome: "refused" });
-    expect(String(report.inboundRoutes[0]?.reason)).toContain("Email Routing is not enabled for mail.example.com.");
+    expect(String(report.inboundRoutes[0]?.reason)).toContain("Email Routing is not enabled for mail.example.com");
     expect(report.inboundRoutes[1]).toMatchObject({ env: "prod", outcome: "created" });
     expect(rulesOn("zone-example").map((rule) => rule.name)).toEqual(["replay-prod-support-inbound"]);
     expect(writes().some((request) => request.includes("/dns") || request.endsWith("/email/routing"))).toBe(false);
@@ -263,8 +270,48 @@ describe("pithy support provision, with no routing flag", () => {
     const report = await provisionJson();
     expect(report.inboundRoutes[1]).toMatchObject({ env: "prod", zone: null, zoneId: null, outcome: "refused" });
     expect(String(report.inboundRoutes[1]?.reason)).toContain(
-      "No zone on this Cloudflare account holds help.nowhere.test.",
+      "No zone this token can list holds help.nowhere.test: the account does not hold it, or the token is not granted Zone Read on it.",
     );
+  });
+
+  test("refuses a domain whose zone has Email Routing off, though the subdomain's records are there", async () => {
+    addresses.byEnv.staging = ["staging@help.off.test"];
+    const report = await provisionJson();
+    expect(report.inboundRoutes[0]).toMatchObject({ env: "staging", zone: "off.test", outcome: "refused" });
+    expect(String(report.inboundRoutes[0]?.reason)).toContain("Email Routing is not enabled on the off.test zone.");
+    expect(report.inboundRoutes[1]).toMatchObject({ env: "prod", outcome: "created" });
+  });
+
+  test("a token Cloudflare refuses the settings read is a refusal naming the permissions, and the run goes on", async () => {
+    addresses.byEnv.staging = ["staging@help.forbidden.test"];
+    const result = await run("provision", { json: true });
+    expect(result.exitCode).toBeUndefined();
+    const report = JSON.parse(result.stdout) as { inboundRoutes: Record<string, unknown>[] };
+    expect(report.inboundRoutes[0]).toMatchObject({ env: "staging", zone: "forbidden.test", outcome: "refused" });
+    expect(String(report.inboundRoutes[0]?.reason)).toContain(
+      "Routing takes Zone Read, Zone Settings Read and Email Routing Rules Write on forbidden.test",
+    );
+    expect(report.inboundRoutes[1]).toMatchObject({ env: "prod", outcome: "created" });
+  });
+
+  test("refuses, naming them, when several enabled rules claim the address and one sends it elsewhere", async () => {
+    await api.close();
+    const claim = (id: string, worker: string) => ({
+      id,
+      name: id,
+      enabled: true,
+      matchers: [{ type: "literal", field: "to", value: "support@help.example.com" }],
+      actions: [{ type: "worker", value: [worker] }],
+    });
+    api = await startFakeEmailRoutingApi({
+      accountId: "acct-replay",
+      zones: ZONES,
+      rules: { "zone-example": [claim("by-hand", "replay-prod-board"), claim("forward", "someone-else")] },
+    });
+    vi.stubEnv("CLOUDFLARE_BASE_URL", api.baseUrl);
+    const report = await provisionJson();
+    expect(report.inboundRoutes[1]).toMatchObject({ env: "prod", outcome: "refused" });
+    expect(String(report.inboundRoutes[1]?.reason)).toContain("by-hand, forward");
   });
 
   test("skips an environment whose composition claims no address", async () => {
@@ -340,7 +387,7 @@ describe("pithy support provision, with the three routing flags", () => {
       {
         env: null,
         address: "support@help.example.com",
-        zone: null,
+        zone: "example.com",
         zoneId: "zone-example",
         worker: "replay-board-live",
         outcome: "created",
@@ -350,6 +397,19 @@ describe("pithy support provision, with the three routing flags", () => {
     expect(rulesOn("zone-example").map((rule) => [rule.name, rule.actions])).toEqual([
       ["replay-global-support-inbound", [{ type: "worker", value: ["replay-board-live"] }]],
     ]);
+  });
+
+  test("are held to Email Routing being enabled for the address's domain", async () => {
+    const report = await provisionJson({ ...flags, "inbound-address": "support@mail.example.com" });
+    expect(report.inboundRoutes[0]).toMatchObject({ env: null, zone: "example.com", outcome: "refused" });
+    expect(rulesOn("zone-example")).toEqual([]);
+  });
+
+  test("make no rule on an account the project does not claim", async () => {
+    claim.account = null;
+    const report = await provisionJson(flags);
+    expect(report.inboundRoutes[0]).toMatchObject({ outcome: "refused" });
+    expect(writes()).toEqual([]);
   });
 
   test("a partial set is still refused", async () => {
