@@ -48,10 +48,14 @@ function fakeCf() {
   const removeWorkerRoute = vi.fn();
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
+  // The zone the flags name, on an account that holds it, with Email Routing on.
+  const routingEnabledFor = vi.fn(async () => ({ enabled: true }));
+  const listZones = vi.fn(async () => [{ id: "zone-1", name: "example.test", status: "active" }]);
   const cf = {
     r2Provisioner: () => ({ findBucketByName, createBucket }),
-    emailRouting: () => ({ ensureWorkerRoute, removeWorkerRoute }),
+    emailRouting: () => ({ ensureWorkerRoute, removeWorkerRoute, routingEnabledFor }),
     workers: () => ({ getWorker, deleteWorker }),
+    zones: () => ({ listZones }),
   } as unknown as CloudflareClients;
   return { cf, findBucketByName, createBucket, ensureWorkerRoute, removeWorkerRoute, getWorker, deleteWorker };
 }
@@ -92,6 +96,22 @@ describe("names", () => {
 });
 
 describe("ensureBucket", () => {
+  test("refuses an account nothing claims, before it looks or creates", async () => {
+    const { cf, findBucketByName, createBucket } = fakeCf();
+    const unclaimed = new CloudflareSupportProvisioner({
+      projectDir: KIT_ROOT,
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-1", confirmation: "ambient" },
+      apiToken: "tok",
+      supportConfig: SupportConfig.parse({}),
+      resolveEnv: async () => ({ appDatabaseId: "app-db" }),
+    });
+    await expect(unclaimed.ensureBucket()).rejects.toThrow("Nothing states that Cloudflare account acct-1");
+    expect(findBucketByName).not.toHaveBeenCalled();
+    expect(createBucket).not.toHaveBeenCalled();
+  });
+
   test("reuses a bucket found under this project's name rather than creating a second", async () => {
     const { cf, findBucketByName, createBucket } = fakeCf();
     const events: CliAuditEvent[] = [];

@@ -31,6 +31,7 @@ describe("deriveSessionScopes", () => {
             }
           : { "ci-system": profile("ci-system", ["workers:write"]) },
       declaresDomain: () => false,
+      routesInbound: () => false,
       override: () => undefined,
     });
     expect(scopes).toEqual([...SESSION_BASE_SCOPES, "workers-scripts.write", "d1.write", "vectorize.read"]);
@@ -42,8 +43,24 @@ describe("deriveSessionScopes", () => {
       profilesFor: () => ({ "ci-system": profile("ci-system", ["workers:write"]) }),
       override: () => undefined,
     };
-    expect(deriveSessionScopes({ ...base, declaresDomain: () => false })).not.toContain("workers-routes.write");
-    expect(deriveSessionScopes({ ...base, declaresDomain: (env) => env === "prod" })).toContain("workers-routes.write");
+    const facts = { ...base, routesInbound: () => false };
+    expect(deriveSessionScopes({ ...facts, declaresDomain: () => false })).not.toContain("workers-routes.write");
+    expect(deriveSessionScopes({ ...facts, declaresDomain: (env) => env === "prod" })).toContain(
+      "workers-routes.write",
+    );
+  });
+
+  test("a composition that routes inbound mail asks for the zone-level Email Routing scopes", () => {
+    const base = {
+      environments: ["dev", "prod"],
+      profilesFor: () => ({ "ci-system": profile("ci-system", ["workers:write"]) }),
+      override: () => undefined,
+      declaresDomain: () => false,
+    };
+    expect(deriveSessionScopes({ ...base, routesInbound: () => false })).not.toContain("zone-settings.read");
+    const inbound = deriveSessionScopes({ ...base, routesInbound: (env) => env === "prod" });
+    expect(inbound).toContain("zone-settings.read");
+    expect(inbound).toContain("email-routing-rule.write");
   });
 
   test("an adopter's override of a profile's permissions is what the session must cover, not the default", () => {
@@ -51,6 +68,7 @@ describe("deriveSessionScopes", () => {
       environments: ["dev"],
       profilesFor: () => ({ "ci-system": profile("ci-system", ["workers:write"]) }),
       declaresDomain: () => false,
+      routesInbound: () => false,
       override: (name) => (name === "ci-system" ? { permissions: ["workers:write", "kv:write"] } : undefined),
     });
     expect(scopes).toContain("workers-kv-storage.write");
@@ -63,6 +81,7 @@ describe("bindings an app declares itself", () => {
       environments: ["dev", "staging"],
       profilesFor: () => resolveTokenProfiles(capabilities),
       declaresDomain: () => false,
+      routesInbound: () => false,
       override: () => undefined,
     });
 
@@ -91,6 +110,7 @@ describe("the runtime token's scopes (#728)", () => {
       environments: ["dev", "prod"],
       profilesFor: () => resolveTokenProfiles(capabilities),
       declaresDomain: () => false,
+      routesInbound: () => false,
       override: () => undefined,
     });
   const RUNTIME_SCOPES = ["images.write", "stream.write", "account-analytics.read"];
@@ -144,6 +164,7 @@ describe("turnstile joins the one runtime token (#731)", () => {
       environments: ["dev", "prod"],
       profilesFor: () => resolveTokenProfiles(capabilities),
       declaresDomain: () => false,
+      routesInbound: () => false,
       override: () => undefined,
     });
 
