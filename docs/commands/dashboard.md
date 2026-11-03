@@ -144,14 +144,23 @@ A connection registered before these were recorded keeps working. `status` shows
 `connect`, `rotate`, `disconnect` and `status --verify` all sign in through the device-code flow, and each states a key while it waits:
 
 ```
-Open https://app.pithy.sh/cli and enter ABCD-EFGH.
+Open https://app.pithy.sh/connect?userCode=ABCD-EFGH to approve.
+Check that the page shows ABCD-EFGH.
 Press o to open the link in the browser.
 ▸ Waiting for approval...
 ```
 
-A stated key, not a prompt. The command is already polling and finishes whether or not you touch the keyboard, so there is nothing to answer and nothing that can hang. Press `o` and the page opens in whatever browser the machine already prefers; ignore it and the first line still has the URL and the code, which is what you need when the browser is on another machine.
+A stated key, not a prompt. The command is already polling and finishes whether or not you touch the keyboard, so there is nothing to answer and nothing that can hang. Press `o` and the page opens in whatever browser the machine already prefers; ignore it and the first line still has the link, which is what you need when the browser is on another machine.
 
-What opens is the approval page. If your management client sends a `verificationUriComplete` — the same page with the code already filled in — that is what `o` opens, and it is never printed, because it carries the code. Both are `http(s)` or the CLI refuses them.
+The link is the management client's `verificationUriComplete`: the approval page with the code already filled in. You still choose an account and approve on the page. The code is printed on its own line so you can check the page shows the same one. A client that sends no `verificationUriComplete` gets the plain page and the code to type instead:
+
+```
+Open https://app.pithy.sh/connect and enter ABCD-EFGH.
+```
+
+A `verificationUriComplete` that is not `http(s)`, or that is on another origin than the one `--origin` names, is refused rather than worked around: the sign-in stops with an error before any link is printed or opened. A link that sends your browser somewhere other than the client you are signing in to is that client misbehaving, and the CLI does not guess past it.
+
+`--json` prints the same lines to stderr and leaves its stdout line unchanged.
 
 The offer appears only where a key can be pressed. `--json`, a pipe on stdin or stderr, `--no-open`, and `PITHY_NO_OPEN` at any value each suppress the line as well as the open. An opener that is missing — a headless box with no `xdg-open` — prints one line and the sign-in carries on.
 
@@ -476,7 +485,8 @@ Connect production, choosing the grant at a terminal.
 ```
 $ pithy dashboard connect --env prod --purpose "Support triage, reading threads and replying."
 acme-api → https://api.example.com/control-plane (declared in pithy.config.ts)
-Open <the client's verification uri> and enter WXYZ-1234.
+Open https://app.pithy.sh/connect?userCode=WXYZ-1234 to approve.
+Check that the page shows WXYZ-1234.
 Press o to open the link in the browser.
 ▸ Waiting for approval...
 Connected prod.

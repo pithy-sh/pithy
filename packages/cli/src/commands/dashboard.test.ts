@@ -997,21 +997,57 @@ describe("the offer to open the approval page", () => {
     expect(announced({ json: false, open: true }).urls).toEqual(["https://app.pithy.sh/cli"]);
   });
 
-  test("opens verificationUriComplete when the client sends one, and still prints the plain page", () => {
+  test("prints and opens verificationUriComplete when the client sends one, with the code to compare", () => {
     const { lines, urls } = announced(
       { json: false, open: true },
       {},
       {
         ...AUTHORIZATION,
-        verificationUriComplete: "https://app.pithy.sh/cli?code=ABCD-EFGH",
+        verificationUriComplete: "https://app.pithy.sh/cli?userCode=ABCD-EFGH",
       },
     );
 
-    expect(urls).toEqual(["https://app.pithy.sh/cli?code=ABCD-EFGH"]);
-    // Never printed: it carries the code, and a code in a line somebody tees or screenshots is a code
-    // somebody else can approve with.
-    expect(lines[0]).toBe("Open https://app.pithy.sh/cli and enter ABCD-EFGH.");
-    expect(lines.join("\n")).not.toContain("?code=");
+    expect(urls).toEqual(["https://app.pithy.sh/cli?userCode=ABCD-EFGH"]);
+    expect(lines).toEqual([
+      "Open https://app.pithy.sh/cli?userCode=ABCD-EFGH to approve.",
+      "Check that the page shows ABCD-EFGH.",
+      OPEN_PROMPT,
+      "▸ Waiting for approval...",
+    ]);
+  });
+
+  test("prints the link with the code in it under --json too, and offers nothing", () => {
+    const { lines, urls } = announced(
+      { json: true, open: true },
+      { interactive: false },
+      { ...AUTHORIZATION, verificationUriComplete: "https://app.pithy.sh/cli?userCode=ABCD-EFGH" },
+    );
+
+    expect(urls).toEqual([]);
+    expect(lines).toEqual([
+      "Open https://app.pithy.sh/cli?userCode=ABCD-EFGH to approve.",
+      "Check that the page shows ABCD-EFGH.",
+      "▸ Waiting for approval...",
+    ]);
+  });
+
+  test.each([
+    ["another origin", "https://app.pithy.sh.evil.example/cli?userCode=ABCD-EFGH"],
+    ["another scheme", "javascript:alert(1)"],
+    ["no URL at all", "not a url"],
+  ])("falls back to the plain page and the code when verificationUriComplete is at %s", (_case, hostile) => {
+    const { lines, urls } = announced(
+      { json: false, open: true },
+      {},
+      { ...AUTHORIZATION, verificationUriComplete: hostile },
+    );
+
+    expect(urls).toEqual(["https://app.pithy.sh/cli"]);
+    expect(lines).toEqual([
+      "Open https://app.pithy.sh/cli and enter ABCD-EFGH.",
+      OPEN_PROMPT,
+      "▸ Waiting for approval...",
+    ]);
   });
 
   test("--json neither offers nor opens, and the URL-and-code line still stands", () => {

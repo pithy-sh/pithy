@@ -39,9 +39,9 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  * the other.
  *
  * **Usage rides the listing scope.** `GET {base}/control-plane/usage` counts one connection's calls by scope
- * and key. Its answer is the scope, the key id, and the method and path of the last allowed call — the management
- * client's own footprint, which the listing already discloses in shape through `action`, `actorId` and `resourceId`
- * — and never an IP, a user-agent, or any other metadata key. So it needs no detail scope, and an access review does
+ * and key, or every connection's. Its answer is the connection, the scope, the key id, and the method and path of the
+ * last allowed call — the management client's own footprint, which the listing already discloses in shape through
+ * `action`, `actorId` and `resourceId` — and never an IP, a user-agent, or any other metadata key. So it needs no detail scope, and an access review does
  * not have to hold the most dangerous grant audit defines to ask which grants are used.
  *
  * **The access history rides the listing scope.** `GET {base}/control-plane/access-history` answers every
@@ -150,7 +150,7 @@ export function auditAdminRoutes(basePath: string): AdminRouteDeclaration[] {
       scope: AUDIT_TRAIL_READ_SCOPE,
       kind: "reads",
       summary:
-        "Count which scopes one control-plane connection exercised and was refused, by key, over a window. Counts only — no event is read in full.",
+        "Count which scopes one control-plane connection, or every one, exercised and was refused, by key, over a window. Counts only — no event is read in full.",
     },
     {
       method: "GET",
