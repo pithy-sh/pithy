@@ -433,6 +433,24 @@ export function offerIsAnswerable(json: boolean, streams: OfferStreams): boolean
   return mayReadKeys(json, streams);
 }
 
+/**
+ * The page with the code in it, or `undefined` when it is absent or unusable.
+ *
+ * Usable means `http(s)` and on the same origin as `verificationUri`. The client checks both when the
+ * authorization arrives; this holds the announcement to them for any client that did not.
+ */
+function usableCompleteUri(authorization: DeviceAuthorization): string | undefined {
+  const complete = authorization.verificationUriComplete;
+  if (complete === undefined) return undefined;
+  try {
+    const url = new URL(complete);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+    return url.origin === new URL(authorization.verificationUri).origin ? complete : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The two flags an announcement reads: whether output is machine-readable, and whether opening is wanted. */
 type AnnounceArgs = { json: boolean; open: boolean };
 
@@ -451,13 +469,13 @@ export interface AnnounceSeams {
 /**
  * Show the device code, and offer `o` while the flow waits for approval.
  *
- * Three lines at most, all on stderr. The URL-and-code line is unconditional — somebody whose browser is
- * on another machine, or who never presses anything, still has both halves. The offer line appears only
- * when a key would actually be live.
+ * Four lines at most, all on stderr. The URL and the code are printed unconditionally — somebody whose
+ * browser is on another machine, or who never presses anything, still has both. The offer line appears
+ * only when a key would actually be live.
  *
- * **`verificationUriComplete` is opened and never printed.** It carries the user code, and a code in a
- * line somebody tees, pastes or screenshots is a code somebody else can approve with. Absent, the plain
- * page is opened instead — the field is optional precisely so a client that has not shipped it works.
+ * **`verificationUriComplete` is printed and opened when it is usable**, with the code on its own line
+ * so the person can check the page shows the same one. Absent, or failing {@link usableCompleteUri},
+ * the plain page and the code are printed and the plain page is what opens.
  */
 export function announceFor(
   args: AnnounceArgs,
@@ -472,9 +490,15 @@ export function announceFor(
   const env = seams.env ?? process.env;
 
   return (authorization) => {
-    write(`Open ${authorization.verificationUri} and enter ${authorization.userCode}.`);
+    const complete = usableCompleteUri(authorization);
+    if (complete === undefined) {
+      write(`Open ${authorization.verificationUri} and enter ${authorization.userCode}.`);
+    } else {
+      write(`Open ${complete} to approve.`);
+      write(`Check that the page shows ${authorization.userCode}.`);
+    }
     const offered = openingIsOffered({ json: args.json, isTTY: interactive, noOpen: !args.open, env })
-      ? offer({ url: authorization.verificationUriComplete ?? authorization.verificationUri, write })
+      ? offer({ url: complete ?? authorization.verificationUri, write })
       : undefined;
     write("▸ Waiting for approval...");
     return offered;
