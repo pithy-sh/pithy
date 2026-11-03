@@ -95,7 +95,8 @@ function replayable(message: ForwardableEmailMessage, raw: ArrayBuffer): Forward
  * `createBackend` directly when any capability handles inbound email (e.g. `@pithy-sh/email`'s bounce
  * handler). `fetch` is the same Hono app `createBackend` returns; `email` fans each incoming message
  * to every capability's `email` handler, replaying the single-use raw stream so each sees the full
- * message. Handlers run sequentially in registration order.
+ * message. Handlers run sequentially in registration order. A handler that throws is logged by capability and the
+ * next one still runs; `email` throws only when every handler did.
  */
 export function createEntrypoint<
   const Caps extends readonly Capability[],
@@ -103,7 +104,9 @@ export function createEntrypoint<
 >(options: CreateBackendOptions<Caps, App>): PithyEntrypoint {
   const app = createBackend(options);
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
-  const handlers: CapabilityEmailHandler[] = all.flatMap((cap) => (cap.email ? [cap.email] : []));
+  const handlers: { capability: string; handle: CapabilityEmailHandler }[] = all.flatMap((cap) =>
+    cap.email ? [{ capability: cap.name, handle: cap.email }] : [],
+  );
 
   // The last gate before this Worker can take a request, and the first one the CLI never reaches: only a
   // Worker's own entry calls `createEntrypoint`, while `createBackend` is assembled by tooling too. A
@@ -157,14 +160,24 @@ export function createEntrypoint<
     entrypoint.email = async (message, given, ctx) => {
       const env = withLocalServices(given);
       if (handlers.length === 1) {
-        await handlers[0]?.(message, env, ctx);
+        await handlers[0]?.handle(message, env, ctx);
         return;
       }
-      // Multiple consumers: buffer the raw body once, then replay it per handler.
+      // Multiple consumers: buffer the raw body once, then replay it per handler. One handler's failure must not
+      // stop the next. A throw out of `email()` bounces the message to its sender, so it is rethrown only when
+      // every handler failed: mail another handler may have stored is never bounced.
       const raw = await new Response(message.raw).arrayBuffer();
-      for (const handler of handlers) {
-        await handler(replayable(message, raw), env, ctx);
+      const log = createWorkerLogger({ name: "inbound" });
+      const failures: unknown[] = [];
+      for (const { capability, handle } of handlers) {
+        try {
+          await handle(replayable(message, raw), env, ctx);
+        } catch (error) {
+          failures.push(error);
+          log.error("inbound mail handler failed", { capability, error });
+        }
       }
+      if (failures.length === handlers.length) throw failures[0];
     };
   }
   return entrypoint;

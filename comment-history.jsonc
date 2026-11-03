@@ -1229,7 +1229,6 @@
     "packages/core/src/workflow/stepMessage.test.ts": 2,
     "packages/core/src/workflow/stepMessage.ts": 5,
     "packages/core/vitest.config.ts": 2,
-    "packages/email/src/bounce/handler.workers.test.ts": 3,
     "packages/email/src/bounce/inboundRouting.integration.test.ts": 6,
     "packages/email/src/crypto/linkKeyRotation.test.ts": 1,
     "packages/email/src/crypto/signingKey.ts": 4,

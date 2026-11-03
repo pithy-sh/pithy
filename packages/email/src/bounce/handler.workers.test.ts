@@ -175,7 +175,7 @@ describe("createBounceHandler (parse + classify + apply)", () => {
 });
 
 /**
- * The trust boundary (#47).
+ * The trust boundary.
  *
  * An inbound message is untrusted input from the open internet. Cloudflare's Email Routing accepts mail
  * for the routed address from anyone who can find the MX, and hands it to `email()` unfiltered — the
@@ -358,15 +358,14 @@ describe("createBounceHandler — untrusted input", () => {
     expect(await suppressionTotal()).toBe(0);
   });
 
-  test("an unauthenticated stranger can suppress any address they name (#93)", async () => {
-    // Recorded, not endorsed. Nothing authenticates the sender of an inbound message today: the live
-    // suite shows Cloudflare stamps a verdict but the handler reads none, so a DSN invented by anyone
-    // who can reach the routed address suppresses whatever `Final-Recipient` it claims. The ceiling is
-    // a denial of delivery, never a disclosure — the row carries no data back to the sender.
+  test("an unauthenticated stranger can suppress any address they name", async () => {
+    // Recorded, not endorsed. Nothing authenticates the sender of an inbound message: Cloudflare stamps
+    // a verdict but the handler reads none, so a DSN invented by anyone who can reach the routed address
+    // suppresses whatever `Final-Recipient` it claims. The ceiling is a denial of delivery, never a
+    // disclosure — the row carries no data back to the sender.
     //
-    // This is the whole case for #93 (verify DKIM inside the Worker), and the live suite settles its
-    // precondition: `DKIM-Signature` survives delivery, so verification is possible. If #93 lands, this
-    // test is the one that must change.
+    // `DKIM-Signature` survives delivery (the live suite shows it), so the handler could verify DKIM
+    // itself. A handler that does is the change that must change this test.
     const raw = [
       "Content-Type: multipart/report; report-type=delivery-status; boundary=b",
       "",
@@ -382,5 +381,107 @@ describe("createBounceHandler — untrusted input", () => {
 
     await handle(raw);
     expect(await suppressionCount("someone-elses-customer@example.com")).toBe(1);
+  });
+});
+
+/**
+ * A Worker has one `email()` entry, and `createEntrypoint` fans each message to every capability's handler in turn.
+ * A throw from this one would stop the handlers after it, and a throw out of `email()` bounces the message to its
+ * sender, so the handler catches, logs and returns, whatever the message and whatever the env holds.
+ */
+describe("createBounceHandler — never throws", () => {
+  /** A hard bounce for `u@example.com`, as a DSN. */
+  const DSN = [
+    "From: mailer-daemon@pithy.sh",
+    "To: bounces@pithy.sh",
+    "Subject: Delivery Status Notification (Failure)",
+    "Content-Type: multipart/report; report-type=delivery-status; boundary=b",
+    "",
+    "--b",
+    "Content-Type: message/delivery-status",
+    "",
+    "Original-Message-ID: <send-mime@pithy.sh>",
+    "Final-Recipient: rfc822;u@example.com",
+    "Action: failed",
+    "Status: 5.1.1",
+    "--b--",
+    "",
+  ].join("\r\n");
+
+  const ORDINARY = ["From: ada@example.com", "To: help@acme.test", "Subject: Hi", "", "Hello."].join("\r\n");
+
+  function inbound(raw: string): ForwardableEmailMessage {
+    return {
+      from: "mailer-daemon@pithy.sh",
+      to: "bounces@pithy.sh",
+      headers: new Headers(),
+      raw: new Response(raw).body as ReadableStream<Uint8Array>,
+      rawSize: raw.length,
+      setReject() {},
+      async forward() {},
+      async reply() {},
+    } as unknown as ForwardableEmailMessage;
+  }
+
+  /** A D1 binding whose every statement fails, the way one does when the database is unreachable. */
+  const failingD1 = {
+    prepare() {
+      throw new Error("D1_ERROR: database unavailable");
+    },
+    batch() {
+      throw new Error("D1_ERROR: database unavailable");
+    },
+  };
+
+  /** Run the handler over `raw` with `bindings`, returning every log line it wrote, parsed. */
+  async function handle(raw: string, bindings: Record<string, unknown>): Promise<Record<string, unknown>[]> {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      await expect(createBounceHandler()(inbound(raw), bindings, {} as ExecutionContext)).resolves.toBeUndefined();
+    } finally {
+      console.log = original;
+    }
+    return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  test("an ordinary message reaches no database, so it needs no binding at all", async () => {
+    expect(await handle(ORDINARY, {})).toEqual([]);
+  });
+
+  test("a hard bounce with no EMAIL_SUPPRESSIONS binding logs at warn and returns", async () => {
+    const jobId = await insertSentJob("send-mime@pithy.sh");
+    const logs = await handle(DSN, { DB: env.DB });
+    expect(logs).toEqual([
+      expect.objectContaining({
+        level: "warn",
+        name: "email",
+        fields: expect.objectContaining({ binding: "EMAIL_SUPPRESSIONS", type: "hard" }),
+      }),
+    ]);
+    expect((await jobStatus(jobId)).status).toBe("sent");
+  });
+
+  test("a bounce with no DB binding logs at warn and returns", async () => {
+    const logs = await handle(DSN, { EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS });
+    expect(logs).toEqual([
+      expect.objectContaining({ level: "warn", fields: expect.objectContaining({ binding: "DB" }) }),
+    ]);
+    expect(await suppressionCount("u@example.com")).toBe(0);
+  });
+
+  test("a database that fails is logged with the error it hit, and the handler returns", async () => {
+    const logs = await handle(DSN, { DB: failingD1, EMAIL_SUPPRESSIONS: failingD1, ENVIRONMENT: "staging" });
+    expect(logs).toEqual([
+      expect.objectContaining({
+        level: "error",
+        name: "email",
+        fields: expect.objectContaining({
+          env: "staging",
+          error: expect.objectContaining({ name: "Error", message: expect.stringContaining("database unavailable") }),
+        }),
+      }),
+    ]);
   });
 });

@@ -135,3 +135,72 @@ describe("createEntrypoint email, against native-like accessors", () => {
     expect(seen).toEqual([EXPECTED]);
   });
 });
+
+/**
+ * One handler's failure is not another's. A thrown `email()` is a delivery failure the sender sees as a bounce, so
+ * the fan-out bounces nothing another handler may already have stored: it rethrows only when every handler failed.
+ */
+describe("createEntrypoint email, when a handler throws", () => {
+  /** A capability whose handler throws `error` before reading anything. */
+  function throwing(name: string, error: Error) {
+    return defineCapability({
+      name,
+      requiredBindings: [],
+      email: async () => {
+        throw error;
+      },
+    });
+  }
+
+  /** Run `fn`, returning every line written to `console.log` meanwhile, parsed. */
+  async function logged(fn: () => Promise<unknown>): Promise<Record<string, unknown>[]> {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      await fn();
+    } finally {
+      console.log = original;
+    }
+    return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  test("the next handler still runs, and the failure is logged by capability with its error", async () => {
+    const seen: (Seen | Error)[] = [];
+    const entry = createEntrypoint({
+      capabilities: [throwing("bounces", new TypeError("boom")), reader("support", seen)],
+    });
+    const email = entry.email;
+    if (!email) throw new Error("expected an email handler");
+    const logs = await logged(() => expect(email(asForwardable(nativeLike()), {}, ctx)).resolves.toBeUndefined());
+    expect(seen).toEqual([EXPECTED]);
+    expect(logs).toEqual([
+      expect.objectContaining({
+        level: "error",
+        fields: expect.objectContaining({
+          capability: "bounces",
+          error: expect.objectContaining({ name: "TypeError", message: "boom" }),
+        }),
+      }),
+    ]);
+  });
+
+  test("when every handler fails, email() rethrows the first failure, after every handler has run", async () => {
+    const first = new TypeError("first");
+    const entry = createEntrypoint({
+      capabilities: [throwing("a", first), throwing("b", new RangeError("second"))],
+    });
+    const email = entry.email;
+    if (!email) throw new Error("expected an email handler");
+    const logs = await logged(() => expect(email(asForwardable(nativeLike()), {}, ctx)).rejects.toBe(first));
+    expect(logs.map((line) => (line.fields as { capability?: string }).capability)).toEqual(["a", "b"]);
+  });
+
+  test("a single handler that throws still throws out of email(), unchanged", async () => {
+    const error = new TypeError("only");
+    const entry = createEntrypoint({ capabilities: [throwing("only", error)] });
+    const email = entry.email;
+    if (!email) throw new Error("expected an email handler");
+    await expect(email(asForwardable(nativeLike()), {}, ctx)).rejects.toBe(error);
+  });
+});
