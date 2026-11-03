@@ -1,5 +1,25 @@
 # @pithy-sh/support
 
+## 0.7.0
+
+### Minor Changes
+
+- [#920](https://github.com/pithy-sh/pithy/pull/920) [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7) Thanks [@kingmesal](https://github.com/kingmesal)! - Support replies come from the inbox the customer wrote to, under the name of the person who answered.
+
+- [#920](https://github.com/pithy-sh/pithy/pull/920) [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy support provision` routes each environment's inbound support address to its Worker by itself, finding the zone from the address.
+
+### Patch Changes
+
+- [#932](https://github.com/pithy-sh/pithy/pull/932) [`c6f12fa`](https://github.com/pithy-sh/pithy/commit/c6f12fa4f8710abe82eaf25857e402886496b994) Thanks [@kingmesal](https://github.com/kingmesal)! - A support thread says which message each attachment came on.
+- Updated dependencies [[`5903449`](https://github.com/pithy-sh/pithy/commit/59034492338eabacb174ba022f30387ccbf342ee), [`d76c6c7`](https://github.com/pithy-sh/pithy/commit/d76c6c707813f114ffd6b51b7283401cfcfd3d85), [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7), [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7), [`46fa66b`](https://github.com/pithy-sh/pithy/commit/46fa66bebccd5992912f37a55e24b61e6b88923a)]:
+  - @pithy-sh/auth@0.13.0
+  - @pithy-sh/payments@0.8.0
+  - @pithy-sh/email@0.9.0
+  - @pithy-sh/core@0.17.0
+  - @pithy-sh/secrets@0.6.5
+  - @pithy-sh/storage@0.7.3
+  - @pithy-sh/vector@0.5.5
+
 ## 0.6.2
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @pithy-sh/payments
 
+## 0.8.0
+
+### Minor Changes
+
+- [#931](https://github.com/pithy-sh/pithy/pull/931) [`5903449`](https://github.com/pithy-sh/pithy/commit/59034492338eabacb174ba022f30387ccbf342ee) Thanks [@kingmesal](https://github.com/kingmesal)! - Admin lists filter by state, type, template, category, action prefix and more on the server.
+
+### Patch Changes
+
+- Updated dependencies [[`d76c6c7`](https://github.com/pithy-sh/pithy/commit/d76c6c707813f114ffd6b51b7283401cfcfd3d85), [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7), [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7), [`46fa66b`](https://github.com/pithy-sh/pithy/commit/46fa66bebccd5992912f37a55e24b61e6b88923a)]:
+  - @pithy-sh/core@0.17.0
+  - @pithy-sh/ledger@0.6.3
+  - @pithy-sh/secrets@0.6.5
+
 ## 0.7.2
 
 ### Patch Changes

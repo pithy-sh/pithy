@@ -1,5 +1,19 @@
 # @pithy-sh/core
 
+## 0.17.0
+
+### Minor Changes
+
+- [#920](https://github.com/pithy-sh/pithy/pull/920) [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7) Thanks [@kingmesal](https://github.com/kingmesal)! - Support replies come from the inbox the customer wrote to, under the name of the person who answered.
+
+- [#920](https://github.com/pithy-sh/pithy/pull/920) [`9ce5fe8`](https://github.com/pithy-sh/pithy/commit/9ce5fe8932d8fd1ae6cc0fb966ad7ec226cfa0f7) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy support provision` routes each environment's inbound support address to its Worker by itself, finding the zone from the address.
+
+### Patch Changes
+
+- [#923](https://github.com/pithy-sh/pithy/pull/923) [`d76c6c7`](https://github.com/pithy-sh/pithy/commit/d76c6c707813f114ffd6b51b7283401cfcfd3d85) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker that composes more than one inbound mail handler stores its mail again, and a failure in any of them now logs the error it hit.
+
+- [#934](https://github.com/pithy-sh/pithy/pull/934) [`46fa66b`](https://github.com/pithy-sh/pithy/commit/46fa66bebccd5992912f37a55e24b61e6b88923a) Thanks [@kingmesal](https://github.com/kingmesal)! - A call under an OIDC trust finds the connection that holds the trust, even when the environment has several.
+
 ## 0.16.1
 
 ### Patch Changes
