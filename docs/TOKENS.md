@@ -64,11 +64,13 @@ The value is never printed to stdout or `--json`; `dev-vars` is how you get it o
 `ci-system` is not a fixed list — every composed capability contributes what it needs. A capability declares it next to its code:
 
 ```ts
-// a capability that provisions Email Routing in CI:
-ciPermissions: ["email:routing"]
 // a module that seeds KV during install:
 ciPermissions: ["kv:write"]
+// a capability that routes inbound mail, granted on the zones holding these addresses:
+inboundRouting: { addresses: ["support@help.example.com"] }
 ```
+
+`ciPermissions` takes account-level keys only. A zone-level one (`routes:write`, `email:routing`, `zone:read`, `zone-settings:read`) is refused there, because on the account resource it grants nothing; it reaches `ci-system` as a zone policy instead, below.
 
 `ci-system`'s scope is `base ∪ (every capability's ciPermissions) ∪ (what every composed binding needs)`, so adding a capability grows what the CI token *should* carry with no hand-editing of scopes. The binding half is read off the binding, not declared, so your own app's bindings count: an `r2` bucket brings R2 Write, `kv` brings KV Write, `vectorize` brings Vectorize Write (each write covers its read), a `queue` brings Queues Write, and `artifacts` brings Artifacts Write. `pithy provision` creates the bucket, namespace or queue behind each of those, a capability's provisioner creates its Vectorize index, and `pithy feature destroy` deletes every repo in a feature's Artifacts namespace and then the namespace, all under this token or your signed-in session, whose scopes come from it. A Worker reaches every one of them through its binding and needs no API token, so `runtime` gains nothing. **Applying that to a token that already exists is `pithy token rotate`** — see below: a mint rolls the value and leaves the policies where they are. A session signed in before the project bound one was not granted that permission, and `pithy cloudflare connect` asks for it, as above. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per run with `--permission`.
 
@@ -99,6 +101,20 @@ A project that declares no domain mints exactly what it minted before. No new pe
 **A standing `tokens.overrides[...].permissions` keeps stripping the grant**, on purpose. `pithy token list` reports that state as its own thing and tells you to change the override rather than to run a command that would honor it and produce the same token again.
 
 **A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; a `disabled` or `expired` token is reported as dead rather than as scoped; and when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
+
+### Inbound mail, and the rules CI makes
+
+A capability that routes inbound mail through Cloudflare Email Routing declares it as `inboundRouting`, with the addresses its composition claims. `pithy support provision` routes each address on the zone that holds its domain, and every call it makes there is zone-level:
+
+| Call | Grant |
+|---|---|
+| `GET /zones` — find the zone holding the address's domain | **Zone Read** (`zone:read`) |
+| `GET /zones/<zone>/email/routing` and `GET /zones/<zone>/email/routing/dns` — check Email Routing is enabled for the domain | **Zone Settings Read** (`zone-settings:read`) |
+| `GET`/`POST`/`PUT`/`DELETE /zones/<zone>/email/routing/rules` — read, create, update and remove the rule | **Email Routing Rules Write** (`email:routing`) |
+
+So `ci-system` carries a third policy: those three, on exactly the zones holding the composition's inbound addresses, found by the longest active zone name each address's domain sits under, so a subdomain's address grants its parent zone. An address no zone on the account holds grants nothing and does not fail the mint: provisioning refuses to route it and says why. A project that receives no mail gets no Email Routing grant. A signed-in session asks for the same three scopes whenever a composed capability declares `inboundRouting`, with addresses or without, because a session is not scoped by zone. `pithy email` declares it with none, since its routing flags name the address, so its bounce rule is made from a session or a token you scoped yourself.
+
+None of the three can change a zone, its DNS or its MX. Enabling Email Routing for a domain stays your act, in the Cloudflare dashboard.
 
 ### Mint rolls the value. Rotate replaces the token.
 
