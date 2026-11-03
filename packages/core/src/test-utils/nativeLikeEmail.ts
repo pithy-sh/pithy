@@ -18,6 +18,7 @@ export class NativeLikeMessage {
   readonly #headers: Headers;
   readonly #body: string;
   #raw: ReadableStream<Uint8Array> | null;
+  #annotation: string | undefined;
   rejected: string | undefined;
   forwardedTo: string[] = [];
 
@@ -54,6 +55,13 @@ export class NativeLikeMessage {
     const stream = self.#raw;
     self.#raw = null;
     return stream;
+  }
+  /** A native setter, standing for any the runtime adds: like the getters, it refuses a foreign `this`. */
+  get annotation(): string | undefined {
+    return NativeLikeMessage.#own(this).#annotation;
+  }
+  set annotation(value: string | undefined) {
+    NativeLikeMessage.#own(this).#annotation = value;
   }
   setReject(reason: string): void {
     NativeLikeMessage.#own(this).rejected = reason;

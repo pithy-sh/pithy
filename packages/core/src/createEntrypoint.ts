@@ -77,7 +77,7 @@ function firedCron(controller: unknown): string | undefined {
  * body once and hand each handler a proxy whose `raw` yields a fresh stream over that buffer; every
  * other property/method delegates to (and stays bound to) the real message.
  *
- * Every read goes to the real message with the message as `this`. Its `to`, `from`, `rawSize` and
+ * Every read and write goes to the real message with the message as `this`. Its `to`, `from`, `rawSize` and
  * `headers` are native accessors, and workerd throws `Illegal invocation` when one runs on the proxy.
  */
 function replayable(message: ForwardableEmailMessage, raw: ArrayBuffer): ForwardableEmailMessage {
@@ -86,6 +86,9 @@ function replayable(message: ForwardableEmailMessage, raw: ArrayBuffer): Forward
       if (prop === "raw") return new Response(raw.slice(0)).body as ReadableStream<Uint8Array>;
       const value = Reflect.get(target, prop);
       return typeof value === "function" ? value.bind(target) : value;
+    },
+    set(target, prop, value) {
+      return Reflect.set(target, prop, value);
     },
   });
 }
@@ -167,7 +170,10 @@ export function createEntrypoint<
       // stop the next. A throw out of `email()` bounces the message to its sender, so it is rethrown only when
       // every handler failed: mail another handler may have stored is never bounced.
       const raw = await new Response(message.raw).arrayBuffer();
-      const log = createWorkerLogger({ name: "inbound" });
+      const log = createWorkerLogger({
+        name: "inbound",
+        fields: { env: typeof env.ENVIRONMENT === "string" ? env.ENVIRONMENT : "unknown" },
+      });
       const failures: unknown[] = [];
       for (const { capability, handle } of handlers) {
         try {

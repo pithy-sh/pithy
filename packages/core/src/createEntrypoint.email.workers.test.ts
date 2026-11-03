@@ -110,6 +110,24 @@ describe("createEntrypoint email, against native-like accessors", () => {
     expect(message.forwardedTo).toEqual(["ops@acme.test"]);
   });
 
+  test("a write through the wrapper reaches the real message, setters included", async () => {
+    const message = nativeLike();
+    const writer = (name: string, value: string) =>
+      defineCapability({
+        name,
+        requiredBindings: [],
+        email: async (m) => {
+          (m as unknown as { annotation: string }).annotation = value;
+          (m as unknown as Record<string, unknown>)[`seenBy${name}`] = true;
+        },
+      });
+    const entry = createEntrypoint({ capabilities: [writer("A", "first"), writer("B", "second")] });
+    if (!entry.email) throw new Error("expected an email handler");
+    await entry.email(asForwardable(message), {}, ctx);
+    expect(message.annotation).toBe("second");
+    expect(message).toMatchObject({ seenByA: true, seenByB: true });
+  });
+
   test("a single handler gets the message itself, unwrapped", async () => {
     const message = nativeLike();
     let given: unknown;
@@ -172,12 +190,15 @@ describe("createEntrypoint email, when a handler throws", () => {
     });
     const email = entry.email;
     if (!email) throw new Error("expected an email handler");
-    const logs = await logged(() => expect(email(asForwardable(nativeLike()), {}, ctx)).resolves.toBeUndefined());
+    const logs = await logged(() =>
+      expect(email(asForwardable(nativeLike()), { ENVIRONMENT: "staging" }, ctx)).resolves.toBeUndefined(),
+    );
     expect(seen).toEqual([EXPECTED]);
     expect(logs).toEqual([
       expect.objectContaining({
         level: "error",
         fields: expect.objectContaining({
+          env: "staging",
           capability: "bounces",
           error: expect.objectContaining({ name: "TypeError", message: "boom" }),
         }),

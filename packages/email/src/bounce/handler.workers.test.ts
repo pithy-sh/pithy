@@ -450,24 +450,60 @@ describe("createBounceHandler — never throws", () => {
     expect(await handle(ORDINARY, {})).toEqual([]);
   });
 
-  test("a hard bounce with no EMAIL_SUPPRESSIONS binding logs at warn and returns", async () => {
-    const jobId = await insertSentJob("send-mime@pithy.sh");
-    const logs = await handle(DSN, { DB: env.DB });
-    expect(logs).toEqual([
-      expect.objectContaining({
-        level: "warn",
-        name: "email",
-        fields: expect.objectContaining({ binding: "EMAIL_SUPPRESSIONS", type: "hard" }),
-      }),
-    ]);
-    expect((await jobStatus(jobId)).status).toBe("sent");
+  /** The same DSN with a 4.x.x status: a soft bounce, which is recorded on the job and never suppresses. */
+  const SOFT = DSN.replace("Status: 5.1.1", "Status: 4.2.2").replace("Action: failed", "Action: delayed");
+
+  /** How many bounce events the app database holds. */
+  async function bounceEvents(): Promise<number> {
+    const row = await env.DB.prepare("select count(*) as n from pithy_email_events where type = 'bounce'").first<{
+      n: number;
+    }>();
+    return row?.n ?? 0;
+  }
+
+  /** The warn lines, as the binding and the part each one names. */
+  function warned(logs: Record<string, unknown>[]): { binding?: unknown; skipped?: unknown }[] {
+    return logs
+      .filter((line) => line.level === "warn")
+      .map((line) => {
+        const fields = line.fields as Record<string, unknown>;
+        return { binding: fields.binding, skipped: fields.skipped };
+      });
+  }
+
+  test("a hard bounce with no DB still writes the suppression, and warns that the job went unrecorded", async () => {
+    const logs = await handle(DSN, { EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS });
+    expect(await suppressionCount("u@example.com")).toBe(1);
+    expect(warned(logs)).toEqual([{ binding: "DB", skipped: "job" }]);
   });
 
-  test("a bounce with no DB binding logs at warn and returns", async () => {
-    const logs = await handle(DSN, { EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS });
-    expect(logs).toEqual([
-      expect.objectContaining({ level: "warn", fields: expect.objectContaining({ binding: "DB" }) }),
+  test("a hard bounce with no EMAIL_SUPPRESSIONS still marks the job, and warns that the suppression was skipped", async () => {
+    const jobId = await insertSentJob("send-mime@pithy.sh");
+    const logs = await handle(DSN, { DB: env.DB });
+    expect(await jobStatus(jobId)).toEqual({ status: "bounced", bounce_type: "hard" });
+    expect(await bounceEvents()).toBe(1);
+    expect(warned(logs)).toEqual([{ binding: "EMAIL_SUPPRESSIONS", skipped: "suppression" }]);
+  });
+
+  test("a hard bounce with neither binding warns once for each part it skipped", async () => {
+    const logs = await handle(DSN, {});
+    expect(warned(logs)).toEqual([
+      { binding: "DB", skipped: "job" },
+      { binding: "EMAIL_SUPPRESSIONS", skipped: "suppression" },
     ]);
+  });
+
+  test("a soft bounce needs only DB: with no EMAIL_SUPPRESSIONS it records the job and the event, and warns nothing", async () => {
+    const jobId = await insertSentJob("send-mime@pithy.sh");
+    const logs = await handle(SOFT, { DB: env.DB });
+    expect(await jobStatus(jobId)).toEqual({ status: "sent", bounce_type: "soft" });
+    expect(await bounceEvents()).toBe(1);
+    expect(logs).toEqual([]);
+  });
+
+  test("a soft bounce with no DB warns that the job went unrecorded", async () => {
+    const logs = await handle(SOFT, { EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS });
+    expect(warned(logs)).toEqual([{ binding: "DB", skipped: "job" }]);
     expect(await suppressionCount("u@example.com")).toBe(0);
   });
 

@@ -83,6 +83,46 @@ describe("serializeRecord — an Error in a field", () => {
   });
 });
 
+describe("serializeRecord — one line stays bounded", () => {
+  test("an AggregateError writes its first ten errors and counts the rest", () => {
+    const many = new AggregateError(
+      Array.from({ length: 25 }, (_, i) => new TypeError(`e${i}`)),
+      "all failed",
+    );
+    const { fields } = roundTrip({ error: many });
+    const written = fields?.error as { errors?: { message?: string }[]; errorsOmitted?: number };
+    expect(written.errors?.map((e) => e.message)).toEqual(Array.from({ length: 10 }, (_, i) => `e${i}`));
+    expect(written.errorsOmitted).toBe(15);
+  });
+
+  test("an AggregateError with ten errors or fewer omits none", () => {
+    const { fields } = roundTrip({ error: new AggregateError([new TypeError("a")], "one failed") });
+    expect(fields?.error).toMatchObject({ errors: [{ message: "a" }] });
+    expect(fields?.error).not.toHaveProperty("errorsOmitted");
+  });
+
+  test("a cause chain is written five causes deep, then marked as cut", () => {
+    let error = new Error("e0");
+    for (let i = 1; i <= 8; i++) error = new Error(`e${i}`, { cause: error });
+    const { fields } = roundTrip({ error });
+    let node = fields?.error as { message?: string; cause?: unknown };
+    const messages: string[] = [];
+    while (typeof node === "object" && node !== null) {
+      messages.push(node.message ?? "");
+      node = node.cause as typeof node;
+    }
+    expect(messages).toEqual(["e8", "e7", "e6", "e5", "e4", "e3"]);
+    expect(node).toBe("[3 more causes]");
+  });
+
+  test("a chain too deep to walk still serializes the record, not the bare fallback", () => {
+    let error = new Error("e0");
+    for (let i = 1; i <= 100_000; i++) error = new Error(`e${i}`, { cause: error });
+    const record = roundTrip({ error, kept: "yes" });
+    expect(record.fields).toMatchObject({ kept: "yes", error: { message: "e100000" } });
+  });
+});
+
 describe("serializeLogValue", () => {
   test("serializes one field value through the same rules", () => {
     expect(JSON.parse(serializeLogValue(new TypeError("boom")))).toMatchObject({ name: "TypeError", message: "boom" });
