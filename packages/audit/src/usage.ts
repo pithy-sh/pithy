@@ -8,12 +8,17 @@ import { z } from "zod";
 import type { AuditDatabase } from "./data/tables";
 
 /**
- * Which scopes a control-plane connection exercised, and which it was refused — `#812`.
+ * Which scopes a control-plane connection exercised, and which it was refused — `#812` — for one connection or every
+ * connection at once.
  *
  * Every admitted call writes `controlplane/call_allowed`, and every verified call refused a scope writes
  * `controlplane/call_denied`, both against the connection as `resourceId` and both naming the scope and key in
  * `metadata`. Answering "granted twelve, used three" from the listing would take one forensic read per event, behind
  * the scope that also discloses the client IP; this reads the same rows in SQL and returns counts.
+ *
+ * **One connection, or every one.** Over-grant — scopes a credential holds and never used — is a question over every
+ * connection on the Worker, so leaving the connection out counts them all in the same statement, grouped by connection
+ * first. A connection that made no call in the window has no row: the caller joins against the connection listing.
  *
  * **One statement for the aggregate, never a page walk.** A dashboard connection makes thousands of calls a day, and a
  * handler that paged them to count would be the largest read on the surface. The `GROUP BY` runs in D1, over rows
@@ -24,10 +29,10 @@ import type { AuditDatabase } from "./data/tables";
  * client's own footprint.
  */
 
-/** What to count: one connection, over an inclusive window. */
+/** What to count: one connection, or every connection, over an inclusive window. */
 export interface ControlPlaneUsageFilter {
-  /** The connection whose calls are counted — the rows' `resourceId`. */
-  connectionId: string;
+  /** The connection whose calls are counted — the rows' `resourceId`. Absent, every connection's calls are. */
+  connectionId?: string;
   /** Inclusive lower bound on `occurredAt`. */
   since: Date;
   /** Inclusive upper bound on `occurredAt`. */
@@ -47,6 +52,7 @@ const CONNECTION_RESOURCE = "controlplane_connection";
  */
 export const ControlPlaneUsageRow = z
   .object({
+    connectionId: z.string().describe("The connection that made the calls — the rows' `resourceId`."),
     scope: z
       .string()
       .describe(
@@ -75,7 +81,7 @@ const OldestEvent = z
 
 /** What {@link controlPlaneUsage} answers. */
 export interface ControlPlaneUsage {
-  /** One row per `(scope, keyId)` exercised, ordered by scope then key. */
+  /** One row per `(connectionId, scope, keyId)` exercised, ordered by connection, then scope, then key. */
   usage: ControlPlaneUsageRow[];
   /** The oldest event the trail holds, or null on an empty trail. */
   oldestEventAt: Date | null;
@@ -86,13 +92,18 @@ export interface ControlPlaneUsage {
  *
  * Three steps, in one statement:
  *
- * 1. **`calls`** — the connection's call rows in the window, with the scope, key, method and path lifted out of
- *    `metadata`. The scope is read from where each writer puts it: an allowed row carries the token's `scope`; a gate
+ * 1. **`calls`** — the connection's call rows in the window, or every connection's when none is named, with the
+ *    connection beside the scope, key, method and path lifted out of `metadata`. The scope is read from where each writer puts it: an allowed row carries the token's `scope`; a gate
  *    refusal names the scope it required as `required`, and a handler's refusal as `scope`, so a denied row reads
  *    `required` first. A row with no scope at all is nobody's usage and is dropped.
- * 2. **`ranked`** — each row's recency within its `(scope, keyId, action)`, newest first, `id` breaking a tie. Rank 1
- *    of the allowed rows is the last allowed call, whose method and path the answer carries.
- * 3. **The group** — counts and last instants per `(scope, keyId)`.
+ * 2. **`ranked`** — each row's recency within its `(connectionId, scope, keyId, action)`, newest first, `id`
+ *    breaking a tie. Rank 1 of the allowed rows is the last allowed call, whose method and path the answer carries.
+ * 3. **The group** — counts and last instants per `(connectionId, scope, keyId)`.
+ *
+ * Both shapes seek `pithyAuditEventsCallIdx` the same way: each action, then a connection, then the window as a range.
+ * Named, the connection is the one asked for. Unnamed, it is each connection that has a call row at all, listed off the
+ * same index without reading a row, so the window still bounds every connection's read and the table is never
+ * scanned. A row with no connection — an unverified refusal — is nobody's usage in either.
  */
 export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPlaneUsageFilter) {
   const allowed = ControlPlaneAuditActions.callAllowed;
@@ -105,6 +116,7 @@ export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPla
           "id",
           "action",
           "occurredAt",
+          eb.ref("resourceId").as("connectionId"),
           sql<string | null>`case when ${eb.ref("action")} = ${denied}
             then coalesce(json_extract(${eb.ref("metadata")}, '$.required'), json_extract(${eb.ref("metadata")}, '$.scope'))
             else json_extract(${eb.ref("metadata")}, '$.scope') end`.as("scope"),
@@ -114,7 +126,19 @@ export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPla
         ])
         // In `pithyAuditEventsCallIdx`'s column order: the actions, the connection, then the window.
         .where("action", "in", CALL_ACTIONS)
-        .where("resourceId", "=", filter.connectionId)
+        .$call((q) =>
+          filter.connectionId === undefined
+            ? // Every connection that ever made a call, read off the same index without touching a row, so the
+              // window below is still a range inside each connection rather than a filter over every call.
+              q.where("resourceId", "in", (eb) =>
+                eb
+                  .selectFrom("pithyAuditEvents")
+                  .select("resourceId")
+                  .where("action", "in", CALL_ACTIONS)
+                  .where("resourceId", "is not", null),
+              )
+            : q.where("resourceId", "=", filter.connectionId),
+        )
         .where("occurredAt", ">=", SQLiteDate.encode(filter.since))
         .where("occurredAt", "<=", SQLiteDate.encode(filter.until))
         .where("resourceType", "=", CONNECTION_RESOURCE),
@@ -125,13 +149,14 @@ export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPla
         .selectAll()
         .select(
           sql<number>`row_number() over (
-            partition by ${sql.ref("scope")}, ${sql.ref("keyId")}, ${sql.ref("action")}
+            partition by ${sql.ref("connectionId")}, ${sql.ref("scope")}, ${sql.ref("keyId")}, ${sql.ref("action")}
             order by ${sql.ref("occurredAt")} desc, ${sql.ref("id")} desc)`.as("recency"),
         )
         .where("scope", "is not", null),
     )
     .selectFrom("ranked")
     .select((eb) => [
+      "connectionId",
       "scope",
       "keyId",
       sql<number>`sum(case when ${eb.ref("action")} = ${allowed} then 1 else 0 end)`.as("allowed"),
@@ -147,13 +172,15 @@ export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPla
         "lastDeniedAt",
       ),
     ])
-    .groupBy(["scope", "keyId"])
+    .groupBy(["connectionId", "scope", "keyId"])
+    .orderBy("connectionId")
     .orderBy("scope")
     .orderBy("keyId");
 }
 
 /**
- * Count one connection's calls by scope and key, over an inclusive window.
+ * Count one connection's calls by scope and key, or every connection's by connection, scope and key, over an
+ * inclusive window.
  *
  * `oldestEventAt` is the oldest event the trail holds at all, for any connection or none. Retention prunes the trail
  * by time, never per connection, so this is how far back any connection's answer can reach: a window starting before

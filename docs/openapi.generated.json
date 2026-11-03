@@ -11617,13 +11617,13 @@
           "audit"
         ],
         "operationId": "getAuditControlPlaneUsage",
-        "summary": "Count which scopes one control-plane connection exercised and was refused, by key, over a window.",
+        "summary": "Count which scopes one control-plane connection, or every one, exercised and was refused, by key, over a window.",
         "parameters": [
           {
             "name": "connectionId",
             "in": "query",
-            "required": true,
-            "description": "The control-plane connection whose calls to count — the `resourceId` its call rows carry. Required.",
+            "required": false,
+            "description": "The control-plane connection whose calls to count — the `resourceId` its call rows carry. Omit it to count every connection's.",
             "schema": {
               "type": "string",
               "minLength": 1,
@@ -11655,133 +11655,276 @@
         ],
         "responses": {
           "200": {
-            "description": "Which scopes one control-plane connection exercised and was refused, by key, over a window.",
+            "description": "One connection's usage when `connectionId` is named, as `ControlPlaneUsageResponse`; every connection's when it is not, as `ControlPlaneUsageAllResponse`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "connectionId": {
-                      "type": "string",
-                      "description": "The connection counted, as asked for."
-                    },
-                    "since": {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                      "description": "The window's inclusive start, ISO-8601."
-                    },
-                    "until": {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                      "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
-                    },
-                    "usage": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "scope": {
-                            "type": "string",
-                            "description": "The scope exercised — what an allowed call's token carried, or what a refused call required. A scope never exercised has no row."
-                          },
-                          "keyId": {
-                            "description": "The registered key that signed the calls, or null when none was recorded.",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "allowed": {
-                            "type": "integer",
-                            "minimum": -9007199254740991,
-                            "maximum": 9007199254740991,
-                            "description": "How many calls under this scope and key were admitted in the window."
-                          },
-                          "denied": {
-                            "type": "integer",
-                            "minimum": -9007199254740991,
-                            "maximum": 9007199254740991,
-                            "description": "How many verified calls naming this scope were refused in the window. An under-grant shows here, beside an over-grant's zero. A refusal that failed verification proves no connection and is not counted."
-                          },
-                          "lastAllowedAt": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "date-time",
-                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "description": "When the last admitted call landed, ISO-8601, or null when none was admitted."
-                          },
-                          "lastAllowedMethod": {
-                            "description": "The HTTP method of the last admitted call, or null.",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "lastAllowedPath": {
-                            "description": "The path of the last admitted call, or null.",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "lastDeniedAt": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "date-time",
-                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "description": "When the last refusal landed, ISO-8601, or null when none was refused."
-                          }
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "connectionId": {
+                          "type": "string",
+                          "description": "The connection counted, as asked for."
                         },
-                        "required": [
-                          "scope",
-                          "keyId",
-                          "allowed",
-                          "denied",
-                          "lastAllowedAt",
-                          "lastAllowedMethod",
-                          "lastAllowedPath",
-                          "lastDeniedAt"
-                        ],
-                        "description": "One scope and key a control-plane connection exercised in a window."
-                      },
-                      "description": "One row per scope and key exercised, ordered by scope then key."
-                    },
-                    "oldestEventAt": {
-                      "anyOf": [
-                        {
+                        "since": {
                           "type": "string",
                           "format": "date-time",
-                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's inclusive start, ISO-8601."
                         },
-                        {
-                          "type": "null"
+                        "until": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
+                        },
+                        "usage": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "scope": {
+                                "type": "string",
+                                "description": "The scope exercised — what an allowed call's token carried, or what a refused call required. A scope never exercised has no row."
+                              },
+                              "keyId": {
+                                "description": "The registered key that signed the calls, or null when none was recorded.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "allowed": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "How many calls under this scope and key were admitted in the window."
+                              },
+                              "denied": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991,
+                                "description": "How many verified calls naming this scope were refused in the window. An under-grant shows here, beside an over-grant's zero. A refusal that failed verification proves no connection and is not counted."
+                              },
+                              "lastAllowedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "When the last admitted call landed, ISO-8601, or null when none was admitted."
+                              },
+                              "lastAllowedMethod": {
+                                "description": "The HTTP method of the last admitted call, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "lastAllowedPath": {
+                                "description": "The path of the last admitted call, or null.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "lastDeniedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "When the last refusal landed, ISO-8601, or null when none was refused."
+                              }
+                            },
+                            "required": [
+                              "scope",
+                              "keyId",
+                              "allowed",
+                              "denied",
+                              "lastAllowedAt",
+                              "lastAllowedMethod",
+                              "lastAllowedPath",
+                              "lastDeniedAt"
+                            ],
+                            "description": "One scope and key a control-plane connection exercised in a window."
+                          },
+                          "description": "One row per scope and key exercised, ordered by scope then key."
+                        },
+                        "oldestEventAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The oldest event the trail holds, for any connection, or null on an empty trail. A window starting before it was not fully covered: retention removed what came before."
                         }
+                      },
+                      "required": [
+                        "connectionId",
+                        "since",
+                        "until",
+                        "usage",
+                        "oldestEventAt"
                       ],
-                      "description": "The oldest event the trail holds, for any connection, or null on an empty trail. A window starting before it was not fully covered: retention removed what came before."
+                      "description": "Which scopes one control-plane connection exercised and was refused, by key, over a window."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "since": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's inclusive start, ISO-8601."
+                        },
+                        "until": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "The window's inclusive end, ISO-8601 — now, when the query named none."
+                        },
+                        "connections": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "connectionId": {
+                                "type": "string",
+                                "description": "The connection that made the calls."
+                              },
+                              "usage": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "scope": {
+                                      "type": "string",
+                                      "description": "The scope exercised — what an allowed call's token carried, or what a refused call required. A scope never exercised has no row."
+                                    },
+                                    "keyId": {
+                                      "description": "The registered key that signed the calls, or null when none was recorded.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "allowed": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "How many calls under this scope and key were admitted in the window."
+                                    },
+                                    "denied": {
+                                      "type": "integer",
+                                      "minimum": -9007199254740991,
+                                      "maximum": 9007199254740991,
+                                      "description": "How many verified calls naming this scope were refused in the window. An under-grant shows here, beside an over-grant's zero. A refusal that failed verification proves no connection and is not counted."
+                                    },
+                                    "lastAllowedAt": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "When the last admitted call landed, ISO-8601, or null when none was admitted."
+                                    },
+                                    "lastAllowedMethod": {
+                                      "description": "The HTTP method of the last admitted call, or null.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "lastAllowedPath": {
+                                      "description": "The path of the last admitted call, or null.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "lastDeniedAt": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "format": "date-time",
+                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "When the last refusal landed, ISO-8601, or null when none was refused."
+                                    }
+                                  },
+                                  "required": [
+                                    "scope",
+                                    "keyId",
+                                    "allowed",
+                                    "denied",
+                                    "lastAllowedAt",
+                                    "lastAllowedMethod",
+                                    "lastAllowedPath",
+                                    "lastDeniedAt"
+                                  ],
+                                  "description": "One scope and key a control-plane connection exercised in a window."
+                                },
+                                "description": "One row per scope and key this connection exercised, ordered by scope then key. Never empty."
+                              }
+                            },
+                            "required": [
+                              "connectionId",
+                              "usage"
+                            ],
+                            "description": "One control-plane connection's usage, by scope and key."
+                          },
+                          "description": "One entry per connection that made a call in the window, ordered by connection id. A connection that made none is absent: join against the connection listing for it."
+                        },
+                        "oldestEventAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The oldest event the trail holds, for any connection, or null on an empty trail. A window starting before it was not fully covered: retention removed what came before."
+                        }
+                      },
+                      "required": [
+                        "since",
+                        "until",
+                        "connections",
+                        "oldestEventAt"
+                      ],
+                      "description": "Which scopes every control-plane connection exercised and was refused, by key, over a window."
                     }
-                  },
-                  "required": [
-                    "connectionId",
-                    "since",
-                    "until",
-                    "usage",
-                    "oldestEventAt"
                   ],
-                  "description": "Which scopes one control-plane connection exercised and was refused, by key, over a window."
+                  "description": "One connection's usage when `connectionId` is named, as `ControlPlaneUsageResponse`; every connection's when it is not, as `ControlPlaneUsageAllResponse`."
                 }
               }
             }

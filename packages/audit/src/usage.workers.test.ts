@@ -110,6 +110,7 @@ describe("controlPlaneUsage", () => {
 
     expect(usage).toEqual([
       {
+        connectionId: CONNECTION,
         scope: "audit:events:read",
         keyId: KEY,
         allowed: 3,
@@ -120,6 +121,7 @@ describe("controlPlaneUsage", () => {
         lastDeniedAt: new Date(5_000),
       },
       {
+        connectionId: CONNECTION,
         scope: "audit:events:read",
         keyId: NEXT_KEY,
         allowed: 1,
@@ -225,6 +227,62 @@ describe("controlPlaneUsage", () => {
   });
 });
 
+describe("controlPlaneUsage, with no connection named", () => {
+  const THIRD_CONNECTION = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
+
+  test("groups every connection's calls by connection, then scope and key", async () => {
+    await seed(allowed({ scope: "audit:events:read", connection: OTHER_CONNECTION, keyId: "key-o" }), 1_000);
+    await seed(allowed({ scope: "audit:events:read", path: "/audit/events?first" }), 2_000);
+    await seed(allowed({ scope: "audit:events:read", path: "/audit/events?last" }), 3_000);
+    await seed(allowed({ scope: "auth:users:read", keyId: NEXT_KEY, path: "/admin/users" }), 3_500);
+    await seed(gateDenied("payments:overrides:set"), 4_000);
+    await seed(allowed({ scope: "audit:events:read_detail", connection: OTHER_CONNECTION, keyId: "key-o" }), 4_500);
+    // Outside the window: this connection is absent from the answer, not present with zeroes.
+    await seed(allowed({ scope: "audit:events:read", connection: THIRD_CONNECTION }), 9_000);
+
+    const { usage } = await controlPlaneUsage(db(), { since: new Date(0), until: new Date(8_000) });
+
+    expect(usage.map((row) => [row.connectionId, row.scope, row.keyId, row.allowed, row.denied])).toEqual(
+      [
+        [CONNECTION, "audit:events:read", KEY, 2, 0],
+        [CONNECTION, "auth:users:read", NEXT_KEY, 1, 0],
+        [CONNECTION, "payments:overrides:set", KEY, 0, 1],
+        [OTHER_CONNECTION, "audit:events:read", "key-o", 1, 0],
+        [OTHER_CONNECTION, "audit:events:read_detail", "key-o", 1, 0],
+      ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    );
+    const last = usage.find((row) => row.connectionId === CONNECTION && row.scope === "audit:events:read");
+    expect(last).toMatchObject({ lastAllowedAt: new Date(3_000), lastAllowedPath: "/audit/events?last" });
+    expect(usage.some((row) => row.connectionId === THIRD_CONNECTION)).toBe(false);
+  });
+
+  test("a named connection's rows are the same rows the unnamed read gives that connection", async () => {
+    await seed(allowed({ scope: "audit:events:read" }), 1_000);
+    await seed(allowed({ scope: "audit:events:read", connection: OTHER_CONNECTION }), 1_500);
+    await seed(handlerDenied("ledger:accounts:adjust"), 2_000);
+
+    const named = await controlPlaneUsage(db(), { connectionId: CONNECTION, ...ALL_TIME });
+    const every = await controlPlaneUsage(db(), ALL_TIME);
+
+    expect(every.usage.filter((row) => row.connectionId === CONNECTION)).toEqual(named.usage);
+  });
+
+  test("an unverified refusal names no connection and is nobody's usage", async () => {
+    await seed(
+      {
+        action: "controlplane/call_denied",
+        outcome: "denied",
+        actorType: "control-plane",
+        actorId: null,
+        metadata: { reason: "controlplane/invalid_credential", required: "keys:rotate", method: "GET", path: "/" },
+      },
+      2_000,
+    );
+    const { usage } = await controlPlaneUsage(db(), ALL_TIME);
+    expect(usage).toEqual([]);
+  });
+});
+
 describe("the aggregate is SQL, not a page walk", () => {
   /** Ten thousand allowed calls across two scopes, written in one statement so the fixture costs no time. */
   async function tenThousandCalls(): Promise<void> {
@@ -271,6 +329,68 @@ describe("the aggregate is SQL, not a page walk", () => {
       ["audit:events:read_detail", 2_500, new Date(10_000)],
     ]);
     expect(oldestEventAt).toEqual(new Date(1));
+  });
+
+  /**
+   * Ten thousand events that are not calls, over the same instants: logins, as any trail holds beside its calls. On a
+   * trail of nothing but calls, reading every row is the cheapest way to read every call, and the planner says so.
+   */
+  async function tenThousandOtherEvents(): Promise<void> {
+    await env.DB.prepare(
+      `with recursive n(i) as (select 1 union all select i + 1 from n where i < 10000)
+       insert into pithy_audit_events
+         (event_id, occurred_at, action, outcome, severity, actor_type, actor_id, ip, user_agent, metadata)
+       select 'login-' || i, i, 'auth/login', 'success', 'info', 'user', 'u-' || (i % 50), '203.0.113.9',
+              'Browser/1.0', null
+       from n`,
+    ).run();
+  }
+
+  test("every connection answers in the same two statements, however many connections called", async () => {
+    await tenThousandCalls();
+    for (const [index, connection] of ["c-1", "c-2", "c-3"].entries()) {
+      await seed(allowed({ scope: "audit:events:read", connection }), 20_000 + index);
+    }
+    const statements: string[] = [];
+    const counted = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (query: string) => {
+            statements.push(query);
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const { usage } = await controlPlaneUsage(db(counted as unknown as D1Database), ALL_TIME);
+
+    expect(statements).toHaveLength(2);
+    expect(statements.filter((query) => /group by/i.test(query))).toHaveLength(1);
+    expect(new Set(usage.map((row) => row.connectionId))).toEqual(new Set([CONNECTION, "c-1", "c-2", "c-3"]));
+  });
+
+  test("with no connection named, the query plan still reads the call index, not the table", async () => {
+    await tenThousandCalls();
+    await tenThousandOtherEvents();
+    await env.DB.prepare("analyze").run();
+    const { sql, parameters } = controlPlaneUsageStatement(db(), ALL_TIME).compile();
+
+    const plan = await env.DB.prepare(`explain query plan ${sql}`)
+      .bind(...parameters)
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail);
+
+    expect(
+      details.some((detail) => detail.includes("pithy_audit_events_call_idx")),
+      details.join("\n"),
+    ).toBe(true);
+    expect(
+      details.some((detail) => /^SCAN pithy_audit_events\b/.test(detail)),
+      details.join("\n"),
+    ).toBe(false);
   });
 
   test("the query plan reads the call index, not the table", async () => {

@@ -191,15 +191,16 @@ export type ControlPlaneReachQuery = z.infer<typeof ControlPlaneReachQuery>;
 /**
  * The usage query: whose calls to count, and over what window.
  *
- * `connectionId` and `since` are required, so a missing one is a 400 before any query runs — an unbounded window over
- * every connection is not a question this route answers. `until` defaults to now in the handler, which is the one
- * value a schema cannot compute for a request. A window that ends before it starts is refused rather than answered
- * with nothing, because nothing would read as an idle connection.
+ * `since` is required, so a missing one is a 400 before any query runs — an unbounded window is not a question this
+ * route answers. `connectionId` is optional: named, the route counts that connection's calls; left out, it counts every
+ * connection's, which is the over-grant question across a Worker in one read. `until` defaults to now in the
+ * handler, which is the one value a schema cannot compute for a request. A window that ends before it starts is
+ * refused rather than answered with nothing, because nothing would read as an idle connection.
  */
 export const ControlPlaneUsageQuery = z
   .object({
-    connectionId: FilterValue.describe(
-      "The control-plane connection whose calls to count — the `resourceId` its call rows carry. Required.",
+    connectionId: FilterValue.optional().describe(
+      "The control-plane connection whose calls to count — the `resourceId` its call rows carry. Omit it to count every connection's.",
     ),
     since: TimeBound.describe("Inclusive lower bound on when a call landed, ISO-8601. Required."),
     until: TimeBound.optional().describe("Inclusive upper bound on when a call landed, ISO-8601. Defaults to now."),
@@ -208,7 +209,7 @@ export const ControlPlaneUsageQuery = z
     message: "`until` must not be before `since`.",
     path: ["until"],
   })
-  .describe("The control-plane usage query: one connection, over a window.");
+  .describe("The control-plane usage query: one connection or every connection, over a window.");
 export type ControlPlaneUsageQuery = z.infer<typeof ControlPlaneUsageQuery>;
 
 /**
