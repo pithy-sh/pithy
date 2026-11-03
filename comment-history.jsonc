@@ -320,7 +320,7 @@
     "packages/cli/src/capabilities/storeSecretWrites.test.ts": 4,
     "packages/cli/src/capabilities/storeSecretWrites.ts": 4,
     "packages/cli/src/capabilities/supportProvisioner.test.ts": 4,
-    "packages/cli/src/capabilities/supportProvisioner.ts": 10,
+    "packages/cli/src/capabilities/supportProvisioner.ts": 9,
     "packages/cli/src/capabilities/testersLoader.ts": 1,
     "packages/cli/src/capabilities/testersProvisioner.test.ts": 2,
     "packages/cli/src/capabilities/testersProvisioner.ts": 6,

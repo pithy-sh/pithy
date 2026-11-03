@@ -84,9 +84,20 @@ export class CloudflareZonesManager extends CloudflareManager {
    * all — a zone can itself be a subdomain, and the account's own list is the authority.
    */
   async findZoneForHostname(hostname: string): Promise<ZoneInfo | null> {
-    const zones = await this.listZones();
-    const candidates = zones.filter((zone) => hostname === zone.name || hostname.endsWith(`.${zone.name}`));
-    if (candidates.length === 0) return null;
-    return candidates.reduce((longest, zone) => (zone.name.length > longest.name.length ? zone : longest));
+    return zoneForHostname(await this.listZones(), hostname);
   }
+}
+
+/**
+ * The zone among `zones` that `hostname` belongs to, or `null`: the longest zone name the hostname equals or sits
+ * under, compared without case. For a caller that lists the zones once and asks about several hostnames.
+ */
+export function zoneForHostname(zones: readonly ZoneInfo[], hostname: string): ZoneInfo | null {
+  const host = hostname.toLowerCase();
+  const candidates = zones.filter((zone) => {
+    const name = zone.name.toLowerCase();
+    return host === name || host.endsWith(`.${name}`);
+  });
+  if (candidates.length === 0) return null;
+  return candidates.reduce((longest, zone) => (zone.name.length > longest.name.length ? zone : longest));
 }

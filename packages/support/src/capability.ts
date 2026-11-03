@@ -279,8 +279,9 @@ export function support(options: SupportOptions = {}): SupportCapability {
     inapplicableSecrets: inapplicableAttachmentSecrets(resolved),
     workflows: supportWorkflows,
     requiredBindings,
-    // Provisioning creates the routing rule that delivers mail to this Worker.
-    ciPermissions: ["email:routing"],
+    // Provisioning finds the zone each inbound address lives in, then creates the routing rule that delivers its
+    // mail to this Worker.
+    ciPermissions: ["email:routing", "zone:read"],
     databases: {
       app: {
         binding: "DB",

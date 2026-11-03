@@ -2,7 +2,7 @@
 
 _The site renders this for readers: [pithy.sh/docs/cli/commands/support](https://pithy.sh/docs/cli/commands/support). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
 
-Stands up the support inbox: the R2 bucket attachments and raw messages live in, the per-environment classification worker, the full-text index, the semantic message index when `search.semantic` is on, and — only when you name all three parts — the Email Routing rule that delivers the support address to your app worker.
+Stands up the support inbox: the R2 bucket attachments and raw messages live in, the per-environment classification worker, the full-text index, the semantic message index when `search.semantic` is on, and, per environment, the Email Routing rule that delivers that environment's support address to its app worker.
 
 ## Synopsis
 
@@ -22,9 +22,9 @@ pithy support deprovision --env <environment> [--worker <name>] [--storage] [--r
 | Flag | Default | Purpose |
 |---|---|---|
 | `--worker <name>` | the project's only Worker | The app Worker whose `support(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
-| `--routing-zone <zone-id>` | — | Cloudflare Zone ID of the (sub)domain receiving the mail. Email Routing must already be enabled on it |
-| `--inbound-address <address>` | — | The exact recipient address the rule matches, e.g. `support@help.example.com`. It must also be listed in `support()`'s `inboundAddresses`, which is what claims it |
-| `--app-worker <name>` | — | Deployed name of the production app worker running `createEntrypoint` with the support capability composed |
+| `--routing-zone <zone-id>` | derived | Override. The Zone ID of the zone that contains the address's domain: for `help.example.com`, the parent zone `example.com`, where Email Routing for the subdomain is set up. Email Routing must already be enabled for the domain |
+| `--inbound-address <address>` | derived | Override. The exact recipient address the rule matches, e.g. `support@help.example.com`. It must also be listed in `support()`'s `inboundAddresses`, which is what claims it |
+| `--app-worker <name>` | derived | Override. Deployed name of the app worker running `createEntrypoint` with the support capability composed |
 | `--json` | `false` | Machine-readable output — one line, one object |
 
 `pithy support deprovision`
@@ -34,14 +34,25 @@ pithy support deprovision --env <environment> [--worker <name>] [--storage] [--r
 | `--env <environment>` | none — required | The one environment to tear down, declared in `pithy.config.ts`. With none, or one not declared, it refuses and lists the environments it could act on |
 | `--worker <name>` | — | The app Worker whose `wrangler.jsonc` names the database the audit trail is written to |
 | `--storage` | `false` | **Irreversible.** Also delete the R2 bucket with every attachment and raw message in it — this is your support history. Only the last environment's teardown may |
-| `--routing-zone <zone-id>` | — | Also remove the inbound rule, from this zone. Without it the rule is left in place and mail keeps arriving. Only the last environment's teardown may |
+| `--routing-zone <zone-id>` | — | Also remove the project-global rule the three provision flags created, from this zone. Without it that rule is left in place. Only the last environment's teardown may. The environment's own rule is removed either way |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | Required with `--storage`: a bucket must be emptied over the S3 protocol before R2 will delete it |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair |
 | `--json` | `false` | Machine-readable output |
 
-**The three routing flags are all or nothing.** Pass all three and the rule is created; pass none and everything else provisions without one. Pass one or two and the run is refused before anything is created — an operator who passed two of three asked for a rule, and provisioning everything but the step that delivers the mail would look like success and receive nothing.
+## Routing
 
-The refusal exists because enabling Email Routing on a zone points its MX at Cloudflare. A rule created on the wrong zone moves an adopter's real inbound mail off their existing provider, which is not a mistake a provisioning command gets to make on somebody's behalf. Use a subdomain zone, never your apex.
+**With no routing flag, each environment's address is routed by itself.** For every ready environment, `provision` composes that environment's `pithy.config.ts`, which may read `compositionEnvironment()`, so the address can differ per environment, and reads support's `inboundAddresses`. For each address:
+
+1. **The zone** is the one on the account whose name is the longest suffix of the address's domain. `support@help.example.com` lives in `example.com`'s zone: Email Routing for a subdomain is set up on its parent zone, so a subdomain is usually not a zone of its own. An address whose domain no zone holds is refused, naming the domain.
+2. **Email Routing must be enabled for the domain.** For the apex, the zone's Email Routing settings say so; for a subdomain, the zone's DNS check for that subdomain lists no missing record. **It is never enabled here.** Enabling it moves the domain's MX, and that stays your act. Off, the environment is refused, naming the domain and where to turn it on, and no rule is made.
+3. **The Worker** is the one `pithy deploy` names for the environment: the name its stanza in the app Worker's `wrangler.jsonc` declares, `<project>-<env>-<worker>` as `pithy init` writes it.
+4. **The rule** matches the exact address and sends it to that Worker. One that already does is left alone, whatever it is named. One for the address that sends it anywhere else is updated, keeping its name. With none, `<project>-<env>-support-inbound` is created.
+
+**Only on an account the project claims.** A rule is made, updated or removed only when `pithy.config.ts` names the account (`cloudflare.accountId`, or `cloudflare.accountName`). On an account only the environment names, `provision` refuses every derived route, saying why, and `deprovision` refuses before anything is deleted.
+
+A refusal is reported and the run goes on: every other environment is still routed, and the run still exits 0 when one was provisioned. An environment whose composition claims no address is `skipped`. An address two environments both claim is refused for both, because one exact-address rule sends it to one Worker: give each environment its own address, or use the flags.
+
+**The three routing flags are an override, and all or nothing.** Pass all three and they replace the derivation with exactly the rule they describe: one project-global rule named `<project>-global-support-inbound`, on the zone named, with no lookup and no check. Pass one or two and the run is refused before anything is created: an operator who passed two of three asked for a rule, and routing something else would look like success and deliver elsewhere.
 
 ## What it does
 
@@ -59,7 +70,7 @@ The refusal exists because enabling Email Routing on a zone points its MX at Clo
 
    **Re-run this after upgrading `@pithy-sh/support`.** A database whose table is already there and whose triggers are not is repaired and backfilled here, and reported as `search index triggers restored and backfilled`. `pithy doctor`'s `Support search:` block names any environment still in that state.
 6. **Message index, settled.** An index that holds nothing yet is **backfilled once**: one step 3 created, or one that exists while inbound mail does and no message carries a stamp — what a run that failed after creating the index leaves, so re-running provision finishes the job. The run starts the reprocess Workflow over every inbound message and does not wait for it — re-embedding an inbox is a Workflow's job. An index holding any stamp is never re-embedded here; that is `pithy vector reprocess`. With `search.semantic` off, an index that exists is **dropped**, after the deploy that stopped binding it, with the model stamps in `pithy_support_embeddings` that named its vectors. Looking for it is the only Vectorize call a run with semantic search off makes, and a token without a Vectorize grant, or an account without the paid Workers plan Vectorize needs, answers it with nothing to drop rather than failing the run. Either way the app Worker's `wrangler.jsonc` follows: the `SUPPORT_VECTORIZE` entry is written into each environment's stanza while the index exists, and taken out when it is dropped, because a binding to a deleted index fails the next deploy.
-7. **Routing rule.** Last, only with all three routing flags, and only when at least one classification host went up. Creating it first would start delivering mail to a Worker whose classification host is not deployed yet — a window in which real customer messages arrive and stay uncategorized with nothing to say why; over a run that deployed nothing, that window is the whole project.
+7. **Routing rules.** Last, and only when at least one classification host went up: each ready environment's own, or the one the flags name. See [Routing](#routing). Creating it first would start delivering mail to a Worker whose classification host is not deployed yet — a window in which real customer messages arrive and stay uncategorized with nothing to say why; over a run that deployed nothing, that window is the whole project.
 
 An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after the bucket and staging's worker already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
 
@@ -67,9 +78,9 @@ The bucket is created on the first run **however many environments skip**; it is
 
 `deprovision` removes **one named environment's** classification worker and its `<project>-<env>-support-classify` and `<project>-<env>-support-reprocess` Workflows, the Workflows before the worker, because deleting a Worker leaves the Workflows registered against it. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
-The routing rule goes only with `--routing-zone`, and first, so mail stops before its handler does. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
+The environment's own routing rule goes first, so mail stops before its handler does: each rule that sends one of the addresses its composition claims to its app Worker, on the zone holding the address's domain. A rule for the address that sends it anywhere else is left, and so is every other environment's. The project-global rule the provision flags created goes only with `--routing-zone`. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
 
-**The rule and the bucket go with the last environment.** Each is one per project: the bucket holds every environment's support history, and the rule delivers the project's inbound mail. A staging teardown with either flag would take production's. It refuses while any other declared environment still runs a classification worker, before anything is deleted. Tear those down first.
+**The project-global rule and the bucket go with the last environment.** Each is one per project: the bucket holds every environment's support history, and that rule delivers the project's inbound mail. A staging teardown with either flag would take production's. It refuses while any other declared environment still runs a classification worker, before anything is deleted. Tear those down first.
 
 ```
 The support bucket and the inbound routing rule are shared by every environment, and prod still runs. Nothing was deleted.
@@ -119,16 +130,24 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `semantic[].created` | boolean | The index was created in this run |
 | `semantic[].dropped` | boolean | The index was dropped in this run, because `search.semantic` is off |
 | `semantic[].backfilled` | boolean | This run started the index's one backfill: for an index it created, or one that holds no stamp while inbound mail exists |
-| `routing` | object | What happened to the inbound Email Routing rule |
-| `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when no routing flags were supplied, so no rule was made |
+| `routing` | object | The inbound Email Routing rules, in sum. `inboundRoutes` has each one |
+| `routing.created` | boolean | True when this run created or updated a rule |
+| `routing.skipped` | boolean | True when there was nothing to route: every environment claims no address |
+| `inboundRoutes` | `object[]` | Each inbound rule this run settled: one per address per provisioned environment, or the one the three routing flags name |
+| `inboundRoutes[].env` | string \| null | The environment the rule routes, or `null` for the project-global rule the flags name |
+| `inboundRoutes[].address` | string \| null | The exact address the rule matches. `null` when the environment's composition claims none |
+| `inboundRoutes[].zone` | string \| null | The zone the rule lives on, by name: the zone holding the address's domain, the parent zone for a subdomain. `null` when no zone holds it, and for the flags, which name the zone by id |
+| `inboundRoutes[].zoneId` | string \| null | That zone's id. `null` when no zone holds the address's domain |
+| `inboundRoutes[].worker` | string \| null | The app Worker the rule sends the mail to, as `pithy deploy` names it for the environment. `null` when it could not be resolved |
+| `inboundRoutes[].outcome` | `"created" \| "updated" \| "unchanged" \| "skipped" \| "refused"` | `created`: this run made the rule. `updated`: a rule for the address sent it elsewhere, and now sends it to the Worker. `unchanged`: a rule already did. `skipped`: the environment claims no address. `refused`: no rule was made |
+| `inboundRoutes[].reason` | string \| null | Why the route was skipped or refused, naming the domain. `null` otherwise |
 | `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
 **One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`, and its message names the bucket when this run created it. `support provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
 
 ```
 $ pithy support provision --worker api --json
-{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":true,"skipped":false},"environments":["staging"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":true,"dropped":false,"repaired":false}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
+{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":true,"skipped":false},"environments":["staging"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":true,"dropped":false,"repaired":false}],"inboundRoutes":[{"env":"staging","address":"staging@help.example.com","zone":"example.com","zoneId":"0a1b2c3d","worker":"acme-staging-api","outcome":"created","reason":null}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
 $ echo $?
 0
 ```
@@ -150,7 +169,14 @@ The second line is on stderr, and stdout is empty.
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The one environment torn down — the value of `--env` |
 | `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether the bucket and everything in it was deleted |
-| `routingZone` | string \| null | The zone id the rule was removed from, or `null` when `--routing-zone` was not passed and the rule was left in place |
+| `routingZone` | string \| null | The zone id the project-global rule was removed from, or `null` when `--routing-zone` was not passed and that rule was left in place |
+| `inboundRoutes` | `object[]` | This environment's own inbound rules: one per address its composition claims |
+| `inboundRoutes[].env` | string | The environment torn down |
+| `inboundRoutes[].address` | string \| null | The address the rule matched. `null` when the composition claims none |
+| `inboundRoutes[].zone` | string \| null | The zone the rule lived on, by name. `null` when no zone holds the domain |
+| `inboundRoutes[].worker` | string \| null | The app Worker the rule sent mail to. `null` when it could not be resolved |
+| `inboundRoutes[].outcome` | `"removed" \| "absent" \| "skipped"` | `removed`: this run deleted the environment's rule for the address. `absent`: no rule sent it to the Worker. `skipped`: nothing could be looked up |
+| `inboundRoutes[].reason` | string \| null | Why the removal was skipped. `null` otherwise |
 
 A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (`docs/CLI.md` §3.8) — the same public payload the HTTP surface encodes, with `detail` stripped, plus `exit`, `retryable` and, where the cause is known, `fix`.
 
@@ -226,36 +252,54 @@ Add the prod environment to apps/api/wrangler.jsonc with its DB binding.
 
 ## Examples
 
-Provision everything but the rule, then add it once the zone is decided:
+Provision staging, with Email Routing enabled for `help.example.com`:
 
 ```
 $ pithy support provision
 Bucket acme-global-support ready.
   staging  classification worker deployed, search index created, message index created and backfilling
   prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
-No routing rule. Pass --routing-zone, --inbound-address, and --app-worker to create one.
+staging: staging@help.example.com now routes to acme-staging-api, on example.com.
 Done.
 ```
 
-With routing, machine-readable:
+Run it again and nothing changes:
 
 ```
-$ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help.example.com --app-worker acme-prod --json
-{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[],"exitCode":0}
+$ pithy support provision
+Bucket acme-global-support ready.
+  staging  classification worker deployed
+  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
+Search index already matches your config.
+staging: staging@help.example.com already routes to acme-staging-api, on example.com.
+Done.
 ```
 
-Take staging's worker down but keep the history and the rule:
+A domain Email Routing is not enabled for is refused, and everything else still provisions:
+
+```
+prod: No routing rule. Email Routing is not enabled for help.example.com. Turn it on for the subdomain in the Cloudflare dashboard under example.com > Email > Email Routing > Settings > Subdomains, and the next run routes it.
+```
+
+The override, machine-readable:
+
+```
+$ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help.example.com --app-worker acme-prod-api --json
+{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false,"repaired":false},{"env":"prod","created":false,"dropped":false,"repaired":false}],"inboundRoutes":[{"env":null,"address":"support@help.example.com","zone":null,"zoneId":"0a1b2c3d","worker":"acme-prod-api","outcome":"created","reason":null}],"skippedEnvironments":[],"exitCode":0}
+```
+
+Take staging's worker and its rule down, and keep the history:
 
 ```
 $ pithy support deprovision --env staging
 staging: classification worker removed.
-The routing rule was left in place. Pass --routing-zone to remove it.
+staging: staging@help.example.com no longer routes to acme-staging-api.
 Done.
 ```
 
-Take the lot down, mail included, once production is the last environment standing:
+Take the lot down, the override's rule included, once production is the last environment standing:
 
 ```
 $ pithy support deprovision --env prod --routing-zone 0a1b2c3d --storage --json
-{"command":"support deprovision","schemaVersion":1,"env":"prod","storageDeleted":true,"routingZone":"0a1b2c3d"}
+{"command":"support deprovision","schemaVersion":1,"env":"prod","storageDeleted":true,"routingZone":"0a1b2c3d","inboundRoutes":[{"env":"prod","address":"support@help.example.com","zone":"example.com","worker":"acme-prod-api","outcome":"removed","reason":null}]}
 ```
