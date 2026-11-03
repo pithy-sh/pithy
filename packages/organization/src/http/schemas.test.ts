@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { inputOf } from "@pithy-sh/core/src/controlPlane/discovery/routeInput";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { describe, expect, test } from "vitest";
 import {
   AdminAddMember,
   AdminDeleteOrganization,
   AdminInvitationsQuery,
+  AdminOrganizationsQuery,
   AdminReason,
   AdminSuspendOrganization,
   AdminUpdateOrganization,
@@ -118,5 +121,29 @@ describe("the organization lifecycle bodies (#623)", () => {
 
   test("a reason carrying an address is refused, as on every operator write", () => {
     expect(AdminSuspendOrganization.safeParse({ reason: "asked by ada@example.com" }).success).toBe(false);
+  });
+});
+
+describe("AdminOrganizationsQuery", () => {
+  test("takes a standing, a cursor and a bound, and an empty query is the first page of every tenant", () => {
+    expect(AdminOrganizationsQuery.parse({ state: "suspended", cursor: "abc", limit: "25" })).toEqual({
+      state: "suspended",
+      cursor: "abc",
+      limit: 25,
+    });
+    expect(AdminOrganizationsQuery.parse({})).toEqual({});
+  });
+
+  test("refuses a standing it does not know, an oversized cursor, and a bound out of range", () => {
+    expect(AdminOrganizationsQuery.safeParse({ state: "banned" }).success).toBe(false);
+    expect(AdminOrganizationsQuery.safeParse({ cursor: "x".repeat(513) }).success).toBe(false);
+    expect(AdminOrganizationsQuery.safeParse({ limit: "0" }).success).toBe(false);
+  });
+
+  test("every filter reaches the manifest's route input, so a client can discover it", () => {
+    const input = inputOf([validate("query", AdminOrganizationsQuery)]).properties as {
+      query: { properties: object };
+    };
+    expect(Object.keys(input.query.properties)).toEqual(expect.arrayContaining(["state", "cursor", "limit"]));
   });
 });

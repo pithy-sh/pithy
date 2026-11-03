@@ -1436,6 +1436,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
               rail: query.rail ?? null,
               status: query.status ?? null,
               environment: query.environment ?? null,
+              type: query.type ?? null,
             },
           },
         );
@@ -1697,7 +1698,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         await recordRead(c, PaymentsAuditActions.reconcileRunsRead, null, {
           returned: page.items.length,
           resumed: query.cursor !== undefined,
-          filters: { rail: query.rail ?? null, environment: query.environment ?? null },
+          filters: { rail: query.rail ?? null, environment: query.environment ?? null, outcome: query.outcome ?? null },
         });
         return c.json(
           {

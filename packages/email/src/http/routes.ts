@@ -218,6 +218,8 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
           metadata: {
             connectionId: who.connectionId,
             status: query.status ?? null,
+            template: query.template ?? null,
+            category: query.category ?? null,
             returned: page.items.length,
             paged: Boolean(query.cursor),
           },
@@ -329,7 +331,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
         const query = c.req.valid("query");
         const who = caller(c);
         const now = clock();
-        const page = await listSuppressions(suppressions(c), query);
+        const page = await listSuppressions(suppressions(c), { ...query, now });
 
         // The heaviest read in the capability: this database is global, so a page of it is a page of
         // every environment's bounces, complaints, and opt-outs. Audited with whether it was a lookup
@@ -345,6 +347,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
             connectionId: who.connectionId,
             reason: query.reason ?? null,
             lookup: Boolean(query.email),
+            active: query.active ?? null,
             returned: page.items.length,
             paged: Boolean(query.cursor),
           },

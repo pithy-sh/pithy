@@ -3,6 +3,7 @@
 
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { routeInputs } from "@pithy-sh/core/src/controlPlane/discovery/routeInput";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
@@ -614,5 +615,15 @@ describe("the declared strategy and the contract agree", () => {
       expect(declared.get(key), `${key} declares no describeRoute`).toBeDefined();
       expect(declared.get(key), key).toContain(route.strategy);
     }
+  });
+});
+
+describe("the mounted tenant listing", () => {
+  test("its manifest input carries every filter the route parses, so a client can discover them", () => {
+    const inputs = routeInputs([{ tag: "organization", routes: makeApp().routes }]);
+    const input = inputs.get(`GET ${fullPath("/admin/organizations")}`);
+    expect(input, "the tenant listing is not mounted").toBeDefined();
+    const query = (input?.properties as { query?: { properties: object } } | undefined)?.query;
+    expect(Object.keys(query?.properties ?? {})).toEqual(expect.arrayContaining(["state", "cursor", "limit"]));
   });
 });

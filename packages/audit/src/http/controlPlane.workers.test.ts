@@ -304,6 +304,34 @@ describe("GET /audit/events", () => {
     expect(byTime.events.map((e) => e.actorId)).toEqual(["u-2"]);
   });
 
+  test("filters by action prefix, and pages the narrowed trail on the cursor", async () => {
+    await seed({ action: "auth/login", outcome: "success", actorType: "user", actorId: "ada" }, new Date(1_000));
+    await seed({ action: "authority/granted", outcome: "success", actorType: "system" }, new Date(2_000));
+    await seed({ action: "auth/logout", outcome: "success", actorType: "user", actorId: "ada" }, new Date(3_000));
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    const read = async (query: string) => {
+      const response = await call(app, `${BASE}/events?${query}`, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status).toBe(200);
+      return await response.json<{ events: { action: string }[]; nextCursor: string | null }>();
+    };
+
+    expect((await read("actionPrefix=auth")).events.map((e) => e.action)).toEqual(["auth/logout", "auth/login"]);
+    expect((await read("actionPrefix=auth/")).events.map((e) => e.action)).toEqual(["auth/logout", "auth/login"]);
+    const first = await read("actionPrefix=auth&limit=1");
+    expect(first.events.map((e) => e.action)).toEqual(["auth/logout"]);
+    const second = await read(`actionPrefix=auth&limit=1&cursor=${encodeURIComponent(first.nextCursor ?? "")}`);
+    expect(second.events.map((e) => e.action)).toEqual(["auth/login"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("an action prefix that is not one lowercase domain is a 400", async () => {
+    const app = makeApp([AUDIT_TRAIL_READ_SCOPE]);
+    for (const prefix of ["Auth", "auth/log", "a%25", ""]) {
+      const response = await call(app, `${BASE}/events?actionPrefix=${prefix}`, AUDIT_TRAIL_READ_SCOPE);
+      expect(response.status, prefix).toBe(400);
+    }
+  });
+
   test("filters by tenant, and by no tenant at all", async () => {
     // The pane this route exists for draws one customer's history. `?tenant=` — the parameter present
     // and empty — is the null filter: an empty string is not a legal tenant id, so it can never collide
