@@ -109,11 +109,22 @@ export interface EnqueueInput {
   /**
    * The address a recipient's answer should go to, when it is not `fromAddress`.
    *
-   * `@pithy-sh/support` is what this is for: a reply is sent as the adopter's onboarded sending
-   * identity (Cloudflare validates the `From` domain against exactly what was onboarded) while the
-   * conversation has to come back to the support inbox, which is usually a different subdomain.
+   * `@pithy-sh/support` sets it on every reply, so the customer's answer comes back to the support inbox
+   * whichever address the reply was sent {@link from}.
    */
   replyTo?: string;
+  /**
+   * The sender of this one message, when it is not the capability's `fromAddress` and `fromName`.
+   *
+   * Refused unless `address` is one the composing capability declared: {@link EnqueueDeps.claimedFrom}, which
+   * only {@link import("../capability").EmailCapability.enqueueAs} fills, and the plain `enqueue` leaves empty.
+   * That keeps a capability to the addresses it declared; it is not a boundary against Worker code, which can
+   * call `enqueueAs` itself. Cloudflare sends only from onboarded domains. `name` falls back to `fromName`.
+   *
+   * The job is sent from exactly this address. A domain Email Service cannot send from fails the job with
+   * the domain named; no other sender is tried.
+   */
+  from?: EnqueueFrom;
   /**
    * The `Message-ID` this job answers, angle brackets included — the `In-Reply-To` header.
    *
@@ -144,11 +155,24 @@ export interface EnqueueInput {
   consentSubject?: ConsentSubject;
 }
 
+/** A per-message sender: an address the composing capability claims, and an optional display name. */
+export interface EnqueueFrom {
+  /** The address the message is sent from. Must be on {@link EnqueueDeps.claimedFrom}. */
+  address: string;
+  /** The display name. Absent sends under the capability's `fromName`. */
+  name?: string;
+}
+
 /** Dependencies enqueue needs: the database, the from identity, optional send-Workflow binding, time, ids. */
 export interface EnqueueDeps {
   db: EmailDatabase;
   fromAddress: string;
   fromName: string;
+  /**
+   * The addresses a per-message {@link EnqueueInput.from} may name, supplied by the capability composing the
+   * call. Absent or empty refuses every override.
+   */
+  claimedFrom?: readonly string[];
   theme: EmailTheme;
   /**
    * Where the words for a locale come from — the composed project's catalogs.
@@ -275,9 +299,32 @@ function resolveSchedule(input: EnqueueInput, now: Date): { mode: SendMode; send
   return { mode, sendAt: resolveTimezoneSendAt(input.localTime, input.timezone, now), status: "scheduled" };
 }
 
+/**
+ * The sender this job is stored with: the capability's identity, or a per-message one the composing capability
+ * claims. An unclaimed override is refused before anything is written.
+ */
+function resolveSender(deps: EnqueueDeps, input: EnqueueInput): { fromAddress: string; fromName: string } {
+  if (input.from === undefined) return { fromAddress: deps.fromAddress, fromName: deps.fromName };
+  const address = normalizeAddress(input.from.address);
+  const claimed = (deps.claimedFrom ?? []).map(normalizeAddress);
+  if (!claimed.includes(address)) {
+    throw new EmailInvalidPayloadError({
+      message: "This message cannot be sent from that address.",
+      action:
+        claimed.length === 0
+          ? "Send without `from`, or send through the `enqueueAs` seam of the capability that claims the address."
+          : `Send from one of the claimed addresses: ${claimed.join(", ")}.`,
+      detail: `from ${address} is not among the ${claimed.length} address(es) the composing capability claims`,
+    });
+  }
+  const name = input.from.name?.trim();
+  return { fromAddress: address, fromName: name ? name : deps.fromName };
+}
+
 /** Enqueue an email job, dispatching the send Workflow immediately when the mode is `immediate`. */
 export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Promise<EnqueueResult> {
   const template = getTemplate(input.template);
+  const from = resolveSender(deps, input);
   // Validates the payload against the template schema and computes the stored subject — in the
   // recipient's language, which is also what the row records so the body can be rendered in it later.
   const translator = emailTranslator(input.locale, deps.layersFor ?? kitEmailLayers);
@@ -370,8 +417,8 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     id: deps.newId(),
     toAddress: personalAddress(input.to),
     recipientKey: personalAddress(recipient),
-    fromAddress: deps.fromAddress,
-    fromName: deps.fromName,
+    fromAddress: from.fromAddress,
+    fromName: from.fromName,
     subject,
     template: input.template,
     category: template.category,

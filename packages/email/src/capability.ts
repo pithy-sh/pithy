@@ -142,6 +142,18 @@ export interface EmailCapability extends Capability {
    */
   enqueue: (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
   /**
+   * `enqueue`, able to send as the addresses a composing capability declares and no others.
+   *
+   * The one way a per-message `from` is accepted. `enqueue` declares none, so an override passed to it is
+   * refused; a capability that receives mail at its own addresses binds this once, at compose, with exactly
+   * those addresses, and an override outside them is refused at enqueue. `@pithy-sh/support` binds its
+   * `inboundAddresses` and `reply.replyToAddress`.
+   *
+   * A convention that keeps each capability to its own addresses, not a security boundary: trusted Worker code
+   * can call this with any list. What limits sending is Cloudflare, which sends only from onboarded domains.
+   */
+  enqueueAs: (claimed: readonly string[]) => (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
+  /**
    * The suppression list, from a request env — **it is the adopter's database, and this is how they open
    * it**.
    *
@@ -390,29 +402,35 @@ export function email(config: EmailConfigInput): EmailCapability {
     if (composed === undefined) return undefined;
     return (charge) => composed.charge(env as unknown as Record<string, unknown>, charge);
   };
-  const enqueue = (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
-    enqueueEmail(
-      {
-        db: emailDatabase(env.DB),
-        fromAddress: resolved.fromAddress,
-        fromName: resolved.fromName,
-        theme,
-        // Read through the closure, not captured: `compose` runs after this function is defined and
-        // before any request reaches it, so a snapshot taken here would be the pre-compose English.
-        layersFor: (locale) => layersFor(locale),
-        sender: emailSenderBinding(env),
-        // Read straight off the env the consumer forwarded. This one line is what makes suppression
-        // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
-        suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
-        // Read through the closure for the reason `layersFor` is: `compose` fills it after this is defined.
-        meter: chargeFor(env),
-        // Read through the closure for the same reason: `compose` fills the composition after this is defined.
-        consent: composedConsent(composition, env as unknown as Record<string, unknown>),
-        now: new Date(),
-        newId: () => crypto.randomUUID(),
-      },
-      input,
-    );
+  const enqueueAs = (claimed: readonly string[]) => {
+    // Copied, so the list a capability bound at compose is the list every later call is held to.
+    const claimedFrom = Object.freeze([...claimed]);
+    return (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
+      enqueueEmail(
+        {
+          db: emailDatabase(env.DB),
+          fromAddress: resolved.fromAddress,
+          fromName: resolved.fromName,
+          claimedFrom,
+          theme,
+          // Read through the closure, not captured: `compose` runs after this function is defined and
+          // before any request reaches it, so a snapshot taken here would be the pre-compose English.
+          layersFor: (locale) => layersFor(locale),
+          sender: emailSenderBinding(env),
+          // Read straight off the env the consumer forwarded. This one line is what makes suppression
+          // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
+          suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
+          // Read through the closure for the reason `layersFor` is: `compose` fills it after this is defined.
+          meter: chargeFor(env),
+          // Read through the closure for the same reason: `compose` fills the composition after this is defined.
+          consent: composedConsent(composition, env as unknown as Record<string, unknown>),
+          now: new Date(),
+          newId: () => crypto.randomUUID(),
+        },
+        input,
+      );
+  };
+  const enqueue = enqueueAs([]);
   return Object.assign(capability, {
     emailConfig: {
       fromAddress: resolved.fromAddress,
@@ -423,6 +441,7 @@ export function email(config: EmailConfigInput): EmailCapability {
       theme,
     },
     enqueue,
+    enqueueAs,
     suppressions,
     // Read through the closures, never captured — `compose` runs after this object is built, and both
     // values it fills are the whole point of the call.

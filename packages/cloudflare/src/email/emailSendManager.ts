@@ -53,6 +53,25 @@ export class CloudflareEmailSendManager extends CloudflareManager {
   }
 
   /**
+   * Whether Email Sending is enabled for `hostname` in the zone `zoneId`: an enabled sending domain of exactly
+   * that name, or a leftmost wildcard (`*.example.com`) above it. Read-only; one paginated list per call.
+   * Throws `cloudflare/request_failed` when the list cannot be read, so a token that cannot read it is an
+   * unanswered question rather than a domain that cannot send.
+   */
+  async sendsFrom(zoneId: string, hostname: string): Promise<boolean> {
+    const wanted = hostname.trim().toLowerCase();
+    return cloudflareRequest("Email Sending list sending domains", async () => {
+      for await (const entry of this.getClient().emailSending.subdomains.list({ zone_id: zoneId })) {
+        if (!entry.enabled) continue;
+        const name = entry.name.trim().toLowerCase();
+        if (name === wanted) return true;
+        if (name.startsWith("*.") && wanted.endsWith(name.slice(1))) return true;
+      }
+      return false;
+    });
+  }
+
+  /**
    * Send one message through the Email Sending API. Throws `cloudflare/request_failed` on any API
    * error — the SDK unwraps the envelope and raises on `success: false`, so a resolved call is a send.
    *

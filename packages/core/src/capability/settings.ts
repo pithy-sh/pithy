@@ -7,7 +7,7 @@ import type { HostEnvReport } from "../workflow/hostEnv";
 import { hostEnvProviderSentence } from "../workflow/hostEnv";
 
 /**
- * How a capability checks that its own settings **work** — the seam `pithy doctor` runs (#411).
+ * How a capability checks that its own settings **work** — the seam `pithy doctor` runs.
  *
  * Everything doctor asked before this was a question about *presence*: is the option key written, is the
  * binding declared, is the ledger level. So a project could be entirely green while `fromAddress` named a
@@ -101,7 +101,7 @@ export interface SettingsCheckContext {
   /** The Worker whose `pithy.config.ts` composed this capability, by its `wrangler.jsonc` name. */
   worker: string;
   /**
-   * That Worker's directory under `apps/` — the value `--worker` takes, and the one a refusal lists (#711).
+   * That Worker's directory under `apps/` — the value `--worker` takes, and the one a refusal lists.
    *
    * Not `worker` under another name. A scaffold deploys `apps/api` as `acme-api`, so a command a finding names
    * for one Worker is written with this.
@@ -131,9 +131,9 @@ export interface SettingsAccountReader {
    * Whether that environment's **D1 vault** holds a value under this registry name — asked of its manager
    * Worker, the only thing that can open it.
    *
-   * Named for the store it asks, because it used to be `secret()` — "does this secret have a value" — and
-   * that question has two stores behind it (#596). A check asking it about a `cf-secrets-store` secret got a
-   * confident `false` from a vault the secret never lives in. Ask {@link storeEntry} about one of those.
+   * Named for the store it asks, because "does this secret have a value" has two stores behind it. Asked about
+   * a `cf-secrets-store` secret it answers a confident `false` from a vault the secret never lives in. Ask
+   * {@link storeEntry} about one of those.
    */
   vaultSecret(request: { name: string; environment: string }): Promise<boolean>;
   /**
@@ -144,7 +144,7 @@ export interface SettingsAccountReader {
   storeEntry(name: string): Promise<boolean>;
   /**
    * The ids of the rows in one of the kit's own tables whose column holds one of `values`, in the app
-   * database a Worker binds as `DB` in one deployed environment (#727).
+   * database a Worker binds as `DB` in one deployed environment.
    *
    * Asked by media and storage after a project narrows `visibility.allowed`: narrowing never rewrites a
    * record, so the records left outside the policy have to be *named*, and only the deployed database
@@ -155,7 +155,7 @@ export interface SettingsAccountReader {
   appRows(request: AppRowsRequest): Promise<readonly string[]>;
   /**
    * Whether that environment's **D1 vault** holds a `json` secret that still carries a top-level `field` —
-   * asked of its manager Worker, which opens the value and answers a bit, never the value (#728). `false`
+   * asked of its manager Worker, which opens the value and answers a bit, never the value. `false`
    * for a secret that is not stored, since it carries nothing.
    *
    * Asked by media of `media-storage-credentials`, which held a supplied Cloudflare token until the runtime
@@ -163,19 +163,26 @@ export interface SettingsAccountReader {
    */
   vaultSecretField(request: { name: string; environment: string; field: string }): Promise<boolean>;
   /**
-   * Whether the account holds a Cloudflare API token of exactly this name (#728). The name is the token's,
+   * Whether the account holds a Cloudflare API token of exactly this name. The name is the token's,
    * composed with the namer that minted it — never a pattern, so a check names one credential it can see.
    *
    * Asked by secrets of the manager token the runtime token superseded, which nothing revokes for you.
    */
   accountToken(name: string): Promise<boolean>;
   /**
-   * **Whether an R2 bucket's objects under `prefix` are under an indefinite lock (#822)** — `locked`, `unlocked`, or
+   * **Whether an R2 bucket's objects under `prefix` are under an indefinite lock** — `locked`, `unlocked`, or
    * `missing` when no bucket of that name exists on the account. Asked by audit, whose checkpoints are evidence only
    * while nothing can replace them. Optional, so a reader built before the question existed still compiles; a
    * check asking a reader without it reports the environment unanswered rather than guessing.
    */
   r2BucketLock?(request: { bucket: string; prefix: string }): Promise<"locked" | "unlocked" | "missing">;
+  /**
+   * **Whether Email Service can send from this domain**: an enabled sending domain of that name, or a wildcard
+   * above it, in the active zone that covers it. `false` when no active zone on the account covers it. Asked by
+   * support of each address a reply is sent from. Optional, like {@link r2BucketLock}; a
+   * check asking a reader without it reports the question unanswered.
+   */
+  sendingDomain?(domain: string): Promise<boolean>;
 }
 
 /** What {@link SettingsAccountReader.appRows} is asked. */
@@ -263,7 +270,7 @@ export interface CapabilitySettings {
 }
 
 /**
- * **Two or more checks on one capability, as the one `settings` it declares (#728).** Media names records a
+ * **Two or more checks on one capability, as the one `settings` it declares.** Media names records a
  * narrowed visibility no longer admits and a bundle still holding a superseded token: two questions, one
  * capability, one seam.
  *
@@ -329,7 +336,7 @@ export function hostEnvFindings(report: HostEnvReport<unknown>, environment: str
     environment,
     problem: problem.reason,
     action: hostEnvProviderSentence(problem.provider),
-    // The provider's own command, where it names one, as the finding's `fix` (#697): the same words the action
+    // The provider's own command, where it names one, as the finding's `fix`: the same words the action
     // line runs, without the sentence around them.
     ...(problem.provider.command === undefined ? {} : { fix: problem.provider.command }),
   }));
