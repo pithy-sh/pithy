@@ -75,18 +75,32 @@ describe("D1PreparedStatementREST", () => {
       );
     });
 
-    it("coerces non-string params to strings", async () => {
+    it("coerces numbers and booleans to strings", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([]));
-      await manager.prepare("SELECT ?").bind(42, true, null).run();
+      await manager.prepare("SELECT ?").bind(42, true, 7n).run();
       expect(mockQuery).toHaveBeenCalledWith(
         "test-db-id",
         {
           account_id: "test-account-id",
           sql: "SELECT ?",
-          params: ["42", "true", ""],
+          params: ["42", "true", "7"],
         },
         { maxRetries: 0 },
       );
+    });
+
+    // D1 binds a JSON `null` param as SQL NULL and `""` as text (measured 2026-11-02), so a null
+    // sent as `""` lands in a nullable column as a value no reader takes for absent.
+    it("sends a null as a null, never an empty string", async () => {
+      mockQuery.mockResolvedValue(mockQueryResponse([]));
+      await manager.prepare("INSERT INTO t VALUES (?, ?, ?)").bind(null, undefined, "").run();
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ params: [null, null, ""] });
+    });
+
+    it("sends a null as a null on the raw path too", async () => {
+      mockRaw.mockResolvedValue({ result: [{ results: { columns: [], rows: [] } }] });
+      await manager.prepare("SELECT ?").bind(null).raw();
+      expect(mockRaw.mock.calls[0]?.[1]).toMatchObject({ params: [null] });
     });
 
     it("sends no params when bind is not called", async () => {

@@ -12,7 +12,7 @@ import type { PrivacyInventory } from "../../privacy/report";
 import type { RetirementVerdict } from "../../privacy/retirement";
 import { workerVersionMetadata } from "../../worker/identity";
 import type { ControlPlaneContext } from "../context";
-import { ControlPlaneConnection } from "../data/connection";
+import { parseConnectionRow } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import type { ControlPlaneEvidenceResponse } from "../http/responses";
@@ -82,7 +82,7 @@ async function readConnections(
       .execute();
     return rows.map((row) => {
       // Only the fields the pack reports and the key windows it ages. The public halves stay in the row.
-      const connection = ControlPlaneConnection.parse(row);
+      const connection = parseConnectionRow(row);
       return {
         id: connection.id,
         authorizedBy: connection.authorizedBy,

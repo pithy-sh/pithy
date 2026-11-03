@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { commandName } from "../../cli/command";
 import { JsonDate, SQLiteDate, sqliteJson } from "../../data/codecs";
+import { InternalError } from "../../error/pithyError";
 import { ControlPlaneScope } from "../scope/scope";
 import { OidcTrust } from "./oidcTrust";
 
@@ -232,3 +234,37 @@ export const ControlPlaneConnection = z
   );
 export type ControlPlaneConnection = z.output<typeof ControlPlaneConnection>;
 export type ControlPlaneConnectionRow = z.input<typeof ControlPlaneConnection>;
+
+/** The SQLite column a schema path names: `authorizedBy` → `authorized_by`, or `row` for the row itself. */
+function columnOf(path: readonly PropertyKey[]): string {
+  const field = path[0];
+  return field === undefined ? "row" : String(field).replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+/** The nullable columns a NULL in which means "not recorded", and which `pithy migrate` repairs when they hold `''`. */
+export const CONNECTION_NULLABLE_COLUMNS = ["managementOrigin", "authorizedBy", "actorKind", "purpose"] as const;
+
+/**
+ * Decode one stored connection row, or refuse it with the columns that would not parse.
+ *
+ * Every reader of the table goes through this, the Worker's verifier and the CLI's registry alike, so a row
+ * nobody can read is named the same way wherever it is met, never surfaced as a bare `ZodError`. The message is
+ * the default, because the verifier answers before a caller is authenticated.
+ */
+export function parseConnectionRow(row: unknown): ControlPlaneConnection {
+  const parsed = ControlPlaneConnection.safeParse(row);
+  if (parsed.success) return parsed.data;
+  const columns = [...new Set(parsed.error.issues.map((issue) => columnOf(issue.path)))];
+  const repairable = CONNECTION_NULLABLE_COLUMNS.map((column) => columnOf([column]));
+  const id = typeof row === "object" && row !== null && "id" in row ? String(row.id) : "unknown";
+  const repair = columns.some((column) => repairable.includes(column))
+    ? ` ${repairable.join(", ")} read NULL as not recorded, and an empty string in one is not NULL. Run ${commandName("migrate")} for its environment, which puts it back.`
+    : "";
+  throw new InternalError(
+    {
+      action: `${columns.join(", ")} in pithy_controlplane_connections ${columns.length === 1 ? "holds a value" : "hold values"} this release cannot read.${repair}`,
+      detail: `Connection ${id}: ${parsed.error.issues.map((issue) => `${columnOf(issue.path)}: ${issue.message}`).join("; ")}`,
+    },
+    { cause: parsed.error },
+  );
+}

@@ -3,7 +3,12 @@
 
 import { sql } from "kysely";
 import { ConflictError } from "../../error/pithyError";
-import { type ConnectionCredentialKind, ControlPlaneConnection, type RegisteredKey } from "./connection";
+import {
+  type ConnectionCredentialKind,
+  ControlPlaneConnection,
+  parseConnectionRow,
+  type RegisteredKey,
+} from "./connection";
 import { activeKeys } from "./keyLifecycle";
 import { activeTrusts, type OidcTrust } from "./oidcTrust";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "./tables";
@@ -104,7 +109,7 @@ export async function listConnections(
 ): Promise<ConnectionListing> {
   let query = db.selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE).selectAll().orderBy("createdAt").orderBy("id");
   if (filter.environment !== undefined) query = query.where("environment", "=", filter.environment);
-  const rows = (await query.execute()).map((row) => ControlPlaneConnection.parse(row));
+  const rows = (await query.execute()).map((row) => parseConnectionRow(row));
   const { principal } = filter;
   return {
     connections: rows.filter(
@@ -117,7 +122,7 @@ export async function listConnections(
 /** Read one connection by id, or null. */
 export async function readConnection(db: ControlPlaneDatabase, id: string): Promise<ControlPlaneConnection | null> {
   const row = await db.selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE).selectAll().where("id", "=", id).executeTakeFirst();
-  return row ? ControlPlaneConnection.parse(row) : null;
+  return row ? parseConnectionRow(row) : null;
 }
 
 /**
@@ -142,7 +147,7 @@ export async function readConnectionForWrite(
   if (options.environment !== undefined) query = query.where("environment", "=", options.environment);
   const row = await query.executeTakeFirst();
   if (!row) return null;
-  return { connection: ControlPlaneConnection.parse(row), storedKeys: row.keys, storedTrusts: row.trusts };
+  return { connection: parseConnectionRow(row), storedKeys: row.keys, storedTrusts: row.trusts };
 }
 
 /**

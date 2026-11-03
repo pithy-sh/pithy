@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
+import { PithyError } from "../../error/pithyError";
 import {
   ConnectionPrincipal,
   ConnectionPurpose,
@@ -9,6 +10,7 @@ import {
   ControlPlaneConnection,
   Ed25519PublicJwk,
   MAX_CONNECTION_PURPOSE,
+  parseConnectionRow,
   type RegisteredKey,
 } from "./connection";
 
@@ -211,5 +213,49 @@ describe("a purpose is validated at the boundary", () => {
     expect(
       ControlPlaneConnection.safeParse({ ...ControlPlaneConnection.encode(connection), purpose: hostile }).success,
     ).toBe(false);
+  });
+});
+
+describe("parseConnectionRow", () => {
+  const row = ControlPlaneConnection.encode(connection);
+
+  it("decodes a row that parses", () => {
+    expect(parseConnectionRow(row)).toEqual(connection);
+  });
+
+  it("reads null principal columns as a connection registered before they were recorded", () => {
+    const legacy = { ...row, authorizedBy: null, actorKind: null, purpose: null };
+    expect(parseConnectionRow(legacy)).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
+  });
+
+  function refusal(broken: unknown): PithyError["payload"] {
+    try {
+      parseConnectionRow(broken);
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      return (error as PithyError).payload;
+    }
+    throw new Error("parseConnectionRow accepted an unreadable row");
+  }
+
+  it("refuses an empty nullable column, names it and the repair, and tells a caller nothing", () => {
+    const payload = refusal({ ...row, managementOrigin: "", authorizedBy: "", actorKind: "", purpose: "" });
+    expect(payload.code).toBe("core/internal");
+    expect(payload.message).toBe("Something unexpected happened.");
+    expect(payload.detail).toContain(connection.id);
+    for (const column of ["management_origin", "authorized_by", "actor_kind", "purpose"]) {
+      expect(payload.action).toContain(column);
+    }
+    expect(payload.action).toContain("pithy migrate");
+  });
+
+  it("names a broken column outside the nullable set without offering the migrate repair", () => {
+    const payload = refusal({ ...row, scopes: "not json" });
+    expect(payload.action).toMatch(/^scopes in pithy_controlplane_connections holds a value/);
+    expect(payload.action).not.toContain("pithy migrate");
+  });
+
+  it("names the row itself when it is not a row at all", () => {
+    expect(refusal("nope").action).toMatch(/^row in pithy_controlplane_connections/);
   });
 });

@@ -1274,6 +1274,7 @@ describe("GET /control-plane/migrations", () => {
   const SEAM_3 = "1100_controlplane_0003_connection_principal";
   const SEAM_4 = "1100_controlplane_0004_connection_trusts";
   const SEAM_5 = "1100_controlplane_0005_holds";
+  const SEAM_6 = "1100_controlplane_0006_connection_nulls";
 
   /** A second database on `ANALYTICS`, so one can be unreadable while the other answers. */
   const reporting = defineCapability({
@@ -1364,6 +1365,7 @@ describe("GET /control-plane/migrations", () => {
             { name: SEAM_3, namespace: "controlplane" },
             { name: SEAM_4, namespace: "controlplane" },
             { name: SEAM_5, namespace: "controlplane" },
+            { name: SEAM_6, namespace: "controlplane" },
           ],
           undeclared: [{ name: "0400_vault_0001_init", namespace: "vault" }],
           lastGroup: {
@@ -1429,7 +1431,7 @@ describe("GET /control-plane/migrations", () => {
       ["undeclaredMigrations", null],
       ["activeHolds", null],
     ]);
-    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 4, undeclaredMigrations: 1 } });
+    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 5, undeclaredMigrations: 1 } });
   });
 
   test("a connection without migrations:read gets no value for either key, rather than a zero", async () => {

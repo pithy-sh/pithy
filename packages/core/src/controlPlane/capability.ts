@@ -19,7 +19,7 @@ import { holdsUserPurge } from "../retention/holdsPurge";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
-import { ControlPlaneConnection } from "./data/connection";
+import { parseConnectionRow } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
 import { recordTrustFirstCall } from "./data/trustFirstCall";
 import type { CapabilityDeclaration } from "./discovery/adminRoute";
@@ -37,6 +37,7 @@ import { controlplane_0002_management_origin } from "./migrations/0002_managemen
 import { controlplane_0003_connection_principal } from "./migrations/0003_connection_principal";
 import { controlplane_0004_connection_trusts } from "./migrations/0004_connection_trusts";
 import { controlplane_0005_holds } from "./migrations/0005_holds";
+import { controlplane_0006_connection_nulls } from "./migrations/0006_connection_nulls";
 import { d1ReplayGuard } from "./replay/d1Guard";
 import type { ReplayGuard } from "./replay/guard";
 import {
@@ -113,6 +114,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     "0003_connection_principal": controlplane_0003_connection_principal,
     "0004_connection_trusts": controlplane_0004_connection_trusts,
     "0005_holds": controlplane_0005_holds,
+    "0006_connection_nulls": controlplane_0006_connection_nulls,
   };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — the connections table lives here, beside auth's and audit's. Not the secrets
@@ -291,7 +293,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
                     .selectAll()
                     .where("id", "=", connectionId)
                     .executeTakeFirst();
-                  return row ? ControlPlaneConnection.parse(row) : null;
+                  return row ? parseConnectionRow(row) : null;
                 },
                 countConnections: async () => {
                   const rows = await db.selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE).select("id").limit(1).execute();
@@ -313,7 +315,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
                     .selectAll()
                     .where("environment", "=", environment)
                     .executeTakeFirst();
-                  return row ? ControlPlaneConnection.parse(row) : null;
+                  return row ? parseConnectionRow(row) : null;
                 },
                 environment,
                 now,
