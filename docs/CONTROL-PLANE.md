@@ -221,7 +221,7 @@ A connection can also hold OIDC trusts beside its keys ([`AGENT-ACCESS.md` §6.2
 Every call is verified on its own, and every step default-denies with the same `controlplane/invalid_credential` as the key path:
 
 1. The token, the trust id and a well-formed scope must all be present, before anything is loaded.
-2. The environment's connection is loaded — one per environment, so the trust names the credential and the environment names the connection. None: `controlplane/not_connected`. The trust must be on it and live, not revoked.
+2. The connection is the one in this environment holding the named trust live, not revoked, whatever order the environment's rows are in. No connection in the environment: `controlplane/not_connected`. None holding the trust live, or more than one holding it: refused, because a trust id names one connection.
 3. The token is verified against the trust's issuer, its key set (fetched from the trust's `jwksUrl` and cached per isolate), and its audience. The audience defaults to the environment's own Worker origin, so a staging token cannot reach production.
 4. The token's claims must match every claim the trust names. This is the boundary: the issuer signs for every workload it serves.
 5. The scope check of §8, against the connection's grant, exactly as for a key: `controlplane/insufficient_scope`.
