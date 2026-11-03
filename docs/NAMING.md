@@ -31,7 +31,7 @@ Provisioning finds a resource by name and reuses it. Without a project segment, 
 | Workflow | `<project>-<env>-<capability>-<job>` | `acme-prod-email-send` |
 | Secrets Store entry | `<project>-<env>-<secret>` | `acme-prod-secrets-encryption-keys` |
 | CF API token | `<project>-<env>-<profile>` | `acme-prod-ci-system` |
-| Email Routing rule | `<project>-global-<capability>-<purpose>` | `acme-global-email-bounce` |
+| Email Routing rule | `<project>-<env>-<capability>-<purpose>`, or `global` for one the project shares | `acme-prod-support-inbound`, `acme-global-email-bounce` |
 | Turnstile widget | `<project>-prod-turnstile-<mode>` | `acme-prod-turnstile-visible` |
 
 The `<thing>` segment is the **binding name** for a resource `pithy add` and `pithy upgrade` propose into your `wrangler.jsonc`, and the **capability** (plus a discriminator where it owns more than one) for a resource a capability's own `provision` command creates. Both compose through the same rule.
@@ -102,7 +102,7 @@ Some things are shared across all of a project's environments on purpose. They p
 
 - `<project>-global-email-suppressions` — the suppression list. "Do not email this person again" is not an environment-local fact; an address that hard-bounced in production must not be retried from staging, or the sending domain's reputation pays for the distinction.
 - `<project>-global-support` — the bucket the support inbox's attachments and raw messages live in. A thread does not belong to an environment; the environments are separated by which bucket an operator binds.
-- `<project>-global-email-bounce`, `<project>-global-support-inbound` — the Email Routing rules. There is one rule per zone; environments are separated by which Worker it points at, not by the rule.
+- `<project>-global-email-bounce` — the bounce handler's Email Routing rule, and `<project>-global-support-inbound`, the one rule `pithy support provision`'s routing flags create. There is one such rule per zone; environments are separated by which Worker it points at, not by the rule. Without the flags, each environment's support address gets its own rule, `<project>-<env>-support-inbound`, to its own Worker.
 
 **Two of those are Worker bindings, and they say so in code rather than in this list.** `EMAIL_SUPPRESSIONS` and `SUPPORT_BUCKET` carry `scope: "global"` in their capability's `pithy.manifest.json`, and every writer reads it: `pithy add` proposes the name, `pithy provision` creates the resource under it, and the capability's own provisioner composes it through the same expression. Before that the manifest had no way to say it, so `pithy add email` wrote a *per-environment* suppression database into every stanza while `pithy email provision` created the one global one — two names for a resource defined as one, and an unsubscribe recorded through either was invisible to the other. `pithy doctor`'s `shared:` section reports a project still in that state. The other entries above are not bindings — an Email Routing rule and a Secrets Store entry are named by their own writers — so this list stays the statement of record for them.
 
@@ -322,7 +322,7 @@ So the split is about data, not about deployment. A marketing site and an API th
 
 Inbound mail — bounce and complaint handling in `@pithy-sh/email`, the support inbox in `@pithy-sh/support` — arrives through Cloudflare Email Routing, and **enabling Email Routing on a zone takes over that zone's MX.** So it is never enabled on an apex that carries real mail. Every inbound address sits on a subdomain zone (`bounce.example.com`, `help.example.com`), delegated by NS from the parent.
 
-The per-project topology follows from that: **one subdomain zone per project**, with that project's own routing rules (`<project>-global-email-bounce`, `<project>-global-support-inbound`) pointing at that project's own Worker. The alternative — one inbound Worker serving several projects — would need a D1 binding into every one of their databases, which is precisely the cross-project coupling this whole scheme exists to prevent, aimed at the most sensitive capability.
+The per-project topology follows from that: **one subdomain zone per project**, with that project's own routing rules (`<project>-global-email-bounce`, and `<project>-<env>-support-inbound` per environment) pointing at that project's own Workers. The alternative — one inbound Worker serving several projects — would need a D1 binding into every one of their databases, which is precisely the cross-project coupling this whole scheme exists to prevent, aimed at the most sensitive capability.
 
 **This topology is unverified.** It rests on an assumption nobody has exercised against a live account: that two sibling subdomain zones under one parent, both with Email Routing enabled, each pointing at a different Worker, operate independently. Issue [#47](https://github.com/pithy-sh/pithy/issues/47) carries that check and is open. If sibling subdomain zones do not work that way, multi-project inbound mail is unsupported and this section needs a carve-out rather than an adopter discovering it.
 
