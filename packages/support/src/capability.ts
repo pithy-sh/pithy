@@ -9,7 +9,6 @@ import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
-import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import type { SupportClientProjection } from "./client/projection";
 import {
@@ -28,7 +27,9 @@ import { senderPeers } from "./link/peers";
 import type { SenderPeers } from "./link/sender";
 import { SUPPORT_MIGRATIONS } from "./migrations/set";
 import { supportPresence } from "./presence/room";
+import { supportSendingSettings } from "./provision/sendingCheck";
 import { supportUserPurge } from "./purge/contribution";
+import { replySender } from "./reply/sender";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
@@ -80,7 +81,7 @@ export interface SupportWiring {
   enqueueEmail: EmailCapability["enqueue"] | undefined;
   /**
    * The optional peers the sender link reads through — `auth()`'s and `payments()`'s surfaces, set by
-   * `compose` when each is composed. Found, never imported (#645): see `link/sender.ts`.
+   * `compose` when each is composed. Found, never imported: see `link/sender.ts`.
    */
   peers: SenderPeers;
   /**
@@ -241,10 +242,10 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // **Declared only when this configuration would ever write to it.** A manifest is one static file
     // and cannot vary with config, so the manifest says `optional` and the composed instance decides
     // — which is exactly what the CLI's `effectiveBindings` reads, and what `controlplane` has always
-    // done for its KV. Declaring it unconditionally made `pithy upgrade` write six R2 stanzas across
-    // three environments for an inbox with attachments off, and `pithy doctor` call them missing
-    // forever once they were deleted by hand (#440). The three settings behind `supportNeedsBucket`
-    // all default `true`, so nothing changes for a project that has not turned one off.
+    // done for its KV. Declared unconditionally, `pithy upgrade` would write six R2 stanzas across
+    // three environments for an inbox with attachments off, and `pithy doctor` would call them missing
+    // once they were deleted by hand. The three settings behind `supportNeedsBucket` all default
+    // `true`, so a project that has not turned one off declares the bucket.
     ...(supportNeedsBucket(resolved) ? [{ type: "r2" as const, name: SUPPORT_BUCKET_BINDING, optional: true }] : []),
     // The classification Workflow the inbound handler dispatches to, derived from the spec rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing.
@@ -267,20 +268,23 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     // Attachment presigning reads an R2 credential bundle through @pithy-sh/secrets.
     dependsOn: ["secrets"],
     secretRegistry: supportSecretsRegistry,
-    // And whether this composition can reach it at all (#541). The binding is suppressed when nothing
+    // And whether this composition can reach it at all. The binding is suppressed when nothing
     // would ever write to the bucket, so there is no decline for the CLI to join against — the
     // capability is the only thing that knows, and it already computed the answer for the binding.
     inapplicableSecrets: inapplicableAttachmentSecrets(resolved),
     workflows: supportWorkflows,
     requiredBindings,
-    // Provisioning creates the routing rule that delivers mail to this Worker.
-    ciPermissions: ["email:routing"],
+    // Provisioning finds the zone each inbound address lives in, checks Email Routing is enabled for it, and routes
+    // the address to this Worker; the CI token is granted that on those zones.
+    inboundRouting: { addresses: resolved.inboundAddresses },
+    // `pithy doctor` asks whether each inbound address's domain can send, since a reply is sent from it.
+    settings: supportSendingSettings(resolved),
     databases: {
       app: {
         binding: "DB",
@@ -303,9 +307,8 @@ export function support(options: SupportOptions = {}): SupportCapability {
     compose: ({ capabilities }) => {
       // A staff block no request could be served by safely is refused here, at boot. See `staff/staff.ts`.
       assertStaffComposition(resolved.staff, capabilities);
-      const email = capabilities.find(isEmailCapability);
-      wiring.enqueueEmail = email?.enqueue;
-      // Auth and payments, found rather than imported (#645), and refused here when this Worker's config needs
+      wiring.enqueueEmail = replySender(capabilities, resolved);
+      // Auth and payments, found rather than imported, and refused here when this Worker's config needs
       // one it cannot reach. See `link/peers.ts`.
       wiring.peers = senderPeers(capabilities, resolved);
     },
@@ -319,7 +322,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     ...(supportMessageIndex(resolved.search)
       ? { vectorIndexes: [{ name: SUPPORT_MESSAGES_INDEX, reprocessJob: "reprocess" }] }
       : {}),
-    // Who else has a thread open (#816): one `support.thread` room per thread, on core's presence seam.
+    // Who else has a thread open: one `support.thread` room per thread, on core's presence seam.
     // Declaring it is the whole of the wiring — core adds the room's binding, socket and ticket routes.
     presence: supportPresence(mountPath, wiring),
     routes: registerSupportRoutes({
@@ -332,7 +335,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     seeds: [supportExampleSeed],
     // A person's threads — linked to their account, or sent from their address and linked to no other — with every
     // message, attachment and raw mail in them: exported on an access request and erased by their purge, as its own
-    // step (#814).
+    // step.
     purge: [supportUserPurge("DB", { semantic: supportMessageIndex(resolved.search) !== undefined })],
   });
 

@@ -1,5 +1,14 @@
 # @pithy-sh/cli
 
+## 0.21.2
+
+### Patch Changes
+
+- [#916](https://github.com/pithy-sh/pithy/pull/916) [`af0c2d6`](https://github.com/pithy-sh/pithy/commit/af0c2d6b6756471612ae8b4c9ee992299f12102e) Thanks [@kingmesal](https://github.com/kingmesal)! - A null the CLI writes to a deployed database is stored as a null, not an empty string.
+- Updated dependencies [[`af0c2d6`](https://github.com/pithy-sh/pithy/commit/af0c2d6b6756471612ae8b4c9ee992299f12102e)]:
+  - @pithy-sh/cloudflare@0.9.2
+  - @pithy-sh/core@0.16.1
+
 ## 0.21.1
 
 ### Patch Changes

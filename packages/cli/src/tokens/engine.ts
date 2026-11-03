@@ -15,6 +15,7 @@ import {
 } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
   CI_SYSTEM_PROFILE,
+  inboundRoutingPermissions,
   type ProfileOverride,
   profilePermissions,
   resolveProfile,
@@ -107,6 +108,12 @@ export interface TokenEngine {
    * hold cannot be scoped, and a token minted without it passes every local check and fails in CI.
    */
   routeZones?: () => Promise<ResolvedRouteZone[]>;
+  /**
+   * The ids of the zones holding this environment's inbound addresses (`Capability.inboundRouting`). Only the
+   * `ci-system` token gets them, as {@link inboundRoutingPermissions}: the provisioning that routes inbound mail runs
+   * in CI. Absent or `[]`, no Email Routing grant is added.
+   */
+  inboundZones?: () => Promise<string[]>;
   /**
    * The token a composed capability stored that `runtime` superseded, in this environment — media's supplied
    * Images and Stream token, still in `media-storage-credentials` — or `null` when there is none (#728). It
@@ -269,7 +276,8 @@ async function tokenPolicies(
   // naming `routes:write` by hand is refused.
   if (override?.permissions) return account;
   const zones = (await engine.routeZones?.()) ?? [];
-  return [...account, ...routePermissions(routeZoneIds(zones))];
+  const inbound = (await engine.inboundZones?.()) ?? [];
+  return [...account, ...routePermissions(routeZoneIds(zones)), ...inboundRoutingPermissions(inbound)];
 }
 
 /**
