@@ -332,8 +332,8 @@ describe("the aggregate is SQL, not a page walk", () => {
   });
 
   /**
-   * Ten thousand events that are not calls, over the same instants: logins, as any trail holds beside its calls. On a
-   * trail of nothing but calls, reading every row is the cheapest way to read every call, and the planner says so.
+   * Ten thousand events that are not calls, over the same instants: logins, as any trail holds beside its calls, so the
+   * planner chooses on a distribution where the call actions are not the whole table.
    */
   async function tenThousandOtherEvents(): Promise<void> {
     await env.DB.prepare(
@@ -372,25 +372,27 @@ describe("the aggregate is SQL, not a page walk", () => {
     expect(new Set(usage.map((row) => row.connectionId))).toEqual(new Set([CONNECTION, "c-1", "c-2", "c-3"]));
   });
 
-  test("with no connection named, the query plan still reads the call index, not the table", async () => {
+  test("with no connection named, the window drives the read: the time index, and nothing outside the window", async () => {
     await tenThousandCalls();
     await tenThousandOtherEvents();
     await env.DB.prepare("analyze").run();
-    const { sql, parameters } = controlPlaneUsageStatement(db(), ALL_TIME).compile();
+    // A hundred instants of ten thousand: an hour's review of a trail that keeps months.
+    const { sql, parameters } = controlPlaneUsageStatement(db(), {
+      since: new Date(5_000),
+      until: new Date(5_100),
+    }).compile();
 
     const plan = await env.DB.prepare(`explain query plan ${sql}`)
       .bind(...parameters)
       .all<{ detail: string }>();
     const details = plan.results.map((row) => row.detail);
+    const reads = details.filter((detail) => /^(SEARCH|SCAN) pithy_audit_events\b/.test(detail));
 
-    expect(
-      details.some((detail) => detail.includes("pithy_audit_events_call_idx")),
-      details.join("\n"),
-    ).toBe(true);
-    expect(
-      details.some((detail) => /^SCAN pithy_audit_events\b/.test(detail)),
-      details.join("\n"),
-    ).toBe(false);
+    // One read of the table, bounded by the window — no second read of every call the trail retains.
+    expect(reads, details.join("\n")).toHaveLength(1);
+    expect(reads[0], details.join("\n")).toMatch(
+      /USING INDEX pithy_audit_events_occurred_at_idx \(occurred_at>\? AND occurred_at<\?\)/,
+    );
   });
 
   test("the query plan reads the call index, not the table", async () => {

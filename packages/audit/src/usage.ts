@@ -22,7 +22,8 @@ import type { AuditDatabase } from "./data/tables";
  *
  * **One statement for the aggregate, never a page walk.** A dashboard connection makes thousands of calls a day, and a
  * handler that paged them to count would be the largest read on the surface. The `GROUP BY` runs in D1, over rows
- * `pithyAuditEventsCallIdx` (`audit_0003_call_index`) finds by action, connection and time.
+ * `pithyAuditEventsCallIdx` (`audit_0003_call_index`) finds by action, connection and time — or, across every
+ * connection, rows `pithyAuditEventsOccurredAtIdx` finds by the window.
  *
  * **Nothing personal leaves this function.** It reads the scope, the key id, and the method and path of the last
  * allowed call out of `metadata`, and no other key, and never the IP or the user-agent. Those four are the management
@@ -100,10 +101,11 @@ export interface ControlPlaneUsage {
  *    breaking a tie. Rank 1 of the allowed rows is the last allowed call, whose method and path the answer carries.
  * 3. **The group** — counts and last instants per `(connectionId, scope, keyId)`.
  *
- * Both shapes seek `pithyAuditEventsCallIdx` the same way: each action, then a connection, then the window as a range.
- * Named, the connection is the one asked for. Unnamed, it is each connection that has a call row at all, listed off the
- * same index without reading a row, so the window still bounds every connection's read and the table is never
- * scanned. A row with no connection — an unverified refusal — is nobody's usage in either.
+ * Named, it seeks `pithyAuditEventsCallIdx`: each action, then the connection, then the window as a range. Unnamed,
+ * nothing narrows it but the actions and the window, and the window is what is small: an access review reads days of
+ * a trail that keeps months. So the planner reads `pithyAuditEventsOccurredAtIdx` over the window and checks the
+ * action on each row it finds, and the cost follows the window rather than everything retention holds. A row with no
+ * connection — an unverified refusal — is nobody's usage in either.
  */
 export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPlaneUsageFilter) {
   const allowed = ControlPlaneAuditActions.callAllowed;
@@ -124,20 +126,12 @@ export function controlPlaneUsageStatement(db: AuditDatabase, filter: ControlPla
           sql<string | null>`json_extract(${eb.ref("metadata")}, '$.method')`.as("method"),
           sql<string | null>`json_extract(${eb.ref("metadata")}, '$.path')`.as("path"),
         ])
-        // In `pithyAuditEventsCallIdx`'s column order: the actions, the connection, then the window.
+        // In `pithyAuditEventsCallIdx`'s column order, for the named read: the actions, the connection, the window.
         .where("action", "in", CALL_ACTIONS)
-        .$call((q) =>
+        .where((eb) =>
           filter.connectionId === undefined
-            ? // Every connection that ever made a call, read off the same index without touching a row, so the
-              // window below is still a range inside each connection rather than a filter over every call.
-              q.where("resourceId", "in", (eb) =>
-                eb
-                  .selectFrom("pithyAuditEvents")
-                  .select("resourceId")
-                  .where("action", "in", CALL_ACTIONS)
-                  .where("resourceId", "is not", null),
-              )
-            : q.where("resourceId", "=", filter.connectionId),
+            ? eb("resourceId", "is not", null)
+            : eb("resourceId", "=", filter.connectionId),
         )
         .where("occurredAt", ">=", SQLiteDate.encode(filter.since))
         .where("occurredAt", "<=", SQLiteDate.encode(filter.until))
