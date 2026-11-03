@@ -485,7 +485,8 @@ Connect production, choosing the grant at a terminal.
 ```
 $ pithy dashboard connect --env prod --purpose "Support triage, reading threads and replying."
 acme-api → https://api.example.com/control-plane (declared in pithy.config.ts)
-Open <the client's verification uri> and enter WXYZ-1234.
+Open https://app.pithy.sh/connect?userCode=WXYZ-1234 to approve.
+Check that the page shows WXYZ-1234.
 Press o to open the link in the browser.
 ▸ Waiting for approval...
 Connected prod.
