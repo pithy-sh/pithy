@@ -95,6 +95,7 @@ describe("email capability", () => {
       "/email/jobs/:id",
       "/email/jobs/:id/retry",
       "/email/suppressions",
+      "/email/suppressions/lookup",
       "/email/suppressions",
       "/email/suppressions/remove",
     ]);

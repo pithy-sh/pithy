@@ -16,7 +16,7 @@ import {
 } from "../data/connections";
 import { type ControlPlaneHandlerDeps, caller } from "./handlers";
 import type { ConnectionView, ControlPlaneConnectionsResponse, RevokeConnectionResponse } from "./responses";
-import type { ConnectionListQuery, ConnectionParams, RevokeConnectionRequest } from "./schemas";
+import type { ConnectionLookupRequest, ConnectionParams, RevokeConnectionRequest } from "./schemas";
 
 /** A connection as the listing shows it at `now`: who, what for, which credentials, never key material. */
 export function connectionView(connection: ControlPlaneConnection, now: Date): ConnectionView {
@@ -41,12 +41,12 @@ export function connectionView(connection: ControlPlaneConnection, now: Date): C
 }
 
 /**
- * `GET /control-plane/connections` — every connection bound to this Worker's environment, the caller's own among
- * them. A database shared with another environment holds that environment's rows too, and they are never listed.
- * Read-only.
+ * `GET /control-plane/connections` and `POST /control-plane/connections/lookup` — every connection bound to this
+ * Worker's environment, the caller's own among them, or those one principal authorized. A database shared with
+ * another environment holds that environment's rows too, and they are never listed. Read-only.
  */
 export function listConnectionsHandler(deps: ControlPlaneHandlerDeps) {
-  return async (c: Context<PithyHonoEnv>, query: ConnectionListQuery) => {
+  return async (c: Context<PithyHonoEnv>, query: Partial<ConnectionLookupRequest> = {}) => {
     const context = caller(c);
     const now = deps.now();
     const listing = await listConnections(deps.database(c), {

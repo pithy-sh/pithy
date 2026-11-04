@@ -9,7 +9,9 @@ import { NotFoundError } from "../error/pithyError";
 import { ErrorBody } from "../error/wire";
 import { describeRoute } from "../http/routeSpec";
 import { validate } from "../http/validation";
+import { pii } from "../privacy/classes";
 import {
+  addressedParameters,
   type OpenApiDocument,
   openApiDocument,
   openApiPath,
@@ -353,5 +355,57 @@ describe("undescribedFields", () => {
       "/paths/~1loose~1{id}/get/parameters/0",
       "/paths/~1loose~1{id}/get/responses/200/content/application~1json/schema/properties/name",
     ]);
+  });
+});
+
+describe("addressedParameters", () => {
+  /** One `GET` route whose query or path carries `field`, for the sweep to judge. */
+  function carrying(target: "query" | "param", field: z.ZodType): OpenApiDocument {
+    const Shape = z.object({ who: field.describe("Who.") }).describe("Who to look up.");
+    const routed = group("people", (app) => {
+      app.get(
+        target === "param" ? "/people/:who" : "/people",
+        describeRoute({ summary: "Look one up.", verification: "control-plane", responses: { 200: Entry } }),
+        validate(target, Shape),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    return openApiDocument(INFO, [routed]);
+  }
+
+  test("is empty for a document whose parameters are ids, keys and filters", () => {
+    expect(addressedParameters(openApiDocument(INFO, [games]))).toEqual([]);
+  });
+
+  test.each([
+    ["an address", z.email()],
+    ["an optional address", z.email().optional()],
+    ["a nullable address", z.email().nullable()],
+    ["a string that must hold an @", z.string().min(3).includes("@")],
+    ["a pattern that demands an @", z.string().regex(/^[^\s]+@[^\s]+$/)],
+    ["a phone number", z.e164()],
+    ["a field marked with a privacy class", pii(z.string().max(200))],
+  ])("names %s in a query string", (_, field) => {
+    expect(addressedParameters(carrying("query", field))).toEqual([
+      { method: "GET", path: "/people", in: "query", name: "who" },
+    ]);
+  });
+
+  test("names an address in a path segment", () => {
+    expect(addressedParameters(carrying("param", z.email()))).toEqual([
+      { method: "GET", path: "/people/{who}", in: "path", name: "who" },
+    ]);
+  });
+
+  test("passes an address in a body, which no access log records", () => {
+    const bodied = group("people", (app) => {
+      app.post(
+        "/people/lookup",
+        describeRoute({ summary: "Look one up.", verification: "control-plane", responses: { 200: Entry } }),
+        validate("json", z.object({ who: z.email().describe("Who.") }).describe("Who to look up.")),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    expect(addressedParameters(openApiDocument(INFO, [bodied]))).toEqual([]);
   });
 });

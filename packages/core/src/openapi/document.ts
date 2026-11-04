@@ -390,3 +390,60 @@ export function undescribedFieldsIn(node: unknown, at: string): UndescribedField
   visit(node, at);
   return found;
 }
+
+/** A query or path parameter that carries a direct personal identifier, so it is written to every request log. */
+export interface AddressedParameter {
+  /** The method, upper case. */
+  readonly method: string;
+  /** The OpenAPI path, e.g. `/email/suppressions`. */
+  readonly path: string;
+  /** `query` or `path`. */
+  readonly in: string;
+  /** The parameter's name. */
+  readonly name: string;
+}
+
+/** The `format`s JSON Schema gives an address or a phone number: `z.email()` and `z.e164()` write them. */
+const IDENTIFIER_FORMATS = new Set(["email", "idn-email", "e164"]);
+
+/**
+ * Whether a parameter's schema, or any branch of it, is shaped as a direct personal identifier: an
+ * address or phone number by `format`, a string that must hold an `@` (`.includes("@")` and every address
+ * regex write one into `pattern`), or a field marked with a privacy class, which `toJSONSchema` writes as
+ * `privacy`.
+ */
+function identifies(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(identifies);
+  if (node === null || typeof node !== "object") return false;
+  const schema = node as Record<string, unknown>;
+  if (typeof schema.format === "string" && IDENTIFIER_FORMATS.has(schema.format)) return true;
+  if (typeof schema.pattern === "string" && schema.pattern.includes("@")) return true;
+  if (typeof schema.privacy === "string") return true;
+  return Object.values(schema).some(identifies);
+}
+
+/**
+ * Every query and path parameter in the document that carries an address, a phone number, or a field
+ * marked with a privacy class.
+ *
+ * A URL is recorded wherever a request is: Cloudflare's request logs, Workers observability and tail, and
+ * every proxy between the client and the Worker. A value in a body is recorded by none of them, so a
+ * lookup by a person's address is a `POST` with the address in its body. Judged on the wire shape, so it
+ * reaches every route the document covers and no list of field names has to keep up. A free-text search
+ * parameter is not shaped as an address and is not found here.
+ */
+export function addressedParameters(document: OpenApiDocument): AddressedParameter[] {
+  const found: AddressedParameter[] = [];
+  for (const [path, item] of Object.entries(document.paths)) {
+    for (const [method, operation] of Object.entries(item)) {
+      const parameters = (operation as { parameters?: unknown }).parameters;
+      if (!Array.isArray(parameters)) continue;
+      for (const parameter of parameters as Record<string, unknown>[]) {
+        if (parameter.in !== "query" && parameter.in !== "path") continue;
+        if (!identifies(parameter.schema)) continue;
+        found.push({ method: method.toUpperCase(), path, in: String(parameter.in), name: String(parameter.name) });
+      }
+    }
+  }
+  return found;
+}

@@ -574,6 +574,7 @@ describe("GET /control-plane/manifest", () => {
       "GET /control-plane/privacy",
       "GET /control-plane/processing",
       "POST /control-plane/connections/:connectionId/revoke",
+      "POST /control-plane/connections/lookup",
       "POST /control-plane/holds",
       "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",
@@ -601,6 +602,7 @@ describe("GET /control-plane/manifest", () => {
     expect(kindOf("GET", "/keys")).toBe("credentials");
     expect(kindOf("POST", "/holds")).toBe("writes");
     expect(kindOf("POST", "/connections/:connectionId/revoke")).toBe("credentials");
+    expect(kindOf("POST", "/connections/lookup")).toBe("reads");
     expect(kindOf("GET", "/ping")).toBeUndefined();
     for (const route of seam?.adminRoutes ?? []) {
       if (route.scope !== null) expect(route.kind, `${route.method} ${route.path}`).toBeDefined();

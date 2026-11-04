@@ -64,6 +64,7 @@ describe("control-plane route contract", () => {
     expect(paths).toEqual([
       "/control-plane/connections",
       "/control-plane/connections/:connectionId/revoke",
+      "/control-plane/connections/lookup",
       "/control-plane/erasure",
       "/control-plane/erasure/:subjectType/:subjectId",
       "/control-plane/evidence",
@@ -112,7 +113,7 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(17);
+    expect(handlerCounts.size).toBe(18);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
@@ -124,7 +125,7 @@ describe("control-plane route contract", () => {
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(17);
+    expect(capability.adminRoutes).toHaveLength(18);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. The CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.

@@ -187,7 +187,7 @@ describe("GET /control-plane/connections", () => {
     expect(raw).not.toContain("publicKey");
   });
 
-  test("filters by principal", async () => {
+  test("refuses a principal in its query string rather than answering every connection", async () => {
     await connect(ALL);
     await seedOthers();
     const response = await call(
@@ -195,9 +195,8 @@ describe("GET /control-plane/connections", () => {
       "/control-plane/connections?principal=Grace%40example.com",
       CONNECTIONS_READ_SCOPE,
     );
-    const body = ControlPlaneConnectionsResponse.parse(await response.json());
-    expect(body.connections.map((connection) => connection.id)).toEqual([AGENT]);
-    expect(body.unattributed.map((connection) => connection.id)).toEqual([OLD]);
+    expect(response.status).toBe(400);
+    expect((await response.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
   });
 
   test("lists only the connections bound to this Worker's environment", async () => {
@@ -213,6 +212,50 @@ describe("GET /control-plane/connections", () => {
   test("is refused without connections:read", async () => {
     await connect([MANIFEST_READ_SCOPE]);
     expect((await call("GET", "/control-plane/connections", CONNECTIONS_READ_SCOPE)).status).toBe(403);
+  });
+});
+
+describe("POST /control-plane/connections/lookup", () => {
+  test("narrows to one principal's connections, from a body, the unattributed apart", async () => {
+    await connect(ALL);
+    await seedOthers();
+    await seedElsewhere();
+    const response = await call("POST", "/control-plane/connections/lookup", CONNECTIONS_READ_SCOPE, {
+      principal: "Grace@example.com",
+    });
+    expect(response.status).toBe(200);
+    const raw = await response.json();
+    const body = ControlPlaneConnectionsResponse.parse(raw);
+    expect(body).toEqual(raw);
+    expect(body.connections.map((connection) => connection.id)).toEqual([AGENT]);
+    expect(body.unattributed.map((connection) => connection.id)).toEqual([OLD]);
+    expect(JSON.stringify(body)).not.toContain(ELSEWHERE);
+  });
+
+  test("a principal nobody authorized answers no attributed connection", async () => {
+    await connect(ALL);
+    await seedOthers();
+    const response = await call("POST", "/control-plane/connections/lookup", CONNECTIONS_READ_SCOPE, {
+      principal: "nobody@example.com",
+    });
+    const body = ControlPlaneConnectionsResponse.parse(await response.json());
+    expect(body.connections).toEqual([]);
+  });
+
+  test("a body without an address is a 400", async () => {
+    await connect(ALL);
+    for (const body of [{}, { principal: "not-an-address" }, { principal: "grace@example.com", extra: true }]) {
+      const response = await call("POST", "/control-plane/connections/lookup", CONNECTIONS_READ_SCOPE, body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  test("is refused without connections:read, before the body is judged", async () => {
+    await connect([MANIFEST_READ_SCOPE]);
+    const response = await call("POST", "/control-plane/connections/lookup", CONNECTIONS_READ_SCOPE, {
+      principal: "not-an-address",
+    });
+    expect(response.status).toBe(403);
   });
 });
 

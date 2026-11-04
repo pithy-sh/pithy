@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { undescribedAsyncFields } from "@pithy-sh/core/src/asyncapi/document";
-import { undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
+import { addressedParameters, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import {
@@ -62,6 +62,13 @@ describe("the kit's OpenAPI document", () => {
 
   test("every field and parameter in the document carries a description", () => {
     expect(undescribedFields(document)).toEqual([]);
+  });
+
+  test("no query string or path segment carries an address, a phone number or a privacy-marked field", () => {
+    expect(
+      addressedParameters(document),
+      "A URL is written to every request log between the client and the Worker. Look the value up with a POST that carries it in the body, as `POST {email}/suppressions/lookup` does.",
+    ).toEqual([]);
   });
 
   test("the committed document is the rendered one", () => {

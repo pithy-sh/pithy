@@ -542,21 +542,70 @@ describe("the suppression list", () => {
     expect(suppressions.every((s) => s.active)).toBe(true);
   });
 
-  test("looks one address up without disclosing anybody else", async () => {
+  test("looks one address up from a body, without disclosing anybody else", async () => {
     const db = emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS);
     await suppress(db, { email: "wanted@example.com", reason: "complaint" }, NOW);
     await suppress(db, { email: "other@example.com", reason: "complaint" }, NOW);
 
     const response = await call(
       makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
+      "POST",
+      "/email/suppressions/lookup",
+      EMAIL_SUPPRESSIONS_READ_SCOPE,
+      { email: " WANTED@example.com " },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<{ suppressions: { email: string }[]; nextCursor: string | null }>();
+    // Normalized on the way in, so an operator typing it with capitals still finds the row.
+    expect(body.suppressions.map((s) => s.email)).toEqual(["wanted@example.com"]);
+    expect(body.nextCursor).toBeNull();
+  });
+
+  test("a lookup of an address not on the list answers an empty list", async () => {
+    await suppress(
+      emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+      { email: "other@example.com", reason: "complaint" },
+      NOW,
+    );
+    const response = await call(
+      makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
+      "POST",
+      "/email/suppressions/lookup",
+      EMAIL_SUPPRESSIONS_READ_SCOPE,
+      { email: "nobody@example.com" },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ suppressions: [], nextCursor: null });
+  });
+
+  test("a lookup without a usable address is a 400", async () => {
+    for (const body of [{}, { email: "no-at-sign" }, { email: "a@b.c", reason: "complaint" }]) {
+      const response = await call(
+        makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
+        "POST",
+        "/email/suppressions/lookup",
+        EMAIL_SUPPRESSIONS_READ_SCOPE,
+        body,
+      );
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect(await errorCode(response)).toBe("validation/invalid_input");
+    }
+  });
+
+  test("the listing refuses an address in its query string rather than answering the whole list", async () => {
+    await suppress(
+      emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+      { email: "other@example.com", reason: "complaint" },
+      NOW,
+    );
+    const response = await call(
+      makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
       "GET",
-      "/email/suppressions?email=WANTED%40example.com",
+      "/email/suppressions?email=wanted%40example.com",
       EMAIL_SUPPRESSIONS_READ_SCOPE,
     );
-    const body = await response.text();
-    // Normalized on the way in, so an operator typing it with capitals still finds the row.
-    expect(body).toContain("wanted@example.com");
-    expect(body).not.toContain("other@example.com");
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
   });
 
   test("filters by reason", async () => {
@@ -617,8 +666,20 @@ describe("the suppression list", () => {
 
   test("the read is audited, and records whether it was a lookup or a walk", async () => {
     await call(makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]), "GET", "/email/suppressions", EMAIL_SUPPRESSIONS_READ_SCOPE);
-    const event = emitted.find((e) => e.action === "email/suppressions_read");
-    expect(event?.metadata).toMatchObject({ lookup: false });
+    const walk = emitted.find((e) => e.action === "email/suppressions_read");
+    expect(walk?.metadata).toMatchObject({ lookup: false });
+
+    emitted.length = 0;
+    await call(
+      makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
+      "POST",
+      "/email/suppressions/lookup",
+      EMAIL_SUPPRESSIONS_READ_SCOPE,
+      { email: "anyone@example.com" },
+    );
+    const lookup = emitted.find((e) => e.action === "email/suppressions_read");
+    expect(lookup?.metadata).toMatchObject({ lookup: true, returned: 0, paged: false });
+    expect(lookup?.resourceId).toBeNull();
   });
 });
 
@@ -730,9 +791,10 @@ describe("POST /email/suppressions", () => {
     );
     const list = await call(
       makeApp([EMAIL_SUPPRESSIONS_READ_SCOPE]),
-      "GET",
-      "/email/suppressions?email=temporary@example.com",
+      "POST",
+      "/email/suppressions/lookup",
       EMAIL_SUPPRESSIONS_READ_SCOPE,
+      { email: "temporary@example.com" },
     );
     const { suppressions } = await list.json<{ suppressions: { expiresAt: string | null; active: boolean }[] }>();
     expect(suppressions[0]?.expiresAt).toBe(new Date(NOW.getTime() + 3600_000).toISOString());
@@ -862,6 +924,20 @@ describe("the five scopes are not interchangeable", () => {
     expect(response.status).toBe(403);
   });
 
+  test("a jobs credential cannot look an address up either", async () => {
+    const response = await call(
+      makeApp([EMAIL_JOBS_READ_SCOPE]),
+      "POST",
+      "/email/suppressions/lookup",
+      EMAIL_JOBS_READ_SCOPE,
+      {
+        email: "not-even-an-address",
+      },
+    );
+    // 403 before the body is judged: a validator ahead of the gate would answer 400 and say which shapes parse.
+    expect(response.status).toBe(403);
+  });
+
   test("a credential that may block may not unblock", async () => {
     // The asymmetry that matters most. Blocking is reversible and cautious; unblocking re-opens
     // sending to somebody who reported spam or asked to be left alone.
@@ -944,6 +1020,16 @@ describe("the exported response schemas against the live routes", () => {
     await contract(EmailJobResponse, EMAIL_JOBS_READ_SCOPE, "GET", `/email/jobs/${job.id}`);
     await contract(EmailJobRetryResponse, EMAIL_JOBS_RETRY_SCOPE, "POST", `/email/jobs/${job.id}/retry`);
     await contract(EmailSuppressionsResponse, EMAIL_SUPPRESSIONS_READ_SCOPE, "GET", "/email/suppressions");
+    const found = await contract(
+      EmailSuppressionsResponse,
+      EMAIL_SUPPRESSIONS_READ_SCOPE,
+      "POST",
+      "/email/suppressions/lookup",
+      {
+        email: "blocked@example.com",
+      },
+    );
+    expect(found.suppressions).toHaveLength(1);
     await contract(EmailSuppressResponse, EMAIL_SUPPRESSIONS_WRITE_SCOPE, "POST", "/email/suppressions", {
       email: "manual@example.com",
       detail: "asked us to stop",

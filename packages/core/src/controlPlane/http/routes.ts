@@ -58,6 +58,7 @@ import {
 } from "./responses";
 import {
   ConnectionListQuery,
+  ConnectionLookupRequest,
   ConnectionParams,
   ErasurePeriodQuery,
   ErasureSubjectParams,
@@ -79,7 +80,8 @@ import {
  *   GET  /control-plane/keys                  → the registration state       (keys:rotate)
  *   POST /control-plane/keys                  → register a key               (keys:rotate)
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
- *   GET  /control-plane/connections           → every connection, by principal (connections:read)
+ *   GET  /control-plane/connections           → every connection             (connections:read)
+ *   POST /control-plane/connections/lookup    → one principal's connections  (connections:read)
  *   POST /control-plane/connections/:id/revoke → revoke another connection    (connections:revoke)
  *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *   GET  /control-plane/privacy               → what each schema holds        (privacy:read)
@@ -165,7 +167,16 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRouteDeclar
       scope: CONNECTIONS_READ_SCOPE,
       kind: "reads",
       summary:
-        "Every connection bound to this Worker's environment: who authorized it, what kind of client it is for and why, its credentials, grant and trust constraints, and when it was registered or revoked. Filterable by principal. No key material.",
+        "Every connection bound to this Worker's environment: who authorized it, what kind of client it is for and why, its credentials, grant and trust constraints, and when it was registered or revoked. No key material.",
+    },
+    {
+      method: "POST",
+      operation: "connections.lookup",
+      path: `${basePath}/connections/lookup`,
+      scope: CONNECTIONS_READ_SCOPE,
+      kind: "reads",
+      summary:
+        "The connections one email authorized, the unattributed apart, as the listing reports them. The address travels in the body, never the URL.",
     },
     {
       method: "POST",
@@ -342,14 +353,29 @@ export function registerControlPlaneRoutes(
     describeRoute({
       summary: "List every connection in this Worker's environment.",
       description:
-        "Every connection bound to this Worker's environment, the caller's own among them; a database shared with another environment never lists that environment's rows. Each connection's id, environment, actor kind, purpose, authorizing principal, credential kind, granted scopes, every trust's subject constraint, whether it is live, and when it was registered and revoked. `principal` narrows to the connections one email authorized; connections registered before principals were recorded are listed apart in `unattributed` and never match. No key material and no secret. Read-only.",
+        "Every connection bound to this Worker's environment, the caller's own among them; a database shared with another environment never lists that environment's rows. Each connection's id, environment, actor kind, purpose, authorizing principal, credential kind, granted scopes, every trust's subject constraint, whether it is live, and when it was registered and revoked. Connections registered before principals were recorded are listed apart in `unattributed`. To narrow to one principal, `POST /control-plane/connections/lookup`; a `principal` query is refused. No key material and no secret. Read-only.",
       verification: "control-plane",
       scopes: [CONNECTIONS_READ_SCOPE],
       responses: { 200: ControlPlaneConnectionsResponse },
     }),
     requireControlPlane(CONNECTIONS_READ_SCOPE),
     validate("query", ConnectionListQuery),
-    (c) => listConnectionsHandler(deps)(c, c.req.valid("query")),
+    (c) => listConnectionsHandler(deps)(c),
+  );
+
+  app.post(
+    `${basePath}/connections/lookup`,
+    describeRoute({
+      summary: "List the connections one principal authorized.",
+      description:
+        "The listing, narrowed to the connections one email authorized, compared without regard to case; connections registered before principals were recorded are listed apart in `unattributed` and never match. The address travels in the body because a query string is written to every request log between the client and the Worker. No key material and no secret. Read-only.",
+      verification: "control-plane",
+      scopes: [CONNECTIONS_READ_SCOPE],
+      responses: { 200: ControlPlaneConnectionsResponse },
+    }),
+    requireControlPlane(CONNECTIONS_READ_SCOPE),
+    validate("json", ConnectionLookupRequest),
+    (c) => listConnectionsHandler(deps)(c, c.req.valid("json")),
   );
 
   app.post(

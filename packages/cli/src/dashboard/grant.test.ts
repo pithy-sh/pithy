@@ -67,6 +67,23 @@ describe("grantableScopes", () => {
     expect(grantableScopes([misnamed])[0]?.read).toBe(false);
   });
 
+  test("a POST lookup that declares itself a read keeps its scope a read, and one that declares any other kind does not", () => {
+    // A lookup by a person's address is a POST, because a URL is written to every request log.
+    const lookup = capabilityWith("lookup", [
+      { method: "GET", path: "/l/things", scope: "l:things:read", kind: "reads", summary: "Page the things." },
+      { method: "POST", path: "/l/things/lookup", scope: "l:things:read", kind: "reads", summary: "Look one up." },
+    ]);
+    const undeclared = capabilityWith("undeclared", [
+      { method: "GET", path: "/u/things", scope: "u:things:read", kind: "reads", summary: "Page the things." },
+      { method: "POST", path: "/u/things/lookup", scope: "u:things:read", kind: "writes", summary: "Look one up." },
+    ]);
+
+    expect(grantableScopes([lookup])[0]).toMatchObject({ read: true, routes: 2 });
+    expect(grantableScopes([undeclared])[0]).toMatchObject({ read: false, routes: 2 });
+    expect(defaultGrant([lookup])).toContain("l:things:read");
+    expect(defaultGrant([undeclared])).not.toContain("u:things:read");
+  });
+
   test("an unscoped route is not grantable and is never offered", () => {
     const seam = capabilityWith("seam", [
       { method: "GET", path: "/cp/ping", scope: null, summary: "Prove connectivity." },
@@ -175,7 +192,7 @@ describe("defaultGrant", () => {
 
   test("offers connections:read as a read by default, and connections:revoke only when asked", () => {
     const grantable = grantableScopes([controlplane()]);
-    expect(grantable.find((entry) => entry.scope === "connections:read")).toMatchObject({ read: true, routes: 1 });
+    expect(grantable.find((entry) => entry.scope === "connections:read")).toMatchObject({ read: true, routes: 2 });
     expect(grantable.find((entry) => entry.scope === "connections:revoke")).toMatchObject({ read: false, routes: 1 });
     expect(defaultGrant([controlplane()])).toContain("connections:read");
     expect(defaultGrant([controlplane()])).not.toContain("connections:revoke");
@@ -240,7 +257,7 @@ describe("defaultGrant", () => {
  * The gate.
  *
  * **The invariant: every scope the default grant adds beyond the seam's own opens nothing but `GET`
- * routes.** Stated over whatever the project composes rather than over a list of scope names, because a
+ * routes and `POST …/lookup` routes declared `kind: "reads"`.** Stated over whatever the project composes rather than over a list of scope names, because a
  * list is the thing this derivation exists to delete — a capability landing a route must not be able to
  * put a write into a read default by being new.
  *
@@ -261,6 +278,16 @@ describe("a read default never grants a write", () => {
       },
       { method: "POST", path: "/h/wipe", scope: "hostile:wipe:read", kind: "writes", summary: "Wipe everything." },
       { method: "PATCH", path: "/h/thing", scope: "hostile:thing:write", kind: "writes", summary: "Amend a thing." },
+      { method: "GET", path: "/h/gone", scope: "hostile:gone:read", kind: "reads", summary: "List the gone." },
+      { method: "DELETE", path: "/h/gone", scope: "hostile:gone:read", kind: "reads", summary: "Delete, said a read." },
+      { method: "GET", path: "/h/notes", scope: "hostile:notes:read", kind: "reads", summary: "List the notes." },
+      {
+        method: "POST",
+        path: "/h/notes/purge",
+        scope: "hostile:notes:read",
+        kind: "reads",
+        summary: "Purge, said a read.",
+      },
     ]);
     const composed: Capability[] = [controlplane(), hostile, support];
 
@@ -271,15 +298,25 @@ describe("a read default never grants a write", () => {
       const opened = routes.filter((route) => route.scope === scope);
       expect(opened.length, `${scope} is granted by default but no declared route requires it`).toBeGreaterThan(0);
       expect(
-        opened.map((route) => route.method),
-        `${scope} is in the read default but opens a route that is not a GET`,
-      ).toEqual(opened.map(() => "GET"));
+        opened.filter(
+          (route) =>
+            route.method !== "GET" &&
+            !(route.method === "POST" && route.kind === "reads" && route.path.endsWith("/lookup")),
+        ),
+        `${scope} is in the read default but opens a route that is neither a GET nor a POST lookup declared as a read`,
+      ).toEqual([]);
     }
     // Not vacuous — a genuine read is found and granted.
     expect(added).toContain("support:tickets:read");
     // And each trap is refused: a read name over a POST, and a read route sharing a scope with a DELETE.
     expect(added).not.toContain("hostile:wipe:read");
     expect(added).not.toContain("hostile:things:read");
+    // A kind of `reads` admits a POST lookup and nothing else: a DELETE calling itself a read is a write.
+    expect(added).not.toContain("hostile:gone:read");
+    // Nor does a POST that is not a lookup, whatever kind it copied from the listing beside it.
+    expect(added).not.toContain("hostile:notes:read");
+    // And the real lookups keep their scopes in the default.
+    expect(added).toContain("connections:read");
   });
 });
 
