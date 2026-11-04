@@ -10,7 +10,7 @@ import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { emailSigningRegistry } from "../crypto/signingKey";
-import { mintToken, type TokenClaims } from "../crypto/token";
+import { mintToken, type TokenClaims, tokenAudience } from "../crypto/token";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
@@ -20,9 +20,47 @@ import {
   handleClick,
   handleOpen,
   handleUnsubscribe,
+  handleUnsubscribePage,
   registerCallbacks,
   type SigningKeys,
 } from "./callbacks";
+
+/**
+ * A token in the signed `<payload>.<signature>` format, built the way mail already in inboxes carries it.
+ *
+ * Only tests build one: `mintToken` seals, and the verifier reads this format until the last such link expires. The
+ * payload is plain base64url JSON, recipient included, which is exactly why nothing mints it any more.
+ */
+async function signedToken(
+  claims: TokenClaims,
+  options: { key: string; kid: string; expiresAt: Date; audience: string; v?: number },
+): Promise<string> {
+  const encode = (bytes: Uint8Array): string => {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const payload = encode(
+    new TextEncoder().encode(
+      JSON.stringify({
+        ...claims,
+        v: options.v ?? 2,
+        kid: options.kid,
+        ...(options.v === 1 ? {} : { aud: tokenAudience(options.audience) }),
+        exp: Math.floor(options.expiresAt.getTime() / 1000),
+      }),
+    ),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(options.key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+  return `${payload}.${encode(signature)}`;
+}
 
 const KEY = "callback-signing-key";
 const keys: SigningKeys = { versions: { "1": KEY } };
@@ -165,6 +203,18 @@ describe("unsubscribe callback", () => {
     expect(sup?.detail).toBe("too_many_emails");
   });
 
+  test("the page handler verifies the token and records nothing", async () => {
+    const t = await token({ kind: "unsubscribe", jobId: "job-page", recipient: "page@example.com" });
+    const res = await handleUnsubscribePage(keys, at(t), now);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(await eventsFor("job-page")).toEqual([]);
+    const click = await token({ kind: "click", jobId: "job-page", recipient: "page@example.com" });
+    await expect(handleUnsubscribePage(keys, at(click), now)).rejects.toMatchObject({
+      payload: { code: "email/invalid_token" },
+    });
+  });
+
   test("an expired token is rejected and suppresses nothing", async () => {
     const t = await token({ kind: "unsubscribe", jobId: "job-7", recipient: "u@example.com" });
     const afterExpiry = new Date("2027-01-01T00:00:00.000Z");
@@ -192,7 +242,7 @@ function liveToken(claims: TokenClaims, audience = "http://localhost"): Promise<
 
 /**
  * The three routes as `registerCallbacks` mounts them — the app-level peer of the direct-handler cases
- * above, so the `validate("param" | "query", …)` declarations on the route line are
+ * above, so the `validate("param" | "form", …)` declarations on the route line are
  * actually exercised. The signing key resolves through the shared secrets accessor from the binding a
  * deployed Worker gets from its `secrets_store_secrets` stanza: the entry's text, exactly as provisioning
  * writes it (`storeEntryText`) — a fresh envelope, so its one version is `"1"`, the `kid` `liveToken()`
@@ -246,15 +296,78 @@ describe("registered callback routes", () => {
     expect((await eventsFor("job-route-o"))[0]).toMatchObject({ type: "open", recipient: "u@example.com" });
   });
 
-  test("the unsubscribe route passes ?reason= through and still truncates it", async () => {
+  test("the unsubscribe GET renders a page that posts back, and suppresses nothing", async () => {
+    // A mail scanner or a link preview fetches the link on its own. That fetch must not opt anyone out.
+    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-g", recipient: "look@example.com" });
+    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const page = await res.text();
+    expect(page).toContain('<form method="post">');
+    expect(page).not.toContain("look@example.com");
+    expect(await eventsFor("job-route-g")).toEqual([]);
+    const count = await env.EMAIL_SUPPRESSIONS.prepare("select count(*) as n from pithy_email_suppressions").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(0);
+  });
+
+  test("the unsubscribe POST takes a reason from its form body, and still truncates it", async () => {
     const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-u", recipient: "bye@example.com" });
-    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}?reason=${"why".repeat(100)}`);
+    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ reason: "why".repeat(100) }).toString(),
+    });
 
     expect(res.status).toBe(200);
     const sup = await env.EMAIL_SUPPRESSIONS.prepare("select detail from pithy_email_suppressions where email = ?")
       .bind("bye@example.com")
       .first<{ detail: string }>();
     expect(sup?.detail).toHaveLength(200);
+  });
+
+  test("a ?reason= on the link is never read: the opt-out still lands, without it", async () => {
+    // An app that still appends the reason to the URL keeps opting people out; the words it put in the query are
+    // not stored, so nothing downstream comes to rely on a value every request log has already recorded.
+    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-q", recipient: "query@example.com" });
+    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}?reason=${"x".repeat(3000)}`, { method: "POST" });
+
+    expect(res.status).toBe(200);
+    const sup = await env.EMAIL_SUPPRESSIONS.prepare("select detail from pithy_email_suppressions where email = ?")
+      .bind("query@example.com")
+      .first<{ detail: string }>();
+    expect(sup?.detail).toBe("unsubscribe link");
+  });
+
+  test("a link already in an inbox, in the signed format, still works on every route until it expires", async () => {
+    const app = callbackApp();
+    const expiry = new Date(Date.now() + 86_400_000);
+    const options = { key: KEY, kid: "1", expiresAt: expiry, audience: "http://localhost" };
+    const click = await signedToken(
+      { kind: "click", jobId: "job-route-old", recipient: "old@example.com", destination: "https://acme.test/welcome" },
+      options,
+    );
+    const open = await signedToken({ kind: "open", jobId: "job-route-old", recipient: "old@example.com" }, options);
+    const unsubscribe = await signedToken(
+      { kind: "unsubscribe", jobId: "job-route-old", recipient: "old@example.com" },
+      options,
+    );
+
+    expect((await app(`${CALLBACK_BASE}/c/${click}`)).status).toBe(302);
+    expect((await app(`${CALLBACK_BASE}/o/${open}.png`)).status).toBe(200);
+    expect((await app(`${CALLBACK_BASE}/u/${unsubscribe}`)).status).toBe(200);
+    expect((await app(`${CALLBACK_BASE}/u/${unsubscribe}`, { method: "POST" })).status).toBe(200);
+    expect((await eventsFor("job-route-old")).map((event) => event.type)).toEqual(["click", "open", "unsubscribe"]);
+
+    const expired = await signedToken(
+      { kind: "unsubscribe", jobId: "job-route-old", recipient: "old@example.com" },
+      { ...options, expiresAt: new Date(Date.now() - 1000) },
+    );
+    const res = await app(`${CALLBACK_BASE}/u/${expired}`, { method: "POST" });
+    expect(res.status).toBe(400);
+    expect(await errCode(res)).toBe("email/invalid_token");
   });
 
   test("the unsubscribe route answers a one-click POST, with no human ever loading a page", async () => {
@@ -354,27 +467,44 @@ describe("registered callback routes", () => {
     expect(await errCode(res)).toBe("validation/invalid_input");
   });
 
-  test("an over-long ?reason= is rejected as validation/invalid_input", async () => {
-    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-q", recipient: "u@example.com" });
-    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}?reason=${"x".repeat(2001)}`);
-
-    expect(res.status).toBe(400);
-    expect(await errCode(res)).toBe("validation/invalid_input");
-    // Nothing was suppressed: the validator answered before the handler ran.
-    const count = await env.EMAIL_SUPPRESSIONS.prepare("select count(*) as n from pithy_email_suppressions").first<{
-      n: number;
-    }>();
-    expect(count?.n).toBe(0);
-  });
-
-  test("a repeated ?reason= is now ambiguous and rejected", async () => {
-    // Hono hands a repeated query key to the validator as an array, so the schema refuses it. Before
-    // the validator, `c.req.query("reason")` silently took the first value; ambiguous input is now a 400.
-    const t = await liveToken({ kind: "unsubscribe", jobId: "job-route-d", recipient: "u@example.com" });
-    const res = await callbackApp()(`${CALLBACK_BASE}/u/${t}?reason=a&reason=b`);
-
-    expect(res.status).toBe(400);
-    expect(await errCode(res)).toBe("validation/invalid_input");
+  test("no body can refuse the opt-out: malformed, repeated, over-long or mistyped, it still lands", async () => {
+    const app = callbackApp();
+    const cases: [string, RequestInit][] = [
+      [
+        "malformed@example.com",
+        { headers: { "content-type": "multipart/form-data; boundary=zzz" }, body: "--zzz\r\nbroken" },
+      ],
+      [
+        "repeated@example.com",
+        {
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "reason=a&reason=b&List-Unsubscribe=One-Click&List-Unsubscribe=One-Click",
+        },
+      ],
+      [
+        "long@example.com",
+        {
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ reason: "x".repeat(5000) }).toString(),
+        },
+      ],
+      ["json@example.com", { headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: 7 }) }],
+    ];
+    for (const [address, init] of cases) {
+      const t = await liveToken({ kind: "unsubscribe", jobId: `job-body-${address}`, recipient: address });
+      const res = await app(`${CALLBACK_BASE}/u/${t}`, { method: "POST", ...init });
+      expect(res.status, address).toBe(200);
+      const sup = await env.EMAIL_SUPPRESSIONS.prepare("select detail from pithy_email_suppressions where email = ?")
+        .bind(address)
+        .first<{ detail: string }>();
+      expect(sup?.detail, address).toBe(
+        address === "repeated@example.com"
+          ? "a"
+          : address === "long@example.com"
+            ? "x".repeat(200)
+            : "unsubscribe link",
+      );
+    }
   });
 
   test("a malformed token is the validator's error, not the verifier's", async () => {

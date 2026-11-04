@@ -5,8 +5,17 @@ import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { authConfig } from "../../pithy-config";
-import { routeTable, useGo, useSearch, useSearchParam } from "../../router";
-import { adoptSignIn, afterSignIn, refusedAccountScreen } from "../../session";
+import { parseQuery, queryString } from "../../platform";
+import { Redirect, routeTable, useGo, usePath, useSearch, useSearchParam } from "../../router";
+import {
+  adoptSignIn,
+  afterSignIn,
+  heldOtpAddress,
+  holdOtpAddress,
+  refusedAccountScreen,
+  releaseOtpAddress,
+  resumeQuery,
+} from "../../session";
 import { type Theme, useTheme } from "../../theme";
 import { transport } from "../../transport";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
@@ -18,10 +27,13 @@ export const path = "/otp";
 // **The sign-in screen sends people here on a phone with no universal link.** It offers one way in, and there that
 // is a code: the Worker hands a magic link only to an https link, since any app can claim a custom scheme. With
 // `universalLinkOrigin` set, the sign-in screen mails a link instead and nothing sends anyone here. To send a code
-// from your own screen, go here with `go(`/otp?email=${encodeURIComponent(email)}`)`.
+// from your own screen, hand it the address and go here: `holdOtpAddress(email); go("/otp")`.
 //
-// **The email is a query parameter, not a path segment.** The address is a prefill, not the thing this screen
-// is, and `/otp` with no email is a valid screen that says "your inbox".
+// **The address is never in the URL.** A path or a query string is written to every request log between the
+// browser and the Worker, so `holdOtpAddress` keeps it in memory and in this tab's session storage. A reload keeps
+// it. A new tab, a bookmark or a link somebody else opens has none, and goes back to sign-in, since a code cannot be
+// checked without the address it was sent to. An older link carrying `?email=` is read once, held, and dropped from
+// the address bar.
 
 /**
  * This screen's English, baked in: the only catalog that survives being copied into your repository.
@@ -75,7 +87,12 @@ export default function Otp(): ReactNode {
   const theme = useTheme();
   const go = useGo();
   const search = useSearch();
-  const email = useSearchParam("email") ?? "";
+  const path = usePath();
+  const carried = useSearchParam("email");
+  const [email] = useState(() => {
+    if (carried) holdOtpAddress(carried);
+    return carried || heldOtpAddress() || "";
+  });
   const length = authConfig.otpLength;
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
@@ -111,6 +128,7 @@ export default function Otp(): ReactNode {
     const held = result.ok && (await adoptSignIn(result.value));
     setBusy(false);
     if (held) {
+      releaseOtpAddress();
       // A sign-in a screen or an application's authorization sent somebody to resumes it, or goes home.
       const next = await afterSignIn(search);
       if (next !== null) go(next);
@@ -127,6 +145,15 @@ export default function Otp(): ReactNode {
     // The gate goes on the send route and not on the verify one, which is where `@pithy-sh/auth` stacks the
     // humanity check: a code that was already mailed is not a surface worth challenging.
     await sendOtp({ email, type: "sign-in" }, { ...transport.auth, gate: (body) => turnstileRequest(body, captcha) });
+  }
+
+  if (carried !== null) {
+    const { email: _dropped, ...rest } = parseQuery(search);
+    return <Redirect to={`${path}${queryString(rest)}`} replace />;
+  }
+  if (!email) {
+    const resume = resumeQuery(search);
+    return <Redirect screen="sign-in" replace {...(resume ? { search: resume.slice(1) } : {})} />;
   }
 
   return (

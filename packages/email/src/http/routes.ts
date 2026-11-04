@@ -461,17 +461,17 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
             message: "That expiry has already passed, so it would not block anything.",
             action:
               "Give a future instant, or omit `expiresAt` to block permanently. To lift an existing block, use the remove route — it requires `email:suppressions:delete`.",
-            detail: `refused suppression for ${email} with expiresAt ${expiresAt.toISOString()} at ${now.toISOString()}`,
+            detail: `refused suppression with expiresAt ${expiresAt.toISOString()} at ${now.toISOString()}`,
           });
         }
 
         const current = (await listSuppressions(db, { email, limit: 1 })).items[0];
         if (current && current.reason !== "manual") {
           throw new ConflictError({
-            message: `${email} is already suppressed as a ${current.reason}, which this route may not overwrite.`,
+            message: `That address is already suppressed as a ${current.reason}, which this route may not overwrite.`,
             action:
               "Lift it with the remove route, which requires `email:suppressions:delete` — undoing a bounce, a complaint, or someone's own opt-out is a separate decision.",
-            detail: `refused manual suppression over an existing ${current.reason} for ${email}`,
+            detail: `refused manual suppression over an existing ${current.reason}`,
           });
         }
 

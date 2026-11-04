@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import { beforeEach, describe, expect, test } from "vitest";
+import { verifyToken } from "../crypto/token";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
@@ -191,13 +192,17 @@ async function tick(at: Date, workflows: Workflows = new Workflows()): Promise<s
   return dispatched;
 }
 
-/** The `exp` claim of the tracked link in a sent message, as a `Date`. */
-function linkExpiry(message: EmailMessage): Date {
-  const match = /_pithy\/email\/c\/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.exec(message.html ?? "");
+/** The `exp` claim of the tracked link in a sent message, as a `Date`. The token is sealed, so it is opened. */
+async function linkExpiry(message: EmailMessage): Promise<Date> {
+  const match = /_pithy\/email\/c\/([A-Za-z0-9._-]+)/.exec(message.html ?? "");
   if (!match?.[1]) throw new Error(`no tracked link in the message: ${message.html?.slice(0, 200)}`);
-  const payload = match[1].split(".")[0] as string;
-  const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-  return new Date((JSON.parse(json) as { exp: number }).exp * 1000);
+  const claims = await verifyToken(
+    match[1],
+    { versions: { [signing.kid]: signing.key } },
+    new Date(0),
+    "https://api.acme.test",
+  );
+  return new Date(claims.exp * 1000);
 }
 
 async function jobRow(jobId: string): Promise<{ status: string; updated_at: number; sent_at: number | null }> {
@@ -261,7 +266,7 @@ describe("runSendBatch — the pass instant", () => {
     await runSendBatch(deps, journalledStep(journal), [first, second]);
 
     expect(sent).toHaveLength(2);
-    const expiries = sent.map((message) => linkExpiry(message).getTime());
+    const expiries = await Promise.all(sent.map(async (message) => (await linkExpiry(message)).getTime()));
     expect(expiries).toEqual([PASS_STARTED.getTime() + 90 * DAY_MS, PASS_STARTED.getTime() + 90 * DAY_MS]);
   });
 });

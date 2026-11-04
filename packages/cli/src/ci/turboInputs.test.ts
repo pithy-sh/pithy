@@ -860,6 +860,8 @@ describe("a gate is keyed on what it reads", () => {
     const PACKAGE_SCOPED: Record<string, string> = {
       "appTools.test.ts":
         "It composes the kit through `openapi/kitDocument.ts`, as `adminOperations.test.ts` does, so what it reads arrives as imports of each capability's built `dist`, which the `^build` dependency already keys. It opens no file outside its own package.",
+      "linkAddresses.test.ts":
+        "It mints every link the kit mails through each capability's built `dist` — email, auth, organization, testers — which the `^build` dependency already keys, and boots the auth Worker in Miniflare from the same. It opens no file outside its own package, so turbo's default inputs and that dependency are exactly right for it.",
       "adminOperations.test.ts":
         "It composes the kit through `openapi/kitDocument.ts`, so what it reads arrives as imports of each capability's built `dist`, which the `^build` dependency already keys. It opens no file outside its own package, so turbo's default inputs and that dependency are exactly right for it.",
       "envStanzaWriters.test.ts":

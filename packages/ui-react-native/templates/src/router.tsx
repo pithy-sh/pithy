@@ -38,7 +38,7 @@ import { useTheme } from "./theme";
 
 /** How the app navigates: the router a screen goes through, never `window`. */
 export interface RouterAdapter {
-  /** Where the app is now: the path and its query, such as `/otp?email=ada%40example.com`. */
+  /** Where the app is now: the path and its query, such as `/invitations/tok_1?resume=%2Fhome`. */
   path(): string;
   /** Go to `to`, a path with an optional query. `replace` swaps the current entry rather than pushing one. */
   go(to: string, options: { replace: boolean }): void;
@@ -151,7 +151,7 @@ export function usePath(): string {
   return splitPath(useLocation()).pathname;
 }
 
-/** The current query string, verbatim: `"?email=ada"`, or `""`. Re-renders on every navigation. */
+/** The current query string, verbatim: `"?tab=billing"`, or `""`. Re-renders on every navigation. */
 export function useSearch(): string {
   return splitPath(useLocation()).search;
 }

@@ -159,6 +159,7 @@ describe("the callback screen", () => {
 
 describe("the one-time code screen", () => {
   async function verifyCode(): Promise<void> {
+    (await import("../templates/src/session")).holdOtpAddress("ada@example.com");
     const { default: Otp } = await import("../templates/src/routes/pithy/otp");
     const container = await render(<Otp />);
     const input = container.querySelector("input");
