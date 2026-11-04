@@ -1,5 +1,26 @@
 # @pithy-sh/email
 
+## 0.10.0
+
+### Minor Changes
+
+- [#938](https://github.com/pithy-sh/pithy/pull/938) [`ba1da3c`](https://github.com/pithy-sh/pithy/commit/ba1da3c323707f52d04831399685167df4be61ab) Thanks [@kingmesal](https://github.com/kingmesal)! - Looking up one address on the suppression list, or the connections one person authorized, is now a POST with the address in the body, so it never lands in a request log. The listings now refuse the old `?email=` and `?principal=`.
+  
+  Security: An email address looked up through `GET /email/suppressions?email=`, or a principal through `GET /control-plane/connections?principal=`, was written to the customer's request logs, Workers observability and any proxy in between as a query parameter.
+
+- [#939](https://github.com/pithy-sh/pithy/pull/939) [`c286341`](https://github.com/pithy-sh/pithy/commit/c28634177e572427971b44afde974c5ebdb27ac1) Thanks [@kingmesal](https://github.com/kingmesal)! - Every tracked link email mints is now sealed, an unsubscribe link opens a page whose button opts out with any reason in the form body, and the code screen keeps the address out of its URL, so no request log learns who a link was for.
+  
+  Security: The recipient's email address rode in every click, open and unsubscribe URL as decodable base64url, the recipient's opt-out reason in the unsubscribe query string, and the address in the OTP screen's query string, so each was written to the customer's request logs.
+
+### Patch Changes
+
+- [#940](https://github.com/pithy-sh/pithy/pull/940) [`7225148`](https://github.com/pithy-sh/pithy/commit/72251485c7be6669f3eabd96882d9ad75ebc17e3) Thanks [@kingmesal](https://github.com/kingmesal)! - Searching the users or the support inbox, and the reason an operator gives for a user export or an invitation listing, now travel in a POST body, never a URL, so nothing a person types lands in a request log. The user listing refuses the old `?search=`, and the GET forms of the inbox search, the export and the invitation listing are gone. Run `pithy dashboard connect` from this CLI or newer: an older one reads the new POST reads as writes and leaves their scopes out of the default grant.
+  
+  Security: A search term typed into the users or support search on the control plane, often a person's email address, and the free-text reason given for a user export or an invitation listing, were written to the customer's request logs, Workers observability and any proxy in between as query parameters.
+- Updated dependencies [[`ba1da3c`](https://github.com/pithy-sh/pithy/commit/ba1da3c323707f52d04831399685167df4be61ab), [`c286341`](https://github.com/pithy-sh/pithy/commit/c28634177e572427971b44afde974c5ebdb27ac1), [`7225148`](https://github.com/pithy-sh/pithy/commit/72251485c7be6669f3eabd96882d9ad75ebc17e3)]:
+  - @pithy-sh/core@0.18.0
+  - @pithy-sh/secrets@0.6.6
+
 ## 0.9.0
 
 ### Minor Changes

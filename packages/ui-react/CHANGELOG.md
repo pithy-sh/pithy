@@ -1,5 +1,13 @@
 # @pithy-sh/ui-react
 
+## 0.7.0
+
+### Minor Changes
+
+- [#939](https://github.com/pithy-sh/pithy/pull/939) [`c286341`](https://github.com/pithy-sh/pithy/commit/c28634177e572427971b44afde974c5ebdb27ac1) Thanks [@kingmesal](https://github.com/kingmesal)! - Every tracked link email mints is now sealed, an unsubscribe link opens a page whose button opts out with any reason in the form body, and the code screen keeps the address out of its URL, so no request log learns who a link was for.
+  
+  Security: The recipient's email address rode in every click, open and unsubscribe URL as decodable base64url, the recipient's opt-out reason in the unsubscribe query string, and the address in the OTP screen's query string, so each was written to the customer's request logs.
+
 ## 0.6.0
 
 ### Minor Changes
