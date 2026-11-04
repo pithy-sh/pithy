@@ -191,7 +191,7 @@ export function usePath(): string {
 }
 
 /**
- * The current query string, verbatim — `"?email=ada"`, or `""` when there is none. Re-renders the
+ * The current query string, verbatim — `"?tab=billing"`, or `""` when there is none. Re-renders the
  * subscriber on every navigation.
  *
  * The raw string rather than a `URLSearchParams`, and that is the decision: a params object is a new
@@ -205,7 +205,7 @@ export function useSearch(): string {
 /**
  * One query parameter, decoded — `null` when the key is absent. Re-renders on every navigation.
  *
- * A value is what call sites actually ask for: the OTP screen wants `email`, a shell wants which record
+ * A value is what call sites actually ask for: a pricing screen wants which plan, a shell wants which record
  * is open. It is a string from a stranger, exactly like a path parameter, so a screen wanting a number
  * or a member of a set validates it — this router types neither.
  */

@@ -67,7 +67,9 @@ describe("Router", () => {
   }, 20_000);
 
   test("a scaffolded screen still renders, and is handed its (empty) params", async () => {
-    // `/otp` declares no parameter, so this is the case every existing screen is in.
+    // `/otp` declares no parameter, so this is the case every existing screen is in. It is handed an address
+    // the way the screen that sent the code hands one, or it would go back to sign-in.
+    (await import("../templates/src/session")).holdOtpAddress("ada@example.com");
     const html = await renderAt("/otp");
     expect(html).toContain("Enter the code.");
     expect(html).not.toContain("Not here.");

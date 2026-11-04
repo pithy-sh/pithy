@@ -20,6 +20,9 @@ const SUSPENDED_CANARY = "/canary-suspended-screen";
 const DELETED_CANARY = "/canary-deleted-screen";
 
 const navigated: string[] = [];
+const redirected: string[] = [];
+let carried: string | null = null;
+let search = "";
 let answer: { ok: true; value: unknown } | { ok: false; failure: { code: string; message: string; action: null } };
 
 vi.mock("../../pithy-config", () => ({
@@ -37,7 +40,13 @@ vi.mock("../../router", () => {
     navigate: (to: string) => {
       navigated.push(to);
     },
-    useSearchParam: () => "someone@example.com",
+    useSearchParam: (name: string) => (name === "email" ? carried : null),
+    usePath: () => "/otp",
+    useSearch: () => search,
+    Redirect: (props: { to?: string; screen?: string; search?: string }) => {
+      redirected.push(props.to ?? `${props.screen}${props.search ? `?${props.search}` : ""}`);
+      return null;
+    },
     routeTable: async () => ({ byRole }),
   };
 });
@@ -54,17 +63,29 @@ vi.mock("@pithy-sh/auth/src/client/api", () => ({
 
 beforeEach(() => {
   navigated.length = 0;
+  redirected.length = 0;
+  carried = null;
+  search = "";
   document.body.innerHTML = "";
 });
 
-/** Render the screen, type a full code, press sign in, and hand back what it rendered. */
-async function submitCode(): Promise<HTMLElement> {
+/** Render the screen, with the address handed over the way a sending screen hands it, and hand back the host. */
+async function render(held: string | null = "someone@example.com"): Promise<HTMLElement> {
+  const session = await import("../../session");
+  session.releaseOtpAddress();
+  if (held !== null) session.holdOtpAddress(held);
   const { default: Otp } = await import("./otp");
   const host = document.createElement("div");
   document.body.appendChild(host);
   await act(async () => {
     createRoot(host).render(<Otp />);
   });
+  return host;
+}
+
+/** Render the screen, type a full code, press sign in, and hand back what it rendered. */
+async function submitCode(): Promise<HTMLElement> {
+  const host = await render();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   for (const input of host.querySelectorAll<HTMLInputElement>(".otp input")) {
     await act(async () => {
@@ -105,4 +126,39 @@ test("a wrong code is still a wrong code", async () => {
   const host = await submitCode();
   expect(navigated).toEqual([]);
   expect(host.textContent).toContain("That code didn't work.");
+});
+
+test("the address it was handed is the one it names and checks, and the URL never carried it", async () => {
+  answer = { ok: false, failure: { code: "auth/invalid_otp", message: "Invalid OTP.", action: null } };
+  const host = await submitCode();
+  expect(host.textContent).toContain("someone@example.com");
+  expect(redirected).toEqual([]);
+});
+
+test("with no address handed over, it goes back to sign-in, carrying what it should resume", async () => {
+  search = "?resume=%2Fauthorize";
+  await render(null);
+  expect(redirected).toEqual(["sign-in?resume=%2Fauthorize"]);
+});
+
+test("an older link carrying ?email= is read once, held, and dropped from the URL", async () => {
+  carried = "legacy@example.com";
+  search = "?email=legacy%40example.com&resume=%2Fauthorize";
+  await render(null);
+  expect(redirected).toEqual(["/otp?resume=%2Fauthorize"]);
+  expect((await import("../../session")).heldOtpAddress()).toBe("legacy@example.com");
+});
+
+test("a right code forgets the held address", async () => {
+  answer = { ok: true, value: {} };
+  await submitCode();
+  expect((await import("../../session")).heldOtpAddress()).toBeNull();
+});
+
+test("an empty ?email= does not cost the address it was handed", async () => {
+  carried = "";
+  search = "?email=";
+  await render();
+  expect(redirected).toEqual(["/otp"]);
+  expect((await import("../../session")).heldOtpAddress()).toBe("someone@example.com");
 });

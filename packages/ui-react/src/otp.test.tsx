@@ -5,7 +5,7 @@ import { KIT_CATALOGS } from "@pithy-sh/i18n/src/catalogs/kit";
 import { TranslatorProvider } from "@pithy-sh/i18n/src/react/translator";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 /**
  * The one-time-code screen, rendered — for the count in its first sentence, and for the seam it reads
@@ -72,9 +72,17 @@ async function render(node: ReactNode): Promise<string> {
   return container.textContent ?? "";
 }
 
-afterEach(() => {
+/** The address the screen is handed, the way the screen that sent the code hands it. */
+const ADDRESS = "ada@example.com";
+
+beforeEach(async () => {
+  (await import("../templates/src/session")).holdOtpAddress(ADDRESS);
+});
+
+afterEach(async () => {
   mounted?.unmount();
   mounted = null;
+  (await import("../templates/src/session")).releaseOtpAddress();
 });
 
 test("counts the digits it asked for in the form the language has for that count", async () => {
@@ -100,10 +108,8 @@ test("reads the language a provider mounted over it, having no prop to be handed
   // Read from the catalog, interpolated the way the screen interpolates it: a Spanish sentence written
   // down here would be a second copy of the translation and the first thing to drift from it.
   const sent = KIT_CATALOGS.es?.[`auth/otp.sent.${OTP_LENGTH === 1 ? "one" : "other"}`];
-  const inbox = KIT_CATALOGS.es?.["auth/otp.inbox"];
   expect(sent, "the kit ships no Spanish for the one-time code screen's first sentence").toBeTypeOf("string");
-  expect(inbox).toBeTypeOf("string");
-  expect(text).toContain((sent ?? "").replace("{count}", String(OTP_LENGTH)).replace("{email}", inbox ?? ""));
+  expect(text).toContain((sent ?? "").replace("{count}", String(OTP_LENGTH)).replace("{email}", ADDRESS));
   // And it is not quietly English: the assertion above is a `toContain`, and a screen that never read
   // the provider would still have to fail this one.
   expect(text).not.toContain("We sent");

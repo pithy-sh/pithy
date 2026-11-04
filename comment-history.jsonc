@@ -1218,7 +1218,6 @@
     "packages/email/src/crypto/linkKeyRotation.test.ts": 1,
     "packages/email/src/crypto/signingKey.ts": 4,
     "packages/email/src/crypto/token.test.ts": 1,
-    "packages/email/src/crypto/token.ts": 1,
     "packages/email/src/data/enums.ts": 1,
     "packages/email/src/data/tables.ts": 2,
     "packages/email/src/http/callbacks.workers.test.ts": 2,

@@ -27,6 +27,7 @@ import {
   afterSignIn,
   beginHandoff,
   completeHandoff,
+  holdOtpAddress,
   type IdTokenUser,
   leaveInPlace,
   refusedAccountScreen,
@@ -435,8 +436,8 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     // Whatever the answer, the code screen: telling a registered address from another is an enumeration oracle.
     await sendOtp({ email, type: "sign-in" }, { ...transport.auth, gate: check.attach });
     setBusy(false);
-    const resume = resumeQuery(search);
-    go(`${otpPath}${queryString({ email })}${resume ? `&${resume.slice(1)}` : ""}`);
+    holdOtpAddress(email);
+    go(`${otpPath}${resumeQuery(search)}`);
   }
 
   /** Where a sign-in goes when it took: the screen or the request it should resume, or home. */
