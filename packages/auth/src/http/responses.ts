@@ -26,7 +26,7 @@ import { VerificationState, VerificationType } from "../data/verificationOutcome
  * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
  * version boundary — a management client validates a response with this schema against a customer's
  * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
- * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * below that release and takes the whole pane with it. Absent then means *this Worker cannot
  * say*, which is a different fact from `null`.
  */
 
@@ -60,7 +60,7 @@ export const AdminUserView = z
       ),
     createdAt: z.iso.datetime().describe("When the user was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When the row was last written, ISO-8601."),
-    // Where the account stands (#813), on the organization view's shape. Each optional: absent from a Worker
+    // Where the account stands, on the organization view's shape. Each optional: absent from a Worker
     // older than the field. No reason and no actor — the reason is on the trail, and the trail is audit's.
     state: z
       .enum(["active", "suspended", "deleted"])
@@ -117,7 +117,7 @@ export const AdminDeviceView = z
   .describe("One registered device as a management client sees it — without the push token, which is a credential.");
 export type AdminDeviceView = z.output<typeof AdminDeviceView>;
 
-/** `GET {base}/admin/users`. */
+/** `GET {base}/admin/users` and `POST {base}/admin/users/search`. */
 export const AdminUsersResponse = z
   .object({
     users: z.array(AdminUserView).describe("The page, newest first."),
@@ -128,7 +128,7 @@ export type AdminUsersResponse = z.output<typeof AdminUsersResponse>;
 
 /** `GET {base}/admin/users/:userId`. */
 /**
- * A sub-read of the user pane that could not be made (#380).
+ * A sub-read of the user pane that could not be made.
  *
  * The pane fans out over three independent tables and this route used to `Promise.all` them: one D1 read
  * failing took the whole page down, so a support agent looking at a locked-out account saw a 500 instead
@@ -201,7 +201,7 @@ export const AdminDevicesResponse = z
 export type AdminDevicesResponse = z.output<typeof AdminDevicesResponse>;
 
 /**
- * One sign-in link or code from the verification ledger (#829), as a management client sees it.
+ * One sign-in link or code from the verification ledger, as a management client sees it.
  *
  * Never the token and never the address: the ledger holds neither. The mail is named by its job id, which is how
  * a reader holding `email:jobs:read` joins this to a bounce, a deferral or a suppression.
@@ -243,7 +243,7 @@ export const VerificationTypeCounts = z
 export type VerificationTypeCounts = z.output<typeof VerificationTypeCounts>;
 
 /**
- * `GET {base}/admin/verifications` (#829): the window it covered, the counts by type and state over all of it,
+ * `GET {base}/admin/verifications`: the window it covered, the counts by type and state over all of it,
  * and a page of its rows, newest issue first.
  *
  * The counts cover every row in the window whatever the page or the filters say, and every type, with zeros —
@@ -286,7 +286,7 @@ export const AdminDeviceRevokeResponse = z
 export type AdminDeviceRevokeResponse = z.output<typeof AdminDeviceRevokeResponse>;
 
 /**
- * `POST {base}/admin/users/:userId/suspend` (#621).
+ * `POST {base}/admin/users/:userId/suspend`.
  *
  * The suspension the account is now under, how many sessions ended with it, and whether the person was told.
  * Not the reason: the caller wrote it, the trail keeps it, and echoing it back would put it in one more place
@@ -319,7 +319,7 @@ export const AdminUserSuspendResponse = z
 export type AdminUserSuspendResponse = z.output<typeof AdminUserSuspendResponse>;
 
 /**
- * `POST {base}/admin/users/:userId/reinstate` (#621).
+ * `POST {base}/admin/users/:userId/reinstate`.
  *
  * No session count: a reinstatement restores none. The person signs in again.
  */
@@ -349,7 +349,7 @@ const PurgeAfter = z.iso
   );
 
 /**
- * `DELETE {base}/admin/users/:userId` (#622).
+ * `DELETE {base}/admin/users/:userId`.
  *
  * What the deletion left in force, how many sessions ended with it, whether the person was told, and what
  * became of the purge. Not the reason: the caller wrote it and the trail keeps it.
@@ -382,7 +382,7 @@ export const AdminUserDeleteResponse = z
 export type AdminUserDeleteResponse = z.output<typeof AdminUserDeleteResponse>;
 
 /**
- * `POST {base}/admin/users/:userId/restore` (#622). No session count: a restoration restores none.
+ * `POST {base}/admin/users/:userId/restore`. No session count: a restoration restores none.
  */
 export const AdminUserRestoreResponse = z
   .object({
@@ -425,7 +425,7 @@ const AuthExportTransition = z
   );
 
 /**
- * What `@pithy-sh/auth` holds about one account, as its purge contribution exports it (#622) — the `data` of
+ * What `@pithy-sh/auth` holds about one account, as its purge contribution exports it — the `data` of
  * the `auth` entry in an export.
  *
  * The person's own data and none of their credentials: no session token, no provider token, no push token.
@@ -513,7 +513,7 @@ const AdminUserExportEntry = z
   .describe("One capability's part of an export, behind a state, so an unread part cannot be taken for an empty one.");
 
 /**
- * `GET {base}/admin/users/:userId/export` (#622).
+ * `POST {base}/admin/users/:userId/export`.
  *
  * Everything the kit holds about one account — the answer to an access request. One entry per composed
  * capability that declares a purge contribution, in the order the purge runs them, each read on its own so
@@ -607,7 +607,7 @@ export const MyDeviceRevokeResponse = z
 export type MyDeviceRevokeResponse = z.output<typeof MyDeviceRevokeResponse>;
 
 /**
- * `DELETE {base}/account` (#622) — the signed-in person deleted their own account. Always soft, on the
+ * `DELETE {base}/account` — the signed-in person deleted their own account. Always soft, on the
  * configured window. Their sessions end with it, this one included.
  */
 export const AccountDeleteResponse = z

@@ -14,6 +14,7 @@ import { support as supportCapability } from "@pithy-sh/support/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
 import { describe, expect, test } from "vitest";
+import { kitComposition } from "../openapi/kitDocument";
 import {
   decideGrant,
   defaultGrant,
@@ -67,21 +68,29 @@ describe("grantableScopes", () => {
     expect(grantableScopes([misnamed])[0]?.read).toBe(false);
   });
 
-  test("a POST lookup that declares itself a read keeps its scope a read, and one that declares any other kind does not", () => {
-    // A lookup by a person's address is a POST, because a URL is written to every request log.
+  test("a POST that declares itself a read carrying its input in a body keeps its scope a read", () => {
+    // A lookup by an address and a search by a term are POSTs, because a URL is written to every request log.
     const lookup = capabilityWith("lookup", [
       { method: "GET", path: "/l/things", scope: "l:things:read", kind: "reads", summary: "Page the things." },
-      { method: "POST", path: "/l/things/lookup", scope: "l:things:read", kind: "reads", summary: "Look one up." },
+      {
+        method: "POST",
+        path: "/l/things/search",
+        scope: "l:things:read",
+        kind: "reads",
+        readInBody: true,
+        summary: "Search them.",
+      },
     ]);
-    const undeclared = capabilityWith("undeclared", [
+    // The kind alone is not the declaration: a POST that says `reads` and no more is a write.
+    const unmarked = capabilityWith("unmarked", [
       { method: "GET", path: "/u/things", scope: "u:things:read", kind: "reads", summary: "Page the things." },
-      { method: "POST", path: "/u/things/lookup", scope: "u:things:read", kind: "writes", summary: "Look one up." },
+      { method: "POST", path: "/u/things/lookup", scope: "u:things:read", kind: "reads", summary: "Look one up." },
     ]);
 
     expect(grantableScopes([lookup])[0]).toMatchObject({ read: true, routes: 2 });
-    expect(grantableScopes([undeclared])[0]).toMatchObject({ read: false, routes: 2 });
+    expect(grantableScopes([unmarked])[0]).toMatchObject({ read: false, routes: 2 });
     expect(defaultGrant([lookup])).toContain("l:things:read");
-    expect(defaultGrant([undeclared])).not.toContain("u:things:read");
+    expect(defaultGrant([unmarked])).not.toContain("u:things:read");
   });
 
   test("an unscoped route is not grantable and is never offered", () => {
@@ -257,7 +266,8 @@ describe("defaultGrant", () => {
  * The gate.
  *
  * **The invariant: every scope the default grant adds beyond the seam's own opens nothing but `GET`
- * routes and `POST …/lookup` routes declared `kind: "reads"`.** Stated over whatever the project composes rather than over a list of scope names, because a
+ * routes and `POST` routes declared `kind: "reads"` with `readInBody`.** Stated over whatever the project composes
+ * rather than over a list of scope names, because a
  * list is the thing this derivation exists to delete — a capability landing a route must not be able to
  * put a write into a read default by being new.
  *
@@ -288,6 +298,25 @@ describe("a read default never grants a write", () => {
         kind: "reads",
         summary: "Purge, said a read.",
       },
+      { method: "GET", path: "/h/files", scope: "hostile:files:read", kind: "reads", summary: "List the files." },
+      // Declarations a type refuses, as a JavaScript capability or a cast could still hand them over.
+      {
+        method: "POST",
+        path: "/h/files/search",
+        scope: "hostile:files:read",
+        kind: "writes",
+        readInBody: true,
+        summary: "Shred, said a search.",
+      } as unknown as AdminRouteDeclaration,
+      { method: "GET", path: "/h/keys", scope: "hostile:keys:read", kind: "reads", summary: "List the keys." },
+      {
+        method: "DELETE",
+        path: "/h/keys/search",
+        scope: "hostile:keys:read",
+        kind: "reads",
+        readInBody: true,
+        summary: "Delete, said a search.",
+      } as unknown as AdminRouteDeclaration,
     ]);
     const composed: Capability[] = [controlplane(), hostile, support];
 
@@ -301,9 +330,9 @@ describe("a read default never grants a write", () => {
         opened.filter(
           (route) =>
             route.method !== "GET" &&
-            !(route.method === "POST" && route.kind === "reads" && route.path.endsWith("/lookup")),
+            !(route.method === "POST" && route.kind === "reads" && "readInBody" in route && route.readInBody === true),
         ),
-        `${scope} is in the read default but opens a route that is neither a GET nor a POST lookup declared as a read`,
+        `${scope} is in the read default but opens a route that is neither a GET nor a POST declared a read in a body`,
       ).toEqual([]);
     }
     // Not vacuous — a genuine read is found and granted.
@@ -313,12 +342,80 @@ describe("a read default never grants a write", () => {
     expect(added).not.toContain("hostile:things:read");
     // A kind of `reads` admits a POST lookup and nothing else: a DELETE calling itself a read is a write.
     expect(added).not.toContain("hostile:gone:read");
-    // Nor does a POST that is not a lookup, whatever kind it copied from the listing beside it.
+    // Nor does a POST that copied the listing's kind and declared nothing more.
     expect(added).not.toContain("hostile:notes:read");
+    // The marker admits a POST declared a read and nothing else: under another kind, or on a DELETE, it is a write.
+    expect(added).not.toContain("hostile:files:read");
+    expect(added).not.toContain("hostile:keys:read");
     // And the real lookups keep their scopes in the default.
     expect(added).toContain("connections:read");
   });
 });
+
+/**
+ * The default grant over the whole kit, pinned. A read whose input travels in a body moves no scope into or out
+ * of the default, so a change to this list is a reviewed decision about what a new connection holds.
+ */
+describe("the kit's default grant", () => {
+  test("is exactly the published set", () => {
+    expect(defaultGrant(kitComposition().capabilities)).toEqual(KIT_DEFAULT_GRANT);
+  });
+
+  test("keeps every scope whose read now carries its input in a body", () => {
+    const grant = defaultGrant(kitComposition().capabilities);
+    for (const scope of ["auth:users:read", "auth:users:export", "support:threads:read", "connections:read"]) {
+      expect(grant).toContain(scope);
+    }
+    expect(grant).toContain("email:suppressions:read");
+  });
+});
+
+const KIT_DEFAULT_GRANT = [
+  "manifest:read",
+  "keys:rotate",
+  "connections:read",
+  "migrations:read",
+  "privacy:read",
+  "evidence:read",
+  "processing:read",
+  "erasure:read",
+  "retention:read",
+  "secrets:status:read",
+  "email:jobs:read",
+  "email:suppressions:read",
+  "auth:users:read",
+  "auth:devices:read",
+  "auth:verifications:read",
+  "auth:users:export",
+  "turnstile:widgets:read",
+  "audit:events:read",
+  "audit:events:export",
+  "audit:events:read_detail",
+  "consent:read",
+  "storage:usage:read",
+  "media:usage:read",
+  "media:delivery:read",
+  "leaderboard:entries:read",
+  "multiplayer:sessions:read",
+  "rating:players:read",
+  "matchmaking:queues:read",
+  "ledger:accounts:read",
+  "ledger:transactions:read",
+  "vector:indexes:read",
+  "payments:catalog:read",
+  "payments:purchases:read",
+  "payments:subscriptions:read",
+  "payments:entitlements:read",
+  "payments:discounts:read",
+  "payments:reconcile:read",
+  "payments:usage:read",
+  "payments:webhooks:read",
+  "support:threads:read",
+  "testers:roster:read",
+  "organization:accounts:read",
+  "organization:members:read",
+  "artifacts:repos:read",
+];
 
 /** An audit surface: one scope per detail level, which is how the default comes to leave one out. */
 const audit = capabilityWith("audit", [

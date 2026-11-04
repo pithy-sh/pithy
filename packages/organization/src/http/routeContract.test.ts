@@ -250,7 +250,6 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `DELETE ${BASE}/current/ownership`,
       `GET ${BASE}`,
       `GET ${BASE}/admin/organizations`,
-      `GET ${BASE}/admin/organizations/:organizationId/invitations`,
       `GET ${BASE}/admin/organizations/:organizationId/members`,
       `GET ${BASE}/admin/roles`,
       `GET ${BASE}/current`,
@@ -268,6 +267,7 @@ describe("the declared surface and the mounted one are the same surface", () => 
       `POST ${BASE}/acting`,
       `POST ${BASE}/admin/organizations/:organizationId/delete/preview`,
       `POST ${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
+      `POST ${BASE}/admin/organizations/:organizationId/invitations/list`,
       `POST ${BASE}/admin/organizations/:organizationId/members`,
       `POST ${BASE}/admin/organizations/:organizationId/ownership`,
       `POST ${BASE}/admin/organizations/:organizationId/reinstate`,
@@ -320,9 +320,9 @@ describe("the request contract: every path param is validated", () => {
     expect(paramPaths).toEqual([
       `${BASE}/admin/organizations/:organizationId`,
       `${BASE}/admin/organizations/:organizationId/delete/preview`,
-      `${BASE}/admin/organizations/:organizationId/invitations`,
       `${BASE}/admin/organizations/:organizationId/invitations/:invitationId`,
       `${BASE}/admin/organizations/:organizationId/invitations/:invitationId/resend`,
+      `${BASE}/admin/organizations/:organizationId/invitations/list`,
       `${BASE}/admin/organizations/:organizationId/members`,
       `${BASE}/admin/organizations/:organizationId/members/:membershipId`,
       `${BASE}/admin/organizations/:organizationId/ownership`,
@@ -513,8 +513,13 @@ describe("the surface a client is told about", () => {
         expect(route.method, route.path).toBe("POST");
         expect(writes, route.path).toContain(route.scope);
       }
-      // Reads are the two listings, the role catalog, and the one read under a write scope: the invitations an operator is
-      // about to fix.
+      // The one read under a write scope, the invitations an operator is about to fix, is a POST because its
+      // reason is free text and a URL is written to every request log.
+      else if (route.path.endsWith("/invitations/list")) {
+        expect(route.method, route.path).toBe("POST");
+        expect(writes, route.path).toContain(route.scope);
+      }
+      // Every other read is a GET: the two listings and the role catalog.
       else expect(route.method, route.path).toBe("GET");
     }
     expect(

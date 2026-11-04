@@ -97,7 +97,7 @@ export interface ThreadFilters {
 /**
  * What a caller may filter the inbox by, and where to resume.
  *
- * **No free text.** Listing lists; `GET {basePath}/threads/search` searches, ranked, with a limit and no
+ * **No free text.** Listing lists; `POST {basePath}/threads/search` searches, ranked, with a limit and no
  * cursor. A `q` here could say whether a thread matched, never how well.
  */
 export interface ListThreadsQuery extends ThreadFilters {

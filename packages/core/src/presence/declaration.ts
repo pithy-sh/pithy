@@ -5,6 +5,7 @@ import type { Context } from "hono";
 import type { BindingSpecInput } from "../capability/bindings";
 import type { PithyHonoEnv } from "../capability/capability";
 import { remedy } from "../cli/command";
+import { type ReadJudgedRoute, readsOnly } from "../controlPlane/discovery/readRoute";
 import { ControlPlaneScope } from "../controlPlane/scope/scope";
 import { InternalError } from "../error/pithyError";
 import { PRESENCE_PARTICIPANT_NAME_MAX } from "./frames";
@@ -42,7 +43,7 @@ export const PRESENCE_ROOM_MODULE = "@pithy-sh/core/src/presence/durableObject";
 /**
  * The binding a capability that declares room kinds requires. `defineCapability` adds it, so a capability
  * never spells it; a kit capability's `pithy.manifest.json` names it exactly as written here, which is what
- * `pithy add` and `pithy upgrade` wire through the Durable Object path (#428).
+ * `pithy add` and `pithy upgrade` wire through the Durable Object path.
  */
 export const PRESENCE_ROOMS_BINDING_SPEC: BindingSpecInput = {
   type: "durable_object",
@@ -186,9 +187,8 @@ export function participantCap(room: PresenceRoomKind): number {
   return room.maxParticipants ?? DEFAULT_PRESENCE_PARTICIPANTS;
 }
 
-/** One of the capability's own admin routes, as far as the scope rule reads it: its method and the scope it requires. */
-export interface PresenceGatingRoute {
-  method: string;
+/** One of the capability's own admin routes, as far as the scope rule reads it: what it does and the scope it requires. */
+export interface PresenceGatingRoute extends ReadJudgedRoute {
   scope: string | null;
 }
 
@@ -198,8 +198,8 @@ export interface PresenceGatingRoute {
  * cap out of range. A declaration that reached a request would be refused there, by a caller, in a way only
  * the operator can fix.
  *
- * **A room kind's scope is one the capability's own admin routes already require, and only `GET`s require
- * it** — compared against `adminRoutes`, the same artifact `capabilityHealthSources` polices health keys
+ * **A room kind's scope is one the capability's own admin routes already require, and only reads require
+ * it** — a `GET`, or a `POST` declared a read that carries its input in a body (`readsOnly`) — compared against `adminRoutes`, the same artifact `capabilityHealthSources` polices health keys
  * with, and for the same reason. `pithy dashboard connect` offers the scopes it reads off `adminRoutes`, so
  * a scope no route requires — one of presence's own, a near-miss, another capability's — is never offered
  * and never in the default grant, and the room is unjoinable from every management client with no error to
@@ -240,10 +240,10 @@ export function assertPresenceDeclaration(
         `room kind "${room.kind}" scope "${room.scope}": no admin route of ${capability} requires it, so no grant would ever offer it`,
       );
     }
-    const write = gating.find((route) => route.method !== "GET");
+    const write = gating.find((route) => !readsOnly(route));
     if (write) {
       refuse(
-        `room kind "${room.kind}" scope "${room.scope}" gates a ${write.method}; a room joins with a read scope, one only GET routes require`,
+        `room kind "${room.kind}" scope "${room.scope}" gates a ${write.method} that is not a read; a room joins with a read scope, one only GETs and POST reads carrying their input in a body require`,
       );
     }
     if (room.activities.length === 0 || room.activities.length > MAX_PRESENCE_ACTIVITIES) {

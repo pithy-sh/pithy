@@ -6,19 +6,19 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
-import { ListThreadsQuery, SearchThreadsQuery } from "./schemas";
+import { ListThreadsQuery, SearchThreadsBody } from "./schemas";
 import { supportAdminRoutes } from "./scopes";
 
 /**
  * The listing and search request contracts, through the real `validate` and the real error handler: the listing
- * takes no `q`, and says so, and the search route takes `q`, a mode, a limit and the inbox filters.
+ * takes no `q`, and says so, and the search route takes `q`, a mode, a limit and the inbox filters, in a body.
  */
 
 function app() {
   const hono = new Hono<PithyHonoEnv>();
   hono.onError(pithyErrorHandler);
   hono.get("/list", validate("query", ListThreadsQuery), (c) => c.json(c.req.valid("query")));
-  hono.get("/search", validate("query", SearchThreadsQuery), (c) => c.json(c.req.valid("query")));
+  hono.post("/search", validate("json", SearchThreadsBody), (c) => c.json(c.req.valid("json")));
   return hono;
 }
 
@@ -35,22 +35,49 @@ describe("the inbox listing", () => {
   });
 });
 
-describe("the search query", () => {
+/** A search request with `body` as its JSON. */
+function search(body: unknown) {
+  return app().request("/search", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("the search body", () => {
   test("takes q, a mode, a limit and every inbox filter", async () => {
-    const response = await app().request(
-      "/search?q=ORD-40912&mode=hybrid&limit=50&archived=false&category=billing&declaredCategory=billing&priority=urgent&sentiment=angry&channel=email&inbox=support%40help.example.com&assignee=none",
-    );
+    const response = await search({
+      q: "ORD-40912",
+      mode: "hybrid",
+      limit: 50,
+      archived: false,
+      category: "billing",
+      declaredCategory: "billing",
+      priority: "urgent",
+      sentiment: "angry",
+      channel: "email",
+      inbox: "support@help.example.com",
+      assignee: "none",
+    });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ q: "ORD-40912", mode: "hybrid", limit: 50 });
+    expect(await response.json()).toMatchObject({ q: "ORD-40912", mode: "hybrid", limit: 50, archived: false });
   });
 
   test("defaults are the handler's: no mode and no limit is a valid search", async () => {
-    expect(SearchThreadsQuery.parse({ q: "refund" })).toEqual({ q: "refund" });
+    expect(SearchThreadsBody.parse({ q: "refund" })).toEqual({ q: "refund" });
   });
 
-  test("refuses a limit over 50, an unknown mode, an empty q, a cursor, and no q at all", async () => {
-    for (const query of ["q=x&limit=51", "q=x&mode=fuzzy", "q=%20", "q=x&cursor=abc", "mode=keyword"]) {
-      expect((await app().request(`/search?${query}`)).status, query).toBe(400);
+  test("refuses a limit over 50, an unknown mode, an empty q, a cursor, a string flag, and no q at all", async () => {
+    for (const body of [
+      { q: "x", limit: 51 },
+      { q: "x", mode: "fuzzy" },
+      { q: " " },
+      { q: "x", cursor: "abc" },
+      { q: "x", archived: "true" },
+      { q: "x", limit: "5" },
+      { mode: "keyword" },
+    ]) {
+      expect((await search(body)).status, JSON.stringify(body)).toBe(400);
     }
   });
 });
@@ -59,10 +86,12 @@ describe("the manifest", () => {
   test("advertises the search route under the read scope, as the threads.search operation", () => {
     expect(supportAdminRoutes("/inbox")).toContainEqual(
       expect.objectContaining({
-        method: "GET",
+        method: "POST",
         operation: "threads.search",
         path: "/inbox/threads/search",
         scope: "support:threads:read",
+        kind: "reads",
+        readInBody: true,
       }),
     );
   });

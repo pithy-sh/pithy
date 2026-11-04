@@ -64,10 +64,10 @@ describe("the kit's OpenAPI document", () => {
     expect(undescribedFields(document)).toEqual([]);
   });
 
-  test("no query string or path segment carries an address, a phone number or a privacy-marked field", () => {
+  test("no query string or path segment carries an address, a phone number, a privacy-marked field or free text", () => {
     expect(
       addressedParameters(document),
-      "A URL is written to every request log between the client and the Worker. Look the value up with a POST that carries it in the body, as `POST {email}/suppressions/lookup` does.",
+      'A URL is written to every request log between the client and the Worker. Carry the value in a POST body, as `POST {email}/suppressions/lookup` does for an address and `POST {auth}/admin/users/search` does for a search term, and declare the admin route `kind: "reads"` with `readInBody: true` when it only reads.',
     ).toEqual([]);
   });
 

@@ -47,7 +47,7 @@ import {
   MyThreadsQuery,
   RepliesQuery,
   ReplyInput,
-  SearchThreadsQuery,
+  SearchThreadsBody,
   SubmitFeedbackInput,
   ThreadIdParam,
 } from "./schemas";
@@ -64,7 +64,7 @@ import {
  * The support routes, their verification strategies, and what each accepts:
  *
  *   GET  /support/threads               → the inbox     (control-plane: support:threads:read)       query: ListThreadsQuery
- *   GET  /support/threads/search        → search        (control-plane: support:threads:read)       query: SearchThreadsQuery
+ *   POST /support/threads/search        → search        (control-plane: support:threads:read)       json:  SearchThreadsBody
  *   GET  /support/threads/:id           → one thread    (control-plane: support:threads:read)       param: ThreadIdParam
  *   POST /support/threads/:id/archive   → done/reopen   (control-plane: support:threads:archive)    param + json
  *   POST /support/threads/:id/assign    → who has it    (control-plane: support:threads:assign)     param + json
@@ -114,8 +114,8 @@ import {
  * person who most needs to reach support is often the one whose access is broken, and a role the kit
  * invented would make one adopter's account model a condition on everybody's ability to report a bug.
  *
- * But an adopter whose *own* model makes some submissions act-on-behalf-of — `pithy-sh/dashboard#10`'s
- * discount application is made for an organization, and a member may not make one — needs somewhere to
+ * But an adopter whose *own* model makes some submissions act-on-behalf-of — a discount application made
+ * for an organization, which a member may not make — needs somewhere to
  * put that check, and it must not be the client. **The seam for it already exists, in the composition
  * contract rather than in this capability's config**, and it is documented here because it was not
  * discoverable rather than because it was missing:
@@ -238,18 +238,19 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
       async (c) => c.json(await listInbox(await resolve(c), c.req.valid("query"), viewer(c))),
     );
 
-    // Before `/threads/:id`, so `search` is never read as a thread id.
-    app.get(
+    app.post(
       `${base}/threads/search`,
       describeRoute({
         summary: "Search the inbox, by words and by meaning, ranked as one.",
+        description:
+          "The words travel in the body, because they are often a customer's address or order number and a query string is written to every request log between the client and the Worker. Read-only.",
         verification: "control-plane",
         scopes: [SUPPORT_THREADS_READ_SCOPE],
         responses: { 200: SupportSearchResponse },
       }),
       requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
-      validate("query", SearchThreadsQuery),
-      async (c) => c.json(await searchInbox(await resolve(c), c.req.valid("query"), viewer(c))),
+      validate("json", SearchThreadsBody),
+      async (c) => c.json(await searchInbox(await resolve(c), c.req.valid("json"), viewer(c))),
     );
 
     app.get(

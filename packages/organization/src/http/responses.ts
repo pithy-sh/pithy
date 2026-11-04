@@ -520,7 +520,7 @@ export const AdminOrganizationResponse = z
   .describe("What an operator's edit of a tenant left behind.");
 export type AdminOrganizationResponse = z.output<typeof AdminOrganizationResponse>;
 
-/** `GET {base}/admin/organizations/:organizationId/invitations`. */
+/** `POST {base}/admin/organizations/:organizationId/invitations/list`. */
 export const AdminInvitationsResponse = z
   .object({
     invitations: z

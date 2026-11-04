@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import {
   AdminAddMember,
   AdminDeleteOrganization,
-  AdminInvitationsQuery,
+  AdminInvitationsBody,
   AdminOrganizationsQuery,
   AdminReason,
   AdminSuspendOrganization,
@@ -68,15 +68,16 @@ describe("OperatorReason", () => {
     expect(refused.error?.issues[0]?.message).toContain("no address");
   });
 
-  test("every operator body and the invitation query require one", () => {
+  test("every operator body, the invitation listing's among them, requires one", () => {
     expect(AdminReason.safeParse({}).success).toBe(false);
     expect(AdminAddMember.safeParse({ userId: "user-ada", role: "member" }).success).toBe(false);
     expect(AdminUpdateOrganization.safeParse({ name: "Acme" }).success).toBe(false);
-    expect(AdminInvitationsQuery.safeParse({}).success).toBe(false);
-    expect(AdminInvitationsQuery.safeParse({ reason: "Fixing an invite.", limit: "5" }).data).toEqual({
+    expect(AdminInvitationsBody.safeParse({}).success).toBe(false);
+    expect(AdminInvitationsBody.safeParse({ reason: "Fixing an invite.", limit: 5 }).data).toEqual({
       reason: "Fixing an invite.",
       limit: 5,
     });
+    expect(AdminInvitationsBody.safeParse({ reason: "Fixing an invite.", limit: "5" }).success).toBe(false);
   });
 });
 

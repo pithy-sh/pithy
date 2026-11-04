@@ -53,6 +53,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
   auth: {
     "users.list": "GET /auth/admin/users",
+    "users.search": "POST /auth/admin/users/search",
     "users.read": "GET /auth/admin/users/:userId",
     "devices.list": "GET /auth/admin/devices",
     "sessions.revoke": "POST /auth/admin/sessions/revoke",
@@ -63,7 +64,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "users.delete": "DELETE /auth/admin/users/:userId",
     "users.restore": "POST /auth/admin/users/:userId/restore",
     "verifications.list": "GET /auth/admin/verifications",
-    "users.export": "GET /auth/admin/users/:userId/export",
+    "users.export": "POST /auth/admin/users/:userId/export",
   },
   turnstile: {
     "widgets.list": "GET /turnstile/admin/widgets",
@@ -149,7 +150,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
   support: {
     "threads.list": "GET /support/threads",
-    "threads.search": "GET /support/threads/search",
+    "threads.search": "POST /support/threads/search",
     "threads.read": "GET /support/threads/:id",
     "threads.archive": "POST /support/threads/:id/archive",
     "threads.assign": "POST /support/threads/:id/assign",
@@ -179,7 +180,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "members.add": "POST /organizations/admin/organizations/:organizationId/members",
     "members.update": "PATCH /organizations/admin/organizations/:organizationId/members/:membershipId",
     "members.remove": "DELETE /organizations/admin/organizations/:organizationId/members/:membershipId",
-    "invitations.list": "GET /organizations/admin/organizations/:organizationId/invitations",
+    "invitations.list": "POST /organizations/admin/organizations/:organizationId/invitations/list",
     "invitations.resend": "POST /organizations/admin/organizations/:organizationId/invitations/:invitationId/resend",
     "invitations.revoke": "DELETE /organizations/admin/organizations/:organizationId/invitations/:invitationId",
     "ownership.transfer": "POST /organizations/admin/organizations/:organizationId/ownership",

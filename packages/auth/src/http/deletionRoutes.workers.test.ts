@@ -56,8 +56,8 @@ import {
 } from "./responses";
 
 /**
- * Delete, restore, export and the purge, through the control plane — and a person deleting their own account
- * (#622). A real `createBackend`, real D1, tokens signed by `mintControlPlaneToken`, a person signed in over OTP
+ * Delete, restore, export and the purge, through the control plane — and a person deleting their own account.
+ * A real `createBackend`, real D1, tokens signed by `mintControlPlaneToken`, a person signed in over OTP
  * the way a reader signs in, and the purge Workflow's own body run against a step runner that journals the
  * way a Workflow does.
  *
@@ -189,7 +189,7 @@ const recorderCapability = defineCapability({
   name: "recorder",
   requiredBindings: [],
   auditRecorder: () => async (event) => void emitted.push(event as AuditEventInput),
-  // And the citation reader `@pithy-sh/audit` declares (#823), over the same capture: each event's place in the
+  // And the citation reader `@pithy-sh/audit` declares, over the same capture: each event's place in the
   // list stands for its chain position, so the erasure attestation's citations are checked end to end.
   auditCitations: () => async (query) =>
     emitted.flatMap((event, index) =>
@@ -329,12 +329,7 @@ const remove = (userId: string, body: unknown, scope: ControlPlaneScope = AUTH_U
 const restore = (userId: string, body: unknown, scope: ControlPlaneScope = AUTH_USERS_DELETE_SCOPE) =>
   call(`/auth/admin/users/${userId}/restore`, body, scope);
 const exportOf = (userId: string, reason: string | null, scope: ControlPlaneScope = AUTH_USERS_EXPORT_SCOPE) =>
-  call(
-    `/auth/admin/users/${userId}/export${reason === null ? "" : `?reason=${encodeURIComponent(reason)}`}`,
-    undefined,
-    scope,
-    "GET",
-  );
+  call(`/auth/admin/users/${userId}/export`, reason === null ? {} : { reason }, scope);
 const suspend = (userId: string, body: unknown) =>
   call(`/auth/admin/users/${userId}/suspend`, body, AUTH_USERS_SUSPEND_SCOPE);
 
@@ -994,7 +989,7 @@ describe("the erasure attestation (#823)", () => {
       ["app", "erased"],
       ["auth", "erased"],
     ]);
-    // A retained step shows its basis, and never reads as erased (#814).
+    // A retained step shows its basis, and never reads as erased.
     expect(attestation.steps[0]?.reason).toBeTruthy();
     expect(attestation.steps[0]?.summary).toBeNull();
     // Every step and the completion are cited by id and position, each its own event.
@@ -1217,7 +1212,7 @@ describe("DELETE /auth/account", () => {
   });
 });
 
-describe("GET /auth/admin/users/:userId/export", () => {
+describe("POST /auth/admin/users/:userId/export", () => {
   test("one JSON document covering every composed capability's contribution, validated by its exported schema", async () => {
     await seedAccountFootprint(env.DB, "u-1");
     await env.DB.prepare(
@@ -1237,7 +1232,7 @@ describe("GET /auth/admin/users/:userId/export", () => {
       ["silent", "not_exported"],
       ["app", "exported"],
     ]);
-    // A retained part says so, and why; an erased one says that (#814).
+    // A retained part says so, and why; an erased one says that.
     expect(document.capabilities.map((entry) => entry.disposition)).toEqual([
       "retain",
       "erase",
@@ -1250,7 +1245,7 @@ describe("GET /auth/admin/users/:userId/export", () => {
     if (authPart?.state !== "exported" || appPart?.state !== "exported") throw new Error("expected two parts");
     expect(AuthUserExport.parse(authPart.data).user.email).toBe("u-1@test.com");
     expect(appPart.data).toEqual({ drafts: ["a draft"] });
-    // Email's rows are found by the account's real address, read from its row at the step (#814).
+    // Email's rows are found by the account's real address, read from its row at the step.
     const emailPart = document.capabilities[0];
     if (emailPart?.state !== "exported") throw new Error("expected email's part");
     expect((emailPart.data as { suppressions: { email: string }[] }).suppressions.map((row) => row.email)).toEqual([
@@ -1285,6 +1280,18 @@ describe("GET /auth/admin/users/:userId/export", () => {
       }),
     ]);
     expect(JSON.stringify(events("auth/admin_user_exported"))).not.toContain("u-1@test.com");
+  });
+
+  test("a GET export is not served, so a reason never rides a URL", async () => {
+    await seedAccountFootprint(env.DB, "u-1");
+    const res = await call(
+      `/auth/admin/users/u-1/export?reason=${encodeURIComponent("Access request from ada@example.com.")}`,
+      undefined,
+      AUTH_USERS_EXPORT_SCOPE,
+      "GET",
+    );
+    expect(res.status).not.toBe(200);
+    expect(events("auth/admin_user_exported")).toEqual([]);
   });
 
   test("an export with no reason is refused validation/invalid_input", async () => {

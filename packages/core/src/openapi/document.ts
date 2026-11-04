@@ -5,6 +5,7 @@ import type { Hono } from "hono";
 import { z } from "zod";
 import { CONTROL_PLANE_HEADER } from "../controlPlane/wire";
 import { ErrorBody } from "../error/wire";
+import { FREE_TEXT_META_KEY } from "../http/freeText";
 import { pathParams } from "../http/routeContract";
 import { type DocumentedMethod, type RouteResponse, type RouteSpec, routeSpecOf } from "../http/routeSpec";
 import { type RequestContract, requestContractOf } from "../http/validation";
@@ -391,7 +392,10 @@ export function undescribedFieldsIn(node: unknown, at: string): UndescribedField
   return found;
 }
 
-/** A query or path parameter that carries a direct personal identifier, so it is written to every request log. */
+/**
+ * A query or path parameter that carries a direct personal identifier, or free text a person types, so it is
+ * written to every request log.
+ */
 export interface AddressedParameter {
   /** The method, upper case. */
   readonly method: string;
@@ -405,6 +409,40 @@ export interface AddressedParameter {
 
 /** The `format`s JSON Schema gives an address or a phone number: `z.email()` and `z.e164()` write them. */
 const IDENTIFIER_FORMATS = new Set(["email", "idn-email", "e164"]);
+
+/**
+ * The words a free-text field's name is made of. A name holding one of them — `q`, `searchTerm`, `reason_text` —
+ * is free text unless its schema closes the value to a set (`enum`, `const`) or to a non-string type, as
+ * `?reason=hard_bounce` on the suppression listing does.
+ */
+const FREE_TEXT_NAMES = new Set([
+  "q",
+  "query",
+  "search",
+  "term",
+  "terms",
+  "text",
+  "keyword",
+  "keywords",
+  "phrase",
+  "reason",
+  "note",
+  "notes",
+  "comment",
+  "message",
+  "detail",
+  "details",
+  "title",
+  "body",
+  "description",
+  "memo",
+  "justification",
+  "prompt",
+  "question",
+]);
+
+/** A description that says the value is free text or free-form, and does not say it is not. */
+const FREE_TEXT_DESCRIPTION = /(?<!\bnot\s)\bfree[- ](?:text|form)\b/i;
 
 /**
  * Whether a parameter's schema, or any branch of it, is shaped as a direct personal identifier: an
@@ -422,15 +460,72 @@ function identifies(node: unknown): boolean {
   return Object.values(schema).some(identifies);
 }
 
+/** Whether a schema, or any branch of it, is marked free text by `freeText()` or described as free text. */
+function markedFreeText(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(markedFreeText);
+  if (node === null || typeof node !== "object") return false;
+  const schema = node as Record<string, unknown>;
+  if (schema[FREE_TEXT_META_KEY] === true) return true;
+  if (typeof schema.description === "string" && FREE_TEXT_DESCRIPTION.test(schema.description)) return true;
+  return Object.values(schema).some(markedFreeText);
+}
+
 /**
- * Every query and path parameter in the document that carries an address, a phone number, or a field
- * marked with a privacy class.
+ * Whether a schema admits an open string, directly or as an array's item: it is not closed to an enumerated
+ * set, a constant, or a type that is not a string.
+ */
+function admitsOpenString(node: unknown): boolean {
+  if (node === null || typeof node !== "object") return true;
+  const schema = node as Record<string, unknown>;
+  for (const key of ["anyOf", "oneOf"] as const) {
+    const branches = schema[key];
+    if (Array.isArray(branches)) return branches.some(admitsOpenString);
+  }
+  if (Array.isArray(schema.enum) || "const" in schema) return false;
+  if (schema.type === "array") {
+    const items = [schema.items, ...(Array.isArray(schema.prefixItems) ? schema.prefixItems : [])];
+    return items.some((item) => item !== undefined && admitsOpenString(item));
+  }
+  if (schema.type !== undefined && schema.type !== "string") {
+    return Array.isArray(schema.type) && schema.type.includes("string");
+  }
+  return true;
+}
+
+/** Whether a parameter's own schema declares, through `notFreeText()`, that its name misleads. */
+function declaredNotFreeText(node: unknown): boolean {
+  return node !== null && typeof node === "object" && (node as Record<string, unknown>)[FREE_TEXT_META_KEY] === false;
+}
+
+/** The words of a parameter name: `searchTerm`, `search_term` and `search-term` are each `search` and `term`. */
+function nameWords(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[\s_.-]+/)
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length > 0);
+}
+
+/** Whether a parameter carries free text: by its marker, by its description, or by a free-text name over an open string. */
+function freeTextParameter(parameter: Record<string, unknown>): boolean {
+  if (markedFreeText(parameter.schema)) return true;
+  if (typeof parameter.description === "string" && FREE_TEXT_DESCRIPTION.test(parameter.description)) return true;
+  if (declaredNotFreeText(parameter.schema)) return false;
+  const words = typeof parameter.name === "string" ? nameWords(parameter.name) : [];
+  return words.some((word) => FREE_TEXT_NAMES.has(word)) && admitsOpenString(parameter.schema);
+}
+
+/**
+ * Every query and path parameter in the document that carries an address, a phone number, a field marked
+ * with a privacy class, or free text a person types.
  *
  * A URL is recorded wherever a request is: Cloudflare's request logs, Workers observability and tail, and
  * every proxy between the client and the Worker. A value in a body is recorded by none of them, so a
- * lookup by a person's address is a `POST` with the address in its body. Judged on the wire shape, so it
- * reaches every route the document covers and no list of field names has to keep up. A free-text search
- * parameter is not shaped as an address and is not found here.
+ * lookup by a person's address, a search, and a reason an operator gives are each a `POST` with the value in
+ * its body. Free text is found three ways, because the route cannot know a given value is not an address: a
+ * field marked with `freeText()` (`@pithy-sh/core/src/http/freeText`), one described as free text, and one
+ * named with a free-text word (`q`, `searchTerm`, `reason`, `note` and the rest of {@link FREE_TEXT_NAMES})
+ * whose schema admits an open string, or an array of them. Judged on the wire shape, so it reaches every route the document covers.
  */
 export function addressedParameters(document: OpenApiDocument): AddressedParameter[] {
   const found: AddressedParameter[] = [];
@@ -440,7 +535,7 @@ export function addressedParameters(document: OpenApiDocument): AddressedParamet
       if (!Array.isArray(parameters)) continue;
       for (const parameter of parameters as Record<string, unknown>[]) {
         if (parameter.in !== "query" && parameter.in !== "path") continue;
-        if (!identifies(parameter.schema)) continue;
+        if (!identifies(parameter.schema) && !freeTextParameter(parameter)) continue;
         found.push({ method: method.toUpperCase(), path, in: String(parameter.in), name: String(parameter.name) });
       }
     }

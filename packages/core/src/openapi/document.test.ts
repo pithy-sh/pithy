@@ -7,6 +7,7 @@ import { z } from "zod";
 import { pithyErrorHandler } from "../error/http";
 import { NotFoundError } from "../error/pithyError";
 import { ErrorBody } from "../error/wire";
+import { freeText, notFreeText } from "../http/freeText";
 import { describeRoute } from "../http/routeSpec";
 import { validate } from "../http/validation";
 import { pii } from "../privacy/classes";
@@ -389,6 +390,109 @@ describe("addressedParameters", () => {
     expect(addressedParameters(carrying("query", field))).toEqual([
       { method: "GET", path: "/people", in: "query", name: "who" },
     ]);
+  });
+
+  test.each([
+    ["a field marked free text", "who", freeText(z.string().max(200))],
+    ["an optional field marked free text", "who", freeText(z.string().max(200)).optional()],
+    ["a field described as free text", "who", z.string().max(200)],
+    ["a search term by its name", "q", z.string().max(200)],
+    ["a search by its name", "search", z.string().min(1).max(200).optional()],
+    ["a reason by its name", "reason", z.string().min(1).max(500)],
+    ["a note by its name", "note", z.string().max(500).optional()],
+    ["a search term by a compound name", "searchTerm", z.string().max(200)],
+    ["a reason by a snake-case name", "reason_text", z.string().max(200)],
+    ["a list of terms", "terms", z.array(z.string().max(200))],
+    ["a field described as free-form", "who", z.string().max(200)],
+  ])("names %s in a query string", (label, name, field) => {
+    const descriptions: Record<string, string> = {
+      "a field described as free text": "Free text to match.",
+      "a field described as free-form": "A free-form note.",
+    };
+    const described = field.describe(descriptions[label] ?? "Words.");
+    const Shape = z.object({ [name]: described }).describe("What to find.");
+    const routed = group("people", (app) => {
+      app.get(
+        "/people",
+        describeRoute({ summary: "Find people.", verification: "control-plane", responses: { 200: Entry } }),
+        validate("query", Shape),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    expect(addressedParameters(openApiDocument(INFO, [routed]))).toEqual([
+      { method: "GET", path: "/people", in: "query", name },
+    ]);
+  });
+
+  test("names free text in a path segment", () => {
+    expect(addressedParameters(carrying("param", freeText(z.string().max(200))))).toEqual([
+      { method: "GET", path: "/people/{who}", in: "path", name: "who" },
+    ]);
+  });
+
+  /** A `GET /people` whose query is `shape`, as the gate sees it. */
+  function queried(shape: z.ZodObject): OpenApiDocument {
+    const routed = group("people", (app) => {
+      app.get(
+        "/people",
+        describeRoute({ summary: "Find people.", verification: "control-plane", responses: { 200: Entry } }),
+        validate("query", shape.describe("What to find.")),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    return openApiDocument(INFO, [routed]);
+  }
+
+  test("passes a description that says the value is not free text", () => {
+    const shape = z.object({ key: z.string().max(64).describe("A key, not free text.") });
+    expect(addressedParameters(queried(shape))).toEqual([]);
+  });
+
+  test("passes a free-text name declared `notFreeText()`, and still names an address under one", () => {
+    const signed = z.object({ oauth_query: notFreeText(z.string().max(8192)).describe("A signed query string.") });
+    expect(addressedParameters(queried(signed))).toEqual([]);
+    const addressed = z.object({ query: notFreeText(z.email()).describe("An address.") });
+    expect(addressedParameters(queried(addressed))).toEqual([
+      { method: "GET", path: "/people", in: "query", name: "query" },
+    ]);
+  });
+
+  test("passes a name that only contains a free-text word's letters", () => {
+    const shape = z.object({
+      subjectId: z.string().max(64).describe("Whose."),
+      notebook: z.string().describe("Which."),
+    });
+    expect(addressedParameters(queried(shape))).toEqual([]);
+  });
+
+  test("passes a free-text name whose schema closes the value to a set", () => {
+    const Shape = z
+      .object({
+        reason: z.enum(["hard_bounce", "complaint"]).optional().describe("Which reason."),
+        message: z.coerce.number().int().optional().describe("A message number."),
+      })
+      .describe("Which rows.");
+    const routed = group("people", (app) => {
+      app.get(
+        "/people",
+        describeRoute({ summary: "Find people.", verification: "control-plane", responses: { 200: Entry } }),
+        validate("query", Shape),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    expect(addressedParameters(openApiDocument(INFO, [routed]))).toEqual([]);
+  });
+
+  test("passes free text in a body", () => {
+    const bodied = group("people", (app) => {
+      app.post(
+        "/people/search",
+        describeRoute({ summary: "Search people.", verification: "control-plane", responses: { 200: Entry } }),
+        validate("json", z.object({ q: freeText(z.string().max(200)).describe("Words.") }).describe("What to find.")),
+        (c) => c.json({ rank: 1 }),
+      );
+    });
+    expect(addressedParameters(openApiDocument(INFO, [bodied]))).toEqual([]);
   });
 
   test("names an address in a path segment", () => {

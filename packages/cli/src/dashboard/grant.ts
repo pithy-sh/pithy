@@ -3,6 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import { readsOnly } from "@pithy-sh/core/src/controlPlane/discovery/readRoute";
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 
@@ -37,28 +38,29 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
  * ## What counts as a read, and why the method decides it
  *
  * **A scope is a read scope only when every route that requires it is a `GET`, or a `POST` that declares
- * `kind: "reads"`.** Not "its name ends in `:read`" — a name is a convention and this is an authorization
- * decision. `scopeCovers` matches exactly, with no prefix or wildcard rule, so holding a scope confers
- * *every* route that requires it anywhere in the composed tree; if one of those mutates, the scope is not a
- * read however it is spelled.
+ * itself a read carrying its input in the body: `kind: "reads"` and `readInBody: true`.** Not "its name ends
+ * in `:read`" — a name is a convention and this is an authorization decision. `scopeCovers` matches
+ * exactly, with no prefix or wildcard rule, so holding a scope confers *every* route that requires it
+ * anywhere in the composed tree; if one of those mutates, the scope is not a read however it is spelled.
  *
  * The seam's own `keys:rotate` is exactly that case and is the reason the rule is stated over routes
  * rather than over scopes: it gates `GET {base}/keys` **and** two `POST`s that register and expire keys.
  * A rule keyed on the listing route alone would have put a credential-lifecycle write into a read
  * default. It does not.
  *
- * The `POST` exception is a lookup by a person's address, which carries the address in a body because a
- * URL is written to every request log (`POST {email}/suppressions/lookup`). It needs both the kind the
- * route declares, the same kind the manifest reports and an MCP client marks read-only on, and a path
- * ending `/lookup`, so a write added under a read scope with its kind copied from a sibling is still a
- * write. A `POST` of any other kind or path is a write here.
+ * The `POST` exception is a read whose input must not be in a URL, because a URL is written to every
+ * request log: a lookup by a person's address (`POST {email}/suppressions/lookup`), a search term
+ * (`POST {auth}/admin/users/search`), a reason an operator types (`POST {auth}/admin/users/:userId/export`).
+ * It needs both declarations. `readInBody` is the deliberate one, and `AdminRouteDeclaration` compiles it
+ * only beside `kind: "reads"` on a `POST`, so a write that copied a sibling's kind is still a write, and a
+ * mutating route that claims the marker under any other kind or method is a write here too.
  */
 
 /** One scope an adopter may grant, and what the composed Worker says holding it would allow. */
 export interface GrantableScope {
   /** The scope, as a route requires it and as `--scope` names it. */
   scope: ControlPlaneScope;
-  /** True when every declared route requiring this scope is a `GET`, or a `POST …/lookup` declared `kind: "reads"`. */
+  /** True when every declared route requiring this scope is a `GET`, or a `POST` declared `kind: "reads"` and `readInBody`. */
   read: boolean;
   /** The capability that first declared it — what an adopter recognizes the grant by. */
   capability: string;
@@ -86,8 +88,7 @@ export function grantableScopes(capabilities: readonly Capability[]): GrantableS
   const found = new Map<string, GrantableScope>();
   for (const { capability, route } of declaredRoutes(capabilities)) {
     if (route.scope === null) continue;
-    const reads =
-      route.method === "GET" || (route.method === "POST" && route.kind === "reads" && route.path.endsWith("/lookup"));
+    const reads = readsOnly(route);
     const existing = found.get(route.scope);
     if (existing) {
       // One route that is not a read anywhere in the tree settles it. The union is what a grant confers.
@@ -190,7 +191,7 @@ export function readScopeRequest(requested: readonly string[]): ScopeRequest {
  * a write does not quietly widen anybody's next connect.
  *
  * A named grant is passed through untouched, empty included — an operator who deselected everything is
- * granted nothing, not handed a default (#248).
+ * granted nothing, not handed a default.
  */
 export function resolveScopeRequest(request: ScopeRequest, grantable: readonly GrantableScope[]): ControlPlaneScope[] {
   if (!request.all) return [...request.scopes];
@@ -243,7 +244,7 @@ export interface GrantDecision {
  * `undefined` means "not specified — use the default grant"; `[]` means "deliberately nothing".
  * Collapsing those two is a real bug rather than a tidy-up: an operator who deselected every scope at
  * the prompt would be handed the full default set, `keys:rotate` included — the exact opposite of what
- * they just said (#248).
+ * they just said.
  */
 export async function decideGrant(decision: GrantDecision): Promise<ControlPlaneScope[] | undefined> {
   const grantable = grantableScopes(decision.composed);

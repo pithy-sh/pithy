@@ -61,7 +61,7 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "
  * **Do not reach for `<STEM>_ORIGIN` here.** It looks like the precise version of this and it does not
  * work: `pithy dev` publishes those into each child *process*, and the host environment does not cross
  * into workerd — `cli/src/dev/env.ts:157-165`. Only capability *hosts* are forwarded as `--var`
- * (`hostVarArgs`), deliberately (#410), and a UI worker is not one. So a Worker's `env` never carries
+ * (`hostVarArgs`), deliberately, and a UI worker is not one. So a Worker's `env` never carries
  * the console's address, and a version of this that read one allowed exactly the origins no browser
  * calls while reading as though it did more.
  *
@@ -130,6 +130,26 @@ export interface CorsSurfaceEntry {
 }
 
 /**
+ * Order two route paths as a router prefers them: segment by segment, a literal ahead of a `:param`, then
+ * alphabetically. `/t/search` comes before `/t/:id`, which matches it too, so the literal's own entry is the
+ * one that answers its preflight.
+ */
+function byRouterPreference(a: string, b: string): number {
+  const left = a.split("/");
+  const right = b.split("/");
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const l = left[index] ?? "";
+    const r = right[index] ?? "";
+    if (l === r) continue;
+    const lParam = l.startsWith(":");
+    const rParam = r.startsWith(":");
+    if (lParam !== rParam) return lParam ? 1 : -1;
+    return l < r ? -1 : 1;
+  }
+  return left.length - right.length;
+}
+
+/**
  * Fold every composed capability's `adminRoutes` into one entry per distinct path.
  *
  * **The descriptors are the surface.** They already exist, a management client already navigates by
@@ -139,10 +159,9 @@ export interface CorsSurfaceEntry {
  * `app.use("*", …)`, which would attach dashboard origins to the adopter's own API — a different
  * surface, with different origins, that is not the kit's decision to make.
  *
- * **`content-type` keys on the method, not on whether the route takes a body.** {@link AdminRoute}
- * carries no body flag, and adding one is worse than the proxy it would replace: that type is read
- * across a version boundary by the management client, so a new field must be `.optional()` and an
- * absent optional says less than the method already does.
+ * **`content-type` keys on the method, not on whether the route takes a body.** Every method but `GET` may
+ * carry one, and `readInBody` is not consulted: it is optional on a type read across a version boundary, so
+ * its absence says less than the method already does.
  */
 export function corsSurface(capabilities: readonly { adminRoutes?: readonly AdminRoute[] }[]): CorsSurfaceEntry[] {
   const methodsByPath = new Map<string, Set<string>>();
@@ -155,7 +174,7 @@ export function corsSurface(capabilities: readonly { adminRoutes?: readonly Admi
   }
 
   return [...methodsByPath.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => byRouterPreference(a, b))
     .map(([path, methods]) => {
       const carriesBody = [...methods].some((method) => method !== "GET");
       return {
@@ -165,6 +184,9 @@ export function corsSurface(capabilities: readonly { adminRoutes?: readonly Admi
       };
     });
 }
+
+/** The requests a CORS entry has already answered or marked. */
+const answered = new WeakSet<Request>();
 
 /**
  * The per-path middleware: answer the preflight, and mark the real response readable.
@@ -179,6 +201,10 @@ export function corsMiddleware(
   maxAgeSeconds: number,
 ): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
+    // A literal path is matched by a `:param` sibling's entry too. The first entry to see a request owns it,
+    // and the surface is ordered so that is the literal's own.
+    if (answered.has(c.req.raw)) return next();
+    answered.add(c.req.raw);
     // On every response this layer touches, echoing or not. The allowed and the refused answer differ
     // by exactly one header, so a shared cache keyed on the URL alone would serve one origin's
     // `Access-Control-Allow-Origin` to another. Deliberately wider than "responses that echo an origin".
@@ -232,7 +258,8 @@ export function corsMiddleware(
  *
  * Exact paths, never a wildcard: `app.use` on a literal path does not match subpaths, so "nothing
  * outside the control-plane surface gains a CORS header" is structural rather than a check that could
- * be got wrong.
+ * be got wrong. A `:param` path does match a literal sibling (`/t/:id` matches `/t/search`), which is why
+ * {@link corsSurface} orders literals first and each request is answered by the first entry that sees it.
  */
 export function registerControlPlaneCors(
   app: Hono<PithyHonoEnv>,

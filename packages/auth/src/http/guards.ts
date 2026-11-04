@@ -159,7 +159,16 @@ export function authAdminRoutes(basePath: string): AdminRouteDeclaration[] {
       path: `${basePath}/admin/users`,
       scope: AUTH_USERS_READ_SCOPE,
       kind: "reads",
-      summary: "Find a user. Lists everyone newest first, or searches email and display name.",
+      summary: "List the users newest first, narrowed by standing, verification or signup window.",
+    },
+    {
+      method: "POST",
+      operation: "users.search",
+      path: `${basePath}/admin/users/search`,
+      scope: AUTH_USERS_READ_SCOPE,
+      kind: "reads",
+      readInBody: true,
+      summary: "Find a user by email or display name, the term in the body so it never reaches a request log.",
     },
     {
       method: "GET",
@@ -244,11 +253,12 @@ export function authAdminRoutes(basePath: string): AdminRouteDeclaration[] {
         "Every sign-in link and code sent over a window: used, expired or still waiting, and the mail that carried it.",
     },
     {
-      method: "GET",
+      method: "POST",
       operation: "users.export",
       path: `${basePath}/admin/users/:userId/export`,
       scope: AUTH_USERS_EXPORT_SCOPE,
       kind: "reads",
+      readInBody: true,
       summary: "Everything the kit holds about one user, from every capability — the answer to an access request.",
     },
   ];

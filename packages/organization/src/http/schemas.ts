@@ -3,6 +3,7 @@
 
 import { MAX_ADDRESS_LENGTH } from "@pithy-sh/core/src/address/address";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
+import { freeText } from "@pithy-sh/core/src/http/freeText";
 import { StoredImage } from "@pithy-sh/core/src/image/storedImage";
 import { z } from "zod";
 import { looksLikeAnAddress, MAX_OPERATOR_REASON_LENGTH } from "../audit/emit";
@@ -343,11 +344,7 @@ const MAX_USER_ID_LENGTH = 255;
  * `reasonRejected`, the one answer an operator least wants recorded. Saying so at the boundary lets them
  * name the invitation by its id instead.
  */
-export const OperatorReason = z
-  .string()
-  .trim()
-  .min(1)
-  .max(MAX_OPERATOR_REASON_LENGTH)
+export const OperatorReason = freeText(z.string().trim().min(1).max(MAX_OPERATOR_REASON_LENGTH))
   .refine((value) => !looksLikeAnAddress(value), "A reason names no address. Name the member or invitation by id.")
   .describe(
     "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event.",
@@ -466,13 +463,25 @@ export const AdminUpdateOrganization = z
   .describe("An operator changing a tenant's name, short name or seat limit. At least one, and a reason.");
 export type AdminUpdateOrganization = z.output<typeof AdminUpdateOrganization>;
 
-/** The query of `GET {base}/admin/organizations/:organizationId/invitations`. */
-export const AdminInvitationsQuery = AdminListQuery.extend({
-  reason: OperatorReason.describe(
-    "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required.",
-  ),
-}).describe("The bound on a tenant's invitation listing, and why it is being read.");
-export type AdminInvitationsQuery = z.output<typeof AdminInvitationsQuery>;
+/**
+ * The body of `POST {base}/admin/organizations/:organizationId/invitations/list`. The reason travels in a body
+ * rather than a query string, because a reason is free text and a URL is written to every request log.
+ */
+export const AdminInvitationsBody = z
+  .strictObject({
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PAGE_SIZE)
+      .optional()
+      .describe("How many rows to return. Bounded, because a verified client can still have a bug."),
+    reason: OperatorReason.describe(
+      "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required.",
+    ),
+  })
+  .describe("The bound on a tenant's invitation listing, and why it is being read.");
+export type AdminInvitationsBody = z.output<typeof AdminInvitationsBody>;
 
 /**
  * ## The organization's own lifecycle, below

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { freeText } from "@pithy-sh/core/src/http/freeText";
 import { PresenceParticipantName, PresenceParticipantRef } from "@pithy-sh/core/src/presence/frames";
 import { z } from "zod";
 import { MAX_SUBMISSION_ATTACHMENTS, MAX_SUBMISSION_BODY_CHARS, MAX_SUBMISSION_SUBJECT_CHARS } from "../config/config";
@@ -82,7 +83,7 @@ const threadFilterFields = {
 /**
  * The inbox listing query.
  *
- * **Strict, and there is no `q`.** Listing lists; `GET {basePath}/threads/search` searches. An unknown
+ * **Strict, and there is no `q`.** Listing lists; `POST {basePath}/threads/search` searches. An unknown
  * key is refused as `validation/invalid_input` rather than ignored, so a client sending `q` is told so
  * instead of getting the unfiltered inbox back as though it were the answer.
  */
@@ -114,19 +115,22 @@ export const SupportSearchMode = z
   );
 export type SupportSearchMode = z.infer<typeof SupportSearchMode>;
 
-/** The search query. */
-export const SearchThreadsQuery = z
+/**
+ * The body of `POST {basePath}/threads/search`: the words, the mode, how many, and the inbox listing's filters.
+ * A body, not a query string, because the words are often a customer's address or order number and a URL is
+ * written to every request log between the client and the Worker. Strict, so a misspelled filter is refused
+ * rather than silently widening the search.
+ */
+export const SearchThreadsBody = z
   .object({
-    q: z
-      .string()
-      .trim()
-      .min(1)
-      .max(MAX_SEARCH_TERM)
-      .describe("What to search for, in the customer's words or yours. An order number, an error, or a description."),
+    ...threadFilterFields,
+    q: freeText(z.string().trim().min(1).max(MAX_SEARCH_TERM)).describe(
+      "What to search for, in the customer's words or yours. An order number, an error, or a description.",
+    ),
     mode: SupportSearchMode.optional().describe(
       "Which backends to run. Absent runs every one that is on, as `hybrid`. `semantic` or `hybrid` while `search.semantic` is off is refused, naming the flag.",
     ),
-    limit: z.coerce
+    limit: z
       .number()
       .int()
       .min(1)
@@ -135,11 +139,14 @@ export const SearchThreadsQuery = z
       .describe(
         `How many threads to return, best first. Default ${DEFAULT_SEARCH_LIMIT}, at most ${MAX_SEARCH_LIMIT}. No cursor: a ranked list has a top, not pages.`,
       ),
-    ...threadFilterFields,
+    archived: z
+      .boolean()
+      .optional()
+      .describe("`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose."),
   })
   .strict()
   .describe("A search over the inbox: the words, the mode, how many, and the same filters the inbox listing takes.");
-export type SearchThreadsQuery = z.infer<typeof SearchThreadsQuery>;
+export type SearchThreadsBody = z.infer<typeof SearchThreadsBody>;
 
 /** The archive/unarchive body. */
 export const ArchiveThreadInput = z

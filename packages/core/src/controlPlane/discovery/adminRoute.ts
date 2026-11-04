@@ -85,6 +85,13 @@ export const AdminRoute = z
     kind: ScopeKind.optional().describe(
       "What kind of operation the route's scope grants — `reads`, `writes`, `sends`, `charges`, `deletes` or `credentials` — declared by the capability that owns the scope. Every route sharing a scope declares the same kind, so a management client maps its own roles onto kinds rather than onto scopes. Absent for a route with no scope, and from an older Worker, which a client treats as `credentials`, the most restrictive.",
     ),
+    // Optional: absent on every route that is not a read carrying its input in a body, and from an older Worker.
+    readInBody: z
+      .literal(true)
+      .optional()
+      .describe(
+        'Present, and true, on a `POST` that reads and changes nothing: its input travels in the body because a URL is written to every request log, and a search term or an address must not be. Declared only on a `POST` with `kind: "reads"`, and refused anywhere else when the capability is defined. A client judging whether a route only reads checks the method, the kind and this together, never this alone.',
+      ),
     // Optional: absent says *this Worker predates operations*, and a client that names tools from them offers no
     // tool for such a route rather than guessing a name.
     operation: AdminOperation.optional().describe(
@@ -101,10 +108,15 @@ export type AdminRoute = z.infer<typeof AdminRoute>;
 
 /**
  * An admin route as a capability declares it: a scoped route states its kind, and a route with no scope has none.
- * `Capability.adminRoutes` takes this, so a scoped route without a kind does not compile.
+ * `Capability.adminRoutes` takes this, so a scoped route without a kind does not compile, and `readInBody` compiles
+ * only on a `POST` declared `kind: "reads"`.
  */
-export type AdminRouteDeclaration = Omit<AdminRoute, "scope" | "kind"> &
-  ({ scope: ControlPlaneScope; kind: ScopeKind } | { scope: null; kind?: undefined });
+export type AdminRouteDeclaration = Omit<AdminRoute, "method" | "scope" | "kind" | "readInBody"> &
+  (
+    | { method: AdminRouteMethod; scope: ControlPlaneScope; kind: ScopeKind; readInBody?: undefined }
+    | { method: "POST"; scope: ControlPlaneScope; kind: "reads"; readInBody: true }
+    | { method: AdminRouteMethod; scope: null; kind?: undefined; readInBody?: undefined }
+  );
 
 /**
  * One composed capability's declaration — everything about it that is the same for every caller.

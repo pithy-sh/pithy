@@ -87,11 +87,12 @@ export function supportAdminRoutes(basePath: string): AdminRouteDeclaration[] {
       summary: "List the inbox, newest first, filtered by category, priority, assignee, and archived.",
     },
     {
-      method: "GET",
+      method: "POST",
       operation: "threads.search",
       path: `${basePath}/threads/search`,
       scope: SUPPORT_THREADS_READ_SCOPE,
       kind: "reads",
+      readInBody: true,
       summary: "Search the inbox by words and by meaning, ranked as one, with the same filters as the list.",
     },
     {

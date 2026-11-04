@@ -27,7 +27,12 @@ import { SupportThread } from "../data/thread";
 import { SUPPORT_MIGRATIONS } from "../migrations/set";
 import { resolveReplies } from "../reply/snippets";
 import type { HandlerDeps } from "./handlers";
-import { SupportAssignResponse, SupportThreadResponse, SupportThreadsResponse } from "./responses";
+import {
+  SupportAssignResponse,
+  SupportSearchResponse,
+  SupportThreadResponse,
+  SupportThreadsResponse,
+} from "./responses";
 import { registerSupportRoutes } from "./routes";
 import { SUPPORT_THREADS_ARCHIVE_SCOPE, SUPPORT_THREADS_ASSIGN_SCOPE, SUPPORT_THREADS_READ_SCOPE } from "./scopes";
 
@@ -456,5 +461,42 @@ describe("POST {base}/staff/threads/:id/assign — the session door", () => {
       await (await staffPost(app, path, { assignee: { ref: "u-2", name: "Grace" }, note: "Yours." })).json(),
     );
     expect(body.thread).toMatchObject({ assigneeRef: "u-2", assigneeName: "Grace", assignedBy: "u-1" });
+  });
+});
+
+describe("the inbox search, over HTTP", () => {
+  test("takes the words and the filters in a body and answers the ranked envelope", async () => {
+    const app = makeApp({ scopes: [SUPPORT_THREADS_READ_SCOPE] });
+    const response = await cp(app, "POST", "/support/threads/search", SUPPORT_THREADS_READ_SCOPE, {
+      q: "ada@example.com",
+      mode: "keyword",
+      limit: 5,
+      archived: false,
+      assignee: "none",
+    });
+    expect(response.status).toBe(200);
+    const raw = await response.json();
+    expect(SupportSearchResponse.parse(raw)).toEqual(raw);
+  });
+
+  test("refuses a GET search rather than answering it", async () => {
+    const app = makeApp({ scopes: [SUPPORT_THREADS_READ_SCOPE] });
+    const response = await cp(app, "GET", "/support/threads/search?q=ada%40example.com", SUPPORT_THREADS_READ_SCOPE);
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
+  });
+
+  test("refuses a body with an unknown key, or with no words", async () => {
+    const app = makeApp({ scopes: [SUPPORT_THREADS_READ_SCOPE] });
+    for (const body of [{ q: "refund", cursor: "abc" }, { mode: "keyword" }, { q: "refund", archived: "true" }]) {
+      const response = await cp(app, "POST", "/support/threads/search", SUPPORT_THREADS_READ_SCOPE, body);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  test("is refused without support:threads:read, before the body is judged", async () => {
+    const app = makeApp({ scopes: [SUPPORT_THREADS_ARCHIVE_SCOPE] });
+    const response = await cp(app, "POST", "/support/threads/search", SUPPORT_THREADS_READ_SCOPE, { mode: "fuzzy" });
+    expect(response.status).toBe(403);
   });
 });

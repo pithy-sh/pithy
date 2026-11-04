@@ -151,7 +151,7 @@ describe("support route contract", () => {
     capability.routes?.(app);
     expect(capability.adminRoutes?.length).toBeGreaterThan(0);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
-    // And the other way, since #468: the CORS surface derives from `adminRoutes`. A guarded route
+    // And the other way: the CORS surface derives from `adminRoutes`. A guarded route
     // nobody declared gets no preflight, so no browser can reach it while this suite stays green.
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
@@ -183,7 +183,6 @@ describe("support route contract", () => {
       "GET /support/replies",
       "GET /support/threads",
       "GET /support/threads/:id",
-      "GET /support/threads/search",
       "POST /support/feedback",
       "POST /support/staff/threads/:id/assign",
       "POST /support/threads/:id/archive",
@@ -191,6 +190,7 @@ describe("support route contract", () => {
       "POST /support/threads/:id/flags",
       "POST /support/threads/:id/reclassify",
       "POST /support/threads/:id/reply",
+      "POST /support/threads/search",
     ]);
   });
 });

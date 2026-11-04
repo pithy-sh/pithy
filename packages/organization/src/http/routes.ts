@@ -154,7 +154,7 @@ import {
   AdminDeleteOrganization,
   AdminForceOwnership,
   AdminInvitationParam,
-  AdminInvitationsQuery,
+  AdminInvitationsBody,
   AdminListQuery,
   AdminMembershipParam,
   AdminOrganizationParam,
@@ -231,7 +231,7 @@ import {
  * | `POST   {base}/admin/organizations/:id/members`| control-plane  | `members:write` ¹     | param + json `AdminAddMember`  |
  * | `PATCH  {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminChangeRole` |
  * | `DELETE {base}/admin/…/members/:membershipId`  | control-plane  | `members:write` ¹     | param + json `AdminReason`     |
- * | `GET    {base}/admin/…/invitations`            | control-plane  | `members:write`       | param + query `AdminInvitationsQuery` |
+ * | `POST   {base}/admin/…/invitations/list`       | control-plane  | `members:write`       | param + json `AdminInvitationsBody` ³ |
  * | `POST   {base}/admin/…/invitations/:id/resend` | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `DELETE {base}/admin/…/invitations/:id`        | control-plane  | `members:write`       | param + json `AdminReason`     |
  * | `POST   {base}/admin/…/ownership`              | control-plane  | `ownership:transfer`  | param + json `AdminForceOwnership` |
@@ -251,6 +251,9 @@ import {
  * ² A preview: the write's own body, scope and refusals, answering who its member cascade would reach
  * with nothing applied. Writes nothing — no column, history row, mail, hook or audit act — so it is declared
  * not mutating, though it is a `POST`: it carries the write's body, and a body is not a query string.
+ *
+ * ³ A read, under the write scope, and a `POST` because its reason is free text, which a URL would write to
+ * every request log. Writes nothing but its audit event.
  *
  * ## The operator's writes take no CSRF gate, and every one takes a reason
  *
@@ -450,8 +453,8 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
   },
   // A read, under the write scope: the list is addresses, and it is read to fix one of them.
   {
-    method: "GET",
-    path: "/admin/organizations/:organizationId/invitations",
+    method: "POST",
+    path: "/admin/organizations/:organizationId/invitations/list",
     strategy: "control-plane",
     scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
     mutating: false,
@@ -2794,22 +2797,22 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       },
     );
 
-    app.get(
-      `${base}/admin/organizations/:organizationId/invitations`,
+    app.post(
+      `${base}/admin/organizations/:organizationId/invitations/list`,
       describeRoute({
         summary: "List a tenant's outstanding invitations, to fix one.",
         description:
-          "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded.",
+          "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded, and travels in the body because a URL is written to every request log. Changes nothing.",
         verification: "control-plane",
         scopes: [ORGANIZATION_MEMBERS_WRITE_SCOPE],
         responses: { 200: AdminInvitationsResponse },
       }),
       gate(ORGANIZATION_MEMBERS_WRITE_SCOPE),
       validate("param", AdminOrganizationParam),
-      validate("query", AdminInvitationsQuery),
+      validate("json", AdminInvitationsBody),
       async (c) => {
         const { organizationId } = c.req.valid("param");
-        const query = c.req.valid("query");
+        const query = c.req.valid("json");
         await operatorOrganization(c, organizationId);
         const limit = query.limit ?? MAX_PAGE_SIZE;
         const invitations = await listInvitations(db(c), organizationId, limit);
