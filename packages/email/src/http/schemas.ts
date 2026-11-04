@@ -157,18 +157,15 @@ export type JobsQuery = z.output<typeof JobsQuery>;
 /**
  * The suppression list query.
  *
- * `email` is an exact-match lookup rather than a search, and that is the point: answering "is this one
- * address blocked" should not require paging a list of every other person who ever unsubscribed. A
- * prefix or substring search would turn the endpoint into a way to enumerate the list a page at a time
- * while looking like a lookup.
+ * **No address, and an unknown key is refused.** A query string is written to every request log between
+ * the client and the Worker, so looking one address up is {@link SuppressionLookupRequest}, a `POST`
+ * with the address in its body. Strict rather than stripping, so a client still sending `?email=` is
+ * told so with a 400 instead of being handed the whole list as though it were the match.
  */
 export const SuppressionsQuery = z
   .object({
     reason: SuppressionReason.optional().describe(
       "Filter to one reason — hard bounce, complaint, unsubscribe, manual.",
-    ),
-    email: AddressFilter.optional().describe(
-      "Look one address up, exactly. Answers `is this person blocked` without disclosing anybody else.",
     ),
     active: z
       .enum(["true", "false"])
@@ -181,7 +178,10 @@ export const SuppressionsQuery = z
     cursor: Cursor,
     limit: Limit,
   })
-  .describe("The suppression-list query: what to filter by, which address to look up, and where to resume.");
+  .strict()
+  .describe(
+    "The suppression-list query: what to filter by and where to resume. To look one address up, POST it to `/suppressions/lookup`.",
+  );
 export type SuppressionsQuery = z.output<typeof SuppressionsQuery>;
 
 /**
@@ -212,6 +212,24 @@ export const SuppressRequest = z
   })
   .describe("Add one address to the global suppression list, as a manual block.");
 export type SuppressRequest = z.output<typeof SuppressRequest>;
+
+/**
+ * Look one address up.
+ *
+ * An exact match rather than a search, and that is the point: answering "is this one address blocked"
+ * should not require paging a list of every other person who ever unsubscribed, and a prefix or substring
+ * search would enumerate the list a page at a time while looking like a lookup. A body because a query
+ * string is written to every request log between the client and the Worker.
+ */
+export const SuppressionLookupRequest = z
+  .object({
+    email: AddressFilter.describe(
+      "The address to look up, matched exactly against the stored key. Answers `is this person blocked` without disclosing anybody else.",
+    ),
+  })
+  .strict()
+  .describe("Look one address up on the global suppression list.");
+export type SuppressionLookupRequest = z.output<typeof SuppressionLookupRequest>;
 
 /** Unblock an address — the undo of {@link SuppressRequest}, and of a bounce, complaint, or opt-out. */
 export const UnsuppressRequest = z

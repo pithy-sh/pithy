@@ -80,6 +80,7 @@ describe("controlplane capability", () => {
       "GET /admin/cp/privacy",
       "GET /admin/cp/processing",
       "POST /admin/cp/connections/:connectionId/revoke",
+      "POST /admin/cp/connections/lookup",
       "POST /admin/cp/holds",
       "POST /admin/cp/holds/:holdId/release",
       "POST /admin/cp/keys",
@@ -88,7 +89,7 @@ describe("controlplane capability", () => {
     ]);
   });
 
-  test("registers exactly the seventeen seam routes", () => {
+  test("registers exactly the eighteen seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/connections",
       "GET /control-plane/erasure",
@@ -102,6 +103,7 @@ describe("controlplane capability", () => {
       "GET /control-plane/privacy",
       "GET /control-plane/processing",
       "POST /control-plane/connections/:connectionId/revoke",
+      "POST /control-plane/connections/lookup",
       "POST /control-plane/holds",
       "POST /control-plane/holds/:holdId/release",
       "POST /control-plane/keys",

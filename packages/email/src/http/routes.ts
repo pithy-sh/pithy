@@ -41,7 +41,14 @@ import {
   EmailSuppressResponse,
   EmailUnsuppressResponse,
 } from "./responses";
-import { JobIdParam, JobsQuery, SuppressionsQuery, SuppressRequest, UnsuppressRequest } from "./schemas";
+import {
+  JobIdParam,
+  JobsQuery,
+  SuppressionLookupRequest,
+  SuppressionsQuery,
+  SuppressRequest,
+  UnsuppressRequest,
+} from "./schemas";
 import { jobDetailView, jobListView, suppressionView } from "./view";
 
 /**
@@ -51,6 +58,7 @@ import { jobDetailView, jobListView, suppressionView } from "./view";
  *   GET  /email/jobs/:id             → one job in full     (control-plane: email:jobs:read)             param
  *   POST /email/jobs/:id/retry       → queue it again      (control-plane: email:jobs:retry)            param
  *   GET  /email/suppressions         → who we won't mail   (control-plane: email:suppressions:read)     query
+ *   POST /email/suppressions/lookup  → is this one blocked (control-plane: email:suppressions:read)     json
  *   POST /email/suppressions         → block an address    (control-plane: email:suppressions:write)    json
  *   POST /email/suppressions/remove  → unblock one         (control-plane: email:suppressions:delete)   json
  *
@@ -71,10 +79,13 @@ import { jobDetailView, jobListView, suppressionView } from "./view";
  * parsing every response would spend a validation pass on rows this Worker just read, and would turn a
  * shape mistake into a 500 in production rather than a red build.
  *
- * **Removal is a POST with a body, not `DELETE /suppressions/:email`.** An address in a path is an
- * address in every access log, every proxy, every trace, and every referrer between the client and the
- * Worker. The record is personal data whether or not it is a person's current address, so it travels in
- * a body. Testers' `POST /remove` is the same call made for the same reason.
+ * **An address never travels in a URL.** Removal is `POST /suppressions/remove`, not
+ * `DELETE /suppressions/:email`, and a lookup is `POST /suppressions/lookup`, not `?email=`. A path or a
+ * query string is in every access log, every proxy, every trace, and every referrer between the client
+ * and the Worker. The record is personal data whether or not it is a person's current address, so it
+ * travels in a body. Testers' `POST /remove` is the same call made for the same reason, and
+ * `addressedParameters` in `@pithy-sh/core/src/openapi/document` fails the kit's build on a route that
+ * declares one in its URL.
  */
 
 /** What every route this capability mounts declares: its path, its strategy, and the scope it checks. */
@@ -100,6 +111,12 @@ export const EMAIL_ADMIN_ROUTES: readonly EmailRouteDeclaration[] = [
   { method: "GET", path: "/jobs/:id", strategy: "control-plane", scope: EMAIL_JOBS_READ_SCOPE },
   { method: "POST", path: "/jobs/:id/retry", strategy: "control-plane", scope: EMAIL_JOBS_RETRY_SCOPE },
   { method: "GET", path: "/suppressions", strategy: "control-plane", scope: EMAIL_SUPPRESSIONS_READ_SCOPE },
+  {
+    method: "POST",
+    path: "/suppressions/lookup",
+    strategy: "control-plane",
+    scope: EMAIL_SUPPRESSIONS_READ_SCOPE,
+  },
   { method: "POST", path: "/suppressions", strategy: "control-plane", scope: EMAIL_SUPPRESSIONS_WRITE_SCOPE },
   {
     method: "POST",
@@ -180,6 +197,33 @@ function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
     });
   }
   return context;
+}
+
+/** What one read of the suppression list records about itself. The rows never go in. */
+interface SuppressionsReadMetadata {
+  reason: string | null;
+  lookup: boolean;
+  active: boolean | null;
+  returned: number;
+  paged: boolean;
+}
+
+/**
+ * Audit a read of the suppression list. The heaviest read in the capability: this database is global, so
+ * a page of it is a page of every environment's bounces, complaints, and opt-outs. Audited with whether
+ * it was a lookup or a walk, because those are very different events.
+ */
+async function auditSuppressionsRead(c: Context<PithyHonoEnv>, metadata: SuppressionsReadMetadata): Promise<void> {
+  const who = caller(c);
+  await c.var.emit({
+    action: EmailAuditActions.suppressionsRead,
+    outcome: "success",
+    actorType: "control-plane",
+    actorId: who.subject,
+    resourceType: "email_suppression",
+    resourceId: null,
+    metadata: { connectionId: who.connectionId, ...metadata },
+  });
 }
 
 /** Register the email management sub-router. Composed alongside the public callbacks. */
@@ -320,7 +364,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
     app.get(
       `${base}/suppressions`,
       describeRoute({
-        summary: "Page through the suppression list, or look one address up.",
+        summary: "Page through the suppression list.",
         verification: "control-plane",
         scopes: [EMAIL_SUPPRESSIONS_READ_SCOPE],
         responses: { 200: EmailSuppressionsResponse },
@@ -329,28 +373,49 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
       validate("query", SuppressionsQuery),
       async (c) => {
         const query = c.req.valid("query");
-        const who = caller(c);
         const now = clock();
         const page = await listSuppressions(suppressions(c), { ...query, now });
 
-        // The heaviest read in the capability: this database is global, so a page of it is a page of
-        // every environment's bounces, complaints, and opt-outs. Audited with whether it was a lookup
-        // or a walk, because those are very different events wearing the same route.
-        await c.var.emit({
-          action: EmailAuditActions.suppressionsRead,
-          outcome: "success",
-          actorType: "control-plane",
-          actorId: who.subject,
-          resourceType: "email_suppression",
-          resourceId: null,
-          metadata: {
-            connectionId: who.connectionId,
-            reason: query.reason ?? null,
-            lookup: Boolean(query.email),
-            active: query.active ?? null,
-            returned: page.items.length,
-            paged: Boolean(query.cursor),
-          },
+        await auditSuppressionsRead(c, {
+          reason: query.reason ?? null,
+          lookup: false,
+          active: query.active ?? null,
+          returned: page.items.length,
+          paged: Boolean(query.cursor),
+        });
+
+        return c.json({
+          suppressions: page.items.map((row) => suppressionView(row, now)),
+          nextCursor: page.nextCursor,
+        } satisfies EmailSuppressionsResponse);
+      },
+    );
+
+    app.post(
+      `${base}/suppressions/lookup`,
+      describeRoute({
+        summary: "Look one address up on the suppression list.",
+        verification: "control-plane",
+        scopes: [EMAIL_SUPPRESSIONS_READ_SCOPE],
+        responses: { 200: EmailSuppressionsResponse },
+      }),
+      requireControlPlane(EMAIL_SUPPRESSIONS_READ_SCOPE),
+      validate("json", SuppressionLookupRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        const now = clock();
+        // `listSuppressions` matches the normalized key exactly, and `email` is unique, so this is the
+        // row or none: the listing's envelope, so a client renders it with the schema it already holds.
+        const page = await listSuppressions(suppressions(c), { email: input.email, now });
+
+        // The address stays out of the trail: the event records that one address was asked about and
+        // whether it was found, as the listing's lookup always did.
+        await auditSuppressionsRead(c, {
+          reason: null,
+          lookup: true,
+          active: null,
+          returned: page.items.length,
+          paged: false,
         });
 
         return c.json({

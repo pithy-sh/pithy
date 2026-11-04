@@ -36,22 +36,29 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
  *
  * ## What counts as a read, and why the method decides it
  *
- * **A scope is a read scope only when every route that requires it is a `GET`.** Not "its name ends in
- * `:read`" — a name is a convention and this is an authorization decision. `scopeCovers` matches
- * exactly, with no prefix or wildcard rule, so holding a scope confers *every* route that requires it
- * anywhere in the composed tree; if one of those mutates, the scope is not a read however it is spelled.
+ * **A scope is a read scope only when every route that requires it is a `GET`, or a `POST` that declares
+ * `kind: "reads"`.** Not "its name ends in `:read`" — a name is a convention and this is an authorization
+ * decision. `scopeCovers` matches exactly, with no prefix or wildcard rule, so holding a scope confers
+ * *every* route that requires it anywhere in the composed tree; if one of those mutates, the scope is not a
+ * read however it is spelled.
  *
  * The seam's own `keys:rotate` is exactly that case and is the reason the rule is stated over routes
  * rather than over scopes: it gates `GET {base}/keys` **and** two `POST`s that register and expire keys.
  * A rule keyed on the listing route alone would have put a credential-lifecycle write into a read
  * default. It does not.
+ *
+ * The `POST` exception is a lookup by a person's address, which carries the address in a body because a
+ * URL is written to every request log (`POST {email}/suppressions/lookup`). It needs both the kind the
+ * route declares, the same kind the manifest reports and an MCP client marks read-only on, and a path
+ * ending `/lookup`, so a write added under a read scope with its kind copied from a sibling is still a
+ * write. A `POST` of any other kind or path is a write here.
  */
 
 /** One scope an adopter may grant, and what the composed Worker says holding it would allow. */
 export interface GrantableScope {
   /** The scope, as a route requires it and as `--scope` names it. */
   scope: ControlPlaneScope;
-  /** True when every declared route requiring this scope is a `GET`. */
+  /** True when every declared route requiring this scope is a `GET`, or a `POST …/lookup` declared `kind: "reads"`. */
   read: boolean;
   /** The capability that first declared it — what an adopter recognizes the grant by. */
   capability: string;
@@ -79,19 +86,21 @@ export function grantableScopes(capabilities: readonly Capability[]): GrantableS
   const found = new Map<string, GrantableScope>();
   for (const { capability, route } of declaredRoutes(capabilities)) {
     if (route.scope === null) continue;
+    const reads =
+      route.method === "GET" || (route.method === "POST" && route.kind === "reads" && route.path.endsWith("/lookup"));
     const existing = found.get(route.scope);
     if (existing) {
-      // One non-GET anywhere in the tree settles it. The union is what a grant actually confers.
+      // One route that is not a read anywhere in the tree settles it. The union is what a grant confers.
       found.set(route.scope, {
         ...existing,
-        read: existing.read && route.method === "GET",
+        read: existing.read && reads,
         routes: existing.routes + 1,
       });
       continue;
     }
     found.set(route.scope, {
       scope: route.scope,
-      read: route.method === "GET",
+      read: reads,
       capability,
       summary: route.summary,
       routes: 1,

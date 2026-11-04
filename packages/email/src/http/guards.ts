@@ -148,6 +148,14 @@ export function emailAdminRoutes(basePath: string): AdminRouteDeclaration[] {
     },
     {
       method: "POST",
+      operation: "suppressions.lookup",
+      path: `${basePath}/suppressions/lookup`,
+      scope: EMAIL_SUPPRESSIONS_READ_SCOPE,
+      kind: "reads",
+      summary: "Whether one address is on the list, and why. The address travels in the body, never the URL.",
+    },
+    {
+      method: "POST",
       operation: "suppressions.add",
       path: `${basePath}/suppressions`,
       scope: EMAIL_SUPPRESSIONS_WRITE_SCOPE,

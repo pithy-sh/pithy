@@ -161,19 +161,30 @@ export const HoldListQuery = z
   .describe("Which legal holds to list.");
 export type HoldListQuery = z.infer<typeof HoldListQuery>;
 
-/** Which connections to list. */
+/**
+ * Which connections to list: all of them. Strict, so a client still sending `?principal=` is refused
+ * rather than handed every connection as though it were the match. A query string is written to every
+ * request log, so narrowing to one person's address is {@link ConnectionLookupRequest}, in a body.
+ */
 export const ConnectionListQuery = z
+  .object({})
+  .strict()
+  .describe("The connection listing takes no query. To narrow to one principal, POST it to `/connections/lookup`.");
+export type ConnectionListQuery = z.infer<typeof ConnectionListQuery>;
+
+/** Which principal's connections to list, carried in a body so the address never reaches a request log. */
+export const ConnectionLookupRequest = z
   .object({
     principal: z
       .email()
       .max(254)
-      .optional()
       .describe(
         "Only connections this email authorized, compared without regard to case. Connections with no recorded principal are listed apart either way and never match.",
       ),
   })
-  .describe("Which connections to list.");
-export type ConnectionListQuery = z.infer<typeof ConnectionListQuery>;
+  .strict()
+  .describe("Which principal's connections to list.");
+export type ConnectionLookupRequest = z.infer<typeof ConnectionLookupRequest>;
 
 /** The path parameter of the revoke route. */
 export const ConnectionParams = z
