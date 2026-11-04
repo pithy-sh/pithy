@@ -1848,7 +1848,7 @@ describe("membership administration through the control plane", () => {
         },
         { method: "PATCH", path: `${ADMIN}/${ACME}/members/${bob}`, body: { role: "member", reason: REASON } },
         { method: "DELETE", path: `${ADMIN}/${ACME}/members/${bob}`, body: { reason: REASON } },
-        { method: "GET", path: `${ADMIN}/${ACME}/invitations?reason=${encodeURIComponent(REASON)}` },
+        { method: "POST", path: `${ADMIN}/${ACME}/invitations/list`, body: { reason: REASON } },
         { method: "POST", path: `${ADMIN}/${ACME}/invitations/${invitation}/resend`, body: { reason: REASON } },
         { method: "DELETE", path: `${ADMIN}/${ACME}/invitations/${invitation}`, body: { reason: REASON } },
         {
@@ -2332,8 +2332,9 @@ describe("membership administration through the control plane", () => {
 
     test("lists what is outstanding, and records the read with its reason", async () => {
       const offer = await invited();
-      const response = await call("GET", `${ADMIN}/${ACME}/invitations?reason=${encodeURIComponent(REASON)}`, {
+      const response = await call("POST", `${ADMIN}/${ACME}/invitations/list`, {
         app: operatorApp(),
+        body: { reason: REASON },
       });
       expect(response.status).toBe(200);
       const body = await bound(response, AdminInvitationsResponse);
@@ -2343,6 +2344,15 @@ describe("membership administration through the control plane", () => {
         reason: REASON,
         count: 1,
       });
+    });
+
+    test("the reason travels in a body: a GET listing is not served, and records nothing", async () => {
+      await invited();
+      const response = await call("GET", `${ADMIN}/${ACME}/invitations?reason=${encodeURIComponent(REASON)}`, {
+        app: operatorApp(),
+      });
+      expect(response.status).not.toBe(200);
+      expect(events.map((event) => event.action)).not.toContain("organization/admin_invitations_listed");
     });
 
     test("resending an expired invitation issues a fresh token, and the old one stops working", async () => {

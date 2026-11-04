@@ -119,7 +119,7 @@ function memoryKv() {
 /**
  * The Worker env every call carries. `SECRETS` and `SECRETS_ENCRYPTION_KEYS` come from the pool's own
  * bindings and are the real ones: every secret here is a `d1` entry, read from the row `beforeEach`
- * seeded rather than from anything on the env (#153).
+ * seeded rather than from anything on the env.
  */
 function workerEnv(): Record<string, unknown> {
   return {
@@ -376,11 +376,12 @@ describe("GET /auth/admin/users", () => {
     expect((await second.json<{ users: { id: string }[] }>()).users.map((u) => u.id)).toEqual(["u-old"]);
   });
 
-  test("searches by email", async () => {
+  test("refuses a search term in its query string rather than listing everyone", async () => {
     await seedUser("u-1", "ada@example.test", 10);
-    await seedUser("u-2", "grace@example.test", 20);
-    const response = await call("GET", "/auth/admin/users?search=grace", AUTH_USERS_READ_SCOPE);
-    expect((await response.json<{ users: { id: string }[] }>()).users.map((u) => u.id)).toEqual(["u-2"]);
+    const response = await call("GET", "/auth/admin/users?search=grace%40example.test", AUTH_USERS_READ_SCOPE);
+    expect(response.status).toBe(400);
+    expect((await response.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
+    expect(emitted.find((e) => e.action === "auth/admin_users_listed")).toBeUndefined();
   });
 
   test("state, verified and the signup window narrow the listing on the server", async () => {
@@ -433,18 +434,73 @@ describe("GET /auth/admin/users", () => {
     expect((await call("GET", "/auth/admin/users", AUTH_SESSIONS_REVOKE_SCOPE)).status).toBe(403);
   });
 
-  test("the listing is audited as a control-plane read, without the search term", async () => {
-    // A read of other people's data is the larger half of an exfiltration incident, so it is recorded.
-    // The term is not: on this route it is usually somebody's email address, and the trail outlives the
-    // pane that displayed it.
+  test("the listing is audited as a control-plane read that did not search", async () => {
     await seedUser("u-1", "ada@example.test", 10);
-    await call("GET", "/auth/admin/users?search=ada", AUTH_USERS_READ_SCOPE);
-
+    await call("GET", "/auth/admin/users", AUTH_USERS_READ_SCOPE);
     const event = emitted.find((e) => e.action === "auth/admin_users_listed");
-    expect(event).toBeDefined();
+    expect(event?.actorType).toBe("control-plane");
+    expect((event?.metadata as { searched?: boolean } | undefined)?.searched).toBe(false);
+  });
+});
+
+describe("POST /auth/admin/users/search", () => {
+  const search = (body: unknown, scope: ControlPlaneScope = AUTH_USERS_READ_SCOPE) =>
+    call("POST", "/auth/admin/users/search", scope, body);
+
+  test("searches by email and name from a body, answering the listing's envelope", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await seedUser("u-2", "grace@example.test", 20);
+    const response = await search({ search: "grace@example.test" });
+    expect(response.status).toBe(200);
+    const raw = await response.json();
+    const body = AdminUsersResponse.parse(raw);
+    expect(body).toEqual(raw);
+    expect(body.users.map((u) => u.id)).toEqual(["u-2"]);
+  });
+
+  test("pages on the cursor, in the body", async () => {
+    await seedUser("u-old", "old@example.test", 300);
+    await seedUser("u-new", "new@example.test", 1);
+    const first = AdminUsersResponse.parse(await (await search({ search: "@example.test", limit: 1 })).json());
+    expect(first.users.map((u) => u.id)).toEqual(["u-new"]);
+    expect(first.nextCursor).not.toBeNull();
+    await grant(ALL_SCOPES);
+    const second = AdminUsersResponse.parse(
+      await (await search({ search: "@example.test", limit: 1, cursor: first.nextCursor })).json(),
+    );
+    expect(second.users.map((u) => u.id)).toEqual(["u-old"]);
+  });
+
+  test("narrows by the listing's filters, with JSON types", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await seedUser("u-2", "adam@example.test", 20);
+    await db().updateTable("pithyAuthUsers").set({ emailVerified: 0 }).where("id", "=", "u-2").execute();
+    const response = await search({ search: "ada", verified: false });
+    expect(AdminUsersResponse.parse(await response.json()).users.map((u) => u.id)).toEqual(["u-2"]);
+  });
+
+  test("refuses a body with no term, an unknown key, or a string flag", async () => {
+    for (const body of [{}, { search: "" }, { search: "ada", q: "ada" }, { search: "ada", verified: "false" }]) {
+      await grant(ALL_SCOPES);
+      expect((await search(body)).status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  test("is refused without auth:users:read, before the body is judged", async () => {
+    await grant([AUTH_DEVICES_READ_SCOPE]);
+    expect((await search({ search: "" }, AUTH_DEVICES_READ_SCOPE)).status).toBe(403);
+  });
+
+  test("is audited as a listing that searched, never with the term", async () => {
+    // A read of other people's data is the larger half of an exfiltration incident, so it is recorded.
+    // The term is not: it is usually somebody's email address, and the trail outlives the pane.
+    await seedUser("u-1", "ada@example.test", 10);
+    await search({ search: "ada" });
+    const event = emitted.find((e) => e.action === "auth/admin_users_listed");
     expect(event?.actorType).toBe("control-plane");
     expect(event?.actorId).toBe(SUBJECT);
     expect((event?.metadata as { connectionId?: string } | undefined)?.connectionId).toBe(CONNECTION_ID);
+    expect((event?.metadata as { searched?: boolean } | undefined)?.searched).toBe(true);
     expect(JSON.stringify(event?.metadata)).not.toContain("ada");
   });
 });
@@ -859,8 +915,7 @@ describe("the admin surface stays outside the user surface", () => {
 
   test("no admin call writes a user, session, device, or account row of its own", async () => {
     // A management call is not a sign-in. If reading the admin surface created any auth row, the
-    // control plane would have a footprint in the adopter's identity data — which is the property
-    // issue #80 named as a definition-of-done item.
+    // control plane would have a footprint in the adopter's identity data.
     await call("GET", "/auth/admin/users", AUTH_USERS_READ_SCOPE);
     await grant(ALL_SCOPES);
     await call("GET", "/auth/admin/devices", AUTH_DEVICES_READ_SCOPE);
@@ -950,7 +1005,7 @@ describe("the exported response schemas against the live routes", () => {
 });
 
 /**
- * **A list that will not read costs its own pane, not the page (#380).**
+ * **A list that will not read costs its own pane, not the page.**
  *
  * `GET /admin/users/:userId` fans out over three independent tables and used to `Promise.all` them.
  * One D1 read failing threw out of the handler and 500'd the whole request — so a support agent looking

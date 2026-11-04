@@ -223,9 +223,9 @@ export function organizationAdminRoutes(
       summary: "Remove a member and clear their selection. Never an owner. Takes a reason.",
     },
     {
-      method: "GET",
+      method: "POST",
       operation: "invitations.list",
-      path: `${one}/invitations`,
+      path: `${one}/invitations/list`,
       scope: ORGANIZATION_MEMBERS_WRITE_SCOPE,
       kind: "writes",
       summary: "A tenant's outstanding invitations, to fix one. Takes a reason.",

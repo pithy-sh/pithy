@@ -189,7 +189,7 @@ They are two settings because they are two things: one is where this capability'
 | `POST {base}/admin/organizations/:organizationId/members` | Add an existing user at a named role | control-plane | `organization:members:write` |
 | `PATCH {base}/admin/organizations/:organizationId/members/:membershipId` | Change a member's role, to any role the catalog declares but the owning one | control-plane | `organization:members:write` |
 | `DELETE {base}/admin/organizations/:organizationId/members/:membershipId` | Remove a member, and clear their selection | control-plane | `organization:members:write` |
-| `GET {base}/admin/organizations/:organizationId/invitations` | A tenant's outstanding invitations, to fix one | control-plane | `organization:members:write` |
+| `POST {base}/admin/organizations/:organizationId/invitations/list` | A tenant's outstanding invitations, to fix one, with the reason in the body | control-plane | `organization:members:write` |
 | `POST {base}/admin/organizations/:organizationId/invitations/:invitationId/resend` | Send one again with a fresh link, expired or not | control-plane | `organization:members:write` |
 | `DELETE {base}/admin/organizations/:organizationId/invitations/:invitationId` | Revoke one, so its link stops working | control-plane | `organization:members:write` |
 | `POST {base}/admin/organizations/:organizationId/ownership` | Make a member the owner now, with no nomination and no acceptance | control-plane | `organization:ownership:transfer` |

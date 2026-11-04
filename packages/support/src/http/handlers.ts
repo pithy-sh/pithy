@@ -56,7 +56,7 @@ import type {
   MyThreadsQuery,
   RepliesQuery,
   ReplyInput,
-  SearchThreadsQuery,
+  SearchThreadsBody,
   SubmitFeedbackInput,
 } from "./schemas";
 import {
@@ -148,7 +148,7 @@ export async function listInbox(
  */
 export async function searchInbox(
   deps: HandlerDeps,
-  query: SearchThreadsQuery,
+  query: SearchThreadsBody,
   viewer: string,
 ): Promise<SupportSearchResponse> {
   const outcome = await searchThreads(
@@ -165,7 +165,7 @@ export async function searchInbox(
       q: query.q,
       ...(query.mode !== undefined ? { mode: query.mode } : {}),
       ...(query.limit !== undefined ? { limit: query.limit } : {}),
-      archived: query.archived === "true",
+      archived: query.archived === true,
       category: query.category,
       declaredCategory: query.declaredCategory,
       priority: query.priority,

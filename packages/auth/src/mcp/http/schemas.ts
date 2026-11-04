@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { notFreeText } from "@pithy-sh/core/src/http/freeText";
 import { z } from "zod";
 import { RpcMessage } from "../rpc";
 
@@ -10,11 +11,9 @@ export const McpRequestBody = RpcMessage;
 /** The consent screen's question: the signed authorization query the provider redirected it with. */
 export const ConsentQuery = z
   .object({
-    oauth_query: z
-      .string()
-      .min(1)
-      .max(8192)
-      .describe("The query string the authorization server redirected the screen with, signed by it."),
+    oauth_query: notFreeText(z.string().min(1).max(8192)).describe(
+      "The query string the authorization server redirected the screen with, signed by it. Machine-made: no person types it.",
+    ),
   })
   .describe("Which authorization request the consent screen is about.");
 

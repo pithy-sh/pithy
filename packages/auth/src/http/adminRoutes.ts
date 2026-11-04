@@ -71,7 +71,7 @@ import {
 } from "./responses";
 import {
   DeleteUserBody,
-  ExportUserQuery,
+  ExportUserBody,
   ListDevicesQuery,
   ListUsersQuery,
   ListVerificationsQuery,
@@ -79,6 +79,7 @@ import {
   RestoreUserBody,
   RevokeDeviceBody,
   RevokeSessionBody,
+  SearchUsersBody,
   SuspendUserBody,
   UserIdParam,
 } from "./schemas";
@@ -102,6 +103,7 @@ type Ctx = Context<PithyHonoEnv>;
  * revocations an incident costs.
  *
  *   GET  {base}/admin/users                          auth:users:read       query: ListUsersQuery
+ *   POST {base}/admin/users/search                   auth:users:read       json:  SearchUsersBody
  *   GET  {base}/admin/users/:userId                  auth:users:read       param: UserIdParam
  *   GET  {base}/admin/devices                        auth:devices:read     query: ListDevicesQuery
  *   GET  {base}/admin/verifications                  auth:verifications:read  query: ListVerificationsQuery
@@ -112,7 +114,7 @@ type Ctx = Context<PithyHonoEnv>;
  *   POST {base}/admin/users/:userId/reinstate        auth:users:suspend    param + json: ReinstateUserBody
  *   DELETE {base}/admin/users/:userId                auth:users:delete     param + json: DeleteUserBody
  *   POST {base}/admin/users/:userId/restore          auth:users:delete     param + json: RestoreUserBody
- *   GET  {base}/admin/users/:userId/export           auth:users:export     param + query: ExportUserQuery
+ *   POST {base}/admin/users/:userId/export           auth:users:export     param + json: ExportUserBody
  *
  * ## Registered before the catch-all, or dead
  *
@@ -155,11 +157,11 @@ function db(c: Ctx, wiring: AuthWiring) {
 }
 
 /**
- * One of the user pane's sub-reads, guarded and projected in one step (#380).
+ * One of the user pane's sub-reads, guarded and projected in one step.
  *
  * **`try`/`catch` inside an `async` function, never `.catch()`.** The read is *called* inside the `try`,
  * so a seam that throws before it returns a promise is caught too — a rejected promise is not the only
- * way a D1 read fails, and a `.catch()` guard has been escaped by exactly that before (#371).
+ * way a D1 read fails, and a `.catch()` guard is escaped by exactly that.
  *
  * **The guard takes no binding.** The state is the whole of what travels; what the read threw names a
  * query and a table, and this response goes to a management client across a trust boundary.
@@ -246,7 +248,7 @@ function lifecycleCall(c: Ctx, wiring: AuthWiring, caller: ControlPlaneContext, 
 }
 
 /**
- * A lifecycle route's body validator, which audits the bodies it refuses (#621). Every call is on the trail,
+ * A lifecycle route's body validator, which audits the bodies it refuses. Every call is on the trail,
  * a refusal included, and a body the validator turns away never reaches `auditedLifecycleCall`. So it is
  * recorded here, as `denied` under the route's own action, with whatever reason the body carried — cut to the
  * reason's own limit, so a refused essay is not stored whole — and the 400 is thrown as before.
@@ -301,7 +303,7 @@ async function endSessions(
 }
 
 /**
- * Start the purge of one account now (#622): `started` when this Worker binds the purge Workflow and it took the
+ * Start the purge of one account now: `started` when this Worker binds the purge Workflow and it took the
  * instance — or already held it — and `pending` when it binds none or the start failed; the account is due
  * either way, and the daily pass starts it. A failed start is not this call's failure: the deletion is already
  * written, and a 500 over it would invite a retry that finds the account deleted and says nothing new.
@@ -351,50 +353,66 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
   return (app) => {
     const base = wiring.config.basePath;
 
+    /** One page of users, audited as a listing: whether it was a search and how much came back, never the term. */
+    const pageOfUsers = async (c: Ctx, query: ListUsersQuery | SearchUsersBody) => {
+      const caller = controlPlaneCaller(c);
+      // One instant for the page, so the filter and every user on it are judged at the same moment.
+      const now = new Date();
+      const page = await listUsers(db(c, wiring), { ...query, now });
+      await emitControlPlaneAction(c.var.emit, {
+        action: AuthAuditActions.adminUsersListed,
+        subject: caller.subject,
+        connectionId: caller.connectionId,
+        resourceType: "user",
+        ...context(c),
+        // `searched`, not the term. A search term is usually somebody's email address, and the audit trail
+        // is queryable and kept far longer than the pane that displayed it, so the term would copy the
+        // personal data the caller already saw into a second store. That it was a search, and how much came
+        // back, is what makes an exfiltration pattern visible.
+        metadata: {
+          searched: "search" in query,
+          returned: page.items.length,
+          filters: {
+            state: query.state ?? null,
+            verified: query.verified ?? null,
+            since: query.since?.toISOString() ?? null,
+            until: query.until?.toISOString() ?? null,
+          },
+        },
+      });
+      return c.json({
+        users: page.items.map((user) => userView(user, now)),
+        nextCursor: page.nextCursor,
+      } satisfies AdminUsersResponse);
+    };
+
     app.get(
       `${base}/admin/users`,
       describeRoute({
         summary:
-          "Page through the users, newest first, optionally searching by email or name and narrowing by standing, verification or signup window.",
+          "Page through the users, newest first, narrowing by standing, verification or signup window. A search by address or name is `POST /admin/users/search`.",
         verification: "control-plane",
         scopes: [AUTH_USERS_READ_SCOPE],
         responses: { 200: AdminUsersResponse },
       }),
       requireControlPlane(AUTH_USERS_READ_SCOPE),
       validate("query", ListUsersQuery),
-      async (c) => {
-        const query = c.req.valid("query");
-        const caller = controlPlaneCaller(c);
-        // One instant for the page, so the filter and every user on it are judged at the same moment.
-        const now = new Date();
-        const page = await listUsers(db(c, wiring), { ...query, now });
-        await emitControlPlaneAction(c.var.emit, {
-          action: AuthAuditActions.adminUsersListed,
-          subject: caller.subject,
-          connectionId: caller.connectionId,
-          resourceType: "user",
-          ...context(c),
-          // `searched`, not the term. A search term on this route is usually somebody's email address,
-          // and the audit trail is queryable and kept far longer than the pane that displayed it — so
-          // recording the term would copy the personal data the caller already saw into a second store
-          // with a different retention policy. That it was a search, and how much came back, is what
-          // makes an exfiltration pattern visible; the string itself adds nothing to that.
-          metadata: {
-            searched: query.search !== undefined,
-            returned: page.items.length,
-            filters: {
-              state: query.state ?? null,
-              verified: query.verified ?? null,
-              since: query.since?.toISOString() ?? null,
-              until: query.until?.toISOString() ?? null,
-            },
-          },
-        });
-        return c.json({
-          users: page.items.map((user) => userView(user, now)),
-          nextCursor: page.nextCursor,
-        } satisfies AdminUsersResponse);
-      },
+      async (c) => pageOfUsers(c, c.req.valid("query")),
+    );
+
+    app.post(
+      `${base}/admin/users/search`,
+      describeRoute({
+        summary: "Search the users by email or name, newest first, with the listing's filters, paged on its cursor.",
+        description:
+          "The term travels in the body, because a query string is written to every request log between the client and the Worker and a search term is usually somebody's address. Answers the listing's envelope. Audited as a listing that searched, never with the term. Read-only.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_READ_SCOPE],
+        responses: { 200: AdminUsersResponse },
+      }),
+      requireControlPlane(AUTH_USERS_READ_SCOPE),
+      validate("json", SearchUsersBody),
+      async (c) => pageOfUsers(c, c.req.valid("json")),
     );
 
     app.get(
@@ -419,10 +437,9 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
         // Bounded, because a device id is client-generated: a user can mint as many device rows as they
         // like, so an unbounded sub-list would let any end user decide how much work this pane does.
         //
-        // Each read is guarded on its own (#380). They are three independent tables and this was a
-        // `Promise.all`, so one of them failing 500'd the whole page — the user, their sessions and
-        // their devices all lost to whichever list would not read, on the pane a support agent opens
-        // when an account is already in trouble. Still concurrent: the guard is inside each arm.
+        // Each read is guarded on its own: they are three independent tables, and one that will not read
+        // must not take the user and the other two lists with it, on the pane a support agent opens when an
+        // account is already in trouble. Still concurrent: the guard is inside each arm.
         const [sessions, devices, providers] = await Promise.all([
           readBounded(() => listUserSessions(database, userId, MAX_PAGE_SIZE), sessionView),
           readBounded(() => listUserDevices(database, userId, MAX_PAGE_SIZE), deviceView),
@@ -815,22 +832,22 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
       },
     );
 
-    app.get(
+    app.post(
       `${base}/admin/users/:userId/export`,
       describeRoute({
         summary: "Export everything the kit holds about one user, from every composed capability, as one document.",
         description:
-          "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason.",
+          "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
         verification: "control-plane",
         scopes: [AUTH_USERS_EXPORT_SCOPE],
         responses: { 200: AdminUserExportResponse },
       }),
       requireControlPlane(AUTH_USERS_EXPORT_SCOPE),
       validate("param", UserIdParam),
-      validate("query", ExportUserQuery),
+      validate("json", ExportUserBody),
       async (c) => {
         const { userId } = c.req.valid("param");
-        const { reason } = c.req.valid("query");
+        const { reason } = c.req.valid("json");
         const caller = controlPlaneCaller(c);
         const call = lifecycleCall(c, wiring, caller, userId, reason);
         const exportedAt = new Date();
@@ -846,7 +863,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
             return purgeExports(wiring.purgeSteps ?? [], {
               subject: { type: "user", id: userId },
               env: c.env as Record<string, unknown>,
-              // A capability holding rows by address — a suppression, a tester's membership — reads it here (#814).
+              // A capability holding rows by address — a suppression, a tester's membership — reads it here.
               address: () => purgeAddress(database, userId),
             });
           },

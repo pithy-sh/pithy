@@ -70,6 +70,37 @@ const vault = defineCapability({
   },
 });
 
+/**
+ * A literal path beside a `:param` sibling, the shape a search in a body takes: `/desk/admin/tickets/search`
+ * is matched by `/desk/admin/tickets/:id` too, so whichever entry answers its preflight decides what a
+ * browser may send.
+ */
+const desk = defineCapability({
+  name: "desk",
+  requiredBindings: [],
+  adminRoutes: [
+    {
+      method: "GET",
+      path: "/desk/admin/tickets/:id",
+      scope: "desk:tickets:read",
+      kind: "reads",
+      summary: "One ticket.",
+    },
+    {
+      method: "POST",
+      path: "/desk/admin/tickets/search",
+      scope: "desk:tickets:read",
+      kind: "reads",
+      readInBody: true,
+      summary: "Search the tickets.",
+    },
+  ],
+  routes: (app) => {
+    app.post("/desk/admin/tickets/search", requireControlPlane("desk:tickets:read"), (c) => c.json({ tickets: [] }));
+    app.get("/desk/admin/tickets/:id", requireControlPlane("desk:tickets:read"), (c) => c.json({ ticket: null }));
+  },
+});
+
 /** The adopter's own API: not an admin surface, and never the kit's to decide CORS for. */
 const adopterApp = defineCapability({
   name: "app",
@@ -80,7 +111,7 @@ const adopterApp = defineCapability({
 });
 
 /** The stock composition: no CORS config of any kind passed to `controlplane()`. */
-const backend = createBackend({ capabilities: [controlplane(), inventory, vault], app: adopterApp });
+const backend = createBackend({ capabilities: [controlplane(), inventory, vault, desk], app: adopterApp });
 
 /** The same, for a management client the adopter hosts themselves. */
 const selfHosted = createBackend({
@@ -154,6 +185,20 @@ describe("corsSurface", () => {
     expect(surface[0]?.allowMethods).toBe("GET, POST, OPTIONS");
   });
 
+  test("orders a literal segment ahead of a `:param` one, as the router prefers it", () => {
+    const surface = corsSurface([
+      {
+        adminRoutes: [
+          { method: "GET", path: "/t/:id", scope: null, summary: "" },
+          { method: "GET", path: "/t/:id/notes", scope: null, summary: "" },
+          { method: "POST", path: "/t/search", scope: null, summary: "" },
+          { method: "GET", path: "/t", scope: null, summary: "" },
+        ],
+      },
+    ]);
+    expect(surface.map((entry) => entry.path)).toEqual(["/t", "/t/search", "/t/:id", "/t/:id/notes"]);
+  });
+
   test("names content-type only where a method could carry a body", () => {
     const [readOnly] = corsSurface([{ adminRoutes: [{ method: "GET", path: "/a", scope: null, summary: "" }] }]);
     const [writes] = corsSurface([{ adminRoutes: [{ method: "POST", path: "/b", scope: null, summary: "" }] }]);
@@ -190,6 +235,15 @@ describe("the preflight, on a stock Worker", () => {
       expect(response.status).toBe(204);
       expect(await response.text()).toBe("");
     }
+  });
+
+  test("a literal path is answered by its own entry, never by a `:param` sibling that also matches it", async () => {
+    const search = await call(backend, "/desk/admin/tickets/search");
+    expect(search.status).toBe(204);
+    expect(search.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
+    expect(search.headers.get("access-control-allow-headers")).toContain("content-type");
+    const one = await call(backend, "/desk/admin/tickets/0195c1f0");
+    expect(one.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
   });
 
   test("names the token header, and content-type only where a body is plausible", async () => {

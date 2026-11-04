@@ -175,6 +175,7 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRouteDeclar
       path: `${basePath}/connections/lookup`,
       scope: CONNECTIONS_READ_SCOPE,
       kind: "reads",
+      readInBody: true,
       summary:
         "The connections one email authorized, the unattributed apart, as the listing reports them. The address travels in the body, never the URL.",
     },

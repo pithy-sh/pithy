@@ -626,6 +626,11 @@
                                     "credentials"
                                   ]
                                 },
+                                "readInBody": {
+                                  "description": "Present, and true, on a `POST` that reads and changes nothing: its input travels in the body because a URL is written to every request log, and a search term or an address must not be. Declared only on a `POST` with `kind: \"reads\"`, and refused anywhere else when the capability is defined. A client judging whether a route only reads checks the method, the kind and this together, never this alone.",
+                                  "type": "boolean",
+                                  "const": true
+                                },
                                 "operation": {
                                   "description": "The route's permanent name within its capability — `threads.reply`, `users.suspend` — declared beside the route by the capability that owns it. Never derived from the path, which moves when an adopter moves a `basePath`, and never from the scope, which several routes share. An MCP tool is named `<capability>_<operation>`. Absent from a Worker that predates #723.",
                                   "type": "string",
@@ -8208,19 +8213,8 @@
           "auth"
         ],
         "operationId": "getAuthAdminUsers",
-        "summary": "Page through the users, newest first, optionally searching by email or name and narrowing by standing, verification or signup window.",
+        "summary": "Page through the users, newest first, narrowing by standing, verification or signup window. A search by address or name is `POST /admin/users/search`.",
         "parameters": [
-          {
-            "name": "search",
-            "in": "query",
-            "required": false,
-            "description": "Free text matched against email and display name. `%` and `_` are escaped rather than treated as wildcards, so an address containing an underscore matches itself and nothing else.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200
-            }
-          },
           {
             "name": "state",
             "in": "query",
@@ -8232,19 +8226,6 @@
                 "active",
                 "suspended",
                 "deleted"
-              ]
-            }
-          },
-          {
-            "name": "verified",
-            "in": "query",
-            "required": false,
-            "description": "`true` for the users whose address is verified, `false` for those whose is not. Both when absent.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "true",
-                "false"
               ]
             }
           },
@@ -8281,6 +8262,19 @@
             }
           },
           {
+            "name": "verified",
+            "in": "query",
+            "required": false,
+            "description": "`true` for the users whose address is verified, `false` for those whose is not. Both when absent.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -8292,6 +8286,228 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "A page of the user list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The user's id, as `pithy_auth_users.id` stores it."
+                          },
+                          "email": {
+                            "type": "string",
+                            "description": "The user's email address. Personal data, and the point of a support pane."
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "The display name from the provider profile or sign-up."
+                          },
+                          "emailVerified": {
+                            "type": "boolean",
+                            "description": "Whether the address has been verified."
+                          },
+                          "image": {
+                            "description": "The avatar URL from a social profile, or null.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "locale": {
+                            "description": "The reader's chosen language as a BCP-47 tag; null when they have never chosen one, and absent when the Worker that answered predates the field (#450).",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 2,
+                                "maxLength": 64,
+                                "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+                                "description": "A BCP-47 language tag (`en`, `es`, `es-AR`) — the identity of a locale across the kit."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the user was created, ISO-8601."
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the row was last written, ISO-8601."
+                          },
+                          "state": {
+                            "description": "Where the account stands now: `active`; `suspended`, refused until it is reinstated or its end passes; or `deleted`, refused and restorable until `purgeAfter`. A suspension whose end has passed reads `active`, as enforcement reads it. Absent when the Worker that answered predates the field.",
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "suspended",
+                              "deleted"
+                            ]
+                          },
+                          "suspendedUntil": {
+                            "description": "When a suspension in force ends by itself, ISO-8601. Null for one that lasts until a reinstatement, and in every other state. Absent when the Worker predates the field.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "purgeAfter": {
+                            "description": "For a deleted account, when the purge may erase it, ISO-8601 — restorable until then. Null in every other state. Absent when the Worker predates the field.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "email",
+                          "name",
+                          "emailVerified",
+                          "image",
+                          "createdAt",
+                          "updatedAt"
+                        ],
+                        "description": "One user as a management client sees them. The table holds no credential, so nothing is withheld."
+                      },
+                      "description": "The page, newest first."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes. Null at the end of the list. Opaque — pass it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "users",
+                    "nextCursor"
+                  ],
+                  "description": "A page of the user list."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "auth:users:read"
+        ]
+      }
+    },
+    "/auth/admin/users/search": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAdminUsersSearch",
+        "summary": "Search the users by email or name, newest first, with the listing's filters, paged on its cursor.",
+        "description": "The term travels in the body, because a query string is written to every request log between the client and the Worker and a search term is usually somebody's address. Answers the listing's envelope. Audited as a listing that searched, never with the term. Read-only.",
+        "requestBody": {
+          "required": true,
+          "description": "A user search: the term, which standing, verification and signup window to narrow to, how many to return, and where to resume.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "search": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "freeText": true,
+                    "description": "Free text matched against email and display name. `%` and `_` are escaped rather than treated as wildcards, so an address containing an underscore matches itself and nothing else."
+                  },
+                  "state": {
+                    "description": "Narrow to where the account stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as enforcement reads it.",
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "suspended",
+                      "deleted"
+                    ]
+                  },
+                  "since": {
+                    "description": "Created at or after this instant, ISO-8601. Inclusive.",
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  "until": {
+                    "description": "Created before this instant, ISO-8601. Exclusive.",
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  "cursor": {
+                    "description": "Where to resume, from the previous page's `nextCursor`, passed back as it came: `null` or absent is a first page. Opaque; a malformed one is a first page.",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 512
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "verified": {
+                    "description": "`true` for the users whose address is verified, `false` for those whose is not. Both when absent.",
+                    "type": "boolean"
+                  },
+                  "limit": {
+                    "description": "How many rows to return. Bounded, because a verified client can still have a bug.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "search"
+                ],
+                "additionalProperties": false,
+                "description": "A user search: the term, which standing, verification and signup window to narrow to, how many to return, and where to resume."
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "A page of the user list.",
@@ -8901,6 +9117,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
                   },
                   "notify": {
@@ -9722,6 +9939,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
                   },
                   "until": {
@@ -9867,6 +10085,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
                   },
                   "notify": {
@@ -9972,6 +10191,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them."
                   }
                 },
@@ -10040,13 +10260,13 @@
       }
     },
     "/auth/admin/users/{userId}/export": {
-      "get": {
+      "post": {
         "tags": [
           "auth"
         ],
-        "operationId": "getAuthAdminUsersByUserIdExport",
+        "operationId": "postAuthAdminUsersByUserIdExport",
         "summary": "Export everything the kit holds about one user, from every composed capability, as one document.",
-        "description": "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason.",
+        "description": "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
         "parameters": [
           {
             "name": "userId",
@@ -10058,19 +10278,33 @@
               "minLength": 1,
               "maxLength": 255
             }
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "required": true,
-            "description": "Why this person's data is being exported — the access request it answers. Recorded on the audit trail.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 500
-            }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "An export: why it is being made.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "freeText": true,
+                    "description": "Why this person's data is being exported — the access request it answers. Recorded on the audit trail."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "An export: why it is being made."
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Everything the kit holds about one account, from every composed capability, as one document.",
@@ -37188,160 +37422,119 @@
       }
     },
     "/support/threads/search": {
-      "get": {
+      "post": {
         "tags": [
           "support"
         ],
-        "operationId": "getSupportThreadsSearch",
+        "operationId": "postSupportThreadsSearch",
         "summary": "Search the inbox, by words and by meaning, ranked as one.",
-        "parameters": [
-          {
-            "name": "q",
-            "in": "query",
-            "required": true,
-            "description": "What to search for, in the customer's words or yours. An order number, an error, or a description.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 200
-            }
-          },
-          {
-            "name": "mode",
-            "in": "query",
-            "required": false,
-            "description": "Which backends to run. Absent runs every one that is on, as `hybrid`. `semantic` or `hybrid` while `search.semantic` is off is refused, naming the flag.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "keyword",
-                "semantic",
-                "hybrid"
-              ]
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "description": "How many threads to return, best first. Default 20, at most 50. No cursor: a ranked list has a top, not pages.",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 50
-            }
-          },
-          {
-            "name": "archived",
-            "in": "query",
-            "required": false,
-            "description": "`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "true",
-                "false"
-              ]
-            }
-          },
-          {
-            "name": "category",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one category — what the classifier made of it.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64,
-              "pattern": "^[a-z][a-z0-9_]*$"
-            }
-          },
-          {
-            "name": "declaredCategory",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one category **the submitter chose**, which is a different question from `category` and answers it about different threads. Combining the two is how an operator finds the disagreements; asking for this one alone is how they triage a project with `ai.enabled: false`, where nothing ever writes the other.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64,
-              "pattern": "^[a-z][a-z0-9_]*$"
-            }
-          },
-          {
-            "name": "priority",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one priority.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "urgent",
-                "normal",
-                "low"
-              ]
-            }
-          },
-          {
-            "name": "sentiment",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one sentiment.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "angry",
-                "frustrated",
-                "neutral",
-                "positive"
-              ]
-            }
-          },
-          {
-            "name": "channel",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one channel — `email` for mail, `app` for what signed-in users filed from inside the app. Absent shows both, which is the right default for an inbox that is one queue however things arrived.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "email",
-                "app"
-              ]
-            }
-          },
-          {
-            "name": "inbox",
-            "in": "query",
-            "required": false,
-            "description": "Filter to one configured inbox address, for a Worker serving several.",
-            "schema": {
-              "type": "string",
-              "minLength": 3,
-              "maxLength": 256
-            }
-          },
-          {
-            "name": "assignee",
-            "in": "query",
-            "required": false,
-            "description": "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "const": "none"
+        "description": "The words travel in the body, because they are often a customer's address or order number and a query string is written to every request log between the client and the Worker. Read-only.",
+        "requestBody": {
+          "required": true,
+          "description": "A search over the inbox: the words, the mode, how many, and the same filters the inbox listing takes.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archived": {
+                    "description": "`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose.",
+                    "type": "boolean"
+                  },
+                  "category": {
+                    "description": "Filter to one category — what the classifier made of it.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9_]*$"
+                  },
+                  "declaredCategory": {
+                    "description": "Filter to one category **the submitter chose**, which is a different question from `category` and answers it about different threads. Combining the two is how an operator finds the disagreements; asking for this one alone is how they triage a project with `ai.enabled: false`, where nothing ever writes the other.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9_]*$"
+                  },
+                  "priority": {
+                    "description": "Filter to one priority.",
+                    "type": "string",
+                    "enum": [
+                      "urgent",
+                      "normal",
+                      "low"
+                    ]
+                  },
+                  "sentiment": {
+                    "description": "Filter to one sentiment.",
+                    "type": "string",
+                    "enum": [
+                      "angry",
+                      "frustrated",
+                      "neutral",
+                      "positive"
+                    ]
+                  },
+                  "channel": {
+                    "description": "Filter to one channel — `email` for mail, `app` for what signed-in users filed from inside the app. Absent shows both, which is the right default for an inbox that is one queue however things arrived.",
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "app"
+                    ]
+                  },
+                  "inbox": {
+                    "description": "Filter to one configured inbox address, for a Worker serving several.",
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 256
+                  },
+                  "assignee": {
+                    "description": "Filter to the threads one assignee has, by their `assigneeRef`, or `none` for the threads nobody has. Absent shows every thread, assigned or not.",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "none"
+                      },
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has."
+                      }
+                    ]
+                  },
+                  "q": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "freeText": true,
+                    "description": "What to search for, in the customer's words or yours. An order number, an error, or a description."
+                  },
+                  "mode": {
+                    "description": "Which backends to run. Absent runs every one that is on, as `hybrid`. `semantic` or `hybrid` while `search.semantic` is off is refused, naming the flag.",
+                    "type": "string",
+                    "enum": [
+                      "keyword",
+                      "semantic",
+                      "hybrid"
+                    ]
+                  },
+                  "limit": {
+                    "description": "How many threads to return, best first. Default 20, at most 50. No cursor: a ranked list has a top, not pages.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
+                  }
                 },
-                {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 128,
-                  "description": "Who the thread is assigned to: an opaque reference, the participant shape presence rooms use. A management client's own reference, which it chose; or a user of the app's id. Never `none`, which is the listing's filter for threads nobody has."
-                }
-              ]
+                "required": [
+                  "q"
+                ],
+                "additionalProperties": false,
+                "description": "A search over the inbox: the words, the mode, how many, and the same filters the inbox listing takes."
+              }
             }
           }
-        ],
+        },
         "responses": {
           "200": {
             "description": "A ranked search over the inbox. No cursor: a ranked list has a top, not pages.",
@@ -45131,6 +45324,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -45343,6 +45537,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -45514,6 +45709,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   },
                   "mode": {
@@ -45747,6 +45943,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is suspending it. Required, at most 500 characters, carrying no email address. Recorded verbatim, and sent to the organization's owners — the suspended screen tells every member the owners were told why."
                   },
                   "until": {
@@ -45966,6 +46163,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is suspending it. Required, at most 500 characters, carrying no email address. Recorded verbatim, and sent to the organization's owners — the suspended screen tells every member the owners were told why."
                   },
                   "until": {
@@ -46140,6 +46338,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -46271,6 +46470,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   },
                   "mode": {
@@ -46447,6 +46647,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -46590,6 +46791,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -46727,6 +46929,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -46784,14 +46987,14 @@
         ]
       }
     },
-    "/organizations/admin/organizations/{organizationId}/invitations": {
-      "get": {
+    "/organizations/admin/organizations/{organizationId}/invitations/list": {
+      "post": {
         "tags": [
           "organization"
         ],
-        "operationId": "getOrganizationsAdminOrganizationsByOrganizationIdInvitations",
+        "operationId": "postOrganizationsAdminOrganizationsByOrganizationIdInvitationsList",
         "summary": "List a tenant's outstanding invitations, to fix one.",
-        "description": "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded.",
+        "description": "Under the write scope, because the list is addresses and it is read to change one. The reason is recorded, and travels in the body because a URL is written to every request log. Changes nothing.",
         "parameters": [
           {
             "name": "organizationId",
@@ -46803,30 +47006,39 @@
               "format": "uuid",
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "description": "How many rows to return. Bounded, because a verified client can still have a bug.",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            }
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "required": true,
-            "description": "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 500
-            }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "The bound on a tenant's invitation listing, and why it is being read.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "description": "How many rows to return. Bounded, because a verified client can still have a bug.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "freeText": true,
+                    "description": "Why the operator is reading them — the list holds addresses, so the read is recorded with its reason. Required."
+                  }
+                },
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "The bound on a tenant's invitation listing, and why it is being read."
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "One tenant's outstanding invitations, bounded, with an honest flag where it was cut short.",
@@ -46969,6 +47181,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -47122,6 +47335,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -47270,6 +47484,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 500,
+                    "freeText": true,
                     "description": "Why the operator is doing this — a ticket, a sentence. Required, at most 500 characters, carrying no email address, and recorded verbatim on the audit event."
                   }
                 },
@@ -50156,11 +50371,12 @@
             "name": "oauth_query",
             "in": "query",
             "required": true,
-            "description": "The query string the authorization server redirected the screen with, signed by it.",
+            "description": "The query string the authorization server redirected the screen with, signed by it. Machine-made: no person types it.",
             "schema": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 8192
+              "maxLength": 8192,
+              "freeText": false
             }
           }
         ],

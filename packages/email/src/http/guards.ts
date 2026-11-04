@@ -152,6 +152,7 @@ export function emailAdminRoutes(basePath: string): AdminRouteDeclaration[] {
       path: `${basePath}/suppressions/lookup`,
       scope: EMAIL_SUPPRESSIONS_READ_SCOPE,
       kind: "reads",
+      readInBody: true,
       summary: "Whether one address is on the list, and why. The address travels in the body, never the URL.",
     },
     {

@@ -28,8 +28,8 @@ import {
 import { createAuthRoutes } from "./routes";
 
 /**
- * The path-param half of the route request contract (issue #74), and the control-plane half of the
- * verification contract (issue #89).
+ * The path-param half of the route request contract, and the control-plane half of the verification
+ * contract.
  *
  * Query and body are covered by the `no-raw-request-input` Biome plugin — `c.req.query()` and
  * `c.req.json()` are banned, so a handler can only read them through a validator it declared. A path
@@ -212,11 +212,12 @@ describe("the control-plane admin surface", () => {
     // has not proved anything.
     const response = await makeApp().request("/auth/admin/users?limit=99999");
     expect(response.status).toBe(403);
-    // And an export with no reason, which a verified caller is refused with a 400.
-    expect((await makeApp().request("/auth/admin/users/u-1/export")).status).toBe(403);
+    // And an export or a search with no body, which a verified caller is refused with a 400.
+    expect((await makeApp().request("/auth/admin/users/u-1/export", { method: "POST" })).status).toBe(403);
+    expect((await makeApp().request("/auth/admin/users/search", { method: "POST" })).status).toBe(403);
   });
 
-  test("delete and restore are advertised under auth:users:delete, export under auth:users:export (#622)", () => {
+  test("delete and restore are advertised under auth:users:delete, export under auth:users:export", () => {
     const of = (scope: string) =>
       ADMIN_ROUTES.filter((route) => route.scope === scope)
         .map((route) => `${route.method} ${route.path}`)
@@ -225,10 +226,10 @@ describe("the control-plane admin surface", () => {
       "DELETE /auth/admin/users/:userId",
       "POST /auth/admin/users/:userId/restore",
     ]);
-    expect(of(AUTH_USERS_EXPORT_SCOPE)).toEqual(["GET /auth/admin/users/:userId/export"]);
+    expect(of(AUTH_USERS_EXPORT_SCOPE)).toEqual(["POST /auth/admin/users/:userId/export"]);
   });
 
-  test("suspend and reinstate are advertised under auth:users:suspend, and nothing else is (#621)", () => {
+  test("suspend and reinstate are advertised under auth:users:suspend, and nothing else is", () => {
     // One grant ends an account's access and gives it back. Reading the user confers neither.
     const lifecycle = ADMIN_ROUTES.filter((route) => route.scope === AUTH_USERS_SUSPEND_SCOPE);
     expect(lifecycle.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
@@ -287,7 +288,7 @@ describe("the control-plane admin surface", () => {
   });
 
   test("nothing on this surface is named for impersonation", () => {
-    // Excluded from #89 on purpose: signing in as a user produces a credential indistinguishable from
+    // Excluded on purpose: signing in as a user produces a credential indistinguishable from
     // their own, so every action taken with it reads in the trail as theirs. It gets its own design and
     // its own security review, not a scope quietly added to this list.
     for (const scope of AUTH_CONTROL_PLANE_SCOPES) {
@@ -325,7 +326,7 @@ describe("the advertised admin surface matches what is mounted", () => {
       "The control-plane manifest advertises routes that no router mounts. A management client composes its calls from that manifest, so a drifted entry is a 404 nobody can diagnose.",
     ).toEqual([]);
 
-    // And since #468 the CORS surface derives from `adminRoutes` too. A guarded route nobody declared
+    // And the CORS surface derives from `adminRoutes` too. A guarded route nobody declared
     // gets no preflight, so no browser reaches it — while this suite stays green.
     expect(
       undeclaredAdminRoutes(app as unknown as Hono<never>, [capability]),
@@ -345,21 +346,20 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: twenty-one routes carry a method — the twelve
-    // admin ones and the nine a person calls. A twenty-second is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: twenty-two routes carry a method — the thirteen
+    // admin ones and the nine a person calls. A twenty-third is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
         .map((route) => `${route.method} ${route.path}`)
         .sort(),
     ).toEqual([
-      // The signed-in person deleting their own account (#622). The one route a suspended account reaches.
+      // The signed-in person deleting their own account. The one route a suspended account reaches.
       "DELETE /auth/account",
       "DELETE /auth/admin/users/:userId",
       "GET /auth/admin/devices",
       "GET /auth/admin/users",
       "GET /auth/admin/users/:userId",
-      "GET /auth/admin/users/:userId/export",
       "GET /auth/admin/verifications",
       "GET /auth/devices",
       // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
@@ -368,10 +368,12 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/sign-in/social/start",
       "POST /auth/admin/sessions/revoke",
       "POST /auth/admin/users/:userId/devices/revoke",
+      "POST /auth/admin/users/:userId/export",
       "POST /auth/admin/users/:userId/reinstate",
       "POST /auth/admin/users/:userId/restore",
       "POST /auth/admin/users/:userId/sessions/revoke",
       "POST /auth/admin/users/:userId/suspend",
+      "POST /auth/admin/users/search",
       "POST /auth/devices/revoke",
       // A native app trading the one-time code a redirect sign-in left on its deep link. Public: the code is the credential.
       "POST /auth/handoff",

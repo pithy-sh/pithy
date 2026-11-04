@@ -184,14 +184,17 @@ A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (
 
 ## Search
 
-The inbox is searched at `GET {basePath}/threads/search`, behind `support:threads:read`. **Search is its own route, not a filter on the list**: a query goes in, ranked threads come out, up to a limit, with no cursor. The inbox list, `GET {basePath}/threads`, no longer takes `q`, and refuses it as `validation/invalid_input` rather than ignoring it.
+The inbox is searched at `POST {basePath}/threads/search`, behind `support:threads:read`, with the words, the mode, the limit and the inbox list's filters in a JSON body: the words are often a customer's address or order number, and a query string is written to every request log. **Search is its own route, not a filter on the list**: a query goes in, ranked threads come out, up to a limit, with no cursor. The inbox list, `GET {basePath}/threads`, no longer takes `q`, and refuses it as `validation/invalid_input` rather than ignoring it.
 
-| Query | Default | Meaning |
-|---|---|---|
-| `q` | — | What to search for, up to 200 characters |
-| `mode` | every backend that is on | `keyword`, `semantic` or `hybrid`. `semantic` or `hybrid` with `search.semantic` off is a 400 naming the flag |
-| `limit` | `20` | Threads to return, at most `50` |
-| `archived`, `category`, `declaredCategory`, `priority`, `sentiment`, `channel`, `inbox`, `assignee` | — | The inbox list's filters, applied in D1 after retrieval |
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `q` | string | — | What to search for, up to 200 characters. Required |
+| `mode` | string | every backend that is on | `keyword`, `semantic` or `hybrid`. `semantic` or `hybrid` with `search.semantic` off is a 400 naming the flag |
+| `limit` | integer | `20` | Threads to return, at most `50` |
+| `archived` | boolean | `false` | `true` for the done pile |
+| `category`, `declaredCategory`, `priority`, `sentiment`, `channel`, `inbox`, `assignee` | string | — | The inbox list's filters, applied in D1 after retrieval |
+
+The body is strict: an unknown field, `cursor` included, is a 400.
 
 **Keyword** finds the exact words: FTS5, on by default, ranked by `bm25`; the `LIKE` scan with `search.fts` off or the index not yet provisioned, which has no score and ranks by recency. **Semantic** finds the meaning: the query is embedded with the index's pinned model and Vectorize returns the 100 nearest message ids, with no payload. **Hybrid**, the default, runs both and fuses them by reciprocal rank fusion over rank position, so a thread both found rises above one only one found. A tie goes to the keyword hit, then to `lastMessageAt`, newest first — which is what keeps an order number first: semantic search cannot retrieve it, so its thread is keyword's first while semantic's first is some other thread, and the two tie.
 

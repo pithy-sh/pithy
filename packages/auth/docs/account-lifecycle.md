@@ -82,10 +82,10 @@ Three routes. Deleting and restoring are gated by `auth:users:delete`, exporting
 ```
 DELETE /auth/admin/users/:userId           { mode?, reason, notify? }
 POST   /auth/admin/users/:userId/restore   { reason }
-GET    /auth/admin/users/:userId/export?reason=…
+POST   /auth/admin/users/:userId/export    { reason }
 ```
 
-`reason` is required on all three, on the same terms as a suspension's. A request without one is `validation/invalid_input`.
+`reason` is required on all three, on the same terms as a suspension's, and travels in the body on all three: a reason often names the request it answers, and a URL is written to every request log. A request without one is `validation/invalid_input`.
 
 **Two modes, and soft is the default.** `mode: "soft"`, or no mode at all, stamps `deleted_at` and `purge_after` — now plus the purge window — and revokes every session the account holds. Signing in again answers `auth/account_deleted`. The deletion-scheduled mail goes out with the purge date and, when you configure one, the restore path. `onUserDeleted` fires. The account can be restored until `purge_after`. `mode: "hard"` closes the window now: `purge_after` is the moment of the deletion, nothing can restore it, and the purge starts in the same call. You name it on purpose. A typo — `"Hard"`, `"hrad"` — is a 400, never either mode. A hard deletion of an account already deleted softly brings its purge forward to now.
 

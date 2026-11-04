@@ -93,6 +93,15 @@ describe("assertPresenceDeclaration", () => {
     expect(refusal(() => check(declaration([thread]), mixed))).toContain("gates a DELETE");
   });
 
+  test("a scope a POST read shares is a read scope, and a POST claiming the marker under another kind is a write", () => {
+    const search = { method: "POST", scope: "support:threads:read", kind: "reads", readInBody: true } as const;
+    expect(() => check(declaration([thread]), [...routes, search])).not.toThrow();
+    const claimed = { method: "POST", scope: "support:threads:read", kind: "writes", readInBody: true } as const;
+    expect(refusal(() => check(declaration([thread]), [...routes, claimed]))).toContain("gates a POST");
+    const unmarked = { method: "POST", scope: "support:threads:read", kind: "reads" } as const;
+    expect(refusal(() => check(declaration([thread]), [...routes, unmarked]))).toContain("gates a POST");
+  });
+
   test("a scope another capability's routes require is refused, since it is not this capability's to lend", () => {
     expect(refusal(() => check(declaration([{ ...thread, scope: "ledger:accounts:read" }])))).toContain(
       "no admin route of support requires",

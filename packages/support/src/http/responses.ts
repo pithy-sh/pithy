@@ -34,16 +34,14 @@ import { SupportSubmissionContext } from "../data/message";
  *
  * **A browser imports this file, so it reaches no module that needs the Workers runtime.** That is not
  * a preference about bundle size; it is what "a client validates what comes back" means once the client
- * is a Vite program with the DOM lib and no Workers types. This file imported `SUPPORT_BILLING_SCOPE`
- * from `link/sender.ts` for one release and brought D1, Kysely and two capabilities' table maps with it,
- * which took `pithy-sh/dashboard`'s client build down on an error in `@pithy-sh/auth` (#419). The rule is
- * held by `tooling/browser-scopes`, which compiles this module with `types: []` and asks the compiler
+ * is a Vite program with the DOM lib and no Workers types: an import of `link/sender.ts` would bring D1,
+ * Kysely and two capabilities' table maps into that build. The rule is held by `tooling/browser-scopes`, which compiles this module with `types: []` and asks the compiler
  * which files that program included.
  *
  * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
  * version boundary — a management client validates a response with this schema against a customer's
  * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
- * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * below that release and takes the whole pane with it. Absent then means *this Worker cannot
  * say*, which is a different fact from `null`.
  */
 
@@ -110,7 +108,7 @@ export const SupportThreadView = z
       .describe(
         "The control-plane subject that archived it, for convenience only — the answer to 'who marked this done' comes from the audit trail.",
       ),
-    // Optional as well as nullable (#450, #816): absent says *this Worker predates assignment*, which a client
+    // Optional as well as nullable: absent says *this Worker predates assignment*, which a client
     // must not read as *nobody has it*.
     assigneeRef: z
       .string()
@@ -346,7 +344,7 @@ export const SupportSearchResultView = z
   .describe("One thread a search found, named by its best-matching message, with that message's raw scores.");
 export type SupportSearchResultView = z.output<typeof SupportSearchResultView>;
 
-/** `GET {base}/threads/search`. */
+/** `POST {base}/threads/search`. */
 export const SupportSearchResponse = z
   .object({
     mode: z
@@ -418,7 +416,7 @@ export const SupportThreadResponse = z
       .describe("Its attachments, across every message, each naming the message it arrived on in `messageId`."),
     sender: SenderContextView.describe("What the app already knows about the sender."),
     replies: z.array(SupportReplyView).describe("The canned replies, ordered for this thread's category."),
-    // Optional (#450): absent from a Worker that predates assignment.
+    // Optional: absent from a Worker that predates assignment.
     assignments: z
       .array(SupportAssignmentView)
       .optional()
@@ -518,9 +516,8 @@ export type SupportFlagsResponse = z.output<typeof SupportFlagsResponse>;
  * Below is the same projection for the other consumer: a management client reading a Worker **it does
  * not control**. That client is crossing a trust boundary — a fork, a bug, a half-finished deploy, or a
  * hostile Worker each put a member here that no enum of ours declares — and under the strict schema one
- * such token costs it the entire response. It cost `pithy-sh/dashboard#15` exactly that: one
- * unrecognized `channel` and the support pane rendered zero of twenty-five conversations. The client
- * then had to widen our shape locally, which is the hand-held mirror `#113` exists to forbid.
+ * such token costs it the entire response: one unrecognized `channel` and a support pane renders none of
+ * its conversations, and the client is left widening our shape locally, the hand-held mirror the kit forbids.
  *
  * So the tolerance is published rather than reimplemented, by the one pattern
  * `@pithy-sh/core/src/projection/asRead` states for the whole kit: same objects, every enum read as a
@@ -553,7 +550,7 @@ export type SupportMessageViewAsRead = z.output<typeof SupportMessageViewAsRead>
 export const SupportThreadsResponseAsRead = asRead(SupportThreadsResponse);
 export type SupportThreadsResponseAsRead = z.output<typeof SupportThreadsResponseAsRead>;
 
-/** `GET {base}/threads/search`, as a client that does not control the Worker must read it. */
+/** `POST {base}/threads/search`, as a client that does not control the Worker must read it. */
 export const SupportSearchResponseAsRead = asRead(SupportSearchResponse);
 export type SupportSearchResponseAsRead = z.output<typeof SupportSearchResponseAsRead>;
 

@@ -13,6 +13,7 @@ import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRouteDeclaration } from "../controlPlane/discovery/adminRoute";
 import type { CapabilityManifestConfig } from "../controlPlane/discovery/configuration";
 import type { CapabilityHealth } from "../controlPlane/discovery/health";
+import { assertReadInBody } from "../controlPlane/discovery/readRoute";
 import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
@@ -855,6 +856,8 @@ export function defineCapability<
   if (input.vectorIndexes) {
     assertVectorIndexContributions(input.name, input.vectorIndexes, Object.keys(input.workflows ?? {}));
   }
+  // A read-in-a-body marker on a route that is not a POST read is refused where it is written, naming the capability.
+  if (input.adminRoutes) assertReadInBody(input.name, input.adminRoutes);
   // A consent purpose outside the capability's own domain, or declared twice, is refused where it is written.
   const consentPurposes = input.consentPurposes
     ? parseConsentPurposes(input.name, input.consentPurposes, input.name)

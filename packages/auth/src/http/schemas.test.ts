@@ -8,15 +8,16 @@ import { MAX_REASON } from "../lifecycle/reason";
 import {
   DeleteAccountBody,
   DeleteUserBody,
-  ExportUserQuery,
+  ExportUserBody,
   ListUsersQuery,
   ReinstateUserBody,
   RestoreUserBody,
+  SearchUsersBody,
   SuspendUserBody,
 } from "./schemas";
 
 /**
- * The lifecycle request bodies (#621). The routes read only what these hand back, so a reason the transition
+ * The lifecycle request bodies. The routes read only what these hand back, so a reason the transition
  * would refuse, or an end that is not a timestamp, is a 400 here and never a conflict later.
  */
 describe("SuspendUserBody", () => {
@@ -64,7 +65,7 @@ describe("ReinstateUserBody", () => {
   });
 });
 
-describe("DeleteUserBody (#622)", () => {
+describe("DeleteUserBody", () => {
   test("no mode is soft: the window is the default, and nothing defaults to an erasure", () => {
     expect(DeleteUserBody.parse({ reason: "Asked by email." })).toEqual({ mode: "soft", reason: "Asked by email." });
   });
@@ -91,22 +92,23 @@ describe("DeleteUserBody (#622)", () => {
   });
 });
 
-describe("RestoreUserBody (#622)", () => {
+describe("RestoreUserBody", () => {
   test("takes a reason and nothing else, and refuses none", () => {
     expect(RestoreUserBody.parse({ reason: " Changed their mind. " })).toEqual({ reason: "Changed their mind." });
     expect(RestoreUserBody.safeParse({}).success).toBe(false);
   });
 });
 
-describe("ExportUserQuery (#622)", () => {
-  test("a disclosure says why, like every other lifecycle call", () => {
-    expect(ExportUserQuery.parse({ reason: "Access request 4411." })).toEqual({ reason: "Access request 4411." });
-    expect(ExportUserQuery.safeParse({}).success).toBe(false);
-    expect(ExportUserQuery.safeParse({ reason: "" }).success).toBe(false);
+describe("ExportUserBody", () => {
+  test("a disclosure says why, like every other lifecycle call, and nothing else", () => {
+    expect(ExportUserBody.parse({ reason: "Access request 4411." })).toEqual({ reason: "Access request 4411." });
+    expect(ExportUserBody.safeParse({}).success).toBe(false);
+    expect(ExportUserBody.safeParse({ reason: "" }).success).toBe(false);
+    expect(ExportUserBody.safeParse({ reason: "Access request 4411.", userId: "other" }).success).toBe(false);
   });
 });
 
-describe("DeleteAccountBody (#622)", () => {
+describe("DeleteAccountBody", () => {
   test("requires the confirmation, and only the literal true", () => {
     expect(DeleteAccountBody.parse({ confirm: true })).toEqual({ confirm: true });
     for (const confirm of [undefined, false, "true", 1, "yes", null]) {
@@ -144,10 +146,55 @@ describe("ListUsersQuery", () => {
     );
   });
 
+  test("refuses a search term rather than listing everyone as though they were the match", () => {
+    const refused = ListUsersQuery.safeParse({ search: "ada@example.com" });
+    expect(refused.success).toBe(false);
+  });
+
   test("every filter reaches the manifest's route input, so a client can discover it", () => {
     const query = inputOf([validate("query", ListUsersQuery)]).properties as { query: { properties: object } };
     expect(Object.keys(query.query.properties)).toEqual(
-      expect.arrayContaining(["state", "verified", "since", "until"]),
+      expect.arrayContaining(["state", "verified", "since", "until", "cursor", "limit"]),
     );
+    expect(Object.keys(query.query.properties)).not.toContain("search");
+  });
+});
+
+describe("SearchUsersBody", () => {
+  test("takes the term, the listing's filters and its cursor, with JSON types", () => {
+    expect(
+      SearchUsersBody.parse({
+        search: " ada@example.com ",
+        state: "active",
+        verified: true,
+        since: "2026-06-01T00:00:00Z",
+        cursor: "abc",
+        limit: 5,
+      }),
+    ).toEqual({
+      search: "ada@example.com",
+      state: "active",
+      verified: true,
+      since: new Date("2026-06-01T00:00:00Z"),
+      cursor: "abc",
+      limit: 5,
+    });
+  });
+
+  test("takes the previous page's `nextCursor` as it came, `null` included, as a first page", () => {
+    expect(SearchUsersBody.parse({ search: "ada", cursor: null })).toEqual({ search: "ada" });
+  });
+
+  test("refuses no term, an empty one, an unknown key, string flags and a backwards window", () => {
+    for (const body of [
+      {},
+      { search: " " },
+      { search: "ada", q: "ada" },
+      { search: "ada", verified: "true" },
+      { search: "ada", limit: "5" },
+      { search: "ada", since: "2026-06-02T00:00:00Z", until: "2026-06-01T00:00:00Z" },
+    ]) {
+      expect(SearchUsersBody.safeParse(body).success, JSON.stringify(body)).toBe(false);
+    }
   });
 });

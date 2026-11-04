@@ -3,6 +3,7 @@
 
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
+import { freeText } from "@pithy-sh/core/src/http/freeText";
 import { z } from "zod";
 import { DevicePlatform } from "../data/device";
 import { VerificationState, VerificationType } from "../data/verificationOutcome";
@@ -131,41 +132,93 @@ const PageCursorParam = z
 /** A signup-window bound, as ISO-8601, decoded to a `Date` by the schema so the handler takes a typed value. */
 const SignupBound = z.iso.datetime({ offset: true }).transform((value) => new Date(value));
 
-/** The user listing query. */
+/** Where an account stands now, as a listing or a search narrows to it. */
+const UserStateFilter = z
+  .enum(["active", "suspended", "deleted"])
+  .describe(
+    "Narrow to where the account stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as enforcement reads it.",
+  );
+
+/** The narrowing a listing and a search share, beside `verified`, which a query and a body spell differently. */
+const userFilterFields = {
+  state: UserStateFilter.optional().describe(
+    "Narrow to where the account stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as enforcement reads it.",
+  ),
+  since: SignupBound.optional().describe("Created at or after this instant, ISO-8601. Inclusive."),
+  until: SignupBound.optional().describe("Created before this instant, ISO-8601. Exclusive."),
+  cursor: PageCursorParam,
+};
+
+/** A signup window that ends before it starts holds nothing. */
+const SIGNUP_WINDOW_ORDER = {
+  message: "`since` must be before `until`. A window that ends before it starts holds nothing.",
+};
+
+/** Whether a signup window is in order: either bound may be absent. */
+function windowInOrder(query: { since?: Date | undefined; until?: Date | undefined }): boolean {
+  return query.since === undefined || query.until === undefined || query.since < query.until;
+}
+
+/**
+ * The user listing query. Strict, and there is no `search`: a search term is usually somebody's address, and
+ * a query string is written to every request log, so a search is {@link SearchUsersBody}, in a body. A
+ * client still sending `?search=` is refused as `validation/invalid_input` rather than handed every user as
+ * though they were the match.
+ */
 export const ListUsersQuery = z
   .object({
-    search: z
-      .string()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe(
-        "Free text matched against email and display name. `%` and `_` are escaped rather than treated as wildcards, so an address containing an underscore matches itself and nothing else.",
-      ),
-    state: z
-      .enum(["active", "suspended", "deleted"])
-      .optional()
-      .describe(
-        "Narrow to where the account stands now: `active`, `suspended` or `deleted`. A suspension whose end has passed reads `active`, as enforcement reads it.",
-      ),
+    ...userFilterFields,
     verified: z
       .enum(["true", "false"])
       .describe("`true` or `false`.")
       .transform((value) => value === "true")
       .optional()
       .describe("`true` for the users whose address is verified, `false` for those whose is not. Both when absent."),
-    since: SignupBound.optional().describe("Created at or after this instant, ISO-8601. Inclusive."),
-    until: SignupBound.optional().describe("Created before this instant, ISO-8601. Exclusive."),
-    cursor: PageCursorParam,
     limit: PageLimit,
   })
-  .refine((query) => query.since === undefined || query.until === undefined || query.since < query.until, {
-    message: "`since` must be before `until`. A window that ends before it starts holds nothing.",
-  })
+  .strict()
+  .refine(windowInOrder, SIGNUP_WINDOW_ORDER)
   .describe(
-    "The user listing query: what to search for, which standing, verification and signup window to narrow to, how many to return, and where to resume.",
+    "The user listing query: which standing, verification and signup window to narrow to, how many to return, and where to resume. To search by address or name, POST to `/admin/users/search`.",
   );
 export type ListUsersQuery = z.output<typeof ListUsersQuery>;
+
+/**
+ * The body of `POST {base}/admin/users/search`: the term, the listing's filters, and the cursor, all in a body
+ * so the term never reaches a request log. Pages exactly as the listing does.
+ */
+export const SearchUsersBody = z
+  .object({
+    search: freeText(z.string().trim().min(1).max(200)).describe(
+      "Free text matched against email and display name. `%` and `_` are escaped rather than treated as wildcards, so an address containing an underscore matches itself and nothing else.",
+    ),
+    ...userFilterFields,
+    cursor: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((value) => value ?? undefined)
+      .describe(
+        "Where to resume, from the previous page's `nextCursor`, passed back as it came: `null` or absent is a first page. Opaque; a malformed one is a first page.",
+      ),
+    verified: z
+      .boolean()
+      .optional()
+      .describe("`true` for the users whose address is verified, `false` for those whose is not. Both when absent."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PAGE_SIZE)
+      .optional()
+      .describe("How many rows to return. Bounded, because a verified client can still have a bug."),
+  })
+  .strict()
+  .refine(windowInOrder, SIGNUP_WINDOW_ORDER)
+  .describe(
+    "A user search: the term, which standing, verification and signup window to narrow to, how many to return, and where to resume.",
+  );
+export type SearchUsersBody = z.output<typeof SearchUsersBody>;
 
 /** The device-registry listing query. */
 export const ListDevicesQuery = z
@@ -233,14 +286,9 @@ export type RevokeSessionBody = z.output<typeof RevokeSessionBody>;
  * is a 400 here rather than a conflict later. Required rather than defaulted: a suspension nobody explained is
  * a lockout the person cannot answer, and the trail would record nothing about why.
  */
-const LifecycleReason = z
-  .string()
-  .trim()
-  .min(1)
-  .max(MAX_REASON)
-  .describe(
-    "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them.",
-  );
+const LifecycleReason = freeText(z.string().trim().min(1).max(MAX_REASON)).describe(
+  "Why, in a sentence written for the person. A suspension's reason is what every refused sign-in shows them.",
+);
 
 /** Whether the person is mailed. */
 const Notify = z
@@ -306,17 +354,19 @@ export const RestoreUserBody = z
 export type RestoreUserBody = z.output<typeof RestoreUserBody>;
 
 /**
- * The query of `GET /admin/users/:userId/export`. A disclosure of everything the kit holds about one person
- * says why, like every lifecycle call: the reason goes on the trail beside who asked.
+ * The body of `POST /admin/users/:userId/export`. A disclosure of everything the kit holds about one person
+ * says why, like every lifecycle call: the reason goes on the trail beside who asked, and in a body, never a
+ * URL, because a reason names the request it answers and often the person who made it.
  */
-export const ExportUserQuery = z
+export const ExportUserBody = z
   .object({
     reason: LifecycleReason.describe(
       "Why this person's data is being exported — the access request it answers. Recorded on the audit trail.",
     ),
   })
+  .strict()
   .describe("An export: why it is being made.");
-export type ExportUserQuery = z.output<typeof ExportUserQuery>;
+export type ExportUserBody = z.output<typeof ExportUserBody>;
 
 /**
  * The body of `DELETE /account`, the signed-in person deleting their own account.
