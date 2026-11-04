@@ -4,8 +4,15 @@ import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate, routeTable, useSearchParam } from "../../router";
-import { refusedAccountScreen, resumeAfterSignIn } from "../../session";
+import { navigate, Redirect, routeTable, usePath, useSearch, useSearchParam } from "../../router";
+import {
+  heldOtpAddress,
+  holdOtpAddress,
+  refusedAccountScreen,
+  releaseOtpAddress,
+  resumeAfterSignIn,
+  resumeQuery,
+} from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 import "../../pithy-screens.css";
 
@@ -16,16 +23,14 @@ export const path = "/otp";
 // **Nothing sends anyone here by default.** The sign-in screen offers one way in — the magic link —
 // because two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
 // and two inboxes' worth of mail for one intent. This screen stays because the server route behind it
-// does: if you would rather have a code, send one from your own screen and route here with
-// `navigate(`/otp?email=${encodeURIComponent(email)}`)`.
+// does: if you would rather have a code, send one from your own screen, hand this screen the address and go
+// here: `holdOtpAddress(email); navigate("/otp")`.
 //
-// **The email stays a query parameter, now that `/otp/:email` is expressible.** A path parameter
-// identifies the thing a URL points at, and this URL points at the code entry screen — the address is
-// a prefill, not the resource. `/otp` with no email is a valid screen and renders "your inbox", which
-// a path segment cannot say without an optional-segment rule the router deliberately does not have.
-// Nothing mails a link here either, so the argument for identifiers in the path — that a link is the
-// way in — does not apply. And an address in a path is PII in every access log and referrer along the
-// way: the same argument that favours the path for a token, pointing the other way for an email.
+// **The address is never in the URL.** A path or a query string is written to every access log, proxy and
+// referrer between the browser and the worker, so `holdOtpAddress` keeps it in memory and in this tab's session
+// storage. A reload keeps it. A new tab, a bookmark or a link somebody else opens has none, and goes back to
+// sign-in, since a code cannot be checked without the address it was sent to. An older link carrying `?email=` is
+// read once, held, and dropped from the address bar.
 
 /**
  * This screen's English, baked in — the only catalog that survives being copied into your repository.
@@ -46,7 +51,13 @@ const EN = {
 
 export default function Otp() {
   const t = useTranslator(EN);
-  const email = useSearchParam("email") ?? "";
+  const path = usePath();
+  const search = useSearch();
+  const carried = useSearchParam("email");
+  const [email] = useState(() => {
+    if (carried) holdOtpAddress(carried);
+    return carried || heldOtpAddress() || "";
+  });
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length: authConfig.otpLength }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [error, setError] = useState(false);
@@ -73,6 +84,7 @@ export default function Otp() {
     const result = await signInWithOtp({ email, otp: code }, client);
     setBusy(false);
     if (result.ok) {
+      releaseOtpAddress();
       // A sign-in an application's authorization sent somebody to resumes it.
       if (resumeAfterSignIn()) return;
       return navigate("/");
@@ -89,6 +101,17 @@ export default function Otp() {
     // The gate goes on the send route and not on the verify one, which is where `@pithy-sh/auth`
     // stacks the humanity check: a code that was already mailed is not a surface worth challenging.
     await sendOtp({ email, type: "sign-in" }, { ...client, gate: (body) => turnstileRequest(body, captcha) });
+  }
+
+  if (carried !== null) {
+    const rest = new URLSearchParams(search);
+    rest.delete("email");
+    const query = rest.toString();
+    return <Redirect to={`${path}${query ? `?${query}` : ""}`} replace />;
+  }
+  if (!email) {
+    const resume = resumeQuery(search);
+    return <Redirect screen="sign-in" replace {...(resume ? { search: resume.slice(1) } : {})} />;
   }
 
   return (

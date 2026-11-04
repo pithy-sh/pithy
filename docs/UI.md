@@ -291,7 +291,7 @@ Identifier-in-path is the ordinary shape for anything arriving by link: an invit
 
 **One level, and no more.** A pattern matches a path with the same number of segments. There are no wildcards, no optional segments, no nested routes and no layouts — `/a` does not answer `/a/b`. Nesting is a different and much larger request; this is the piece that was missing.
 
-**Prefer a path over a query string for anything link-addressed.** A query string lands in referrer headers and access logs more readily than a path segment. It is not a large difference — a token in a URL is a token in a URL — but it is the wrong thing to be forced into. Pithy's own `/otp` screen keeps its `?email=`, and says why in the file: that URL points at the code-entry screen, the address is a prefill rather than the resource, and `/otp` with no email is a valid screen.
+**Prefer a path over a query string for anything link-addressed.** A query string lands in referrer headers and access logs more readily than a path segment. It is not a large difference — a token in a URL is a token in a URL — but it is the wrong thing to be forced into. **A person's address goes in neither.** Pithy's own `/otp` screen is handed the address with `holdOtpAddress(email)` from `session.tsx`, which keeps it in memory and this tab's session storage, never the URL. A reload keeps it. A new tab or a bookmark has none and goes back to sign-in. An older link carrying `?email=` is read once, held, and dropped from the address bar.
 
 ### The query string
 

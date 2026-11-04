@@ -333,11 +333,12 @@ describe("on a phone with no universal link, email", () => {
     expect(screen.getByRole("button", { name: "Email me a code" })).toBeTruthy();
   });
 
-  test("mails a one-time code and goes on to the code screen, carrying the address and the resume target", async () => {
+  test("mails a one-time code and goes on to the code screen, handing it the address outside the URL", async () => {
     const { adapter } = await open("ios", "/sign-in?resume=%2Fauth%2Fx");
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
     await press(screen.getByRole("button", { name: "Email me a code" }));
-    await waitFor(() => expect(adapter.path()).toBe("/otp?email=ada%40example.com&resume=%2Fauth%2Fx"));
+    await waitFor(() => expect(adapter.path()).toBe("/otp?resume=%2Fauth%2Fx"));
+    expect((await import("../templates/src/session")).heldOtpAddress()).toBe("ada@example.com");
     const sent = posted("/email-otp/send-verification-otp");
     expect(sent?.url).toBe(`${ORIGIN}/auth/email-otp/send-verification-otp`);
     expect(sent?.body).toMatchObject({ email: "ada@example.com", type: "sign-in" });

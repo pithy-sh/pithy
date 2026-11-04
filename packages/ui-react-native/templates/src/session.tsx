@@ -288,3 +288,62 @@ export async function afterSignIn(search: string): Promise<string | null> {
   if ((await resumeAfterSignIn(search)) && !onDevice()) return null;
   return "/";
 }
+
+/** The key the code screen's address waits under in this tab's session storage. */
+const OTP_ADDRESS_KEY = "pithy.auth.otp-address";
+
+/** The address, held in memory too: a phone has no session storage, and a private window may refuse it. */
+let otpAddress: string | null = null;
+
+/** The slice of the Web Storage API the held address uses. */
+interface TabStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+/** This tab's session storage, or `null` where there is none or it refuses to be read. */
+function tabStorage(): TabStorage | null {
+  try {
+    return (globalThis as { sessionStorage?: TabStorage }).sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hand the code screen the address a code was sent to, before going there.
+ *
+ * **Never in the URL.** A path or a query string is written to every request log between the browser and the
+ * Worker the moment a reload, a bookmark or a shared link sends it, so the address waits in memory and in this
+ * tab's session storage instead. A reload of the code screen keeps it; a new tab, a bookmark or a link somebody
+ * else opens does not, and the screen goes back to sign-in.
+ */
+export function holdOtpAddress(email: string): void {
+  otpAddress = email;
+  try {
+    tabStorage()?.setItem(OTP_ADDRESS_KEY, email);
+  } catch {
+    // Storage refused: memory still holds it for this page.
+  }
+}
+
+/** The address the code screen was handed, or `null`. */
+export function heldOtpAddress(): string | null {
+  if (otpAddress !== null) return otpAddress;
+  try {
+    return tabStorage()?.getItem(OTP_ADDRESS_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the held address, once the code has done its work. */
+export function releaseOtpAddress(): void {
+  otpAddress = null;
+  try {
+    tabStorage()?.removeItem(OTP_ADDRESS_KEY);
+  } catch {
+    // Nothing to forget.
+  }
+}

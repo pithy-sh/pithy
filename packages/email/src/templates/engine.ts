@@ -19,7 +19,7 @@ import { type EmailTheme, widthPx } from "./theme";
  * evals at request time (CLAUDE.md §Email: "precompiled, no runtime compile/eval"). Rendering is then
  * pure string substitution.
  *
- * Tracking is applied here, not in the template: callback tokens are minted ahead of render (signing
+ * Tracking is applied here, not in the template: callback tokens are minted ahead of render (sealing
  * is async; Handlebars helpers are not) and the resulting URLs are placed into the render context.
  * Click tracking rewrites the declared link locations; open tracking injects a pixel; and an **elective**
  * template gets an unsubscribe link, which a marketing template additionally cannot render without.

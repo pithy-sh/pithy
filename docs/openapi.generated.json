@@ -6091,13 +6091,13 @@
         ],
         "operationId": "getPithyEmailCByToken",
         "summary": "Record a click on a tracked link, then send the reader on to it.",
-        "description": "Public: the HMAC signature on the token is the only gate. A forged, altered, or expired token answers `email/invalid_token` (400) before anything is recorded, and the destination is the http(s) URL signed into the token, never one from the request.",
+        "description": "Public: the token's seal is the only gate. A forged, altered, or expired token answers `email/invalid_token` (400) before anything is recorded, and the destination is the http(s) URL sealed into the token, never one from the request.",
         "parameters": [
           {
             "name": "token",
             "in": "path",
             "required": true,
-            "description": "The signed callback token from the path, optionally with the open-pixel `.png` suffix.",
+            "description": "The sealed callback token from the path, optionally with the open-pixel `.png` suffix.",
             "schema": {
               "type": "string",
               "minLength": 1,
@@ -6129,13 +6129,13 @@
         ],
         "operationId": "getPithyEmailOByToken",
         "summary": "Record that an email was opened.",
-        "description": "Public: the HMAC signature on the token is the only gate. The token may carry the `.png` suffix mail clients expect on an image URL.",
+        "description": "Public: the token's seal is the only gate. The token may carry the `.png` suffix mail clients expect on an image URL.",
         "parameters": [
           {
             "name": "token",
             "in": "path",
             "required": true,
-            "description": "The signed callback token from the path, optionally with the open-pixel `.png` suffix.",
+            "description": "The sealed callback token from the path, optionally with the open-pixel `.png` suffix.",
             "schema": {
               "type": "string",
               "minLength": 1,
@@ -6171,35 +6171,25 @@
           "email"
         ],
         "operationId": "getPithyEmailUByToken",
-        "summary": "Unsubscribe the recipient from everything but the mail they ask for.",
-        "description": "Public: the HMAC signature on the token is the only gate. Answers GET for the link in the message and POST for one-click unsubscribe. The address joins the suppression list shared by every environment.",
+        "summary": "Show the page that confirms an unsubscribe.",
+        "description": "Public: the token's seal is the only gate. Records nothing, so a mail scanner or a link preview fetching the link changes nothing. The page's button posts back to the same URL.",
         "parameters": [
           {
             "name": "token",
             "in": "path",
             "required": true,
-            "description": "The signed callback token from the path, optionally with the open-pixel `.png` suffix.",
+            "description": "The sealed callback token from the path, optionally with the open-pixel `.png` suffix.",
             "schema": {
               "type": "string",
               "minLength": 1,
               "maxLength": 4096,
               "pattern": "^[A-Za-z0-9._-]+$"
             }
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "required": false,
-            "description": "Why the recipient opted out; truncated to 200 characters before it is stored.",
-            "schema": {
-              "type": "string",
-              "maxLength": 2000
-            }
           }
         ],
         "responses": {
           "200": {
-            "description": "A short HTML page confirming the opt-out.",
+            "description": "A short HTML page with one button that unsubscribes.",
             "content": {
               "text/html": {
                 "schema": {}
@@ -6223,31 +6213,63 @@
         ],
         "operationId": "postPithyEmailUByToken",
         "summary": "Unsubscribe the recipient from everything but the mail they ask for.",
-        "description": "Public: the HMAC signature on the token is the only gate. Answers GET for the link in the message and POST for one-click unsubscribe. The address joins the suppression list shared by every environment.",
+        "description": "Public: the token's seal is the only gate. The page's button and a mail client's one-click unsubscribe both post here; an empty body works as well as `List-Unsubscribe=One-Click`. The address joins the suppression list shared by every environment.",
         "parameters": [
           {
             "name": "token",
             "in": "path",
             "required": true,
-            "description": "The signed callback token from the path, optionally with the open-pixel `.png` suffix.",
+            "description": "The sealed callback token from the path, optionally with the open-pixel `.png` suffix.",
             "schema": {
               "type": "string",
               "minLength": 1,
               "maxLength": 4096,
               "pattern": "^[A-Za-z0-9._-]+$"
             }
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "required": false,
-            "description": "Why the recipient opted out; truncated to 200 characters before it is stored.",
-            "schema": {
-              "type": "string",
-              "maxLength": 2000
-            }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "The optional form fields an unsubscribe POST accepts.",
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "List-Unsubscribe": {
+                    "description": "`One-Click` from a mail client's RFC 8058 one-click unsubscribe. Accepted and not otherwise read.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "reason": {
+                    "description": "Why the recipient opted out; the first value is kept, truncated to 200 characters before it is stored.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "description": "The optional form fields an unsubscribe POST accepts."
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "A short HTML page confirming the opt-out.",

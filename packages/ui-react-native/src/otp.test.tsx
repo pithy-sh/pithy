@@ -58,13 +58,19 @@ beforeEach(() => {
 const os = Platform.OS;
 afterEach(() => {
   cleanup();
+  globalThis.sessionStorage?.clear();
   Platform.OS = os;
   vi.unstubAllGlobals();
   vi.resetModules();
 });
 
-async function open(platform: "ios" | "web", path = "/otp?email=ada%40example.com") {
+/** The address a code was sent to, as the sign-in screen hands it over. */
+const ADDRESS = "ada@example.com";
+
+async function open(platform: "ios" | "web", path = "/otp", held: string | null = ADDRESS) {
   Platform.OS = platform;
+  const session = await import("../templates/src/session");
+  if (held !== null) session.holdOtpAddress(held);
   const router = await import("../templates/src/router");
   const otp = await import("../templates/src/routes/pithy/otp");
   const adapter = router.createMemoryAdapter(path);
@@ -96,16 +102,38 @@ function submit(): HTMLElement {
 }
 
 describe("the code screen", () => {
-  test("sits at /otp and counts the digits it asked for, to the address in the query", async () => {
+  test("sits at /otp and counts the digits it asked for, to the address it was handed", async () => {
     const { otp } = await open("web");
     expect(otp.path).toBe("/otp");
     expect(screen.getByText("We sent 6 digits to ada@example.com.")).toBeTruthy();
     expect(digits()).toHaveLength(6);
   });
 
-  test("says your inbox with no address", async () => {
-    await open("web", "/otp");
-    expect(screen.getByText("We sent 6 digits to your inbox.")).toBeTruthy();
+  test("with no address handed over, goes back to sign-in, carrying what it should resume", async () => {
+    const { adapter } = await open("web", "/otp?resume=%2Finvitations%2Ftok_1", null);
+    await waitFor(() => expect(adapter.path()).toBe("/sign-in?resume=%2Finvitations%2Ftok_1"));
+  });
+
+  test("an older link carrying ?email= is read once, held, and dropped from the URL", async () => {
+    const { adapter } = await open("web", "/otp?email=ada%40example.com&resume=%2Finvitations%2Ftok_1", null);
+    await waitFor(() => expect(adapter.path()).toBe("/otp?resume=%2Finvitations%2Ftok_1"));
+    expect(screen.getByText("We sent 6 digits to ada@example.com.")).toBeTruthy();
+    const session = await import("../templates/src/session");
+    expect(session.heldOtpAddress()).toBe(ADDRESS);
+  });
+
+  test("an empty ?email= does not cost the address it was handed", async () => {
+    const { adapter } = await open("web", "/otp?email=");
+    await waitFor(() => expect(adapter.path()).toBe("/otp"));
+    expect(screen.getByText("We sent 6 digits to ada@example.com.")).toBeTruthy();
+  });
+
+  test("a reload keeps the address: it waits in this tab's session storage, not the URL", async () => {
+    const session = await import("../templates/src/session");
+    session.holdOtpAddress(ADDRESS);
+    vi.resetModules();
+    await open("web", "/otp", null);
+    expect(screen.getByText("We sent 6 digits to ada@example.com.")).toBeTruthy();
   });
 
   test("keeps the submit shut until every digit is in, and drops anything but digits", async () => {
@@ -131,12 +159,15 @@ describe("the code screen", () => {
     await waitFor(() => expect(adapter.path()).toBe("/"));
     const verify = calls.find((call) => call.url === `${ORIGIN}/auth/sign-in/email-otp`);
     expect(JSON.parse(String(verify?.init.body))).toEqual({ email: "ada@example.com", otp: "123456" });
+    expect(adapter.history.some((entry) => decodeURIComponent(entry).includes(ADDRESS))).toBe(false);
+    const session = await import("../templates/src/session");
+    expect(session.heldOtpAddress()).toBeNull();
     expect(verify?.init.headers?.["x-pithy-platform"]).toBe("ios");
     expect(secureStore.items.get(BEARER_STORAGE_KEY)).toContain("otp-session");
   });
 
   test("on a phone, an invitation that sent somebody to sign in is where the app goes, not a browser", async () => {
-    const { adapter } = await open("ios", "/otp?email=ada%40example.com&resume=%2Finvitations%2Ftok_1");
+    const { adapter } = await open("ios", "/otp?resume=%2Finvitations%2Ftok_1");
     type("123456");
     await act(async () => {
       fireEvent.click(submit());
@@ -174,7 +205,7 @@ describe("the code screen", () => {
       fireEvent.click(submit());
     });
     expect(await screen.findByText("That code didn't work. Try again, or send a new one.")).toBeTruthy();
-    expect(adapter.path()).toBe("/otp?email=ada%40example.com");
+    expect(adapter.path()).toBe("/otp");
   });
 
   test("a new code is sent through the send route, to the same address", async () => {

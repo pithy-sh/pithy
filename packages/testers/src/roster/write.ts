@@ -136,7 +136,9 @@ export async function inviteMember(
   const existing = await findMemberByEmail(deps.db, input.cohortId, email);
 
   if (existing && LIVE_STATES.includes(existing.state)) {
-    throw new TestersAlreadyOnRosterError({ detail: `${email} is already ${existing.state} on ${input.cohortId}` });
+    throw new TestersAlreadyOnRosterError({
+      detail: `member ${existing.id} is already ${existing.state} on ${input.cohortId}`,
+    });
   }
 
   // A withdrawal is the tester's own decision, and it is durable. `lapsed` has exactly one producer —
@@ -148,7 +150,7 @@ export async function inviteMember(
   // contact-list re-import takes.
   if (existing && existing.state === "lapsed") {
     throw new TestersWithdrawnError({
-      detail: `${email} withdrew from ${input.cohortId} on ${existing.lapsedAt?.toISOString() ?? "an unrecorded date"}`,
+      detail: `member ${existing.id} withdrew from ${input.cohortId} on ${existing.lapsedAt?.toISOString() ?? "an unrecorded date"}`,
     });
   }
 

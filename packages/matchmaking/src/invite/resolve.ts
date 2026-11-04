@@ -51,7 +51,7 @@ export async function resolveInvitee(
       .selectAll()
       .executeTakeFirst();
     if (!row) {
-      throw new MatchmakingUserNotFoundError({ detail: `No user with email ${target.email}.` });
+      throw new MatchmakingUserNotFoundError({ detail: "no user with that email" });
     }
     return User.parse(row).id;
   }

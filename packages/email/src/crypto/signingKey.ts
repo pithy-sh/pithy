@@ -55,8 +55,10 @@ export const emailSigningRegistry = defineSecretRegistry({
     // **A rotation keeps the previous key for as long as a link lives (#602).** A link is minted into mail
     // nobody can recall and stays valid for `LINK_TTL_DAYS` — 90 by default — so a key retired sooner breaks
     // an unsubscribe that was valid when it was sent. A host that raises `LINK_TTL_DAYS` wants a longer
-    // overlap than this, declared in the project's own registry. Nothing is sealed under this key at rest:
-    // it signs, and a signature expires with its link.
+    // overlap than this, declared in the project's own registry. Each link is sealed under a key derived from
+    // this one, and a link outlives its expiry in every log that recorded it: a leaked version, retired or
+    // not, opens every logged link sealed under it. Rotating moves new links to a new version; it does not
+    // reseal the old ones.
     overlap: { days: 90, minimumDays: 90 },
   },
 });

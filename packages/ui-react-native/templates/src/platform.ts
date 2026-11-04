@@ -33,7 +33,7 @@ function decodeComponent(value: string): string {
 }
 
 /**
- * A query string as name to value: `"?email=ada%40example.com"` gives `{ email: "ada@example.com" }`. The leading
+ * A query string as name to value: `"?tab=billing%20history"` gives `{ tab: "billing history" }`. The leading
  * `?` is optional. The first value of a repeated name wins, as `URLSearchParams.get` answers.
  */
 export function parseQuery(search: string): Record<string, string> {

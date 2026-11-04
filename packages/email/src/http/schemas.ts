@@ -22,7 +22,7 @@ import { EmailJobStatus, SuppressionReason, TemplateCategory } from "../data/enu
 
 /**
  * The characters a callback token path segment may contain: the base64url alphabet, plus `.` — the
- * token's own `<payload>.<signature>` separator, and the `.png` suffix mail clients append to an
+ * token's own segment separator, and the `.png` suffix mail clients append to an
  * open-pixel URL (which `handleOpen` strips before verifying). Deliberately not a strict base64url
  * check: that would 400 every tracking pixel.
  */
@@ -30,7 +30,7 @@ const TOKEN_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 /**
  * The `:token` path parameter every callback route carries. A shape and size bound only — the ceiling
- * is generous enough for a click token whose signed claims embed a long destination URL, so no link we
+ * is generous enough for a click token whose sealed claims embed a long destination URL, so no link we
  * mint can exceed it, while an unbounded segment can no longer reach the verifier.
  */
 export const CallbackTokenParam = z
@@ -40,26 +40,40 @@ export const CallbackTokenParam = z
       .min(1)
       .max(4096)
       .regex(TOKEN_SEGMENT)
-      .describe("The signed callback token from the path, optionally with the open-pixel `.png` suffix."),
+      .describe("The sealed callback token from the path, optionally with the open-pixel `.png` suffix."),
   })
   .describe("The path parameter carrying a click/open/unsubscribe callback token.");
 export type CallbackTokenParam = z.output<typeof CallbackTokenParam>;
 
+/** One form field as a client may send it: a value, or a repeated field's values. Anything else reads as absent. */
+const FormField = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .catch(undefined);
+
 /**
- * The optional `?reason=` on the unsubscribe callback — supplied by the app's own preferences flow.
- * The bound is a ceiling, not the storage limit: the handler still truncates to 200 characters before
- * writing, so every real value keeps behaving exactly as it did and only an absurd one is refused.
+ * The form body of an unsubscribe `POST`: what a mail client's one-click unsubscribe sends (RFC 8058 fixes it to
+ * `List-Unsubscribe=One-Click`), what the confirmation page's button sends, and what the app's own preferences flow
+ * sends with a `reason`.
+ *
+ * **Nothing in it can refuse the opt-out.** Every field is optional, a repeated field or one of the wrong type reads
+ * as absent or as its first value, and an over-long reason is truncated by the handler rather than refused. The
+ * token is the only gate; a body is never a reason somebody stays subscribed.
+ *
+ * The reason travels in the body because it is the recipient's own words, and a query string is written to every
+ * request log between the client and the Worker. The route reads no query at all.
  */
-export const UnsubscribeQuery = z
+export const UnsubscribeForm = z
   .object({
-    reason: z
-      .string()
-      .max(2000)
-      .optional()
-      .describe("Why the recipient opted out; truncated to 200 characters before it is stored."),
+    "List-Unsubscribe": FormField.describe(
+      "`One-Click` from a mail client's RFC 8058 one-click unsubscribe. Accepted and not otherwise read.",
+    ),
+    reason: FormField.describe(
+      "Why the recipient opted out; the first value is kept, truncated to 200 characters before it is stored.",
+    ),
   })
-  .describe("The optional query parameters accepted by the unsubscribe callback.");
-export type UnsubscribeQuery = z.output<typeof UnsubscribeQuery>;
+  .describe("The optional form fields an unsubscribe POST accepts.");
+export type UnsubscribeForm = z.output<typeof UnsubscribeForm>;
 
 /**
  * Where the next page starts. Opaque, and a malformed one is a first page rather than a 400 — the

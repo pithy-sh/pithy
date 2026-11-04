@@ -7,9 +7,9 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
-import type { Hono } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 import { resolveSigningKeys } from "../crypto/signingKey";
-import { type CallbackToken, type TokenKind, verifyToken } from "../crypto/token";
+import { type TokenKind, type VerifiedCallbackToken, verifyToken } from "../crypto/token";
 import {
   type EmailDatabase,
   type EmailSuppressionDatabase,
@@ -20,32 +20,34 @@ import { EmailInvalidTokenError } from "../error/errors";
 import { recordEvent } from "../send/events";
 import { suppress } from "../send/suppression";
 import { CALLBACK_BASE } from "../templates/engine";
-import { CallbackTokenParam, UnsubscribeQuery } from "./schemas";
+import { CallbackTokenParam, UnsubscribeForm } from "./schemas";
 
 /**
  * The callback routes — click, open, and unsubscribe. Every link in a tracked email points here with
- * an HMAC-signed token (see `crypto/token`). The routes are **public + signed-token**: they take no
- * session, and the token's signature is the only gate. A forged, altered, or expired token is rejected
- * (`email/invalid_token` → 400) before anything is recorded. The click route only ever 302-redirects to
- * an `http(s)` destination carried inside the signed token, so it cannot be turned into an open redirect.
+ * a sealed token (see `crypto/token`) that decodes to nothing, so the URL a request log records names no one.
+ * The routes are **public + sealed token**: they take no session, and the token's seal is the only gate. A forged,
+ * altered, or expired token is rejected (`email/invalid_token` → 400) before anything is recorded. The click route
+ * only ever 302-redirects to an `http(s)` destination carried inside the token, so it cannot be turned into an open
+ * redirect.
  *
  * | Method | Path                          | Strategy      | Validates |
  * |--------|-------------------------------|---------------|-----------|
- * | GET    | /_pithy/email/c/:token        | signed token  | param `CallbackTokenParam` |
- * | GET    | /_pithy/email/o/:token        | signed token  | param `CallbackTokenParam` |
- * | GET    | /_pithy/email/u/:token        | signed token  | param `CallbackTokenParam`, query `UnsubscribeQuery` |
- * | POST   | /_pithy/email/u/:token        | signed token  | param `CallbackTokenParam`, query `UnsubscribeQuery` |
+ * | GET    | /_pithy/email/c/:token        | sealed token  | param `CallbackTokenParam` |
+ * | GET    | /_pithy/email/o/:token        | sealed token  | param `CallbackTokenParam` |
+ * | GET    | /_pithy/email/u/:token        | sealed token  | param `CallbackTokenParam` |
+ * | POST   | /_pithy/email/u/:token        | sealed token  | param `CallbackTokenParam`, form `UnsubscribeForm` |
  *
- * The unsubscribe route answers POST as well as GET because elective mail carries
- * `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058) — the mail client posts to the URL
- * itself, with no human ever loading the page, and Gmail's and Yahoo's bulk-sender rules require that to
- * work. Same handler: the underlying write is an upsert, so the two methods cannot disagree and a
- * client that retries costs nothing.
+ * **The unsubscribe GET changes nothing.** It renders a page whose one button posts back to the same URL, because
+ * a GET is what a mail scanner or a link preview fetches on its own, and an opt-out nobody asked for is still an
+ * opt-out. The POST does the work, and it is what elective mail's `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+ * (RFC 8058) has a mail client send, with no human loading the page. The write is an upsert, so a client that
+ * retries costs nothing.
  *
- * The validators bound shape and size only — the signature check stays in the handler, so a well-formed
- * token that is forged or expired is still `email/invalid_token` (400), not `validation/invalid_input`.
- * No route reads a body, the one-click POST included: RFC 8058 fixes its body to a constant, so parsing
- * it could only ever restate what the method and the signed token already say.
+ * **No route reads a query string.** The one value a caller supplies, the recipient's `reason`, is in the POST's
+ * form body, since a query string is written to every request log on the way. A `?reason=` on a link is never read.
+ *
+ * The validators bound shape and size only — the seal check stays in the handler, so a well-formed token that is
+ * forged or expired is still `email/invalid_token` (400), not `validation/invalid_input`.
  *
  * Every token names the origin it was minted for, and a handler refuses one presented anywhere else — see
  * `crypto/token`'s `aud`. That is what keeps a key misconfigured as shared from letting a staging link act
@@ -91,7 +93,7 @@ async function verify(
   request: CallbackRequest,
   expected: TokenKind,
   now: Date,
-): Promise<CallbackToken> {
+): Promise<VerifiedCallbackToken> {
   const claims = await verifyToken(request.token, keys, now, request.url);
   if (claims.kind !== expected) {
     throw new EmailInvalidTokenError({ detail: `token kind '${claims.kind}' does not match callback '${expected}'` });
@@ -99,7 +101,7 @@ async function verify(
   return claims;
 }
 
-/** Handle a click: record it, then 302-redirect to the signed http(s) destination. */
+/** Handle a click: record it, then 302-redirect to the sealed http(s) destination. */
 export async function handleClick(
   db: EmailDatabase,
   keys: SigningKeys,
@@ -150,10 +152,32 @@ export async function handleOpen(
   });
 }
 
+/** The unsubscribe confirmation page. One button, posting back to this URL; nothing in it names the recipient. */
+const UNSUBSCRIBE_PAGE =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head><body style="font-family:system-ui,-apple-system,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;line-height:1.55"><p>Unsubscribe from everything but the mail you ask for? A sign-in link or a security notice still arrives.</p><form method="post"><button type="submit">Unsubscribe</button></form></body></html>';
+
+/**
+ * Render the unsubscribe page for a valid token, recording nothing. A forged, expired or misdirected token is refused
+ * here exactly as the POST would refuse it, so the page never offers a button that cannot work.
+ */
+export async function handleUnsubscribePage(keys: SigningKeys, request: CallbackRequest, now: Date): Promise<Response> {
+  await verify(keys, request, "unsubscribe", now);
+  return new Response(UNSUBSCRIBE_PAGE, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store, max-age=0",
+      "referrer-policy": "no-referrer",
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    },
+  });
+}
+
 /**
  * Handle an unsubscribe: suppress the address (shared DB), record the opt-out event (app DB), confirm.
- * An optional `reason` — supplied by the app's own unsubscribe/preferences flow via the `?reason=` query
- * param — is stored on the suppression `detail` and the event, so a project can capture *why* someone
+ * An optional `reason` — supplied by the app's own unsubscribe/preferences flow in the POST's form body —
+ * is stored on the suppression `detail` and the event, so a project can capture *why* someone
  * opted out using its own logic. It is length-bounded so the link can't be used to stuff the column.
  */
 export async function handleUnsubscribe(
@@ -185,9 +209,35 @@ export async function handleUnsubscribe(
     "<p>You've been unsubscribed. Messages you ask for — a sign-in link, a security notice — still arrive. Nothing else will.</p>";
   return new Response(body, {
     status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store, max-age=0",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+    },
   });
 }
+
+/** The first value of a form field, or nothing. */
+function firstValue(field: string | string[] | undefined): string | undefined {
+  return Array.isArray(field) ? field[0] : field;
+}
+
+/**
+ * Read an unsubscribe POST's form body forgivingly: a body that will not parse reads as an empty form, so the
+ * validator after it sees `{}` and the opt-out still lands. Hono's form validator reads the parse this caches.
+ */
+const forgivingForm: MiddlewareHandler = async (c, next) => {
+  const type = c.req.header("content-type") ?? "";
+  if (/^(multipart\/form-data|application\/x-www-form-urlencoded)/i.test(type)) {
+    try {
+      await c.req.formData();
+    } catch {
+      Object.assign(c.req.bodyCache, { formData: Promise.resolve(new FormData()) });
+    }
+  }
+  await next();
+};
 
 /** Mount the click/open/unsubscribe callback routes under `${CALLBACK_BASE}` on the app's Hono router. */
 export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
@@ -207,7 +257,7 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     describeRoute({
       summary: "Record a click on a tracked link, then send the reader on to it.",
       description:
-        "Public: the HMAC signature on the token is the only gate. A forged, altered, or expired token answers `email/invalid_token` (400) before anything is recorded, and the destination is the http(s) URL signed into the token, never one from the request.",
+        "Public: the token's seal is the only gate. A forged, altered, or expired token answers `email/invalid_token` (400) before anything is recorded, and the destination is the http(s) URL sealed into the token, never one from the request.",
       verification: "public",
       responses: { 302: { description: "A redirect to the link's destination, carried in `Location`." } },
     }),
@@ -223,7 +273,7 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     describeRoute({
       summary: "Record that an email was opened.",
       description:
-        "Public: the HMAC signature on the token is the only gate. The token may carry the `.png` suffix mail clients expect on an image URL.",
+        "Public: the token's seal is the only gate. The token may carry the `.png` suffix mail clients expect on an image URL.",
       verification: "public",
       responses: { 200: { description: "A 1×1 transparent PNG, never cached.", contentType: "image/png" } },
     }),
@@ -234,18 +284,36 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     },
   );
 
-  app.on(
-    ["GET", "POST"],
+  app.get(
+    `${CALLBACK_BASE}/u/:token`,
+    describeRoute({
+      summary: "Show the page that confirms an unsubscribe.",
+      description:
+        "Public: the token's seal is the only gate. Records nothing, so a mail scanner or a link preview fetching the link changes nothing. The page's button posts back to the same URL.",
+      verification: "public",
+      responses: {
+        200: { description: "A short HTML page with one button that unsubscribes.", contentType: "text/html" },
+      },
+    }),
+    validate("param", CallbackTokenParam),
+    async (c) => {
+      const { keys } = await setup(c.env as unknown as CallbackEnv);
+      return handleUnsubscribePage(keys, { token: c.req.valid("param").token, url: c.req.url }, new Date());
+    },
+  );
+
+  app.post(
     `${CALLBACK_BASE}/u/:token`,
     describeRoute({
       summary: "Unsubscribe the recipient from everything but the mail they ask for.",
       description:
-        "Public: the HMAC signature on the token is the only gate. Answers GET for the link in the message and POST for one-click unsubscribe. The address joins the suppression list shared by every environment.",
+        "Public: the token's seal is the only gate. The page's button and a mail client's one-click unsubscribe both post here; an empty body works as well as `List-Unsubscribe=One-Click`. The address joins the suppression list shared by every environment.",
       verification: "public",
       responses: { 200: { description: "A short HTML page confirming the opt-out.", contentType: "text/html" } },
     }),
     validate("param", CallbackTokenParam),
-    validate("query", UnsubscribeQuery),
+    forgivingForm,
+    validate("form", UnsubscribeForm),
     async (c) => {
       const env = c.env as unknown as CallbackEnv;
       const { db, suppressionDb, keys } = await setup(env);
@@ -255,7 +323,7 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
         keys,
         { token: c.req.valid("param").token, url: c.req.url },
         new Date(),
-        c.req.valid("query").reason,
+        firstValue(c.req.valid("form").reason),
         env.ENVIRONMENT,
       );
     },
