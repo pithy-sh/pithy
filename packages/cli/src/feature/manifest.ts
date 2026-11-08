@@ -9,12 +9,11 @@ import { writeFileAtomic } from "../project/atomic";
 import { readOptionalFile } from "../project/readOptionalFile";
 
 /**
- * The remedy for a file that is there and would not open, chosen from the errno (#217).
+ * The remedy for a file that is there and would not open, chosen from the errno.
  *
  * `readOptionalFile`'s `unreadable` is **every errno but `ENOENT`**. *Check permissions on X* answers
- * one of them. An adopter whose `.pithy-feature.json` is a directory, a symlink loop, or a bad sector
- * reads a sentence about permissions, runs `chmod`, and learns nothing — which is the shape #217 is
- * about: a `catch` reachable more than one way may not name a single remedy. Unrecognised errnos get no
+ * one of them; a `.pithy-feature.json` that is a directory, a symlink loop, or a bad sector needs another,
+ * because a `catch` reachable more than one way may not name a single remedy. Unrecognised errnos get no
  * remedy at all, only the errno, because a wrong action is worse than no action.
  *
  * `ports.ts` carries its own copy for its own file. Two is under this repository's threshold for hoisting
@@ -42,12 +41,18 @@ export const FeatureResource = z
     binding: z.string().describe("The Worker binding name this resource backs, e.g. DB."),
     name: z.string().describe("The full CF resource name, e.g. acme-f69-media-cli-db-d1."),
     id: z.string().describe("The CF-assigned id (D1 uuid, KV namespace id) or the bucket name for r2."),
+    owner: z
+      .string()
+      .optional()
+      .describe(
+        "The apps/<owner> Worker this resource is that Worker's own for, from its ownBindings. Absent for a resource every Worker declaring the binding shares.",
+      ),
   })
   .describe("One provisioned Cloudflare resource recorded for teardown.");
 export type FeatureResource = z.output<typeof FeatureResource>;
 
 /**
- * One Worker script a feature deploys, recorded for teardown (#592).
+ * One Worker script a feature deploys, recorded for teardown.
  *
  * Provisioning does not upload the script — `pithy deploy` does — but provisioning is what names it, in the
  * generated config the deploy reads. So the name is recorded here when it is written there, and `destroy`
@@ -72,12 +77,12 @@ export const FeatureManifest = z
     slug: z.string().describe('The kebab-case feature slug (e.g. "media-cli").'),
     env: z.string().describe("The environment these resources belong to."),
     resources: z.array(FeatureResource).describe("Every provisioned resource, for exact-id teardown."),
-    // Defaulted rather than a version bump: a manifest written before #592 names a live feature whose
+    // Defaulted rather than a version bump: a manifest with no `scripts` names a live feature whose
     // scripts are still deployed, and refusing it as corrupt would make its teardown the one that fails.
     scripts: z
       .array(FeatureScript)
       .default([])
-      .describe("Every Worker script the feature deploys, for teardown. Absent in a manifest written before #592."),
+      .describe("Every Worker script the feature deploys, for teardown. Absent in a manifest from an older release."),
   })
   .describe("The per-feature record of provisioned Cloudflare resources (git-ignored, in the worktree).");
 export type FeatureManifest = z.output<typeof FeatureManifest>;
@@ -133,7 +138,7 @@ export async function writeManifest(path: string, manifest: FeatureManifest): Pr
 }
 
 /**
- * Return a NEW manifest with `resource` upserted — deduped by (kind, binding, name); a match is
+ * Return a NEW manifest with `resource` upserted — deduped by (kind, binding, name), which carries the owner; a match is
  * replaced in place, otherwise the resource is appended. Pure: never mutates `manifest`.
  */
 export function upsertResource(manifest: FeatureManifest, resource: FeatureResource): FeatureManifest {

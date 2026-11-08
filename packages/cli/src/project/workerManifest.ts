@@ -29,19 +29,14 @@ export const DEV_PORT_TOKEN = "{port}";
 export const WorkerDev = z
   .object({
     /**
-     * **Removed (#548), and refused rather than ignored.**
+     * **Refused rather than ignored.** Whether a worker starts locally is not a fact about the project: every
+     * worker autostarts, and the only override is per branch and per machine in `dev-ports.json` —
+     * `pithy dev --app <name> --disable-autostart`.
      *
-     * Whether a worker starts locally is not a fact about the project. The manifest is committed and the
-     * same for everyone; which workers one developer is exercising this week is theirs, and putting it
-     * here made it a diff somebody had to review. So every worker autostarts, and the only override is
-     * per branch and per machine in `dev-ports.json` — `pithy dev --app <name> --disable-autostart`.
-     *
-     * **Kept in the schema purely to refuse it.** A `z.object` strips unknown keys, so deleting the field
-     * outright would silently swallow a key somebody wrote — and for `false` that means starting a worker
-     * its owner had turned off, which is the loudest version of the bug #536 fixed, where the *presence*
-     * of a file decided the answer. A key that no longer means anything has to say so, once, in the one
-     * place it is read: `parseWorkerManifest` renders this through `fromZodError` with the command that
-     * replaces it. Nothing reads the value — {@link WorkerDev}'s output has no `autostart` at all.
+     * **In the schema purely to refuse it.** A `z.object` strips unknown keys, and a silently swallowed
+     * `false` would start a worker its owner meant to keep off. `parseWorkerManifest` renders this through
+     * `fromZodError` with the command that replaces it. Nothing reads the value — {@link WorkerDev}'s output
+     * has no `autostart` at all.
      */
     autostart: z
       .never({
@@ -111,6 +106,12 @@ export const WorkerManifest = z
     ui: WorkerUi.optional().describe(
       "The front end this worker serves. Absent for an API-only worker; written by pithy ui add.",
     ),
+    ownBindings: z
+      .array(z.string().min(1).describe("A binding name this Worker declares, e.g. DB."))
+      .default([])
+      .describe(
+        'Bindings this Worker gets its own resource for, e.g. ["DB", "SESSIONS"]. Every binding not listed is shared by name with every other Worker that declares it. pithy provision names an owned resource <project>-<env>-<worker>---<binding>.',
+      ),
   })
   .describe("Pithy's per-worker manifest (pithy.worker.jsonc): how a worker joins the local dev set.");
 export type WorkerManifest = z.output<typeof WorkerManifest>;
@@ -146,7 +147,7 @@ export async function parseWorkerManifest(dir: string): Promise<WorkerManifest |
   if (!result.success) {
     throw fromZodError(result.error, {
       message: `${WORKER_MANIFEST_FILE} in ${dir} is invalid.`,
-      action: "Correct the dev block, or delete the file to accept the defaults.",
+      action: "Correct the named field, or delete the file to accept the defaults.",
     });
   }
   return result.data;
@@ -155,4 +156,13 @@ export async function parseWorkerManifest(dir: string): Promise<WorkerManifest |
 /** The dev block for a worker with no manifest: the schema's own defaults, decided in one place. */
 export function defaultWorkerDev(): WorkerDev {
   return WorkerDev.parse({});
+}
+
+/**
+ * The bindings `<dir>`'s Worker owns, from its `pithy.worker.jsonc` — empty when there is no manifest. A malformed
+ * manifest throws, as {@link parseWorkerManifest} does: a typo that read as "owns nothing" would share a database
+ * the Worker meant to keep to itself.
+ */
+export async function readOwnBindings(dir: string): Promise<string[]> {
+  return (await parseWorkerManifest(dir))?.ownBindings ?? [];
 }

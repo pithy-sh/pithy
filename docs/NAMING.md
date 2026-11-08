@@ -36,6 +36,35 @@ Provisioning finds a resource by name and reuses it. Without a project segment, 
 
 The `<thing>` segment is the **binding name** for a resource `pithy add` and `pithy upgrade` propose into your `wrangler.jsonc`, and the **capability** (plus a discriminator where it owns more than one) for a resource a capability's own `provision` command creates. Both compose through the same rule.
 
+## Shared by default, owned when a Worker says so
+
+**Every binding is shared by name.** Two Workers that both declare `DB` are backed by one D1, and adding a Worker costs a directory under `apps/`, not a new database.
+
+**A Worker that lists a binding in `ownBindings` gets its own resource instead.** The list lives in that Worker's `pithy.worker.jsonc`:
+
+```jsonc
+// apps/billing/pithy.worker.jsonc
+{
+  "ownBindings": ["DB", "SESSIONS"]
+}
+```
+
+The owned resource puts the Worker in the thing segment, joined by three hyphens:
+
+```
+<project>-<env>-<worker>---<thing>
+```
+
+`<worker>` is the `apps/<worker>` directory, never the deploy name. So `apps/billing` owning `DB` in `acme` is `acme-prod-billing---db`, beside the shared `acme-prod-db` every other Worker binds. It applies to every kind provision creates per binding: D1, KV, R2 and queues. Worker code does not change; `env.DB` is still `env.DB`.
+
+**Three hyphens keep it apart from two things.** From every shared name, because a kebab never holds a run of hyphens: `billing---db` is the Worker owning `DB`, and `billing-db` is a shared `BILLING_DB`. And from every feature, because `--` is a feature's ([below](#feature-environments)): the first `--` in an owned name is followed by a third hyphen, and a feature name's thing never starts with one, so no declared environment's name parses as a feature's.
+
+**Only the thing is fitted, and the separator survives.** When `<worker>---<thing>` does not fit, each side keeps a head and a hash of the whole follows: `<w>---<t>-<hash>`. The project and environment stay verbatim, as everywhere else, so the [project-name cap](#the-project-name-cap) does not move.
+
+**A `scope: "global"` binding cannot be owned.** It is one resource for the project by definition. `pithy provision`, `pithy add` and `pithy worker sync` refuse the entry, naming the binding and the capability. An entry naming no D1, KV, R2 or queue binding the Worker composes owns nothing, and `pithy provision` and `pithy doctor` say so.
+
+**Moving a binding between shared and owned is a repoint, and nothing moves the rows.** A stanza still pointing at the other resource is refused by `pithy provision --env` unless the run passes `--repoint`, and the old resource keeps its data ([`commands/provision.md`](commands/provision.md)). Locally, an owned D1 entry carries a top-level `database_id` of its own, so `pithy dev`, `migrate` and `seed` keep it apart from the shared one. `pithy doctor`'s `Resource names:` block reports a stanza naming anything other than what provision would compose for that Worker.
+
 Three things are deliberately **not** on this list, because they are not Cloudflare resource names.
 
 **Worker binding names** (`DB`, `SESSIONS`, `MEDIA_BUCKET`) never carry the project. A binding is a variable name inside your own Worker, and two projects cannot collide on it. Renaming one is a breaking change to your code for no benefit.
@@ -118,7 +147,7 @@ An ephemeral feature environment is an environment, so it occupies the environme
 
 `pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone. And it is trusted for its name and nothing else. The id `destroy` deletes is the one the account answers for that name, never the id the entry states, so an entry that pairs the feature's own name with production's id reaches nothing.
 
-There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
+There is **no Worker segment**, except for a binding a Worker owns: `<project>-f<issue>-<slug>--<worker>---<binding>-<kind>`, so `apps/billing` owning `DB` on `feature/12-x` is `acme-f12-x--billing---db-d1`. Every other binding is shared by name, as it is in a declared environment ([shared by default](#shared-by-default-owned-when-a-worker-says-so)). The record names the owner, and `destroy` recomputes the owned name like any other.
 
 A feature also deploys Workers, under `<project>-f<issue>-<slug>--<worker>`. This is the tightest shape Pithy composes, and it has its own budget — see [the feature-branch budget](#the-feature-branch-budget).
 
@@ -126,7 +155,7 @@ A feature also deploys Workers, under `<project>-f<issue>-<slug>--<worker>`. Thi
 
 A feature shares nothing with any other feature, with staging or production, in its own project or in another project in the same account (#643), except its rate-limit namespaces, which every feature shares and no declared environment can (below). The account and its one Secrets Store are the only containers that cannot be split; every name inside them is the feature's own. Two rules make that true of the names rather than likely:
 
-- **Two hyphens end the slug.** `<project>-f<issue>-<slug>--<thing>`. Every other segment Pithy composes is kebab-cased, and a kebab never holds two hyphens in a row, so no declared environment of any project can compose a feature's name. And the slug ends where the double hyphen starts, so `feature/12-x` binding `PROD_DB` and `feature/12-x-prod` binding `DB` no longer name one database.
+- **Two hyphens end the slug.** `<project>-f<issue>-<slug>--<thing>`. Every other segment Pithy composes is kebab-cased, and a kebab never holds two hyphens in a row. The one run a declared environment's name can hold is an owned binding's three, and a feature's thing never starts with a hyphen, so no declared environment of any project can compose a feature's name. And the slug ends where the first double hyphen starts, so `feature/12-x` binding `PROD_DB` and `feature/12-x-prod` binding `DB` no longer name one database.
 - **A project with features has no `f<digits>` segment in its name.** A feature name is read from the first `f<digits>` segment, which is the issue. `acme-f12-x`'s feature 3 on `y` and `acme`'s feature 12 on `x-f3-y` would be one string. `pithy init` refuses such a name, `pithy provision --feature` refuses to create features for an existing one, and `pithy doctor` names the segment. Its staging and production are unaffected, and nothing is renamed: a rename orphans everything already provisioned.
 
 Together they make every feature name parse back to exactly one project, issue and slug, which is how the isolation gates check ownership: by parsing, never by prefix. The issue is read without leading zeros, so `feature/0643-foo` is `feature/643-foo`. `packages/cli/src/feature/naming.property.test.ts` holds the property over generated projects, environments and branches.
@@ -290,6 +319,8 @@ acme-f95-project-scope-resources--db-r2
 
 **A slug over budget is refused, not shortened (#643).** `acme-backend-platform` at issue 999999 has 10 characters for a slug beside `EMAIL_SUPPRESSIONS`, so `feature/999999-project-scope-resources` is refused at `pithy feature create`, naming the 10. It used to become `pro-c37741`, and a hash is a slug another branch can have whole. The table is the resource shape only: the budget is the least room any name the feature composes leaves, and a Workflow such as `media-audio-transcribe`, in a Workflow's 64, is usually as tight as `EMAIL_SUPPRESSIONS`.
 
+**An owned binding is a longer shape, and only a project that owns one pays for it.** `<worker>---` sits before the binding, so the slug budget of a project that declares `ownBindings` counts every owned name too. A project that owns nothing keeps the table above.
+
 **The guidance that falls out of it.** Keep the branch slug to roughly 20 characters — `feature/95-project-scope` rather than `feature/95-project-scope-resources-and-limits`. Only the part after the issue number becomes the slug. The refusal says the maximum, so a slug that fits is one rename away.
 
 A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>--<worker>`, held to the Worker script rule of 63. A Worker directory whose name leaves no room for the slug is refused too, naming the directory.
@@ -314,7 +345,7 @@ Two apps often should share. Two projects never can.
 
 A project carries one migration registry and one upgrade cadence. Two projects therefore carry two of each, and `pithy migrate` in one applies schema the other has never heard of. There is no supported way to point them at the same database — the ownership stamp exists specifically to stop it — and no way to share a session KV, a user table, or a signing key across the boundary.
 
-Within a project, **Workers share a resource by declaring the same binding name.** Two Workers that both declare `DB` are backed by one D1. A Worker that wants its own declares `COLLAB_DB` instead. Sharing is expressed in the binding name, not in topology config, and adding a Worker costs you a directory under `apps/`.
+Within a project, **a binding is shared by name unless a Worker owns it.** Two Workers that both declare `DB` are backed by one D1, and a Worker that lists `DB` in `ownBindings` gets its own ([shared by default](#shared-by-default-owned-when-a-worker-says-so)). Adding a Worker costs you a directory under `apps/`.
 
 So the split is about data, not about deployment. A marketing site and an API that both authenticate the same users are one project. Two products that happen to belong to the same company, sharing nothing, are two projects — and this naming scheme is what lets them sit in one Cloudflare account without touching each other.
 

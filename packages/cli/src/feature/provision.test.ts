@@ -226,6 +226,8 @@ describe("provisionFeature / deprovisionFeature", () => {
       "declined",
       "env",
       "manifestFaults",
+      "ownership",
+      "repoints",
       "resources",
       "secretBindings",
       "services",
@@ -2306,5 +2308,121 @@ describe("featureHostsRefusal", () => {
     expect(featureHostsRefusal(["email: not deployed."], "acme-f1-x").payload.action).toBe(
       "email: not deployed. Fix it, then run `pithy provision --feature` again.",
     );
+  });
+});
+
+/** A feature where `apps/business` owns `DB` and `apps/app` shares it. */
+describe("a feature with an owned binding", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "12", slug: "x" };
+  const db = defineCapability({ name: "app", requiredBindings: [{ type: "d1", name: "DB" }] });
+  const owned = "acme-f12-x--business---db-d1";
+  const shared = "acme-f12-x--db-d1";
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-own-"));
+    for (const app of ["app", "business"]) {
+      await mkdir(join(dir, "apps", app), { recursive: true });
+      await writeFile(join(dir, "apps", app, "wrangler.jsonc"), `{\n  "name": "acme-${app}"\n}\n`);
+    }
+    await writeFile(join(dir, "apps", "business", "pithy.worker.jsonc"), '{\n  "ownBindings": ["DB"]\n}\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const workers = (): ProvisionWorker[] => [
+    { name: "acme-app", dir: join(dir, "apps", "app"), capabilities: [db] },
+    { name: "acme-business", dir: join(dir, "apps", "business"), capabilities: [db], ownBindings: ["DB"] },
+  ];
+
+  test("provisions the owned resource under the owned feature name and records the Worker", async () => {
+    const { stores, provisioners } = fakeProvisioners();
+    await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities: [db],
+      identity,
+      provisioners,
+      resolveWorkers: async () => workers(),
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    expect([...stores.d1.keys()]).toEqual([shared, owned]);
+    const manifest = await readManifest(manifestPath(dir));
+    expect(manifest?.resources.map(({ name, owner }) => ({ name, owner }))).toEqual([
+      { name: shared, owner: undefined },
+      { name: owned, owner: "business" },
+    ]);
+    expect(isFeatureOwnedName(identity, owned)).toBe(true);
+  });
+
+  test("destroy deletes it from the record", async () => {
+    const { stores, provisioners } = fakeProvisioners();
+    await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities: [db],
+      identity,
+      provisioners,
+      resolveWorkers: async () => workers(),
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities: [db],
+      env: "feature",
+      provisioners,
+    });
+    expect(report.deleted.map((resource) => resource.name).sort()).toEqual([owned, shared].sort());
+    expect(stores.d1.size).toBe(0);
+  });
+
+  test("destroy deletes it by recomputed name alone, with no record, from the branch's ownBindings", async () => {
+    const { stores, provisioners } = fakeProvisioners();
+    stores.d1.set(owned, "d1-owned");
+    stores.d1.set(shared, "d1-shared");
+    // A sibling feature's owned database, and staging's, stay where they are.
+    stores.d1.set("acme-f12-x-y--business---db-d1", "d1-sibling");
+    stores.d1.set("acme-staging-business---db", "d1-staging");
+    const report = await deprovisionFeature({
+      ...noScripts,
+      workers: [
+        { name: "acme-app", dir: join(dir, "apps", "app") },
+        { name: "acme-business", dir: join(dir, "apps", "business") },
+      ],
+      projectDir: dir,
+      manifestDir: null,
+      identity,
+      capabilities: [db],
+      env: "feature",
+      provisioners,
+    });
+    expect(report.deleted.map((resource) => resource.name).sort()).toEqual([owned, shared].sort());
+    expect([...stores.d1.keys()].sort()).toEqual(["acme-f12-x-y--business---db-d1", "acme-staging-business---db"]);
+  });
+
+  test("honors a recorded owned entry only when its name recomputes from its owner", async () => {
+    const { stores, provisioners } = fakeProvisioners();
+    stores.d1.set("acme-staging-business---db", "d1-staging");
+    await writeManifest(manifestPath(dir), {
+      ...emptyManifest({ ...identity, env: "feature" }),
+      resources: [
+        { kind: "d1", binding: "DB", name: "acme-staging-business---db", id: "d1-staging", owner: "business" },
+      ],
+    });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities: [db],
+      env: "feature",
+      provisioners,
+    });
+    expect(report.deleted).toEqual([]);
+    expect(stores.d1.has("acme-staging-business---db")).toBe(true);
   });
 });

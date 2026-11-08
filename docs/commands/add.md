@@ -64,6 +64,8 @@ A **Durable Object** is two halves, and only one of them is config. The `durable
 
 A **Workflow** entry names the capability's host Worker across scripts — `<project>-<env>-<capability>-<job>` running in `<project>-<env>-<capability>` — so it is complete before that host exists, and `wrangler dev` binds it either way. The host itself is deployed by `pithy <capability> provision`, which `notes` says.
 
+A **D1** entry names the database `pithy provision` creates, `<project>-<env>-<binding>`, and a binding the Worker lists in `ownBindings` gets the Worker's own name instead ([NAMING.md](../NAMING.md#shared-by-default-owned-when-a-worker-says-so)). An owned entry in the top-level stanza also carries a `database_id` of its own, so local dev keeps it apart from the shared database.
+
 A **queue** producer names the queue `pithy provision` creates, under the same rule: `<project>-<env>-<binding>` ([NAMING.md](../NAMING.md)). So the entry is complete before the queue exists. A queue the capability also consumes gets a `queues.consumers` entry beside its producer, carrying the capability's `max_retries`, `max_batch_size` and `dead_letter_queue`, the dead-letter queue named by the same rule. A consuming queue counts as bound only when both entries are there: a producer with no consumer is a queue that fills and is never read, so `pithy upgrade` reports it missing and writes the consumer.
 
 A **`send_email`** entry carries the binding name and nothing else. Where an environment's mail may go — `destination_address`, `allowed_destination_addresses` — is yours to state, per environment.
@@ -156,7 +158,7 @@ $ pithy add secrets --json
 | `kvNamespaces` | array | KV namespace titles to create, one per environment that gained the binding. Reported rather than written, because a `kv_namespaces` entry has no title field — the name can only land in the account. D1's proposal goes into `wrangler.jsonc` as `database_name` |
 | `kvNamespaces[].binding` | string | The Worker env binding the name is proposed for, e.g. `SESSIONS` |
 | `kvNamespaces[].env` | string | The environment whose stanza declares it — `dev` for the top-level one |
-| `kvNamespaces[].name` | string | The proposed resource name, `<project>-<env>-<binding>` |
+| `kvNamespaces[].name` | string | The proposed resource name, `<project>-<env>-<binding>`, or the Worker's own for a binding it lists in `ownBindings` |
 | `notes` | string[] | What `add` finished off-config, and what only a provision command can supply. One line each, in order — a prerequisite's notes come first, so the dev master key `pithy add secrets` mints is never swallowed. Empty for a capability every one of whose bindings `add` writes |
 | `prerequisites` | string[] | The capabilities composed on the way to this one, in the order composed — deepest first. Empty when it declares none, and empty on a re-run into a Worker that already composes them |
 | `eject` | object | Present only when `--eject` ran |

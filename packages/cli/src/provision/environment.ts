@@ -26,6 +26,7 @@ import { workerDirName } from "../project/workerIdentity";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import type { MintedThisRun } from "./mintedThisRun";
+import { type ProvisionedRepoint, pointsAtCounterpart, repointRefusal, stanzaPointers } from "./repoint";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
 import {
   assertFieldKeyRotates,
@@ -173,11 +174,14 @@ export type ProvisionedDecline =
       /**
        * Other Workers that declare this binding and did not decline it.
        *
+       * Only Workers that **share** the declined resource count: a sibling that owns the binding has a resource
+       * of its own, and a Worker that owns the binding it declines declined its own resource, so nothing is
+       * created for it whatever its siblings do.
+       *
        * Empty is the ordinary case and the only one where nothing was created for it. When it is not
-       * empty the environment still provisioned the resource, because provisioning is per binding *name*
-       * and that is how two Workers share a database — this Worker's stanza leaves it out, the sibling's
-       * does not. A report that said "skipped" there would be false, and false in the direction that
-       * matters: an operator would go looking for a resource that exists.
+       * empty the environment still provisioned the shared resource — this Worker's stanza leaves it out,
+       * the sibling's does not. A report that said "skipped" there would be false, and false in the direction
+       * that matters: an operator would go looking for a resource that exists.
        */
       wantedBy: string[];
     }
@@ -237,6 +241,23 @@ export type ProvisionProgress = (event: ProvisionProgressEvent) => void;
 export interface ProvisionedResource extends FeatureResource {
   /** True when this run created the resource; false when it already existed (re-run, or adoption). */
   created: boolean;
+  /** The Workers whose stanza this resource is written into, by deploy name. */
+  workers: string[];
+}
+
+/**
+ * One Worker's `ownBindings`, as this run read them. Only a Worker that lists any appears.
+ *
+ * `unrecognized` is an entry naming no D1, KV, R2 or queue binding the Worker composes — most often one character
+ * off the real one. It owns nothing, and the run says so, as it does a stale `declinedBindings` entry.
+ */
+export interface ProvisionedOwnership {
+  /** The Worker's deploy name. */
+  worker: string;
+  /** The bindings it owns, each with a resource of its own in this run. */
+  owned: string[];
+  /** Entries naming nothing the Worker composes. */
+  unrecognized: string[];
 }
 
 /**
@@ -268,6 +289,13 @@ export interface ProvisionReport {
    * Empty for a project that declines nothing, which is most of them.
    */
   declined: ProvisionedDeclines[];
+  /** What each Worker's `ownBindings` named. Empty for a project that owns nothing, which is most of them. */
+  ownership: ProvisionedOwnership[];
+  /**
+   * Bindings whose stanza pointed at a different resource than this run named, and now points at the new one.
+   * Only a run passing `--repoint` gets here with any; without it the run refuses before creating anything.
+   */
+  repoints: ProvisionedRepoint[];
   /**
    * **Installed packages whose `pithy.manifest.json` is present and unusable.**
    *
@@ -378,6 +406,11 @@ export interface ProvisionWorker {
    * jobs.
    */
   config?: WorkerConfig;
+  /**
+   * The bindings this Worker owns, from its `pithy.worker.jsonc` `ownBindings`. Each gets a resource of its own,
+   * named `<owner>---<binding>` in the thing segment. Absent owns nothing.
+   */
+  ownBindings?: readonly string[];
 }
 
 /** Options for {@link provisionEnvironment}. */
@@ -390,10 +423,16 @@ export interface ProvisionEnvironmentOptions {
    * Every capability the environment spans — the union of each Worker's own `apps/<name>/pithy.config.ts`,
    * deduped by name. It is a union rather than a per-Worker loop because an environment is one
    * environment: `provisionableBindings` dedupes by **binding name**, and sharing is keyed on exactly that
-   * — two Workers that both declare `DB` get one database, and a Worker wanting its own declares a
-   * different binding.
+   * — two Workers that both declare `DB` get one database, unless one lists `DB` in `ownBindings`.
    */
   capabilities: Capability[];
+  /**
+   * Whether a stanza that points a binding at a different resource than this run names may be repointed.
+   * Without it such a run is refused before anything is created. See `./repoint`.
+   */
+  repoint?: boolean;
+  /** The project's `seed.productionEnvironments`, for the refusal's remedy. */
+  productionEnvironments?: readonly string[];
   /** The provisioners to create through (`cloudflareProvisioners` over live CF clients in a real run). */
   provisioners: ResourceProvisioners;
   /** A side record of what was created, for a scope whose resources are torn down automatically. */
@@ -489,7 +528,18 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
     dir: worker.dir,
     capabilities: worker.capabilities,
     config: worker.config,
+    ownBindings: worker.target.ownBindings ?? [],
   }));
+
+/** The owner a Worker's resource for `binding` is named for: its `apps/<owner>` directory when it owns it. */
+export function ownerOf(worker: Pick<ProvisionWorker, "dir" | "ownBindings">, binding: string): string | undefined {
+  return worker.ownBindings?.includes(binding) ? basename(worker.dir) : undefined;
+}
+
+/** The record key of one resource: kind, binding, and owner, where the owner is shared or a Worker. */
+function resourceKey(resource: Pick<FeatureResource, "kind" | "binding" | "owner">): string {
+  return `${resource.kind}:${resource.binding}:${resource.owner ?? ""}`;
+}
 
 /**
  * **The Worker of this project that deploys under this script name**, or `undefined` when no Worker does.
@@ -579,6 +629,16 @@ async function scopedWorkerNames(
   return names;
 }
 
+/** One Worker's `env.<stanza>` as its `wrangler.jsonc` has it now, or `undefined` when there is none to read. */
+async function readStanza(workerDir: string, stanza: string): Promise<unknown> {
+  try {
+    const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
+    return config.env?.[stanza];
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Provision (or resume provisioning) one environment's Cloudflare resources. For each provisionable
  * binding: compute its name from the scope, adopt the resource if one of that name already exists, else
@@ -599,7 +659,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   assertNoDeclaredFeatureIds(await Promise.all(workers.map(readWorkerRatelimits)));
   // Before a resource is created, too: a field key nothing rotates is refused, never minted.
   if (scope.source) assertFieldKeyRotates(options.projectDir, workers, options.capabilities);
-  const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
+  const { bindings, declines, wantedPerWorker, manifestFaults, ownership } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,
     workers,
@@ -631,7 +691,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   }));
 
   const recorded: ProvisionRecorded = options.record ? await options.record.load() : { resources: [], scripts: [] };
-  const byBinding = new Map(recorded.resources.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
+  const byBinding = new Map(recorded.resources.map((resource) => [resourceKey(resource), resource]));
   // Every script this run names, over every script an earlier run named: a Worker removed from the branch
   // since may still be deployed, and the record is the only place teardown can learn its name.
   const byScript = new Map(recorded.scripts.map((script) => [script.name, script]));
@@ -642,25 +702,64 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const persist = async (): Promise<void> =>
     options.record?.save({ resources: [...byBinding.values()], scripts: [...byScript.values()] });
 
+  // **Repoints, refused before anything is created.** A declared environment's stanza is source, and a binding in
+  // it that points at the counterpart — the shared resource for a Worker that now owns the binding, or its own for
+  // one that now shares it — is a Worker moving between the two. A feature's stanza is regenerated.
+  const repoints: ProvisionedRepoint[] = [];
+  if (scope.source) {
+    for (const worker of workers) {
+      const pointers = stanzaPointers(await readStanza(worker.dir, scope.stanza));
+      for (const pointer of pointers) {
+        const owner = ownerOf(worker, pointer.binding);
+        const target = bindings.find(
+          (candidate) =>
+            candidate.kind === pointer.kind && candidate.binding === pointer.binding && candidate.owner === owner,
+        );
+        if (target === undefined || target.global || !target.workers.includes(worker.name)) continue;
+        const counterpart = scope.resource(
+          target.binding,
+          target.kind,
+          target.naming,
+          owner === undefined ? basename(worker.dir) : undefined,
+        );
+        // Only an entry with no name to compare asks the account: a KV namespace, or a D1 entry stating no name.
+        const asks = pointer.kind === "kv" || (pointer.kind === "d1" && pointer.currentName === undefined);
+        const found = asks ? await options.provisioners[target.kind].find(counterpart) : null;
+        if (!pointsAtCounterpart(pointer, { name: counterpart, foundId: found?.id ?? null })) continue;
+        repoints.push({
+          worker: worker.name,
+          binding: pointer.binding,
+          kind: pointer.kind,
+          current: counterpart,
+          next: target.name,
+        });
+      }
+    }
+    if (repoints.length > 0 && options.repoint !== true) {
+      throw repointRefusal(scope.stanza, repoints, options.productionEnvironments);
+    }
+  }
+
   const resources: ProvisionedResource[] = [];
-  for (const { binding, kind, name, global } of bindings) {
+  for (const { binding, kind, name, global, owner, workers: wiredInto } of bindings) {
     // Before the find, because the find is the first thing that can take a while. The plan the command
     // printed named this resource; this says the run has reached it.
     options.onProgress?.({ phase: "start", name, binding, kind });
     const provisioner = options.provisioners[kind];
+    const key = resourceKey({ kind, binding, owner });
     const found = await provisioner.find(name);
     const id = found ? found.id : (await provisioner.create(name)).id;
-    const resource: FeatureResource = { kind, binding, name, id };
+    const resource: FeatureResource = { kind, binding, name, id, ...(owner !== undefined ? { owner } : {}) };
     // **A project-global resource never enters the record.** That file is a feature's exact-id delete
     // list, and a resource the whole project shares has no business in it: teardown deletes what it
     // finds there by id, so one branch's `destroy` would take the project's suppression list with it.
     // `featureScope` already refuses to compose a global name at all — this is the same rule stated from
     // the other end, so honoring `global` in a feature namer could never quietly become a deletion.
     if (!global) {
-      byBinding.set(`${kind}:${binding}`, resource);
+      byBinding.set(key, resource);
       await persist(); // after each — a crash mid-run resumes from here.
     }
-    const provisioned: ProvisionedResource = { ...resource, created: found === null };
+    const provisioned: ProvisionedResource = { ...resource, created: found === null, workers: wiredInto };
     resources.push(provisioned);
     options.onProgress?.({ phase: "settled", resource: provisioned });
 
@@ -672,7 +771,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
         outcome: "success",
         resourceType: AUDIT_RESOURCE_TYPE[kind],
         resourceId: id,
-        metadata: { ...options.auditMetadata, name, binding },
+        metadata: { ...options.auditMetadata, name, binding, ...(owner !== undefined ? { owner } : {}) },
       });
     }
   }
@@ -685,10 +784,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // `wrangler.jsonc` — the file wrangler actually reads, and the file `migrate`/`seed` resolve binding ids
   // from. There is no root Worker: every Worker lives in `apps/<name>/` and owns its wrangler config.
   //
-  // **A Worker receives only the bindings its own config declares.** The run provisions one resource per
-  // binding name across the whole environment (that is how two Workers share a database — same binding
-  // name, same resource), but the *wiring* is per Worker: handing a Worker ids for resources it never
-  // declared would put bindings in its wrangler config that it has no business holding.
+  // **A Worker receives only the bindings its own config declares, and only its own resource for each.** The
+  // run provisions one shared resource per binding name and one more for each Worker that owns it; a Worker's
+  // stanza gets the one it shares or the one it owns, never a sibling's.
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   const routesDropped: { worker: string; routes: string[] }[] = [];
@@ -730,7 +828,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
         minted: false,
       });
     }
-    const written = resources.filter((resource) => declared.has(resource.binding));
+    const written = resources.filter(
+      (resource) => declared.has(resource.binding) && resource.owner === ownerOf(worker, resource.binding),
+    );
     const destination = await applyProvisionedEnv({
       workerDir: worker.dir,
       worker: provisionWorkerNames(worker),
@@ -788,7 +888,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     workers: workers.map((worker) => ({ worker: worker.name, name: scopedName(worker.name) })),
     services,
     secretBindings: secrets,
-    declined: reportedDeclines(declines, wantedPerWorker),
+    declined: reportedDeclines(declines, wantedPerWorker, workers),
+    ownership,
+    repoints,
     // Read out of the same call the bindings came from — a second scan of `node_modules` would be a
     // second answer to which manifests are broken, in the report about the run the first one shaped.
     manifestFaults,
@@ -809,6 +911,12 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
 export interface ProvisionTarget extends ProvisionableBinding {
   /** The Cloudflare name, composed from the scope and the binding's declared naming. */
   name: string;
+  /** The `apps/<owner>` Worker this resource is that Worker's own for, or absent for the shared one. */
+  owner?: string;
+  /** What the manifests say about the resource's name, which every ownership of the binding composes from. */
+  naming: BindingNaming;
+  /** The Workers whose stanza it is written into, by deploy name: every sharer, or the one owner. */
+  workers: string[];
   /**
    * Whether the resource belongs to the project rather than to this environment — `BindingSpec.scope`.
    *
@@ -827,6 +935,8 @@ export interface ProvisionTargets {
   declines: { worker: ProvisionWorker; resolved: BindingDeclines }[];
   /** Per Worker, the binding names that Worker declares and did not decline. */
   wantedPerWorker: Map<string, Set<string>>;
+  /** What each Worker's `ownBindings` named, for a Worker that lists any. */
+  ownership: ProvisionedOwnership[];
   /**
    * **Installed packages whose `pithy.manifest.json` is present and unusable — carried, because a run
    * shaped by manifests must say which ones it could not read.**
@@ -871,8 +981,8 @@ export async function provisionTargets(options: {
 }): Promise<ProvisionTargets> {
   const { workers } = options;
   // **Declines are per Worker, and a resource survives one Worker declining it.** The environment
-  // provisions one resource per binding *name* — that is how two Workers share a database — so a binding
-  // is skipped only when every Worker that declares it declines it. Resolved through the reconcile
+  // provisions one shared resource per binding *name* — that is how two Workers share a database — so a
+  // shared binding is skipped only when every Worker sharing it declines it, and an owned one when its owner does. Resolved through the reconcile
   // engine's own rule so `pithy upgrade` and `pithy provision` cannot come to mean two different things
   // by "declined".
   //
@@ -928,6 +1038,7 @@ export async function provisionTargets(options: {
     ]),
   );
   const wantedSomewhere = new Set([...wantedPerWorker.values()].flatMap((wanted) => [...wanted]));
+  const ownership = ownershipOf(workers);
   // The union is still the source of the *kinds* — `options.capabilities` spans the environment, and a
   // Worker resolver seam may hand back fewer Workers than that union was built from. Only names no
   // Worker wants are dropped.
@@ -946,25 +1057,115 @@ export async function provisionTargets(options: {
     bindings: wanted,
     scope: options.scope,
   });
-  const bindings = wanted.map(({ binding, kind }) => {
+  assertNoGlobalOwned(workers, namings);
+  const bindings: ProvisionTarget[] = [];
+  for (const { binding, kind } of wanted) {
     // A binding nothing declares keeps the generic name it has always had: a fork whose manifest was removed.
     // That is not a missing declaration; it is "nothing to say", which is `{}`. The app's own bindings are
     // declared — by its composed instance, above.
     const declared = namings.get(binding);
     const declaredNaming = declared?.naming ?? {};
-    return {
-      binding,
-      kind,
-      // Read from the resolution rather than composed again — one string, composed once, for the
-      // refusals above, the plan the operator agrees to, and the run that follows it.
-      name: declared?.name ?? options.scope.resource(binding, kind, declaredNaming),
-      // **Asked of the scope, not of the manifest alone.** A feature ignores `global` and names its own
-      // copy, so reading the declaration by itself would mark that copy the project's, keep it out of the
-      // teardown record, and orphan it on `destroy`.
-      global: declaredNaming.scope === GLOBAL_SCOPE && options.scope.honorsGlobal,
-    };
-  });
-  return { bindings, declines, wantedPerWorker, manifestFaults: [...faults.values()] };
+    // **Asked of the scope, not of the manifest alone.** A feature ignores `global` and names its own
+    // copy, so reading the declaration by itself would mark that copy the project's, keep it out of the
+    // teardown record, and orphan it on `destroy`.
+    const global = declaredNaming.scope === GLOBAL_SCOPE && options.scope.honorsGlobal;
+    const wanting = workers.filter((worker) => wantedPerWorker.get(worker.name)?.has(binding));
+    const sharers = wanting.filter((worker) => ownerOf(worker, binding) === undefined);
+    // **Shared by default.** One resource for every Worker that does not own the binding, exactly as before
+    // ownership existed — and the caller's union whole when no Worker resolved, for the reason above.
+    if (workers.length === 0 || sharers.length > 0) {
+      bindings.push({
+        binding,
+        kind,
+        // Read from the resolution rather than composed again — one string, composed once, for the
+        // refusals above, the plan the operator agrees to, and the run that follows it.
+        name: declared?.name ?? options.scope.resource(binding, kind, declaredNaming),
+        naming: declaredNaming,
+        workers: sharers.map((worker) => worker.name),
+        global,
+      });
+    }
+    for (const worker of wanting) {
+      const owner = ownerOf(worker, binding);
+      if (owner === undefined) continue;
+      bindings.push({
+        binding,
+        kind,
+        name: options.scope.resource(binding, kind, declaredNaming, owner),
+        naming: declaredNaming,
+        owner,
+        workers: [worker.name],
+        global: false,
+      });
+    }
+  }
+  assertDistinctNames(bindings);
+  return { bindings, declines, wantedPerWorker, ownership, manifestFaults: [...faults.values()] };
+}
+
+/**
+ * What each Worker's `ownBindings` names, against what it composes: an entry naming a D1, KV, R2 or queue binding
+ * its capabilities declare is owned, and anything else is reported as unrecognized, owning nothing.
+ */
+function ownershipOf(workers: readonly ProvisionWorker[]): ProvisionedOwnership[] {
+  const out: ProvisionedOwnership[] = [];
+  for (const worker of workers) {
+    const listed = worker.ownBindings ?? [];
+    if (listed.length === 0) continue;
+    const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
+    out.push({
+      worker: worker.name,
+      owned: listed.filter((binding) => declared.has(binding)),
+      unrecognized: listed.filter((binding) => !declared.has(binding)),
+    });
+  }
+  return out;
+}
+
+/**
+ * **A `scope: "global"` binding is one resource for the project by definition, so no Worker can own it.** Refused
+ * before anything is created, naming the binding and the capability that declares it global.
+ */
+function assertNoGlobalOwned(workers: readonly ProvisionWorker[], namings: ReadonlyMap<string, DeclaredNaming>): void {
+  for (const worker of workers) {
+    for (const binding of worker.ownBindings ?? []) {
+      // The manifest's declaration, else the composed instance's: either one saying `global` is enough to refuse.
+      const declared = namings.get(binding);
+      const capability =
+        declared?.naming.scope === GLOBAL_SCOPE
+          ? declared.capability
+          : worker.capabilities.find((composed) =>
+              composed.requiredBindings.some((spec) => spec.name === binding && spec.scope === GLOBAL_SCOPE),
+            )?.name;
+      if (capability === undefined) continue;
+      throw new ValidationError({
+        message: `${worker.name} owns ${binding}, which ${capability} declares global: one resource for the whole project.`,
+        action: `Take ${binding} out of ownBindings in ${basename(worker.dir)}'s pithy.worker.jsonc.`,
+      });
+    }
+  }
+}
+
+/**
+ * Two targets of one kind under one name would be one resource that two owners each believe is theirs. The naming
+ * keeps owned and shared names apart by construction; this is the check that says so before anything is created.
+ */
+function assertDistinctNames(targets: readonly ProvisionTarget[]): void {
+  const seen = new Map<string, ProvisionTarget>();
+  for (const target of targets) {
+    const key = `${target.kind}:${target.name}`;
+    const other = seen.get(key);
+    if (other === undefined) {
+      seen.set(key, target);
+      continue;
+    }
+    const who = (candidate: ProvisionTarget): string =>
+      candidate.owner === undefined ? `the shared ${candidate.binding}` : `${candidate.owner}'s ${candidate.binding}`;
+    throw new ValidationError({
+      message: `${who(other)} and ${who(target)} both name ${target.name}.`,
+      action: "Rename a binding or a Worker so each resource has a name of its own.",
+    });
+  }
 }
 
 /** Who declares a set of bindings: a capability's manifest, or a Worker's own app, which has none. */
@@ -1069,6 +1270,7 @@ function resolveBindingNamings(options: {
 function reportedDeclines(
   resolved: readonly { worker: ProvisionWorker; resolved: BindingDeclines }[],
   wantedPerWorker: ReadonlyMap<string, ReadonlySet<string>>,
+  workers: readonly ProvisionWorker[],
 ): ProvisionedDeclines[] {
   const entries: ProvisionedDeclines[] = [];
   for (const { worker, resolved: declines } of resolved) {
@@ -1080,7 +1282,7 @@ function reportedDeclines(
     entries.push({
       state: "read",
       worker: worker.name,
-      declines: declines.declines.map((decline) => reportedDecline(decline, worker.name, wantedPerWorker)),
+      declines: declines.declines.map((decline) => reportedDecline(decline, worker, wantedPerWorker, workers)),
     });
   }
   return entries;
@@ -1089,8 +1291,9 @@ function reportedDeclines(
 /** One resolved entry, projected onto what a provisioning run can say about it. */
 function reportedDecline(
   decline: BindingDecline,
-  worker: string,
+  worker: ProvisionWorker,
   wantedPerWorker: ReadonlyMap<string, ReadonlySet<string>>,
+  workers: readonly ProvisionWorker[],
 ): ProvisionedDecline {
   if (decline.state === "unrecognized") return { state: "unrecognized", name: decline.name, reason: decline.reason };
   const { name, type, capability, reason } = decline;
@@ -1101,12 +1304,23 @@ function reportedDecline(
     type,
     capability,
     reason,
-    // Every other Worker that declares this binding and wants it. Computed from the same per-Worker
-    // sets the resource loop filtered on, so the report cannot claim a skip the run did not take.
+    // Every other Worker that shares this binding's resource and wants it. Computed from the same per-Worker
+    // sets the resource loop filtered on, so the report cannot claim a skip the run did not take. A Worker
+    // declining a binding it owns declined its own resource, which nobody else wants.
     //
     // `stillPresentIn` is deliberately not mirrored here: `resolveDeclines` fills it from stanzas, and
     // this call passes none. What an earlier run left behind is a separate fact, and the human line says
     // "not created by this run" rather than pretending to know the account.
-    wantedBy: [...wantedPerWorker].filter(([other, wanted]) => other !== worker && wanted.has(name)).map(([o]) => o),
+    wantedBy:
+      ownerOf(worker, name) !== undefined
+        ? []
+        : workers
+            .filter(
+              (other) =>
+                other.name !== worker.name &&
+                wantedPerWorker.get(other.name)?.has(name) === true &&
+                ownerOf(other, name) === undefined,
+            )
+            .map((other) => other.name),
   };
 }

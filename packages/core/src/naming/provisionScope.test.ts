@@ -461,6 +461,33 @@ describe("bindingResourceName", () => {
   });
 });
 
+describe("a scope's name for an owned binding", () => {
+  it("names a declared environment's owned resource with the Worker in the thing", () => {
+    const scope = environmentScope("my-app", "staging");
+    expect(scope.resource("DB", "d1", {})).toBe("my-app-staging-db");
+    expect(scope.resource("DB", "d1", {}, "other")).toBe("my-app-staging-other---db");
+    expect(scope.resource("MEDIA_BUCKET", "r2", { resource: "media" }, "other")).toBe("my-app-staging-other---media");
+  });
+
+  it("names a feature's owned resource under the feature's head", () => {
+    const scope = featureScope({ project: "acme", issue: "12", slug: "x" });
+    expect(scope.resource("DB", "d1", {}, "business")).toBe("acme-f12-x--business---db-d1");
+  });
+
+  it("refuses an owner for a project-global binding, naming the Worker and the binding", () => {
+    const scope = environmentScope("acme", "prod");
+    let caught: unknown;
+    try {
+      scope.resource("EMAIL_SUPPRESSIONS", "d1", { scope: GLOBAL_SCOPE }, "other");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ValidationError);
+    expect((caught as PithyError).payload.message).toContain("EMAIL_SUPPRESSIONS");
+    expect((caught as PithyError).payload.message).toContain("other");
+  });
+});
+
 describe("a scope's Artifacts namespace (#673)", () => {
   it("is the environment's own in a declared environment", () => {
     expect(environmentScope("acme", "prod").artifactsNamespace).toBe("acme-prod");

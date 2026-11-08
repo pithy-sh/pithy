@@ -77,7 +77,7 @@ import { commandProgress } from "../terminal/progress";
  * `pithy.config.ts`, or derived from the checked-out branch. That is a flag, not a different verb.
  *
  * **The safety is in the scope, not in the spelling.** A `ProvisionScope` carries the resource naming and
- * the `env.<name>` stanza the ids are written into, as one value (#240) — so a feature-named resource
+ * the `env.<name>` stanza the ids are written into, as one value — so a feature-named resource
  * landing in a declared environment's stanza of a checked-in config is unexpressible rather than merely
  * refused. Nothing about that depends on which words were typed, which is what leaves one command free to
  * carry both modes.
@@ -106,7 +106,7 @@ async function buildProvisioners(account: CloudflareAccountSelection | null): Pr
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
-  // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
+  // What vouches for that id travels with it. `find` is find-or-create's first half, and an empty
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmation = cloudflareAccountConfirmation({ account });
   return cloudflareProvisioners(await cloudflareClients({ accountId, apiToken }), { accountId, confirmation });
@@ -117,7 +117,7 @@ async function buildProvisioners(account: CloudflareAccountSelection | null): Pr
  *
  * Absent is a degraded environment, never a failed command: a project composing no `secrets` capability
  * needs no store, and one that does gets its `secrets_store_secrets` stanza — the binding `pithy add`
- * deliberately could not write, and nothing came back for (#238).
+ * deliberately could not write, and nothing came back for.
  */
 async function buildStore(account: CloudflareAccountSelection | null): Promise<SecretsStore | null> {
   const vars = cloudflareEnv({ account });
@@ -129,7 +129,7 @@ async function buildStore(account: CloudflareAccountSelection | null): Promise<S
 }
 
 /**
- * **A feature's secrets infrastructure, over the account (#643)** — the provisioner and the manager dispatcher
+ * **A feature's secrets infrastructure, over the account** — the provisioner and the manager dispatcher
  * `pithy secrets provision` uses, each bound to this feature, or `null` without the credentials and the store
  * id they need. The provisioner mints the feature's own manager token and master key; the dispatcher reaches
  * the feature's own manager, once `deployKitWorkers` has deployed it, to create its `d1` secrets.
@@ -164,7 +164,7 @@ async function featureSecretsInfrastructure(
 }
 
 /**
- * **The feature's own indexes, over the account (#643)**, or `null` without credentials. Built for every run: an
+ * **The feature's own indexes, over the account**, or `null` without credentials. Built for every run: an
  * index is created only for a host whose registry entry declares one, so a project with none makes no call.
  */
 export async function featureIndexSeam(
@@ -260,12 +260,14 @@ export interface ProvisionRunOptions {
   seed: boolean;
   /** `--json`. */
   json: boolean;
-  /** The caller's own run, the one input a line naming it again is built from (#711). */
+  /** The caller's own run, the one input a line naming it again is built from. */
   caller?: Caller<"provision">;
-  /** `--events`: with `--json`, a progress record per step before the report (#697). */
+  /** `--events`: with `--json`, a progress record per step before the report. */
   events?: boolean;
   /** `--dry-run`: plan the run, and create, write and migrate nothing. */
   dryRun?: boolean;
+  /** `--repoint`: with `--env`, point a binding at the resource this run names even where its stanza holds another. */
+  repoint?: boolean;
 }
 
 /**
@@ -287,10 +289,9 @@ function storeBindings(store: SecretsStore, scope: ProvisionScope, mint: MintSto
 /**
  * One resource, as a line: what it is called, and whether this run made it or found it.
  *
- * One sentence, one writer. It is printed as the resource settles now (#515) and was printed in the
- * summary before; two copies of it would drift the first time one of them was reworded, and an operator
- * comparing a streamed line against a summary line would have no way to tell a rewording from a
- * different resource.
+ * One sentence, one writer. It is printed as the resource settles, and in the summary when nothing streamed;
+ * two copies of it would drift the first time one of them was reworded, and an operator comparing a streamed
+ * line against a summary line would have no way to tell a rewording from a different resource.
  */
 function resourceLine(resource: ProvisionedResource): string {
   return `${resource.name}: ${resource.created ? "created" : "exists"}.`;
@@ -304,19 +305,18 @@ function resourceLine(resource: ProvisionedResource): string {
  * whether a TTY is attached, and a run in CI is the run whose log most needs to say where it got to. A
  * non-TTY simply renders these lines plain, which is what the whole terminal seam already does with color.
  *
- * **The decision and the lines are `terminal/progress.ts`'s now, and this is the adapter (#578).** What
- * was here was the whole vocabulary, named and filed under provisioning — which is exactly why `pithy
- * deploy` never inherited it and printed nothing for minutes. What is left here is the only part that is
- * genuinely about provisioning: a resource has a name, and it was created or it already existed.
+ * **The decision and the lines are `terminal/progress.ts`'s, and this is the adapter**, so every command
+ * narrates the same way. What is here is the only part that is genuinely about provisioning: a resource
+ * has a name, and it was created or it already existed.
  *
- * **Under `--json --events` it is a record per resource instead (#697)**: the start carries the binding and
+ * **Under `--json --events` it is a record per resource instead**: the start carries the binding and
  * kind, the settle the row `resources` will list, beside the line a person would have read.
  */
 export function provisionProgress(options: { json: boolean; events?: boolean }): ProvisionProgress | undefined {
   const progress = options.json && options.events ? eventsProgress("provision") : commandProgress(options);
   if (!progress) return undefined;
   return (event) =>
-    // `▸ <name>...` before the find, then the settled line the summary used to hold until the end.
+    // `▸ <name>...` before the find, then the settled line as the resource settles.
     progress(
       event.phase === "start"
         ? { phase: "start", what: event.name, data: { binding: event.binding, kind: event.kind } }
@@ -329,7 +329,7 @@ export function provisionProgress(options: { json: boolean; events?: boolean }):
  *
  * The plan and the work must name the same Workers, and the cheapest way to guarantee that is to resolve
  * them once and hand the same array to both. Memoized on the promise rather than the result, so two
- * callers racing it still share one read. Composed for the environment being provisioned (#595).
+ * callers racing it still share one read. Composed for the environment being provisioned.
  */
 function workerSetOnce(projectDir: string, environment: string): () => Promise<ResolvedWorker[]> {
   let pending: Promise<ResolvedWorker[]> | null = null;
@@ -343,6 +343,7 @@ function provisionWorkers(workers: readonly ResolvedWorker[]): ProvisionWorker[]
     dir: worker.dir,
     capabilities: worker.capabilities,
     config: worker.config,
+    ownBindings: worker.target.ownBindings ?? [],
   }));
 }
 
@@ -371,8 +372,8 @@ function deferredSecrets(capabilities: Capability[], mode: ProvisionMode): Pendi
 /**
  * **What this run left out, and why — one line per Worker's declaration.**
  *
- * A decline is the one input that removes work, and until #514 the run said nothing about it: the summary
- * lists what was made, so a decline honored and a decline dropped on the floor printed the same output.
+ * A decline is the one input that removes work, and the summary lists what was made, so without these lines
+ * a decline honored and a decline dropped on the floor would print the same output.
  * The reason string is mandatory in `declinedBindings` precisely so a report can hand it back, so it goes
  * out verbatim — it is the adopter's own sentence, and rewording it would lose the one fact the line has
  * that the binding name does not.
@@ -444,7 +445,7 @@ export function writeReport(
     pending: PendingSecrets;
     /**
      * The project's merged secret registry — read for one fact and one only: a missing entry's declared
-     * `scope`, which decides whether its `pithy secrets create` carries `--env` (#517).
+     * `scope`, which decides whether its `pithy secrets create` carries `--env`.
      *
      * `ProvisionedSecret` does not carry the scope and this report cannot invent it: `secretWriteTargets`
      * refuses `--env` on a `global` secret, so a remedy that guessed would be the third round of this
@@ -453,7 +454,7 @@ export function writeReport(
      */
     registry: SecretRegistry;
     /**
-     * Whether each resource already printed its own line as it settled (#515).
+     * Whether each resource already printed its own line as it settled.
      *
      * The summary's resource block **moves** rather than being joined by a second copy: with the lines
      * arriving in place, interleaved with the `▸` step that produced each one, repeating them at the end
@@ -464,11 +465,11 @@ export function writeReport(
      */
     streamed?: boolean;
     /**
-     * The plan, under `--dry-run` (#697). The report beside it is the run's as it would be; the plan is what
+     * The plan, under `--dry-run`. The report beside it is the run's as it would be; the plan is what
      * would change, and the text output is the plan alone.
      */
     plan?: Plan;
-    /** What the run left required (#697): `pithy deploy`, when a Worker it names is not deployed. JSON only. */
+    /** What the run left required: `pithy deploy`, when a Worker it names is not deployed. JSON only. */
     next?: NextStep[];
   },
 ): void {
@@ -500,13 +501,14 @@ export function writeReport(
   // **First of the summary lines, because it is what puts the lines under it in doubt.** A capability
   // whose manifest would not parse still gets its resources created — the bindings come from the composed
   // instance — but under the generic `<project>-<env>-<binding>` name, because `scope` and `resource` are
-  // read out of the file nobody could open (#513). A project-global database created per environment is
-  // the exact split #513 removed, and without this line the run reporting it is byte-identical to a
-  // healthy one (#184). To stderr, like `pithy add`'s and for the same reason: it is a defect in someone's
+  // read out of the file nobody could open. A project-global database created per environment is
+  // a split nothing else reports, and without this line the run reporting it is byte-identical to a
+  // healthy one. To stderr, like `pithy add`'s and for the same reason: it is a defect in someone's
   // package rather than a fact about this run, and a `--json` consumer already has it as `manifestFaults`.
   for (const line of manifestFaultLines(report.manifestFaults)) process.stderr.write(`${line}\n`);
   // Beside what was made, because it is the same subject: what this environment has, and what it does not.
   for (const line of describeDeclines(report)) process.stdout.write(`${line}\n`);
+  for (const line of describeOwnership(report)) process.stdout.write(`${line}\n`);
   for (const worker of report.workers) {
     process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
   }
@@ -514,20 +516,17 @@ export function writeReport(
     process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
   }
   for (const secret of report.secretBindings) {
-    // Three states, and the middle one is new (#321): created by this run, already there, or waiting on
+    // Three states: created by this run, already there, or waiting on
     // a human. The value never appears — what was made and where it went is the whole useful report.
     if (secret.minted) {
       process.stdout.write(`${secret.binding} created. Reads ${secret.entry}.\n`);
     } else if (secret.bound) {
       process.stdout.write(`${secret.binding} reads ${secret.entry}.\n`);
     } else {
-      // **`doctor`'s answer, not a second one** (#517). This is the same finding that command reports
-      // from the files afterwards, and each report used to render it itself: a reviewer ran both to
-      // completion and found doctor's corrected and this one still naming the dead end four rounds had
-      // been about. Sharing the *renderer* was the first fix and was not enough — this went on handing
-      // it the supplied-value question for every secret, including the mintable ones and the master key,
-      // and told an operator to hand-write a value the next `pithy secrets provision` would generate. So
-      // it asks `storeEntryRemedy`, which is the whole answer, over the registry facts doctor reads too:
+      // **`doctor`'s answer, not a second one.** This is the same finding that command reports from the
+      // files afterwards, so it asks `storeEntryRemedy`, which is the whole answer, over the registry facts
+      // doctor reads too, rather than telling an operator to hand-write a value `pithy secrets provision`
+      // would generate:
       // the scope decides whether the command carries `--env`, and `isProvisionableSecret` decides which
       // of the two commands it is.
       const declared = options.registry[secret.secret];
@@ -553,7 +552,28 @@ export function writeReport(
 }
 
 /**
- * **A feature's run, in the lines only a feature run has (#643):** the routes its stanzas gave up, and the `d1`
+ * What `ownBindings` changed in this run: each entry that names nothing the Worker composes, and each binding moved
+ * to another resource under `--repoint`. Nothing for a project that owns nothing.
+ */
+export function describeOwnership(report: Pick<ProvisionReport, "ownership" | "repoints">): string[] {
+  const lines: string[] = [];
+  for (const entry of report.ownership) {
+    for (const binding of entry.unrecognized) {
+      lines.push(
+        `${entry.worker} lists ${binding} in ownBindings. Nothing it composes declares it, so it owns nothing.`,
+      );
+    }
+  }
+  for (const repoint of report.repoints) {
+    lines.push(
+      `${repoint.worker}'s ${repoint.binding} now points at ${repoint.next}. ${repoint.current} keeps its data.`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * **A feature's run, in the lines only a feature run has:** the routes its stanzas gave up, and the `d1`
  * secrets its own manager accounted for — through `mintReportLines`, the renderer `pithy secrets provision`
  * prints the same pass with. Names, never a value. Nothing for a run that has neither.
  */
@@ -564,7 +584,7 @@ export function featureRunLines(report: ProvisionReport): string[] {
       `${dropped.worker}: ${dropped.routes.join(", ")} not routed to this feature. A feature answers on its own workers.dev address.`,
     );
   }
-  // A binding this feature could not make its own, named rather than left to be met at runtime (#650 review).
+  // A binding this feature could not make its own, named rather than left to be met at runtime.
   for (const gone of report.bindingsDropped ?? []) {
     lines.push(
       `${gone.worker}: ${gone.bindings.join(", ")} not bound. Each names a Worker outside this project, and a feature binds nothing it does not own.`,
@@ -576,7 +596,7 @@ export function featureRunLines(report: ProvisionReport): string[] {
 
 /**
  * The `d1` secrets still pending after a feature run: the registry's list, less what the feature's own manager
- * accounted for (#643). A run with no Secrets Store has no manager, and the shortfall reads as before.
+ * accounted for. A run with no Secrets Store has no manager, and the registry's list is the shortfall.
  */
 export function featurePendingSecrets(pending: PendingSecrets, report: ProvisionReport): PendingSecrets {
   const accounted = new Set((report.featureSecrets ?? []).map((secret) => secret.name));
@@ -588,8 +608,7 @@ export function featurePendingSecrets(pending: PendingSecrets, report: Provision
  *
  * It takes the resolved {@link ProvisionMode} rather than a bare name, and hands it on to the deferred-
  * secrets report. There is one producer of the mode — `requireProvisionMode`, in `runProvision` — so
- * neither branch can report itself as the other, which is how `--feature` came to print `--env`'s
- * remedy in the first place (#330).
+ * neither branch can report itself as the other and print the other's remedy.
  */
 async function provisionDeclared(
   projectDir: string,
@@ -612,7 +631,7 @@ async function provisionDeclared(
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
   // Read from the root config this command already loaded, never from the shape of what it composes:
   // composing the control plane makes a Worker administrable by anybody, and only the project can say
-  // that the client is itself (#616). Read once, for the run and for its plan.
+  // that the client is itself. Read once, for the run and for its plan.
   const declared = { administersItself: administersItself(config) };
   if (options.dryRun) {
     // Before the confirmation, as `pithy seed --dry-run` is: a plan creates nothing, so there is nothing to agree to.
@@ -630,6 +649,7 @@ async function provisionDeclared(
       provisioners,
       store: await buildStore(account),
       seed: options.seed,
+      repoint: options.repoint === true,
       ...(config.seed?.productionEnvironments !== undefined
         ? { productionEnvironments: config.seed.productionEnvironments }
         : {}),
@@ -651,6 +671,8 @@ async function provisionDeclared(
             : {}),
           seedData: options.seed,
           ...declared,
+          // A plan reports every repoint rather than refusing on the first, and says below whether the run would.
+          repoint: true,
           migrate: seams.migrate,
           seed: seams.seed,
           audit: seams.audit,
@@ -670,7 +692,7 @@ async function provisionDeclared(
     env: environment,
     yes: options.yes,
     json: options.json,
-    // The plan, before anyone agrees to it and before the first Cloudflare call (#515). It is prose, so under
+    // The plan, before anyone agrees to it and before the first Cloudflare call. It is prose, so under
     // `--json` nothing is resolved for it and nothing is printed — `--events` included, whose stdout is records.
     ...(!options.json
       ? {
@@ -698,7 +720,7 @@ async function provisionDeclared(
   const capabilities = projectCapabilities(await resolved());
   const store = await buildStore(account);
   const audit = await buildAudit(projectDir, capabilities, account);
-  // One record per run: filled by the minter in `secretBindings` below, read by the seed step (#660).
+  // One record per run: filled by the minter in `secretBindings` below, read by the seed step.
   const minted = mintedThisRun();
   const report = await provisionEnvironment({
     projectDir,
@@ -714,8 +736,8 @@ async function provisionDeclared(
             store,
             scope,
             // A declared secret whose value is arbitrary is created here rather than printed as
-            // homework (#321). Absence is checked first, so an existing value is never replaced.
-            // Remembered for this process's seed step, which runs only under `--seed` (#660). What is
+            // homework. Absence is checked first, so an existing value is never replaced.
+            // Remembered for this process's seed step, which runs only under `--seed`. What is
             // created here goes into a store the CLI cannot read back, so a fixture that must seal
             // something under one of these values has this run and no other.
             storeSecretMinter({ store, environment: scope.stanza, audit, minted }),
@@ -725,8 +747,12 @@ async function provisionDeclared(
     // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
     // job, with its own gate, and it must not be something provisioning did on the way past.
     seedData: options.seed,
+    repoint: options.repoint === true,
+    ...(config.seed?.productionEnvironments !== undefined
+      ? { productionEnvironments: config.seed.productionEnvironments }
+      : {}),
     // The read side of the record the minter above fills. Empty on a re-run, and empty when this project
-    // reaches no Secrets Store at all — both of which are answers rather than faults (#660).
+    // reaches no Secrets Store at all — both of which are answers rather than faults.
     mintedThisRun: minted,
     ...declared,
     audit,
@@ -756,7 +782,7 @@ async function provisionBranch(
 ): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
   // The same declaration, from the same file, for the environment that needs it most: a feature's stanza
-  // is regenerated on every run, so a hand-written entry never survives to the deploy (#616).
+  // is regenerated on every run, so a hand-written entry never survives to the deploy.
   const selfAdministering = administersItself(await loadProject(projectDir));
   const scope = featureScope(identity);
   const resolved = workerSetOnce(projectDir, scope.stanza);
@@ -831,14 +857,14 @@ async function provisionBranch(
     provisioners,
     administersItself: selfAdministering,
     resolveWorkers: workers,
-    // How each Worker's generated stanza learns the `workers.dev` origin it answers on (#643).
+    // How each Worker's generated stanza learns the `workers.dev` origin it answers on.
     workersSubdomain: accountWorkersSubdomain(account),
-    // The feature's own manager token, master key and manager — the path a declared environment's take (#643).
+    // The feature's own manager token, master key and manager — the path a declared environment's take.
     ...(infrastructure ? infrastructure : {}),
-    // The Vectorize indexes a feature's hosts bind, created as `pithy vector provision` creates them (#643).
+    // The Vectorize indexes a feature's hosts bind, created as `pithy vector provision` creates them.
     ...(indexes ? { indexes } : {}),
     // Every kit host the feature composes, through the same resolver and gated deploy `pithy deploy` ships a
-    // declared environment's with, and named for this feature (#643).
+    // declared environment's with, and named for this feature.
     deployHosts: () =>
       deployKitWorkers({
         projectDir,
@@ -847,7 +873,7 @@ async function provisionBranch(
         account,
         feature: identity,
         ...(store ? { ids: { storeId: store.storeId } } : {}),
-        // What the host gate follows a bound id to: the feature's own, asked of the account by name (#643).
+        // What the host gate follows a bound id to: the feature's own, asked of the account by name.
         featureOwned: (feature, composed) => featureOwnedIds(provisioners, feature, composed),
       }),
     ...(progress ? { onProgress: progress } : {}),
@@ -873,6 +899,13 @@ export async function runProvision(options: ProvisionRunOptions): Promise<void> 
   // client exists. A run that named no environment or two is a mistake in the command line, and it gets
   // an answer about the command line.
   const mode = requireProvisionMode(options);
+  if (mode.kind === "feature" && options.repoint === true) {
+    // A feature's stanza is regenerated on every run, so there is nothing in it to repoint.
+    throw new ValidationError({
+      message: "--repoint is for --env. A feature's stanza is rewritten on every run.",
+      action: "Drop --repoint.",
+    });
+  }
   const projectDir = options.projectDir ?? process.cwd();
   if (mode.kind === "feature") return provisionBranch(projectDir, mode, options);
   return provisionDeclared(projectDir, mode, options);
@@ -883,10 +916,13 @@ const Worker = z.string().describe("The Worker's own deploy name — its `wrangl
 /** One resource, as `resources` lists it and as an `--events` record settles it. */
 const ProvisionedResourceRow = FeatureResource.extend({
   created: z.boolean().describe("Whether this run created it; `false` when an existing one was adopted."),
+  workers: z
+    .array(Worker)
+    .describe("The Workers whose stanza it is written into: every Worker sharing it, or the one that owns it."),
 }).describe("One resource.");
 
 /**
- * `pithy provision --json --events`: one record per step, before the report closes the stream (#697). A
+ * `pithy provision --json --events`: one record per step, before the report closes the stream. A
  * resource starts with its `binding` and `kind` and settles with its row as `resource`; a feature's kit
  * Worker settles with its row as `kit`; a migration or a seed set starts with only `what`.
  */
@@ -965,6 +1001,32 @@ const ProvisionPayload = z
           .describe("One Worker's `declinedBindings`."),
       )
       .describe("One entry per Worker whose `declinedBindings` has something to say."),
+    ownership: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            owned: z.array(z.string().describe("A binding.")).describe("The bindings it owns a resource for."),
+            unrecognized: z
+              .array(z.string().describe("A binding."))
+              .describe("Entries naming no D1, KV, R2 or queue binding the Worker composes. They own nothing."),
+          })
+          .describe("One Worker's `ownBindings`."),
+      )
+      .describe("One entry per Worker that lists `ownBindings`."),
+    repoints: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            binding: z.string().describe("The binding."),
+            kind: FeatureResource.shape.kind,
+            current: z.string().describe("The resource the stanza pointed at, by name."),
+            next: z.string().describe("The resource it points at now. The current one keeps its data."),
+          })
+          .describe("One binding moved to another resource."),
+      )
+      .describe("`--env --repoint` only: each binding whose stanza pointed at another resource and now points here."),
     manifestFaults: z.array(ManifestFault).describe("Installed packages whose manifest is present and unusable."),
     configs: z
       .array(
@@ -1046,6 +1108,11 @@ export default withContract(
         default: false,
         description: "With --env: also load seed fixtures once the schema is up",
       },
+      repoint: {
+        type: "boolean",
+        default: false,
+        description: "With --env: point a binding at the resource this run names, where its stanza holds another",
+      },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
       events: EVENTS_ARG,
@@ -1064,13 +1131,14 @@ export default withContract(
             json: args.json,
             events: args.json && args.events,
             dryRun: args["dry-run"],
+            repoint: args.repoint,
           }),
         eventsOption("provision", args),
       ),
   }),
   {
     output: "document",
-    // 2: a resource's `kind`, in the report, the plan and the events, takes `queue` (#662).
+    // 2: a resource's `kind`, in the report, the plan and the events, takes `queue`.
     schemaVersion: 2,
     payload: ProvisionPayload,
     events: ProvisionEvents,
@@ -1085,6 +1153,7 @@ export default withContract(
         rule: "Pass either --env or --feature: exactly one says which environment to provision.",
       },
       EVENTS_NEED_JSON,
+      { kind: "requires", flag: "--repoint", needs: ["--env"], any: false, rule: "--repoint needs --env." },
     ],
   },
 );

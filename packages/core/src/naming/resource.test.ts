@@ -7,6 +7,7 @@ import { MAX_ENVIRONMENT_NAME } from "./environment";
 import { FEATURE_DERIVED_PROJECT_NAME, MAX_CAPABILITY_JOB, WORKFLOW_DERIVED_PROJECT_NAME } from "./limits";
 import {
   assertValidProjectName,
+  fitOwnedSegment,
   fitSegment,
   hash6,
   isReservedProjectName,
@@ -14,6 +15,8 @@ import {
   kebab,
   MAX_PROJECT_NAME,
   MAX_RESOURCE_NAME,
+  ownedResourceName,
+  ownedThing,
   RESERVED_TEST_PREFIX,
   resourceName,
 } from "./resource";
@@ -345,5 +348,69 @@ describe("isReservedProjectName", () => {
         expect(reserved).toBe(isReservedProjectName(project));
       }
     }
+  });
+});
+
+describe("ownedThing", () => {
+  it("joins the kebabbed Worker and binding with three hyphens", () => {
+    expect(ownedThing("business", "DB")).toBe("business---db");
+    expect(ownedThing("Other App", "SESSIONS_KV")).toBe("other-app---sessions-kv");
+  });
+
+  it("is empty when either side kebabs to nothing", () => {
+    expect(ownedThing("", "DB")).toBe("");
+    expect(ownedThing("api", "__")).toBe("");
+  });
+});
+
+describe("fitOwnedSegment", () => {
+  it("keeps a thing that fits verbatim", () => {
+    expect(fitOwnedSegment("other", "DB", 20)).toBe("other---db");
+  });
+
+  it("keeps the separator, a head of each side and a hash when it does not fit", () => {
+    const fitted = fitOwnedSegment("collaboration-gateway", "USER_NOTIFICATION_PREFERENCES", 24);
+    expect(fitted.length).toBeLessThanOrEqual(24);
+    expect(fitted).toMatch(/^[a-z0-9-]+[a-z0-9]---[a-z0-9][a-z0-9-]*-[0-9a-f]{6}$/);
+    expect(fitted.match(/-{2,}/g)).toEqual(["---"]);
+  });
+
+  it("is deterministic, and different for different owners", () => {
+    const one = fitOwnedSegment("a".repeat(40), "B".repeat(40), 30);
+    expect(fitOwnedSegment("a".repeat(40), "B".repeat(40), 30)).toBe(one);
+    expect(fitOwnedSegment(`${"a".repeat(39)}c`, "B".repeat(40), 30)).not.toBe(one);
+  });
+
+  it("never ends a head in a hyphen", () => {
+    for (let budget = 12; budget < 40; budget += 1) {
+      const fitted = fitOwnedSegment("ab-cd-ef-gh-ij-kl-mn", "OP_QR_ST_UV_WX_YZ", budget);
+      expect(fitted.length, String(budget)).toBeLessThanOrEqual(budget);
+      expect(fitted.match(/-{2,}/g), fitted).toEqual(["---"]);
+    }
+  });
+
+  it("refuses a budget with no room for a character of each side", () => {
+    expect(() => fitOwnedSegment("worker", "BINDING_NAME", 11)).toThrow(PithyError);
+  });
+});
+
+describe("ownedResourceName", () => {
+  it("composes <project>-<env>-<worker>---<binding>", () => {
+    expect(ownedResourceName({ project: "my-app", env: "staging", thing: "DB", owner: "other" }, 128)).toBe(
+      "my-app-staging-other---db",
+    );
+  });
+
+  it("truncates only the owned thing, and keeps the project and environment verbatim", () => {
+    const name = ownedResourceName({ project: "acme", env: "prod", thing: "B".repeat(80), owner: "w".repeat(30) }, 63);
+    expect(name.length).toBeLessThanOrEqual(63);
+    expect(name.startsWith("acme-prod-w")).toBe(true);
+    expect(name).toContain("---");
+  });
+
+  it("refuses an empty owner", () => {
+    expect(
+      thrown(() => ownedResourceName({ project: "acme", env: "prod", thing: "DB", owner: "-" }, 63)),
+    ).toBeInstanceOf(ValidationError);
   });
 });

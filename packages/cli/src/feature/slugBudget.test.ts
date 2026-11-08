@@ -56,6 +56,24 @@ describe("featureNameShapes", () => {
     expect(maxFeatureSlug(head, shapes)).toBe(28);
   });
 
+  test("reads the owned shape only for a project that declares ownBindings", async () => {
+    const head = { project: "replay", issue: "643" };
+    const db = defineCapability({ name: "app", requiredBindings: [{ type: "d1", name: "DB" }] });
+    const without = await featureNameShapes({ head, capabilities: [db], workers: WORKERS, projectDir: dir });
+    const owning = await featureNameShapes({
+      head,
+      capabilities: [db],
+      workers: WORKERS,
+      owned: [{ app: "collaboration-gateway", binding: "DB", kind: "d1" }],
+      projectDir: dir,
+    });
+    expect(without.map((shape) => shape.thing)).not.toContain("collaboration-gateway---db-d1");
+    expect(owning.map((shape) => shape.thing)).toContain("collaboration-gateway---db-d1");
+    // `replay-f643-` and `--` are 14, the owned thing 29, R2 stops at 63: 20.
+    expect(maxFeatureSlug(head, owning)).toBe(20);
+    expect(maxFeatureSlug(head, without)).toBeGreaterThan(20);
+  });
+
   /**
    * **The app's own Workflows are names this feature composes too (#650).**
    *

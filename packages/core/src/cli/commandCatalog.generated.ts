@@ -1718,6 +1718,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--repoint": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
       "--dry-run": {
         "type": "boolean",
         "required": false,
@@ -1747,6 +1752,14 @@ export const COMMANDS = {
         "flag": "--events",
         "needs": [
           "--json"
+        ],
+        "any": false
+      },
+      {
+        "kind": "requires",
+        "flag": "--repoint",
+        "needs": [
+          "--env"
         ],
         "any": false
       }

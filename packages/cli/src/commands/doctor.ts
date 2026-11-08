@@ -43,6 +43,12 @@ import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { ConsentHealth, ConsentPurposeFinding } from "../doctor/consent";
+import {
+  checkDeclaredNames,
+  type DeclaredNamesCheck,
+  describeDeclaredName,
+  describeUnrecognizedOwnBinding,
+} from "../doctor/declaredNames";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
   checkDevSecrets,
@@ -349,6 +355,12 @@ export interface DoctorReport {
    * the check above: with no root config there is no declaration to hold a stanza to.
    */
   selfBinding: SelfBindingCheck | null;
+  /**
+   * Whether each declared D1, R2 and queue name in a stanza is the one `pithy provision` composes for that Worker,
+   * owned or shared, and whether each `ownBindings` entry names something the Worker composes. `null` outside a
+   * readable project. Report-only: it keeps the report verbose and never fails the exit.
+   */
+  declaredNames: DeclaredNamesCheck | null;
   /**
    * Whether every service binding an app declares reaches a Worker that will be there: no loop, no target
    * that is no Worker, no kit Worker nothing composes. `null` outside a readable project. **It fails the exit.**
@@ -847,6 +859,8 @@ export interface DoctorReportOptions {
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
   /** Self-binding seam; defaults to {@link checkSelfBinding}. Reads files only — no account call. */
   checkSelfBinding?: (projectDir: string) => Promise<SelfBindingCheck>;
+  /** Declared-name seam; defaults to {@link checkDeclaredNames}. Reads files and composes, never an account. */
+  checkDeclaredNames?: (projectDir: string) => Promise<DeclaredNamesCheck>;
   /** Service-binding seam; defaults to {@link checkServiceBindings}. Reads files only — no account call. */
   checkServiceBindings?: (projectDir: string) => Promise<ServiceBindingsCheck>;
   /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
@@ -1064,6 +1078,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeSelfBinding = options.checkSelfBinding ?? checkSelfBinding;
+  const probeDeclaredNames = options.checkDeclaredNames ?? ((projectDir: string) => checkDeclaredNames(projectDir));
   const probeServiceBindings =
     options.checkServiceBindings ?? ((projectDir: string) => checkServiceBindings({ projectDir }));
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
@@ -1410,6 +1425,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         missing: [],
       })
     : null;
+  // Every declared resource name, held to the one provision composes for that Worker. Files and composition only.
+  const declaredNames = inProject
+    ? await probed<DeclaredNamesCheck>(() => probeDeclaredNames(options.projectDir), {
+        state: "could-not-check",
+        mismatches: [],
+        unrecognized: [],
+      })
+    : null;
   // Every app's service bindings, held to the Workers that will be there to answer them. Files only.
   const serviceBindings = inProject
     ? await probed<ServiceBindingsCheck>(() => probeServiceBindings(options.projectDir), {
@@ -1729,6 +1752,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     selfBinding,
+    declaredNames,
     serviceBindings,
     featureRatelimitIds,
     docsMcp,
@@ -3113,6 +3137,16 @@ function selfBindingBlock(check: SelfBindingCheck, productionEnvironments: reado
   return lines.join("\n");
 }
 
+/** Each stanza naming another resource than provision would, and each stale `ownBindings` entry. */
+function declaredNamesBlock(check: DeclaredNamesCheck, productionEnvironments: readonly string[]): string {
+  const lines = ["Resource names:"];
+  for (const mismatch of check.mismatches) {
+    lines.push(healthLine(mismatch.worker, describeDeclaredName(mismatch, productionEnvironments)));
+  }
+  for (const entry of check.unrecognized) lines.push(healthLine(entry.worker, describeUnrecognizedOwnBinding(entry)));
+  return lines.join("\n");
+}
+
 function workerNamesBlock(check: WorkerNameCheck): string {
   const lines = ["Worker names:"];
   const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
@@ -3221,6 +3255,8 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // request that hangs until Cloudflare calls it a 522, so a terse report here would be the toolchain
   // agreeing that nothing is wrong. `could-not-check` keeps its silence, like the block above.
   const selfBindingOk = !report.selfBinding || report.selfBinding.missing.length === 0;
+  // Worth the ink, not a red CI: a hand-chosen name may be the one the adopter meant.
+  const declaredNamesOk = report.declaredNames?.state !== "drifted";
   const serviceBindingsOk = !report.serviceBindings || report.serviceBindings.faults.length === 0;
   const featureRatelimitIdsOk = report.featureRatelimitIds?.state !== "reserved";
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
@@ -3319,6 +3355,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     selfBindingOk &&
+    declaredNamesOk &&
     serviceBindingsOk &&
     featureRatelimitIdsOk &&
     environmentsOk &&
@@ -3497,6 +3534,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // called. The block is the finding — see {@link selfBindingBlock}.
   if (report.selfBinding && report.selfBinding.missing.length > 0) {
     blocks.push(selfBindingBlock(report.selfBinding, report.productionEnvironments));
+  }
+
+  // What a stanza names its resources, against what provision would. The block is the finding.
+  if (report.declaredNames && report.declaredNames.state === "drifted") {
+    blocks.push(declaredNamesBlock(report.declaredNames, report.productionEnvironments));
   }
 
   // The other half of what a stanza binds: another Worker of the project. The block is the finding.
@@ -3782,6 +3824,21 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...entry,
             detail: describeSelfBinding(entry),
             fix: provisionFixCommand(entry.env, report.productionEnvironments),
+          })),
+        }
+      : null,
+    declaredNames: report.declaredNames
+      ? {
+          state: report.declaredNames.state,
+          mismatches: report.declaredNames.mismatches.map((mismatch) => ({
+            ...mismatch,
+            detail: describeDeclaredName(mismatch, report.productionEnvironments),
+            fix: null,
+          })),
+          unrecognized: report.declaredNames.unrecognized.map((entry) => ({
+            ...entry,
+            detail: describeUnrecognizedOwnBinding(entry),
+            fix: null,
           })),
         }
       : null,
@@ -4312,6 +4369,14 @@ const DoctorPayload = z
       declared: z.boolean().describe("Whether the root config says `administersItself` at all."),
       missing: Fixed("stanza binding no `SELF`"),
     }),
+    declaredNames: Check(
+      "Each declared D1, R2 and queue name against the one provisioning composes for that Worker, or `null` outside a project. Never fails the exit.",
+      {
+        state: State("`ok`, `drifted`, `could-not-check`"),
+        mismatches: Fixed("stanza naming a resource other than the one provision would name for that Worker"),
+        unrecognized: Fixed("`ownBindings` entry naming nothing the Worker composes"),
+      },
+    ),
     serviceBindings: Check(
       "Every app's service bindings, held to the Workers they call, or `null` outside a project.",
       {
