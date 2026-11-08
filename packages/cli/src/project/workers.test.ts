@@ -36,12 +36,14 @@ describe("discoverWorkers", () => {
         dir: join(dir, "apps", "api"),
         dev: { readySignal: DEFAULT_READY_SIGNAL },
         hasWrangler: true,
+        ownBindings: [],
       },
       {
         name: "pithy-web",
         dir: join(dir, "apps", "web"),
         dev: { readySignal: "Local:\\s+http" },
         hasWrangler: true,
+        ownBindings: [],
       },
     ]);
   });
@@ -62,6 +64,7 @@ describe("discoverWorkers", () => {
       dir: webDir,
       dev: { readySignal: "Local:\\s+http", command: ["bun", "run", "dev"] },
       hasWrangler: false,
+      ownBindings: [],
     });
   });
 
@@ -79,6 +82,7 @@ describe("discoverWorkers", () => {
         dir: join(dir, "apps", "job"),
         dev: { readySignal: "Local:\\s+http" },
         hasWrangler: true,
+        ownBindings: [],
       },
     ]);
   });
@@ -95,6 +99,7 @@ describe("discoverWorkers", () => {
         dir: apiDir,
         dev: { readySignal: DEFAULT_READY_SIGNAL },
         hasWrangler: true,
+        ownBindings: [],
       },
     ]);
   });

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -104,7 +104,7 @@ describe("pithy provision --env --dry-run", () => {
     expect(payload).toMatchObject({ command: "provision", env: "staging", dryRun: true });
     const plan = Plan.parse(payload.plan);
     expect(plan.resources).toEqual([
-      { kind: "d1", name: "acme-staging-db", binding: "DB", env: "staging", action: "create" },
+      { kind: "d1", name: "acme-staging-db", binding: "DB", env: "staging", workers: ["acme-api"], action: "create" },
     ]);
     expect(plan.files.map((file) => [file.path, file.action])).toEqual([["apps/api/wrangler.jsonc", "edit"]]);
     expect(plan.migrations.map((migration) => [migration.env, migration.name, migration.direction])).toEqual([
@@ -277,6 +277,61 @@ describe("pithy provision --feature --dry-run", () => {
     expect(config?.action).toBe("edit");
     expect(config?.diff).toContain('-  "name": "acme-api-f42-maps"');
     expect(await snapshotTree(dir)).toEqual(before);
+    expect(account.writes).toEqual([]);
+  });
+});
+
+/**
+ * **The reporter's project**: `my-app` with Workers `api` and `other`, each declaring `DB`, and `other` listing `DB`
+ * in `ownBindings`. The plan names one database for each, with the owner on the one `other` owns.
+ */
+describe("pithy provision --env --dry-run with ownBindings", () => {
+  let project: string;
+
+  beforeEach(async () => {
+    project = await mkdtemp(join(tmpdir(), "pithy-provision-own-"));
+    await scaffoldProject({ targetDir: project, appName: "my-app", worker: "api" });
+    await linkKitPackages(project, ["core"]);
+    await writeFile(join(project, "apps", "api", "pithy.config.ts"), APP_CONFIG);
+    const root = join(project, "pithy.config.ts");
+    await writeFile(
+      root,
+      (await readFile(root, "utf8")).replace(
+        '// cloudflare: { accountName: "acme", accountId: "" },',
+        'cloudflare: { accountId: "acct" },',
+      ),
+    );
+    await cp(join(project, "apps", "api"), join(project, "apps", "other"), { recursive: true });
+    const wrangler = join(project, "apps", "other", "wrangler.jsonc");
+    await writeFile(wrangler, (await readFile(wrangler, "utf8")).replaceAll("my-app-api", "my-app-other"));
+    await writeFile(join(project, "apps", "other", "pithy.worker.jsonc"), '{\n  "ownBindings": ["DB"]\n}\n');
+    vi.spyOn(process, "cwd").mockReturnValue(project);
+  });
+
+  afterEach(async () => {
+    await removeTempDir(project);
+  });
+
+  test("plans my-app-staging-db for api and my-app-staging-other---db for other, with the owner on each", async () => {
+    const written = await runCaptured("provision", ["--env", "staging", "--dry-run", "--json"]);
+
+    await expectConforms("provision", written);
+    const payload = JSON.parse(written.join(""));
+    expect(
+      payload.resources.map((resource: { name: string; owner?: string; workers: string[] }) => ({
+        name: resource.name,
+        owner: resource.owner,
+        workers: resource.workers,
+      })),
+    ).toEqual([
+      { name: "my-app-staging-db", owner: undefined, workers: ["my-app-api"] },
+      { name: "my-app-staging-other---db", owner: "other", workers: ["my-app-other"] },
+    ]);
+    expect(Plan.parse(payload.plan).resources.map((resource) => [resource.name, resource.owner])).toEqual([
+      ["my-app-staging-db", undefined],
+      ["my-app-staging-other---db", "other"],
+    ]);
+    expect(payload.ownership).toEqual([{ worker: "my-app-other", owned: ["DB"], unrecognized: [] }]);
     expect(account.writes).toEqual([]);
   });
 });

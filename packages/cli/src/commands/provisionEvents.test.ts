@@ -195,7 +195,14 @@ describe("pithy provision --json --events", () => {
     expect(progress).toContainEqual(
       expect.objectContaining({
         event: "settled",
-        resource: { kind: "d1", binding: "DB", name: "acme-staging-db", id: "d1-1", created: true },
+        resource: {
+          kind: "d1",
+          binding: "DB",
+          name: "acme-staging-db",
+          id: "d1-1",
+          created: true,
+          workers: ["acme-api"],
+        },
       }),
     );
 
@@ -203,7 +210,7 @@ describe("pithy provision --json --events", () => {
     expect(result).not.toHaveProperty("event");
     expect(result).toMatchObject({ command: "provision", schemaVersion: 2, env: "staging" });
     expect(result.resources).toEqual([
-      { kind: "d1", binding: "DB", name: "acme-staging-db", id: "d1-1", created: true },
+      { kind: "d1", binding: "DB", name: "acme-staging-db", id: "d1-1", created: true, workers: ["acme-api"] },
     ]);
     expect(account.writes).toEqual([]);
   });
@@ -227,6 +234,7 @@ describe("provisionProgress under --events", () => {
       name: "acme-staging-db",
       id: "d1-1",
       created: true,
+      workers: ["api"],
     };
     await withErrorReporting(true, async () => {
       const progress = provisionProgress({ json: true, events: true });

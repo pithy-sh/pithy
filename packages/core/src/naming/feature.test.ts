@@ -135,6 +135,29 @@ describe("featureResourceName", () => {
   });
 });
 
+describe("featureResourceName for an owned binding", () => {
+  const me: FeatureIdentity = { project: "acme", issue: "12", slug: "x" };
+
+  it("puts the owning Worker in the thing, joined with three hyphens", () => {
+    expect(featureResourceName(me, "DB", "d1", "business")).toBe("acme-f12-x--business---db-d1");
+    expect(featureResourceName(me, "SESSIONS", "kv", "Other App")).toBe("acme-f12-x--other-app---sessions-kv");
+  });
+
+  it("never equals the shared name of any binding", () => {
+    expect(featureResourceName(me, "DB", "d1", "business")).not.toBe(featureResourceName(me, "BUSINESS_DB", "d1"));
+  });
+
+  it("refuses an owner that kebabs to nothing", () => {
+    expect(() => featureResourceName(me, "DB", "d1", "--")).toThrow(PithyError);
+  });
+
+  it("refuses a slug the owned shape leaves no room for, rather than truncating", () => {
+    const long: FeatureIdentity = { project: "acme", issue: "12", slug: "s".repeat(40) };
+    expect(featureResourceName(long, "DB", "d1").length).toBeLessThanOrEqual(63);
+    expect(() => featureResourceName(long, "DB", "d1", "collaboration")).toThrow(PithyError);
+  });
+});
+
 describe("featureWorkerName", () => {
   it("composes <project>-f<issue>-<slug>-<worker>", () => {
     expect(featureWorkerName(base, "api")).toBe("acme-f69-media-cli--api");
@@ -235,6 +258,30 @@ describe("parseFeatureName and isFeatureOwnedName", () => {
       expect(isFeatureOwnedName(me, featureWorkerName(other, "email")), JSON.stringify(other)).toBe(false);
       expect(isFeatureOwnedName(other, featureWorkerName(me, "email")), JSON.stringify(other)).toBe(false);
     }
+  });
+
+  it("reads an owned feature name back, with the owner in its thing", () => {
+    expect(parseFeatureName("acme-f12-x--business---db-d1")).toEqual({
+      project: "acme",
+      issue: "12",
+      slug: "x",
+      thing: "business---db-d1",
+    });
+    expect(isFeatureOwnedName({ project: "acme", issue: "12", slug: "x" }, "acme-f12-x--business---db-d1")).toBe(true);
+    expect(isFeatureOwnedName({ project: "acme", issue: "12", slug: "x-b" }, "acme-f12-x--business---db-d1")).toBe(
+      false,
+    );
+  });
+
+  it("splits at the first double hyphen and refuses a thing that starts with a hyphen", () => {
+    // `acme-f3`'s prod, Worker x owning SESSIONS_KV: the first `--` opens an owned `---`.
+    expect(parseFeatureName("acme-f3-prod-x---sessions-kv")).toBeNull();
+    expect(parseFeatureName("acme-f3-prod-x--sessions-kv")).toEqual({
+      project: "acme",
+      issue: "3",
+      slug: "prod-x",
+      thing: "sessions-kv",
+    });
   });
 
   it("reads a leading zero as the same issue", () => {

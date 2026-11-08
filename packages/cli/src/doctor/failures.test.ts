@@ -953,6 +953,21 @@ describe("every finding in every block carries fix", () => {
         declared: true,
         missing: [{ worker: "api", env: "staging", boundTo: null, deploysAs: "acme-staging-api" }],
       }),
+      checkDeclaredNames: async () => ({
+        state: "drifted",
+        mismatches: [
+          {
+            worker: "other",
+            env: "staging",
+            binding: "DB",
+            kind: "d1",
+            declared: "acme-staging-other-db",
+            expected: "acme-staging-db",
+            owned: false,
+          },
+        ],
+        unrecognized: [{ worker: "other", binding: "DBB" }],
+      }),
       checkEnvironments: async () => ({
         state: "drifted",
         declared: ["staging", "prod"],

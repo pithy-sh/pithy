@@ -148,6 +148,7 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
   "support provision: allOrNone --routing-zone --inbound-address --app-worker": () =>
     refusal("support provision", ["--routing-zone", "zone"]),
   "provision: requires --events --json": async () => eventsRefusal(["provision", "--env", "staging", "--events"]),
+  "provision: requires --repoint --env": () => refusal("provision", ["--feature", "--repoint"]),
   "provision: exactlyOne --env --feature": async () => {
     const both = await refusal("provision", ["--env", "staging", "--feature"]);
     const neither = await refusal("provision", []);

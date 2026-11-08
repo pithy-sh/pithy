@@ -126,8 +126,22 @@ describe("planProvision", () => {
     const { plan: planned, report } = await plan(provisioners);
 
     expect(Plan.parse(planned).resources).toEqual([
-      { kind: "d1", name: "replay-staging-db", binding: "DB", env: "staging", action: "create" },
-      { kind: "kv", name: "replay-staging-cache", binding: "CACHE", env: "staging", action: "create" },
+      {
+        kind: "d1",
+        name: "replay-staging-db",
+        binding: "DB",
+        env: "staging",
+        workers: ["replay-board"],
+        action: "create",
+      },
+      {
+        kind: "kv",
+        name: "replay-staging-cache",
+        binding: "CACHE",
+        env: "staging",
+        workers: ["replay-board"],
+        action: "create",
+      },
     ]);
     expect(planned.files.map((file) => [file.path, file.action])).toEqual([["apps/board/wrangler.jsonc", "edit"]]);
     expect(planned.files[0]?.diff).toContain(plannedId("d1", "replay-staging-db"));
@@ -191,6 +205,7 @@ describe("planProvision", () => {
         name: "replay-staging-db",
         binding: "DB",
         env: "staging",
+        workers: ["replay-board"],
         action: "adopt",
         id: "d1-real",
       });

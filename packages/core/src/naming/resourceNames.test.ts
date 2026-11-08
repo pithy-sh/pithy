@@ -141,6 +141,34 @@ describe("an environment's names", () => {
   });
 });
 
+describe("an owned binding's names", () => {
+  const staging = names.env("staging");
+
+  it("puts the owning Worker in the thing for every kind provision creates", () => {
+    expect(staging.d1("DB", "other")).toBe("acme-staging-other---db");
+    expect(staging.kv("SESSIONS", "other")).toBe("acme-staging-other---sessions");
+    expect(staging.r2("MEDIA_BUCKET", "other")).toBe("acme-staging-other---media-bucket");
+    expect(staging.queue("JOBS", "other")).toBe("acme-staging-other---jobs");
+  });
+
+  it("is the shared name when no owner is given", () => {
+    expect(staging.d1("DB")).toBe("acme-staging-db");
+    expect(staging.d1("DB", undefined)).toBe("acme-staging-db");
+  });
+
+  it("holds an owned bucket to R2's 63, keeping the separator", () => {
+    const name = resourceNames("a".repeat(MAX_PROJECT_NAME)).env("staging").r2("B".repeat(40), "w".repeat(30));
+    expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
+    expect(name).toContain("---");
+  });
+
+  it("composes a feature's owned resource", () => {
+    expect(names.feature({ issue: "12", slug: "x" }).resource("DB", "d1", "business")).toBe(
+      "acme-f12-x--business---db-d1",
+    );
+  });
+});
+
 describe("the global scope", () => {
   it("is reachable without typing the word, and puts it in the environment slot", () => {
     expect(names.global.secretEntry("secrets-manager-cf-api-token")).toBe("acme-global-secrets-manager-cf-api-token");
