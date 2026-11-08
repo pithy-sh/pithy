@@ -53,7 +53,7 @@ Security: <the issue's Security sentence — omit this line entirely when it is 
 
 ## Isolation
 
-`scripts/worktree.ts`, via `bun run worktree setup|teardown <N> <slug>`. It cuts `feature/<N>-<slug>` and a `.worktrees/<N>-<slug>` worktree off `origin/main`, installs deps, and links `.dev.vars` when one exists. Teardown drops the gitlink, prunes the registration, then removes the directory — **never** `git worktree remove`. It keeps the files when `.dev-state.json` says a `pithy dev` session may still be watching. Both are idempotent.
+`scripts/worktree.ts`, via `bun run worktree setup|teardown <N> <slug>`. It fetches `origin/main`, cuts `feature/<N>-<slug>` and a `.worktrees/<N>-<slug>` worktree from whichever of local `main` and `origin/main` holds the other (local `main` when they have diverged, and it says so), and installs deps. Teardown drops the gitlink, prunes the registration, then removes the directory — **never** `git worktree remove`. It keeps the files when `.dev-state.json` says a `pithy dev` session may still be watching. Both are idempotent.
 
 > `pithy feature create` is the product's own answer to this and is what the dashboard uses. The kit still ships `scripts/worktree.ts` and uses it here. If that changes, change it in this card, not in the skill.
 
