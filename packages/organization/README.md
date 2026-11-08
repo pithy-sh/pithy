@@ -265,9 +265,49 @@ organization({
 });
 ```
 
-`actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
+`actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. A hook cannot undo the write it heard about. A row that must begin with a membership belongs in `onJoin`, below. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
 
 **`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
+
+## Your own rows, in the same write
+
+Your tables are keyed on `organizationId`, and this capability cannot see them. Three seams on `organization()` let you write to them in the same `d1.batch` as its own rows, so both commit or neither does. Each is handed the binding and returns statements, not work: build a Kysely over your own schema and return the queries uncompiled.
+
+```ts
+organization({
+  roles,
+  // Founding. After the organization and the founder's membership are inserted.
+  onCreate: (d1, { organizationId, membershipId, founderUserId, name }) => [
+    myDatabase(d1).insertInto("workspaces").values({ id: crypto.randomUUID(), organizationId, name }),
+  ],
+  // Every new membership. After the membership is inserted.
+  onJoin: (d1, { organizationId, membershipId, userId, role, via, invitationId }) => [
+    myDatabase(d1).insertInto("seats").values({ membershipId, organizationId, userId }),
+  ],
+  // Deletion. Ahead of this capability's own deletes.
+  onDelete: (d1, organizationId) => [
+    myDatabase(d1).deleteFrom("workspaces").where("organizationId", "=", organizationId),
+  ],
+});
+```
+
+**`onCreate` runs when an organization is founded**, through `POST {base}`. Its statements go after the organization and founder-membership inserts, so they may reference both.
+
+**`onJoin` runs whenever a membership begins.** `via` says how: `"founded"`, `"invitation"` or `"operator"`. `invitationId` is the accepted invitation's id, and `null` otherwise. Its statements go after the membership insert, in the batch that writes it.
+
+- Founding (`via: "founded"`): one batch holds the organization, the founder's membership, `onCreate`'s statements, then `onJoin`'s.
+- An accepted invitation (`via: "invitation"`), through `POST {base}/invitations/accept`.
+- An operator's add (`via: "operator"`), through `POST {base}/admin/organizations/:organizationId/members`.
+
+An acceptance by somebody who is already a member begins nothing, so `onJoin` does not run.
+
+**A failing statement rolls the whole write back.** A founding leaves no organization and no membership, and the route answers 500. An acceptance or an operator's add leaves no membership. A failed acceptance leaves the invitation pending, and its link still redeems.
+
+**A founding that commits writes your rows once.** A derived slug that collides is retried with a suffix. The retry reuses the same ids and the same statements, and each builder runs once per founding.
+
+**Your own flows pass the same functions.** `createOrganization(d1, catalog, input, { onCreate, onJoin })`, `acceptInvitation(d1, catalog, options, { onJoin })` and `addMember(d1, catalog, options, { onJoin })` take them as an optional last argument. Without it they write as before. The types are in `@pithy-sh/organization/src/provision/provision`: `OrganizationCreateStatements`, `OrganizationCreated`, `OrganizationJoinStatements`, `MembershipJoined`, `MembershipJoinedVia`, `OrganizationWriteStatements`, `OrganizationStatement` and `OrganizationDeleteSweep`.
+
+`onDelete` runs in the batch that erases an organization's rows. [`docs/scoping-your-own-tables.md`](docs/scoping-your-own-tables.md#deleting-is-the-other-half-and-it-is-the-half-that-bites-later) has what to name in it.
 
 ## Suspending and deleting an organization
 

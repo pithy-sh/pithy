@@ -79,4 +79,6 @@ Name only the head of each chain — a foreign key between two tables of *yours*
 
 They run **before** the memberships go, so a statement may still resolve something through one.
 
+**Creating has the same shape.** `onCreate` and `onJoin` add your rows to the batch that founds an organization or begins a membership, so a row you need from the first request exists with it or not at all. [The README](../README.md#your-own-rows-in-the-same-write) has their order and their rollback rules.
+
 **A foreign key is not the alternative.** D1 does enforce them — `pithy-sh/pithy#569` measured it — so the cascade you may be used to is real. It is real only while both tables are yours. Pointing one at `pithy_organization_organizations` binds your schema to this capability's release cadence and breaks the day either moves to its own database, which is the same boundary every other rule on this page is drawn around.

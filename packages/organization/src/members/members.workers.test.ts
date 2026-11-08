@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { sql } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { ActingOrganization } from "../data/actingOrganization";
@@ -21,6 +22,7 @@ import {
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { forceOwnership } from "../ownership/ownership";
+import type { MembershipJoined, OrganizationJoinStatements } from "../provision/provision";
 import { defineRoles } from "../roles/roles";
 import {
   addMember,
@@ -234,7 +236,7 @@ describe("changing a role", () => {
       actor: { userId: ADA, role: "admin" },
     });
     expect(await roleOf(bob)).toBe("member");
-    // What it was, beside what it became (#831): the role change's audit event carries both.
+    // What it was, beside what it became: the role change's audit event carries both.
     expect([changed.previousRole, changed.role]).toEqual(["admin", "member"]);
   });
 
@@ -725,8 +727,9 @@ describe("the operator's doors", () => {
   }
 
   /**
-   * The database, with `interloper` run once just before the first insert executes: another request's
-   * write landing between `addMember`'s count and its own insert, made deterministic rather than raced.
+   * The database, with `interloper` run once just before the first insert executes, alone or in a batch:
+   * another request's write landing between `addMember`'s count and its own insert, made deterministic
+   * rather than raced.
    */
   function beforeFirstInsert(interloper: () => Promise<unknown>): D1Database {
     let pending: (() => Promise<unknown>) | null = interloper;
@@ -752,6 +755,12 @@ describe("the operator's doors", () => {
       });
     return new Proxy(env.DB, {
       get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            await once();
+            return target.batch(statements);
+          };
+        }
         if (property === "prepare") {
           return (query: string) => {
             const statement = target.prepare(query);
@@ -990,6 +999,171 @@ describe("the operator's doors", () => {
       ]);
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(await countRows("pithy_organization_memberships")).toBe(2);
+    });
+  });
+
+  describe("addMember with the adopter's onJoin", () => {
+    /** The adopter's row for a new member, copied out of the membership so it lands only once that is written. */
+    const profile: OrganizationJoinStatements = (d1, { membershipId, via }) => [
+      {
+        compile: () =>
+          sql`insert into adopter_profiles (membership_id, via)
+            select id, ${via} from pithy_organization_memberships where id = ${membershipId}`.compile(
+            organizationDatabase(d1),
+          ),
+      },
+    ];
+    /** The same row written by value, so it would land whether or not the membership did. */
+    const unconditional: OrganizationJoinStatements = (d1, { membershipId, via }) => [
+      {
+        compile: () =>
+          sql`insert into adopter_profiles (membership_id, via) values (${membershipId}, ${via})`.compile(
+            organizationDatabase(d1),
+          ),
+      },
+    ];
+    const failing: OrganizationJoinStatements = (d1) => [
+      {
+        compile: () =>
+          sql`insert into adopter_profiles (membership_id) values (null)`.compile(organizationDatabase(d1)),
+      },
+    ];
+
+    async function profiles(): Promise<{ membership_id: string; via: string }[]> {
+      const { results } = await env.DB.prepare("select membership_id, via from adopter_profiles").all<{
+        membership_id: string;
+        via: string;
+      }>();
+      return results;
+    }
+
+    beforeEach(async () => {
+      await env.DB.prepare("drop table if exists adopter_profiles").run();
+      await env.DB.prepare("create table adopter_profiles (membership_id text not null, via text)").run();
+    });
+
+    const add = { userId: BOB, role: "member", overrideSeatLimit: false, now: NOW } as const;
+
+    test("runs in the add's batch, after the membership insert, as an operator's", async () => {
+      const joined: MembershipJoined[] = [];
+      const added = await addMember(
+        env.DB,
+        OWNED,
+        { ...add, organizationId: acme },
+        {
+          onJoin: (d1, event) => {
+            joined.push(event);
+            return profile(d1, event);
+          },
+        },
+      );
+      expect(joined).toEqual([
+        {
+          organizationId: acme,
+          membershipId: added.membership.id,
+          userId: BOB,
+          role: "member",
+          via: "operator",
+          invitationId: null,
+        },
+      ]);
+      expect(await profiles()).toEqual([{ membership_id: added.membership.id, via: "operator" }]);
+    });
+
+    test("**a statement that fails leaves no membership**", async () => {
+      // The failure itself, as any write failure here always was: the error handler answers it as a 500.
+      const failure = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: failing }).catch(
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(PithyError);
+      expect(await countRows("pithy_organization_memberships")).toBe(0);
+    });
+
+    test("a statement that fails under a seat limit leaves no membership either", async () => {
+      await setSeatLimit(5);
+      const failure = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: failing }).catch(
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(PithyError);
+      expect(await countRows("pithy_organization_memberships")).toBe(0);
+    });
+
+    test("an add that loses the last seat after the count is refused, and writes neither row", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const payload = await refusal(
+        addMember(
+          beforeFirstInsert(() => join(CAT, "member")),
+          OWNED,
+          { ...add, organizationId: acme },
+          { onJoin: unconditional },
+        ),
+      );
+      expect(payload.code).toBe("organization/seat_limit_reached");
+      expect(await countRows("pithy_organization_memberships")).toBe(2);
+      expect(await profiles()).toEqual([]);
+    });
+
+    test("an override that lands past the limit is recorded as one, and writes the adopter's row once", async () => {
+      await join(ADA, "admin");
+      await setSeatLimit(2);
+      const added = await addMember(
+        beforeFirstInsert(() => join(CAT, "member")),
+        OWNED,
+        { ...add, organizationId: acme, overrideSeatLimit: true },
+        { onJoin: unconditional },
+      );
+      expect(added.overrodeSeatLimit).toBe(true);
+      expect(await countRows("pithy_organization_memberships")).toBe(3);
+      expect(await profiles()).toEqual([{ membership_id: added.membership.id, via: "operator" }]);
+    });
+
+    test("an add inside the limit writes both rows and needed no override", async () => {
+      await setSeatLimit(2);
+      const added = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: profile });
+      expect(added.overrodeSeatLimit).toBe(false);
+      expect(await profiles()).toEqual([{ membership_id: added.membership.id, via: "operator" }]);
+    });
+
+    test("an add the gates refuse never runs the builder", async () => {
+      await join(BOB, "admin");
+      let built = 0;
+      const payload = await refusal(
+        addMember(
+          env.DB,
+          OWNED,
+          { ...add, organizationId: acme },
+          {
+            onJoin: () => {
+              built += 1;
+              return [];
+            },
+          },
+        ),
+      );
+      expect(payload.code).toBe("organization/already_member");
+      expect(built).toBe(0);
+    });
+
+    test("the membership is written in a batch, with or without the builder", async () => {
+      const batches: number[] = [];
+      const watched = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === "batch") {
+            return async (statements: D1PreparedStatement[]) => {
+              batches.push(statements.length);
+              return target.batch(statements);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      await addMember(watched, OWNED, { ...add, organizationId: acme });
+      await addMember(watched, OWNED, { ...add, userId: CAT, organizationId: acme }, { onJoin: profile });
+      expect(batches).toEqual([1, 2]);
     });
   });
 
