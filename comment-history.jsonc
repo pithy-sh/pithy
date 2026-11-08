@@ -1876,7 +1876,6 @@
     "scripts/cleanRoom.ts": 16,
     "scripts/fileModes.ts": 1,
     "scripts/localRelease.ts": 2,
-    "scripts/stampVersions.ts": 3,
-    "scripts/worktree.ts": 4
+    "scripts/stampVersions.ts": 3
   }
 }
