@@ -56,7 +56,7 @@ const LEDGER: Record<string, Held> = {
   // ── base ────────────────────────────────────────────────────────────────────────────────────────
   "app.config.ts": {
     ungated:
-      "The two values that must agree with the screens, the scheme a sign-in returns to and the host a universal link claims, are read from `src/pithy-config.generated.ts` rather than written here, so the agreement is one statement and the rest of the file — the name, the bundle identifiers, the plugins — is the adopter's to set. Restating the scheme as a literal breaks the first sign-in tried on a device, which is loud. `src/appConfig.test.tsx` holds the kit's template to reading both, and it is not named as a kept gate because neither wall stands: the file loads in plain Node, and the party who can break it is the adopter.",
+      "The two values that must agree with the screens, the scheme a sign-in returns to and the host a universal link claims, are read from `src/pithy-config.generated.ts` rather than written here, so the agreement is one statement and the rest of the file — the name, the bundle identifiers, the plugins — is the adopter's to set. Restating the scheme as a literal breaks the first sign-in tried on a device, which is loud. `src/appConfig.test.tsx` holds the kit's template to reading both, and it is not named as a kept gate because neither wall stands: the file loads in plain Node, and the party who can break it is the adopter. The CLI's `src/ui/expoConfig.e2e.test.ts` scaffolds a project and holds the template to loading under Expo's own CLI.",
   },
   "metro.config.js": {
     ungated:

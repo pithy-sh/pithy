@@ -1,5 +1,5 @@
 import type { ExpoConfig } from "expo/config";
-import generated from "./src/pithy-config.generated";
+import generated from "./src/pithy-config.generated.ts";
 
 /** The host whose https links open the app, once `universalLinkOrigin` names one. */
 const universalHost = generated.universalLinkOrigin?.replace(/^https:\/\//, "") ?? null;

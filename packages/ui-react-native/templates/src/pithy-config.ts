@@ -54,6 +54,11 @@ export interface GeneratedPithyConfig {
   readonly rails: PaymentsPlatformRails;
   /** The Google OAuth client ids native Google sign-in needs. Null turns it off. */
   readonly google: { readonly webClientId: string | null; readonly iosClientId: string | null };
+  /**
+   * Every base path the Worker's routes answer under, such as `/auth`. Under `pithy dev` the web build's proxy sends
+   * these to the Worker. Absent when Pithy has not listed them: the proxy then takes the kit's default paths.
+   */
+  readonly workerPaths?: readonly string[];
   readonly auth: PerEnvironment<AuthClientProjection>;
   readonly i18n: PerEnvironment<I18nClientProjection>;
   readonly payments: PerEnvironment<PaymentsClientProjection>;

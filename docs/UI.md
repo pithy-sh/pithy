@@ -648,6 +648,10 @@ The screens are the DOM set's, in React Native primitives, under the same file n
 
 **Consent knows a signed-out phone by its own visitor id.** A phone has no cookie, so the scaffolded transport mints a visitor id for consent alone, keeps it in the secure store, and sends it as `x-pithy-consent-visitor` on consent's requests: every request under the base path consent's projection names, so a Worker composing `consent({ basePath: "/privacy" })` is called at `/privacy` with the id on it. It is never the device id, which operators can list. A choice made signed out merges into the account at sign-in.
 
+**The app needs Node 22.18.** Expo compiles `app.config.ts` itself, then hands its imports to Node's own `require`. Node loads a TypeScript file only by its `.ts` extension, and strips its types by default only from 22.18. So `app.config.ts` imports `./src/pithy-config.generated.ts`, `tsconfig.json` sets `allowImportingTsExtensions`, and the app's `package.json` declares `engines.node: ">=22.18"`. The Workers keep the kit's Node 22 floor.
+
+**An older app imports the generated config with no extension, and does not load under Expo 57.** `app.config.ts` is yours, so no command rewrites it. In `apps/<app>/app.config.ts`, change `import generated from "./src/pithy-config.generated";` to `import generated from "./src/pithy-config.generated.ts";`. Then add `"allowImportingTsExtensions": true` under `compilerOptions` in `apps/<app>/tsconfig.json`. Until then `expo config` fails with `Cannot find module './src/pithy-config.generated'`, and `pithy dev` stops every Worker with it.
+
 **Upgrades.** `pithy upgrade --packages` compares the React templates you copied against the version it moves to. It does not compare the React Native ones: it names each such app and leaves the diff against `@pithy-sh/ui-react-native`'s templates to you.
 
 ## See also

@@ -132,9 +132,13 @@ export function trustedOriginsFor(generated: GeneratedConfig): string[] {
   return [`${generated.appScheme}://`, ...(generated.universalLinkOrigin ? [generated.universalLinkOrigin] : [])];
 }
 
-/** The `package.json` an app starts from: its name, and Expo Router's entry. */
+/**
+ * The `package.json` an app starts from: its name, Expo Router's entry, and the Node its config needs. Expo hands
+ * `app.config.ts`'s import of the generated config to Node, which strips TypeScript types by default from 22.18.
+ */
 function starterPackage(app: string): string {
-  return `${JSON.stringify({ name: app, version: "0.1.0", private: true, main: "expo-router/entry" }, null, 2)}\n`;
+  const pkg = { name: app, version: "0.1.0", private: true, main: "expo-router/entry", engines: { node: ">=22.18" } };
+  return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 
 /** Every file a native add may create or edit, absolute — what a failure has to put back. */

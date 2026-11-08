@@ -1,10 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { appEnvironment, originFor, projectionFor } from "../templates/src/pithy-config";
+import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
+import { appEnvironment, type GeneratedPithyConfig, originFor, projectionFor } from "../templates/src/pithy-config";
+import type { GeneratedConfig } from "./generatedConfig";
 
 const origins = { dev: "http://localhost:8787", staging: "https://staging.example.com", prod: null };
+
+/** The capability projections, which the kit's schema keeps opaque and the template types in full. */
+type Projected = "auth" | "i18n" | "payments" | "turnstile" | "consent";
+
+describe("GeneratedPithyConfig", () => {
+  test("names every field the kit writes, so a scaffolded app typechecks", () => {
+    expectTypeOf<keyof GeneratedPithyConfig>().toEqualTypeOf<keyof GeneratedConfig>();
+  });
+
+  test("admits every value the kit writes outside the projections", () => {
+    expectTypeOf<Omit<GeneratedConfig, Projected>>().toExtend<Omit<GeneratedPithyConfig, Projected>>();
+  });
+});
 
 describe("appEnvironment", () => {
   test("is dev when the build names none, and the one it names otherwise", () => {

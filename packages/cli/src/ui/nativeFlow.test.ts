@@ -175,6 +175,7 @@ describe("pithy ui add react-native", () => {
       scripts: Record<string, string>;
     };
     expect(pkg).toMatchObject({ name: "app", main: "expo-router/entry", private: true });
+    expect(pkg).toMatchObject({ engines: { node: ">=22.18" } });
     expect(pkg.dependencies).toMatchObject({
       expo: "~57.0.31",
       "react-native": "0.86.3",
