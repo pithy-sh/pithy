@@ -1,6 +1,6 @@
 {
-  // The app's TypeScript: Expo's base, strict. Expo writes `expo-env.d.ts` on its first start, which declares
-  // Metro's `require` and the app's assets.
+  // The app's TypeScript: Expo's base, strict. Expo leaves this file as written until you turn on its typed routes;
+  // then it adds their entries to `include` and rewrites the file without these comments.
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
@@ -9,5 +9,5 @@
     // `.ts` extension.
     "allowImportingTsExtensions": true
   },
-  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
+  "include": ["**/*.ts", "**/*.tsx"]
 }
