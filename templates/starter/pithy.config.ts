@@ -10,7 +10,7 @@ const config = {
   // R2, Worker scripts, Workflows, Secrets Store entries, and Cloudflare API
   // tokens. A thing shared across environments puts the literal `global` in the
   // environment slot. Feature resources extend the same shape
-  // (<project>-f<issue>-<slug>-<binding>-<kind>).
+  // (<project>-f<issue>-<slug>--<binding>-<kind>).
   //
   // Cloudflare's namespaces are flat and account-wide, so this segment is the
   // only thing keeping two projects in one account from adopting each other's

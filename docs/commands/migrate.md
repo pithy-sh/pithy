@@ -39,7 +39,7 @@ The registry, the ordering, and the per-database runs are identical everywhere; 
 
 The group lives in `pithy_migrations_groups`, beside the ledger and the owner stamp rather than in them: `pithy_migrations` is Kysely's own table and its rows carry a name and a timestamp and nothing else. Like the owner stamp, the table is not a migration — a rollback and `seed --redo`'s full reset leave it standing. What a reversal removes is the rows of the migrations it reversed.
 
-**Every run is idempotent.** A second run with nothing pending is a no-op and prints `Nothing to migrate.`
+**Every run is idempotent.** A second run with nothing pending is a no-op, and each Worker's line reads `nothing to apply.` A project whose Workers bind no database prints `Nothing to migrate.`
 
 **It says what it is on, while it is on it.** On a remote environment every statement is a D1 round trip, so a run against a fresh database takes minutes, and it used to print nothing until it had finished. An operator watching nothing happen cannot tell a slow schema change from a hung one, and the instinct is Ctrl-C in the middle of it. So each step is named as it starts, one plain line each: the check every database gets before the first write, `▸ Checking DB, SECRETS...`; each database and the Workers it serves, `▸ DB (app) for api, collab...`; and each migration, `▸ Applying 0300_auth_0001_init to DB...` or, on a rollback, `▸ Rolling back 0300_auth_0001_init on DB...`. The last `▸` line of an interrupted run names what was in flight. The per-Worker report below still prints once, at the end, unchanged. A missing TTY gets the same lines, because a run in CI is the run whose log most needs them. `--json` prints none of them.
 
