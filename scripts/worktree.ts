@@ -9,9 +9,8 @@
  * never format paths. `setup` creates and wires the worktree (or no-ops if it
  * already exists); `teardown` prunes the registration, removes the directory, and drops the branch.
  *
- * Dependency-free and runtime-agnostic on purpose: this is the minimal core the
- * future `pithy feature create/destroy` command (issue #25) will wrap, adding the
- * port allocator and ephemeral CF resources on top.
+ * Dependency-free and runtime-agnostic. `pithy feature create/destroy` is the product's
+ * version of this, with the port allocator and ephemeral Cloudflare resources on top.
  */
 
 import { execFileSync } from "node:child_process";
@@ -61,17 +60,29 @@ function branchExists(branch: string): boolean {
 }
 
 /**
- * Say so when `main` is behind the remote, and carry on.
+ * The commit a new branch is cut from, after fetching `origin/main`: whichever of local `main` and `origin/main`
+ * holds the other, so the branch has every merge either side knows about.
  *
- * Not a refusal. Cutting from a `main` that is a few commits behind is usually fine and sometimes
- * deliberate; being told is what stops it becoming a surprise at merge time. Silent when the remote
- * is unknown — a repository with no `origin/main` has nothing to be behind.
+ * - Local `main` behind, nothing of its own: `origin/main`. The main checkout is not moved.
+ * - Local `main` ahead, or level: local `main`. A merge made here and not yet pushed is kept.
+ * - Diverged: local `main`, with a note, because neither side holds the other and choosing is a person's call.
+ *
+ * The fetch is best-effort, so an offline run cuts from what this clone last saw. A repository with no
+ * `origin/main` cuts from local `main`.
  */
-function warnIfBehindOrigin(): void {
-  if (!gitTry(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"])) return;
-  const behind = git(["rev-list", "--count", "main..origin/main"]).trim();
-  if (behind === "0") return;
-  console.warn(`main is ${behind} commit(s) behind origin/main. Cutting from local main. git pull to change that.`);
+export function cutBase(root: string): { base: string; note: string | null } {
+  gitTry(["fetch", "--quiet", "origin", "main"], root);
+  if (!gitTry(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], root))
+    return { base: "main", note: null };
+  const behind = git(["rev-list", "--count", "main..origin/main"], root);
+  const ahead = git(["rev-list", "--count", "origin/main..main"], root);
+  if (behind === "0") return { base: "main", note: null };
+  if (ahead === "0")
+    return { base: "origin/main", note: `main is ${behind} commit(s) behind origin/main. Cutting from origin/main.` };
+  return {
+    base: "main",
+    note: `main and origin/main have diverged: ${ahead} commit(s) here, ${behind} there. Cutting from local main.`,
+  };
 }
 
 type Names = { branch: string; dir: string; wtPath: string; root: string };
@@ -83,32 +94,22 @@ function names(issue: string, slug: string): Names {
 }
 
 function setup(issue: string, slug: string): void {
-  const { branch, wtPath } = names(issue, slug);
+  const { branch, wtPath, root } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
-    // Nothing to repair. A worktree used to outlive the link into it — renaming the main checkout left it
-    // pointing at nothing, and re-running `setup` was the obvious thing to reach for and the one thing
-    // that could not fix it. There is no link now (#154), so an existing worktree is already correct.
+    // Nothing to repair: a worktree holds no link into the main checkout, so one that exists is correct.
     console.log(`Worktree exists. ${wtPath}`);
     return;
   }
 
-  // Attach to the branch if it already exists (a re-run after teardown left the
-  // remote branch behind); otherwise cut a fresh one from local `main`.
-  //
-  // **Local `main`, not `origin/main`.** The integration point is whatever `main` holds here, and it
-  // is not always what the remote holds: work that is merged but deliberately unpushed is invisible
-  // to `origin/main`, so cutting from it hands the new worktree a base missing every such merge. That
-  // is not hypothetical — it stranded six lanes fourteen commits behind, and each one discovered it by
-  // finding that a file it had been asked to edit did not exist.
-  //
-  // A stale local `main` is the opposite mistake and is louder: `git pull` fixes it, and the warning
-  // below says so. A stale base that looks correct fixes nothing and is found halfway through the work.
+  // A branch that already exists is attached as it is: a re-run after teardown left it on the remote.
   if (branchExists(branch)) {
     git(["worktree", "add", wtPath, branch]);
   } else {
-    warnIfBehindOrigin();
-    git(["worktree", "add", wtPath, "-b", branch, "main"]);
+    const { base, note } = cutBase(root);
+    if (note) console.warn(note);
+    // No upstream: cut from `origin/main`, git would track it, and the branch's own push sets the real one.
+    git(["worktree", "add", "--no-track", wtPath, "-b", branch, base]);
   }
 
   configure(wtPath);
@@ -120,14 +121,8 @@ function setup(issue: string, slug: string): void {
 /**
  * Configure a freshly-created worktree so the gates and integration tests run inside it: install deps.
  *
- * **Nothing is shared any more, and that is #154.** `.dev.vars` used to be linked here — at the worktree
- * root, and again into each package by a `vars:local` turbo task — because wrangler reads it from the
- * directory it runs in. Each one is generated now, from sources that are already outside every checkout,
- * so a worktree builds its own with no link to wire, dangle, delete, or detach.
- *
- * **The dev secrets file needs nothing either, and that is #156.** It lives at `<config>/<project>/`,
- * resolved from the project's *name*, so every worktree of this repo finds the same file with no link,
- * no copy, and no step here.
+ * Nothing else is wired. Each `.dev.vars` is generated from sources outside every checkout, and the dev
+ * secrets file lives at `<config>/<project>/`, found by the project's name from any worktree.
  *
  * Idempotent.
  */
@@ -219,4 +214,4 @@ function main(): void {
   else usage();
 }
 
-main();
+if (import.meta.main) main();
