@@ -285,7 +285,6 @@
     "packages/cli/src/capabilities/provisionCommand.test.ts": 6,
     "packages/cli/src/capabilities/provisionCommand.ts": 3,
     "packages/cli/src/capabilities/reconcile.test.ts": 21,
-    "packages/cli/src/capabilities/reconcile.ts": 56,
     "packages/cli/src/capabilities/requiredBindings.test.ts": 25,
     "packages/cli/src/capabilities/retainedDatabase.test.ts": 3,
     "packages/cli/src/capabilities/retainedDatabase.ts": 3,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
@@ -165,4 +165,16 @@ export function defaultWorkerDev(): WorkerDev {
  */
 export async function readOwnBindings(dir: string): Promise<string[]> {
   return (await parseWorkerManifest(dir))?.ownBindings ?? [];
+}
+
+/**
+ * What `<dir>`'s Worker owns, in the shape the stanza writer takes as `BindingScope.owns`: its `apps/<worker>`
+ * directory and its `ownBindings`, or `undefined` when it owns nothing. Every writer of binding entries — `pithy add`,
+ * `pithy upgrade` — reads it here, so they cannot disagree about a Worker's owned names.
+ */
+export async function readOwnership(
+  dir: string,
+): Promise<{ worker: string; bindings: ReadonlySet<string> } | undefined> {
+  const owned = await readOwnBindings(dir);
+  return owned.length === 0 ? undefined : { worker: basename(dir), bindings: new Set(owned) };
 }

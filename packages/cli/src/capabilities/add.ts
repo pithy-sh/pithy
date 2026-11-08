@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import {
   type CapabilityManifest,
@@ -25,7 +25,7 @@ import {
   type WranglerStanza,
 } from "../project/bindingEntries";
 import { readOptionalFile } from "../project/readOptionalFile";
-import { readOwnBindings } from "../project/workerManifest";
+import { readOwnership } from "../project/workerManifest";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { addAgain, addCallerOf } from "./addCommand";
 import { optionValue } from "./configConstants";
@@ -369,8 +369,7 @@ async function updateWrangler({ workerDir, manifest, project }: AddCapabilityOpt
 
   const bindings = wiredBindings(manifest);
   const kvNamespaces: ProposedName[] = [];
-  const owned = await readOwnBindings(workerDir);
-  const owns = owned.length === 0 ? undefined : { worker: basename(workerDir), bindings: new Set(owned) };
+  const owns = await readOwnership(workerDir);
   for (const { env, stanza } of envStanzas(config)) {
     kvNamespaces.push(
       ...appendBindings(stanza, bindings, {

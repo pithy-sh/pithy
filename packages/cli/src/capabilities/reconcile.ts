@@ -31,6 +31,7 @@ import { allCapabilities, readDeclinedBindings, readPinnedBindings, type WorkerC
 import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
+import { readOwnership } from "../project/workerManifest";
 import { readWranglerConfig, workerEntryPath, workerEnvironments, writeWranglerConfig } from "../project/wrangler";
 import { declaresConstant } from "./configConstants";
 import { exportsName } from "./configImports";
@@ -84,7 +85,7 @@ export const SkippedBinding = MissingBinding.extend({
       "Why the entry could not be composed, in an operator's words — the field the spec did not state, or the name that could not be derived.",
     ),
 }).describe(
-  "A required binding `pithy upgrade` could not write. Named rather than counted: reporting the plan instead of the write is what made `upgrade` claim five bindings it had declined, while `doctor` correctly still called them missing (#318).",
+  "A required binding `pithy upgrade` could not write. Named rather than counted: a count taken from the plan rather than the write would claim a binding the writer declined.",
 );
 export type SkippedBinding = z.infer<typeof SkippedBinding>;
 
@@ -179,11 +180,11 @@ export const BindingDeclines = z
 export type BindingDeclines = z.infer<typeof BindingDeclines>;
 
 /**
- * One generated binding value this Worker holds that the kit would write differently today (#499).
+ * One generated binding value this Worker holds that the kit would write differently today.
  *
  * **Reported, never rewritten, and that is the whole design.** A `namespace_id` is a live budget's
  * identity, so changing it re-partitions a running counter; and nothing distinguishes a value an adopter
- * tuned from one that merely predates a derivation, which is #440's problem in the neighboring case. So
+ * tuned from one that merely predates a derivation. So
  * the report states both numbers and hands the decision over, and `pinnedReason` is how the decision
  * comes back.
  */
@@ -280,13 +281,9 @@ export function undeclinableReason(type: BindingType): string {
 /** A capability config option present in the manifest but not yet written into its pithy.config.ts call. */
 export const MissingConfigKey = z
   .object({
-    // Every field is the manifest's own contract, not a copy of one. The copied `default` was a scalar
-    // union, so an option whose value is a literal only the adopter can fill in — the one `pithy add
-    // secrets` could not render at all (#161) — was the one option `pithy upgrade` could not report as
-    // missing either. That value is now a whole worked example (#168), which is exactly why it is
-    // rendered through the manifest's own `renderConfigOptionLine` rather than by anything this file
-    // writes itself (#171). `key` and `describe` were still bare `z.string()` here after #174 narrowed
-    // them at the manifest, which is the same copy waiting to drift the same way.
+    // Every field is the manifest's own contract, not a copy of one: a default can be a whole worked example
+    // only the adopter can fill in, so it is rendered through the manifest's own `renderConfigOptionLine`
+    // rather than by anything this file writes itself, and `key` and `describe` take the manifest's schemas.
     key: ConfigOption.shape.key.describe(
       "The option name to add to the capability's registration call in pithy.config.ts.",
     ),
@@ -297,7 +294,7 @@ export const MissingConfigKey = z
       "The closed set this option takes, when it states one — carried so a refusal to write a required key can name the legal values rather than only the key.",
     ),
     choicesNeedingCode: ConfigOption.shape.choicesNeedingCode.describe(
-      "The choices `pithy add` refuses, carried beside `choices` so a refusal never offers a value the next refusal rejects (#483).",
+      "The choices `pithy add` refuses, carried beside `choices` so a refusal never offers a value the next refusal rejects.",
     ),
     describe: ConfigOption.shape.describe.describe(
       "The option's rationale, rendered as the comment above it in pithy.config.ts.",
@@ -330,7 +327,7 @@ export type CapabilityReconcile = z.infer<typeof CapabilityReconcile>;
 
 /**
  * Whether this Worker's routes gate on an entitlement nothing composed provides — or that the scan could
- * not run (#371).
+ * not run.
  *
  * The scan reads the Worker's own source tree, so it fails the way a directory fails: a permission, a
  * symlink loop, a tree that moved mid-read. An empty `gates` array was the answer for both "no gate" and
@@ -377,7 +374,7 @@ export const ReconcilePlan = z
       .array(z.string())
       .describe("Ejected capabilities, by name — never reconciled, since ejected code no longer tracks its package."),
     ledger: ProjectLedger.describe(
-      "What `env`'s databases have applied against what this Worker declares, in both directions — unapplied migrations (which an upgrade applies with --migrate) and migrations the ledger records that nothing declares any more (which it cannot: whether to restore the migration or drop its ledger row depends on what the database holds, so it is report-only). It is the ledger's own four-way value rather than two flat fields, because a database that could not be read is neither of those things and a count alone cannot say so (#282, #371).",
+      "What `env`'s databases have applied against what this Worker declares, in both directions — unapplied migrations (which an upgrade applies with --migrate) and migrations the ledger records that nothing declares any more (which it cannot: whether to restore the migration or drop its ledger row depends on what the database holds, so it is report-only). It is the ledger's own four-way value rather than two flat fields, because a database that could not be read is neither of those things and a count alone cannot say so.",
     ),
     entitlements: EntitlementGap.describe(
       "Whether this Worker gates a route on an entitlement while nothing it composes provides one — and whether the question could be asked at all. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
@@ -388,10 +385,10 @@ export const ReconcilePlan = z
         "Capabilities this Worker composes whose manifest declares a peer it does not compose. The Worker will not assemble: createBackend refuses on exactly this pair, so it is a boot failure rather than drift. Report-only, like the entitlement gap — composing a capability is the adopter's decision, and `pithy add <cap> --with-prerequisites` is the command that makes it.",
       ),
     declinedBindings: BindingDeclines.describe(
-      "Optional bindings this Worker's pithy.config.ts declines, each resolved against what it composes. An honored decline is left out of wrangler.jsonc by an upgrade and reported as declined rather than missing by doctor; a refused one stops an upgrade before it writes. It rides the plan because `applyReconcilePlan` re-reads nothing — plan and write must be one decision, which is what #318 cost when they were two.",
+      "Optional bindings this Worker's pithy.config.ts declines, each resolved against what it composes. An honored decline is left out of wrangler.jsonc by an upgrade and reported as declined rather than missing by doctor; a refused one stops an upgrade before it writes. It rides the plan because `applyReconcilePlan` re-reads nothing — plan and write must be one decision.",
     ),
     generatedValues: GeneratedValues.describe(
-      "Generated binding values this Worker holds that the current kit would derive differently, each with the adopter's pin resolved. Report-only in both commands: an upgrade writes a binding it finds missing and never rewrites one that is there, because a generated value that is already deployed is a live identity rather than a default (#499).",
+      "Generated binding values this Worker holds that the current kit would derive differently, each with the adopter's pin resolved. Report-only in both commands: an upgrade writes a binding it finds missing and never rewrites one that is there, because a generated value that is already deployed is a live identity rather than a default.",
     ),
     missingVersionMetadata: z
       .boolean()
@@ -422,7 +419,7 @@ export interface MigrationScope {
   env: string;
   /**
    * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)`, or
-   * `null` when it names none. Required (#234): `pithy upgrade --migrate --env staging` reaches a real
+   * `null` when it names none. Required: `pithy upgrade --migrate --env staging` reaches a real
    * D1 through this scope, and the account it reaches it in is the project's, never the default file's.
    */
   account: CloudflareAccountSelection | null;
@@ -444,10 +441,8 @@ export interface MigrateScope extends MigrationScope {
 /**
  * Read one Worker's migration ledger for an environment — the migration seam, injectable for tests.
  *
- * It used to return a number, and that number was the whole of what any caller could learn: how many
- * declared migrations had not run. An applied migration the project no longer declares is invisible to
- * that subtraction and is the state that stops `pithy migrate` dead, so the seam returns the comparison
- * rather than one side of it (#282).
+ * It returns the comparison rather than a pending count: an applied migration the project no longer declares
+ * is invisible to a count, and is the state that stops `pithy migrate` dead.
  */
 export type ReadLedger = (options: MigrationScope) => Promise<ProjectLedger>;
 
@@ -488,7 +483,7 @@ export interface BuildReconcilePlanOptions {
   capabilities?: Capability[];
   /**
    * The Cloudflare account this project belongs to, or `null` when it names none. Reaches the plan's one
-   * network-capable step, the pending-migration count, and nothing else (#234).
+   * network-capable step, the pending-migration count, and nothing else.
    */
   account: CloudflareAccountSelection | null;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
@@ -496,7 +491,7 @@ export interface BuildReconcilePlanOptions {
   /**
    * This Worker composed for another environment than `env`. Asked only when the Worker binds the presence
    * room and `env`'s composition declares none, because taking the room out is decided across every
-   * environment (#815). Defaults to loading this Worker's own `pithy.config.ts` for that environment.
+   * environment. Defaults to loading this Worker's own `pithy.config.ts` for that environment.
    */
   composeEnvironment?: (env: string) => Promise<readonly Capability[]>;
   /**
@@ -504,7 +499,7 @@ export interface BuildReconcilePlanOptions {
    *
    * It exists for the same reason `readLedger` does. The walk behind {@link findEntitlementGap} is
    * deliberately hard to make throw — `ci/sourceFiles.ts` treats a directory it cannot list as skipped —
-   * and a guard nobody can drive is a guard nobody can prove. #371's gate on this contributor plants the
+   * and a guard nobody can drive is a guard nobody can prove. The test of this contributor's guard plants the
    * throw through here.
    */
   findGap?: (workerDir: string, capabilities: readonly Capability[]) => Promise<string[]>;
@@ -528,13 +523,12 @@ export interface BuildReconcilePlanOptions {
 type BindingDeclaration = Pick<CapabilityManifest, "name" | "requiredBindings">;
 
 /**
- * **The Worker's own `app` capability, as a declaration of the bindings it needs (#662).**
+ * **The Worker's own `app` capability, as a declaration of the bindings it needs.**
  *
  * An app is a `Capability` — `allCapabilities` returns `[...capabilities, app]` — so it can declare
  * `requiredBindings`, and `createBackend` enforces them at boot. It has no `pithy.manifest.json` and never will,
- * so every loop below that walked manifests walked past it: `pithy upgrade` never wrote the entry, `pithy doctor`
- * never named it missing, and the Worker refused to boot. The composed instance is the authority instead, as it
- * is for the rest of the CLI.
+ * so a loop that walked manifests alone would walk past it, and the Worker would refuse to boot on a binding nothing
+ * wrote. The composed instance is the authority instead, as it is for the rest of the CLI.
  *
  * **Not a manifest.** It carries no config keys — the app's options are the adopter's own source — and its entry
  * is the adopter's, so it is asked for neither. It has no decline path either: deleting the declaration is the
@@ -582,9 +576,8 @@ function escapeRegExp(text: string): string {
  *
  * The parameter is required and undefaulted **on purpose**. This is the single function every consumer
  * resolves `optional` through — the plan, the entry-export check, the stanza writer, the Durable Object
- * migration tagger, and the entry-export writer — and #318 was exactly the shape where one of them
- * answered from a different list than the others. A sixth consumer must be a compile error, not a
- * silent write.
+ * migration tagger, and the entry-export writer — so none of them can answer from a different list than
+ * the others. A sixth consumer must be a compile error, not a silent write.
  */
 function effectiveBindings(
   manifest: BindingDeclaration,
@@ -715,8 +708,8 @@ export interface WorkerDeclineOptions {
  *
  * **The one export of this rule, for callers that hold no plan.** `pithy provision` and `pithy feature
  * create` create the resource behind each provisionable binding, and a decline that stopped `pithy
- * upgrade` writing a binding while provisioning still made the bucket handed the adopter exactly the
- * resource they had declined (#440). They reach the same {@link resolveDeclines} the plan does rather
+ * upgrade` writing a binding while provisioning still made the bucket would hand the adopter exactly the
+ * resource they declined. They reach the same {@link resolveDeclines} the plan does rather
  * than re-deciding what "declined" means — a second expression of a four-state rule is how two commands
  * come to disagree, which is this issue one level up.
  *
@@ -724,7 +717,7 @@ export interface WorkerDeclineOptions {
  * decline has to be able to say so**. {@link honoredNames} answers *what is left out*, which is all a
  * filter needs and is exactly one bit too few for a report: the `invalid` state collapses into an empty
  * set there, so a `declinedBindings` block with one typo in it reads as *nothing declined* and every
- * declined resource is created in silence (#514). The reason string is required precisely so a run can
+ * declined resource is created in silence. The reason string is required precisely so a run can
  * print it back.
  *
  * No stanzas, because `stillPresentIn` is a fact about a `wrangler.jsonc` and provisioning is not
@@ -736,7 +729,7 @@ export interface WorkerDeclineOptions {
  * and skip nothing: they create a resource for every provisionable binding on every **composed
  * instance**, and a fork is composed. Dropping its manifest here resolves the adopter's decline as
  * `unrecognized`, creates the resource, and writes the binding back into the file they removed it from —
- * #440 for the one capability whose code is theirs. So the option does not exist, and passing one is a
+ * the declined resource handed back, for the one capability whose code is theirs. So the option does not exist, and passing one is a
  * compile error rather than a silent write. A fork that has drifted is still covered: {@link
  * resolveDeclines} refuses a decline the composed instance declares non-optionally.
  */
@@ -752,8 +745,8 @@ export function workerDeclines(options: WorkerDeclineOptions): BindingDeclines {
  * The honored names of a resolved declaration — the set a filter wants, from the value a report wants.
  *
  * **Unreadable is no names, and its caller reports that.** The collapse is correct — a declaration nobody
- * can read leaves nothing out — and it is also the whole of #514's second half, because it is lossless
- * only for as long as somebody upstream still holds the state it dropped. So the two are split: this is
+ * can read leaves nothing out — but it is lossless only for as long as somebody upstream still holds the
+ * state it dropped. So the two are split: this is
  * the set, {@link workerDeclines} is the value, and a caller that reports takes the value.
  */
 export function honoredNames(declines: BindingDeclines): ReadonlySet<string> {
@@ -767,7 +760,7 @@ function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
 
 /**
  * Compare every generated value this Worker's stanzas hold against what the writer derives for it today,
- * and resolve each adopter pin against the answer (#499).
+ * and resolve each adopter pin against the answer.
  *
  * **Scoped to what this Worker composes, never to what the stanzas contain.** Walking `ratelimits`
  * directly would be shorter and would report an adopter's own hand-written limiter as kit drift — a
@@ -845,7 +838,7 @@ function computeMissingBindings(
  * A located capability registration call in pithy.config.ts source. A block's `openIndex` and `closeIndex`
  * are the offsets of its own `{` and `}`, so a caller can walk into it with {@link objectProperties}.
  *
- * **It answers "does this registration state that key?" and never hands out a key list** (#590 review). A
+ * **It answers "does this registration state that key?" and never hands out a key list**. A
  * list reads as the whole set, and it is not one when a member supplies keys the text cannot name — a
  * spread, a computed key. `pithy upgrade` read a list, found `widgets` absent from `turnstile({ ...base })`,
  * and appended a blank default after the spread that won at runtime. `statesKey` is true for a key a member
@@ -1008,7 +1001,7 @@ interface ScannedObject {
  * property (`basePath:`, `"base-path":`, `'x':`, `0:`), a shorthand (`widgets`), a method (`widgets() {}`,
  * `async widgets() {}`, `*widgets() {}`), or an accessor (`get widgets() {}`). Anything else — a spread, a
  * computed key, a shape this does not know — could supply any key at all, so the object is reported as
- * `listable: false` rather than as lacking one (#590 review: a shorthand and a spread read as "missing", and
+ * `listable: false` rather than as lacking one (a shorthand and a spread read as "missing", and
  * `pithy upgrade` appended a blank default after them that won at runtime).
  *
  * Each member is skipped whole, to the comma that ends it, so nothing inside a value — a nested object, a
@@ -1149,12 +1142,12 @@ function computeMissingConfigKeys(manifest: CapabilityManifest, configSource: st
       ...(option.default === undefined ? {} : { default: option.default }),
       ...(option.choices === undefined ? {} : { choices: option.choices }),
       // Carried with `choices`, because the two are read together: a refusal that names what to pass
-      // must not name a value `--set` will reject (#483).
+      // must not name a value `--set` will reject.
       ...(option.choicesNeedingCode === undefined ? {} : { choicesNeedingCode: option.choicesNeedingCode }),
       describe: option.describe,
       // Decided against this Worker's own source, by the same function `pithy add` calls — so the two
       // commands write the same line for the same option, which is the whole reason the renderers are
-      // shared (#171). An `upgrade` on a project that predates the scaffolded constant keeps the literal.
+      // shared. An `upgrade` on a project that predates the scaffolded constant keeps the literal.
       ...(option.constant && declaresConstant(configSource, option.constant) ? { constant: option.constant } : {}),
     }));
 }
@@ -1180,17 +1173,16 @@ async function readEntrySource(workerDir: string): Promise<string> {
   if (path === null) return "";
   // Discarded on purpose, on the terms `readConfigSource` above is — `readOptionalFile.test.ts` holds the
   // sentence. An entry that will not open establishes no export drift; naming every class the Worker
-  // binds would be a guess, and taking the other four contributors down over it is #371's own defect.
+  // binds would be a guess, and it must not take the other four contributors down with it.
   return (await readOptionalFile(path).catch(() => null)) ?? "";
 }
 
 /**
  * The Durable Object classes this capability binds here that the Worker's entry does not export.
  *
- * **A plan reports what an apply writes.** The apply wrote these and no plan mentioned them, so a project
- * wired before that landed — binding present, export nowhere — read as clean under `pithy doctor` and
- * `pithy upgrade --dry-run` while `wrangler deploy` refused it by name. That is #428's own shape one level
- * up: a property of the entry that nobody states, so nothing checks it, and the failure arrives at deploy.
+ * **A plan reports what an apply writes.** A project with a binding present and its export nowhere would
+ * otherwise read as clean under `pithy doctor` and `pithy upgrade --dry-run` while `wrangler deploy` refused
+ * it by name: a property of the entry that nobody states, so nothing checks it, and the failure arrives at deploy.
  * `doctor` is the command an adopter runs *because* something is wrong, so it is the last place a silent
  * property belongs.
  *
@@ -1225,10 +1217,10 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // The deployed name, kept under its own binding because two different consumers want two different
   // things from it. `readLedger` below builds a migration scope, where the Worker is identified the way
   // the migration ledger identifies it; the plan this returns is read by a person or a script holding the
-  // checkout, where the `apps/` directory is the useful handle. Collapsing them is pithy-sh/pithy#144.
+  // checkout, where the `apps/` directory is the useful handle. They are kept apart for that reason.
   const deployedAs = options.worker ?? basename(workerDir);
   // Composed for `env`, because the plan's migration count is `env`'s and a config may compose a different
-  // registry for each (#595).
+  // registry for each.
   let loaded: WorkerConfig | undefined;
   const capabilities =
     options.capabilities ??
@@ -1238,10 +1230,9 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     }));
   const readLedger = options.readLedger ?? defaultReadLedger;
 
-  // Both the project root and this Worker's own `node_modules` (#507). The root alone was wrong wherever
-  // a capability is declared only on the Worker composing it, and a manifest that does not resolve is a
-  // capability every loop below silently skips — which is how `prerequisites` came to report `ok: true`
-  // for a composition missing a required peer.
+  // Both the project root and this Worker's own `node_modules`. The root alone misses a capability declared
+  // only on the Worker composing it, and a manifest that does not resolve is a capability every loop below
+  // silently skips, so `prerequisites` would report `ok: true` for a composition missing a required peer.
   const { manifests } = await composedManifests(projectDir, workerDir);
   const ejected = await ejectedCapabilities(workerDir);
   const configSource = await readConfigSource(workerDir);
@@ -1258,9 +1249,9 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // Resolved before the loop below, because every one of that loop's three contributors resolves
   // `optional` through `effectiveBindings` and must resolve it the same way. `readDeclinedBindings`
   // reports rather than throws: a declaration that will not parse costs its own line and leaves the
-  // rest of the plan standing, exactly as the ledger and entitlement contributors do (#371).
+  // rest of the plan standing, exactly as the ledger and entitlement contributors do.
   // The Worker's own app capability, from the config its caller loaded or the one loaded above, as the
-  // composition holds it (#662). Its generated values are compared like any capability's below.
+  // composition holds it. Its generated values are compared like any capability's below.
   const workerApp = (options.workerConfig ?? loaded)?.app;
   const app = appDeclaration(workerApp && (byName.get(workerApp.name) ?? workerApp), manifests);
   const read = readDeclinedBindings(options.workerConfig ?? { capabilities });
@@ -1277,7 +1268,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
       : [],
   );
 
-  // The neighboring read, and it reads the same config object (#499). `declinedBindings` is about a
+  // The neighboring read, and it reads the same config object. `declinedBindings` is about a
   // binding this Worker does not have; this is about one it does, whose generated value the kit has since
   // changed its mind about. Report-only in both commands, so nothing downstream gates on it.
   const pins = readPinnedBindings(options.workerConfig ?? { capabilities });
@@ -1298,7 +1289,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
         };
 
   const perCapability: CapabilityReconcile[] = [];
-  // The app's bindings, from its composed instance — it has no manifest (#662). Never declined: see
+  // The app's bindings, from its composed instance — it has no manifest. Never declined: see
   // `appDeclaration`.
   if (app !== undefined) {
     perCapability.push({
@@ -1327,7 +1318,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
-  // **Every contributor to this plan is guarded, and none of them is load-bearing (#371).** A plan is a
+  // **Every contributor to this plan is guarded, and none of them is load-bearing.** A plan is a
   // report, and a report is read by an adopter trying to find out why something is wrong — so one
   // contributor failing must cost its own line and leave the other four standing. The two below were the
   // unguarded ones; the config source, the wrangler stanzas and the version-metadata read beside them
@@ -1384,7 +1375,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     missingPrerequisites: missingPrerequisites(manifests, composed),
     missingVersionMetadata,
     // The composed instances decide, not the manifests: a declaration is config, and only the instance has it.
-    // Every environment's, because the retire removes from every environment (#595, #815).
+    // Every environment's, because the retire removes from every environment.
     strayPresenceRooms: await presenceRoomsStray(
       stanzas,
       env,
@@ -1398,10 +1389,9 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
 /**
  * Append every binding a capability needs in this Worker to one environment's stanza.
  *
- * The entries are `project/bindingEntries.ts`'s, the same writer `pithy add` uses. Reconcile used to
- * carry its own copy, "kept in lockstep by intent" with `add`'s, and the two had already drifted: `add`
- * stamped a spec's `remote` flag and wrote the Workers AI binding, this did neither, so a capability
- * wired by `pithy upgrade` got a different config from the same manifest than one wired by `pithy add`.
+ * The entries are `project/bindingEntries.ts`'s, the same writer `pithy add` uses, with the same ownership
+ * (`readOwnership`), so a capability wired by `pithy upgrade` gets the config `pithy add` would write from the
+ * same manifest — an owned binding's names and local `database_id` included.
  *
  * The KV name proposal the writer returns is dropped here on purpose: `upgrade` reports drift, and a KV
  * namespace title is something `pithy add` tells the adopter to create at the moment they compose the
@@ -1436,7 +1426,7 @@ function appendBindings(
  * `pithy add` renders, through the same function, because "matching `pithy add`" was a comment and not
  * a mechanism. This called `JSON.stringify` while `add` called `renderConfigValue`, so one manifest
  * default came out as `{"code":"chips"}` here and `{ code: "chips" }` there, and only the second
- * survived the `biome check` a scaffolded project runs on itself (#171).
+ * survived the `biome check` a scaffolded project runs on itself.
  */
 function renderKeyLines(capability: string, keys: MissingConfigKey[], indent: string): string {
   const lines: string[] = [];
@@ -1444,7 +1434,7 @@ function renderKeyLines(capability: string, keys: MissingConfigKey[], indent: st
     const value = key.constant ? { constant: key.constant } : key.default;
     // A required option — one the manifest states no default for — is reported as drift and cannot be
     // repaired here: `pithy upgrade` has no adopter to ask and no value it is entitled to pick, and the
-    // decision is exactly the kind #412 refused to guess at. So it refuses, naming the option and what it
+    // decision is not one to guess at. So it refuses, naming the option and what it
     // takes, rather than writing the word `undefined` into a config the adopter has to find later.
     if (value === undefined) throw requiredOptionRefusal({ capability, missing: [key] });
     lines.push(renderConfigOptionComment(key.describe, indent));
@@ -1457,7 +1447,7 @@ function renderKeyLines(capability: string, keys: MissingConfigKey[], indent: st
  * Convert a one-liner `name(),` registration to block form, inserting the missing keys.
  *
  * The call is rendered by core, not written here: it is the third place a capability's name reaches
- * generated source, and `pithy add`'s two were the ones #183 was reported about. No trailing comma —
+ * generated source, beside `pithy add`'s two, and all three must render it one way. No trailing comma —
  * the regex below matches `name()` and leaves the file's own separating comma alone.
  */
 function convertOneLiner(source: string, name: string, indent: string, keys: MissingConfigKey[]): string {
@@ -1500,7 +1490,7 @@ function insertIntoBlock(capability: string, source: string, closeIndex: number,
   // Inline block (`name({ x: 1 })`) — append `key: value,` before the closing brace.
   // One space stands in for the indent: an inline block has no line of its own to sit on. The value is
   // rendered by the same function as every other writer's, so a hand-written block gets Biome's shape
-  // too — the whole point of there being one renderer (#171).
+  // too — the whole point of there being one renderer.
   const inline = keys
     .map((key) => {
       const value = key.constant ? { constant: key.constant } : key.default;
@@ -1537,20 +1527,20 @@ export interface ApplyReconcilePlanOptions {
   /** The Worker's composed capabilities (libraries + app) — passed to the migration run. */
   capabilities: Capability[];
   /**
-   * **This Worker's own app capability, off its `pithy.config.ts` (#662)** — whose `requiredBindings` the plan
+   * **This Worker's own app capability, off its `pithy.config.ts`** — whose `requiredBindings` the plan
    * reported under its name with no manifest behind them. Never inferred from `capabilities`, where the app is
    * one entry among the libraries and nothing says which. Omitted for a Worker that declares no `app`.
    */
   app?: Capability;
   /**
-   * The Cloudflare account this project belongs to, or `null` when it names none. Required (#234) — this
+   * The Cloudflare account this project belongs to, or `null` when it names none. Required — this
    * is the write side, and `migrate` on a non-`dev` env runs the project's migrations against a live
    * schema in whichever account the credentials belong to.
    */
   account: CloudflareAccountSelection | null;
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
-  /** The project's `seed.productionEnvironments`, which a refusal naming a provision says as a person's (#711). */
+  /** The project's `seed.productionEnvironments`, which a refusal naming a provision says as a person's. */
   productionEnvironments?: readonly string[];
 }
 
@@ -1562,9 +1552,8 @@ export interface CapabilityApplied {
    * The bindings added to wrangler.jsonc for this capability — **read back off the writer**, one entry
    * per environment actually written.
    *
-   * This used to be `cap.missingBindings`: the plan, copied across verbatim the moment the apply loop
-   * touched the capability at all. So a binding the writer declined was counted as added, by a command
-   * whose whole job is to be believed about what it just changed (#318).
+   * Never the plan's `cap.missingBindings`: a binding the writer declined would be counted as added, by a
+   * command whose whole job is to be believed about what it just changed.
    */
   addedBindings: MissingBinding[];
   /** The bindings this capability needed that the writer could not compose, each with its reason. */
@@ -1583,7 +1572,7 @@ export interface ReconcileApplied {
    * **Both names, or the payload changes shape with a flag.** `pithy upgrade --json` reports
    * `applied ?? plan` out of one `workers` array, so a key the plan carried and the apply dropped meant a
    * consumer that read `deployedAs` worked under `--dry-run` and got `undefined` on the run that actually
-   * wrote something — the mode where being sure which script was reconciled matters most. #231.
+   * wrote something — the mode where being sure which script was reconciled matters most.
    */
   deployedAs: string;
   /** Per capability that changed: the bindings and config keys added. */
@@ -1600,7 +1589,7 @@ export interface ReconcileApplied {
    * The Durable Object classes this run wrote an `export { … } from "…"` for into the Worker's entry.
    *
    * Reported for the reason every other field here is: `upgrade` writes a file in the adopter's repo, and
-   * a change it makes without saying so is a `git diff` they have to reverse-engineer (#318). Empty on the
+   * a change it makes without saying so is a `git diff` they have to reverse-engineer. Empty on the
    * common run, which is what idempotent looks like.
    */
   addedEntryExports: string[];
@@ -1629,15 +1618,17 @@ async function applyBindings(
   if (caps.length === 0) return added;
 
   // The Worker's manifests, not the root's — these write into the Worker, so resolving from the root
-  // alone skipped every capability declared only where it is composed (#507).
+  // alone would skip every capability declared only where it is composed.
   const { manifests } = await composedManifests(projectDir, workerDir);
   const byName = new Map<string, BindingDeclaration>(manifests.map((manifest) => [manifest.name, manifest]));
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
-  // The app's own declaration beside the manifests, as the plan read it (#662), and never declined.
+  // The app's own declaration beside the manifests, as the plan read it, and never declined.
   const app = appDeclaration(workerApp && (composedByName.get(workerApp.name) ?? workerApp), manifests);
   if (app !== undefined) byName.set(app.name, app);
   const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
   const stanzas = envStanzas(config);
+  // The same ownership `pithy add` writes with, so an owned binding is written under its owned name here too.
+  const owns = await readOwnership(workerDir);
   let touched = false;
   for (const cap of caps) {
     const manifest = byName.get(cap.name);
@@ -1650,7 +1641,12 @@ async function applyBindings(
       const result = appendBindings(
         stanza,
         manifest,
-        { ...(project === undefined ? {} : { project }), env, capability: manifest.name },
+        {
+          ...(project === undefined ? {} : { project }),
+          env,
+          capability: manifest.name,
+          ...(owns === undefined ? {} : { owns, topLevel: stanza === config }),
+        },
         composedByName.get(cap.name),
         manifest === app ? new Set() : honored,
       );
@@ -1676,7 +1672,7 @@ async function applyBindings(
 
 /**
  * Write every composed capability's Durable Object exports into the Worker's entry — **the other writer**
- * of the two halves of a Durable Object, and the one #428's first fix missed.
+ * of the two halves of a Durable Object.
  *
  * `pithy add` was not the only command putting a `durable_objects.bindings` entry with a `class_name` in
  * it into a Worker: the reconcile above writes one into every environment that is missing it, and left the
@@ -1706,21 +1702,21 @@ async function applyEntryExports(
   capabilities: readonly Capability[],
 ): Promise<string[]> {
   // The Worker's manifests, not the root's — these write into the Worker, so resolving from the root
-  // alone skipped every capability declared only where it is composed (#507).
+  // alone would skip every capability declared only where it is composed.
   const byName = new Map(
     (await composedManifests(projectDir, workerDir)).manifests.map((manifest) => [manifest.name, manifest]),
   );
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
   // Same list the stanza writer used. A declined Durable Object would otherwise stay exported from the
-  // entry, pulling the class into the bundle for a binding nothing declares — #428's shape.
+  // entry, pulling the class into the bundle for a binding nothing declares.
   const honored = honoredDeclines(plan);
   const exports = plan.perCapability.flatMap((cap) => {
     const manifest = byName.get(cap.name);
     // Same source of truth as the binding writer — see `effectiveBindings`. Exporting a class this Worker
     // does not bind would pull a Durable Object into the bundle for nothing.
     if (manifest) return durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name), honored));
-    // The one entry with no manifest is the app's (#662), and of its classes only the presence room's is not
-    // its own code to export (#815).
+    // The one entry with no manifest is the app's, and of its classes only the presence room's is not
+    // its own code to export.
     return durableObjectExports(presenceRoomBindings(composedByName.get(cap.name)?.requiredBindings ?? []));
   });
   if (exports.length === 0) return [];
@@ -1732,9 +1728,8 @@ async function applyEntryExports(
   const written = withDurableObjectExports(source, exports);
   if (written === source) return [];
   await writeFile(path, written);
-  // What went in, decided by the same reader the writer used rather than by the intention — #318's rule,
-  // and the reason this is reported at all: `upgrade` editing an adopter's entry and saying nothing is
-  // that issue's shape. A class the entry already carried is not something this run added.
+  // What went in, decided by the same reader the writer used rather than by the intention, and reported
+  // because `upgrade` must not edit an adopter's entry without saying so. A class the entry already carried is not something this run added.
   return [...new Set(exports.filter((entry) => !exportsName(source, entry.className)).map((e) => e.className))];
 }
 
@@ -1790,7 +1785,7 @@ function requireMigrationProject(project: string | undefined): string {
  * `default` and no `constant`.
  *
  * `pithy upgrade` has no adopter to ask and no value it is entitled to pick: which billing subject a
- * project uses is exactly the decision #412 refused to guess at. So the plan is refused whole, naming every
+ * project uses is not a decision to guess at. So the plan is refused whole, naming every
  * such option across every capability, and the Worker is left as it was.
  */
 function refuseUnwritableConfigKeys(plan: ReconcilePlan): void {
@@ -1841,7 +1836,7 @@ function refuseUnhonorableDeclines(
  * same defect, and moving it changes output this issue did not touch. It wants its own change.
  *
  * `productionEnvironments` is the project's `seed.productionEnvironments`: a provision for one of them is said as a
- * person's decision, as `prod`'s is (#711).
+ * person's decision, as `prod`'s is.
  */
 export function declineRefusal(
   plan: ReconcilePlan,
@@ -1920,7 +1915,7 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
     const bindings = addedBindings.get(cap.name) ?? { written: [], skipped: [] };
     const keys = addedConfigKeys.get(cap.name) ?? [];
     // A capability that wrote nothing but skipped something still belongs in the report — that is the
-    // whole point of naming a skip. Silence here is the shape #318 was reported about.
+    // whole point of naming a skip.
     if (bindings.written.length === 0 && bindings.skipped.length === 0 && keys.length === 0) continue;
     perCapability.push({
       name: cap.name,
