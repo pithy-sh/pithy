@@ -4,10 +4,11 @@
 /// <reference types="@cloudflare/vitest-plugin/types" />
 
 import { env } from "cloudflare:test";
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { sql } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { Invitation } from "../data/invitation";
@@ -16,6 +17,7 @@ import { Organization } from "../data/organization";
 import { INVITATIONS_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
+import type { MembershipJoined, OrganizationJoinStatements } from "../provision/provision";
 import { defineRoles } from "../roles/roles";
 import { acceptInvitation, invite, listInvitations, resendInvitation, withdrawInvitation } from "./invite";
 import { invitationDigest, mintInvitationToken } from "./token";
@@ -1021,5 +1023,277 @@ describe("two invitations to one mailbox at once", () => {
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.id === first.invitation.id)?.status).toBe("canceled");
     expect(rows.find((row) => row.id === second.invitation.id)?.status).toBe("pending");
+  });
+});
+
+describe("acceptInvitation with the adopter's onJoin", () => {
+  /**
+   * The adopter's link from a new membership to a row of theirs, copied out of the membership so it lands
+   * only when the membership is already written.
+   */
+  const link: OrganizationJoinStatements = (binding, { membershipId, invitationId }) => [
+    {
+      compile: () =>
+        sql`insert into adopter_links (membership_id, invitation_id)
+          select id, ${invitationId} from pithy_organization_memberships where id = ${membershipId}`.compile(
+          organizationDatabase(binding),
+        ),
+    },
+  ];
+
+  /** The same link written by value, so it would land whether or not the membership did. */
+  const unconditional: OrganizationJoinStatements = (binding, { membershipId, invitationId }) => [
+    {
+      compile: () =>
+        sql`insert into adopter_links (membership_id, invitation_id) values (${membershipId}, ${invitationId})`.compile(
+          organizationDatabase(binding),
+        ),
+    },
+  ];
+
+  /** A statement that fails inside the batch, after the membership insert has run. */
+  const failing: OrganizationJoinStatements = (binding) => [
+    {
+      compile: () =>
+        sql`insert into adopter_links (membership_id) values (null)`.compile(organizationDatabase(binding)),
+    },
+  ];
+
+  async function links(): Promise<{ membership_id: string; invitation_id: string | null }[]> {
+    const { results } = await d1
+      .prepare("select membership_id, invitation_id from adopter_links")
+      .all<{ membership_id: string; invitation_id: string | null }>();
+    return results;
+  }
+
+  /** The real binding, with `before` run ahead of every batch it is handed. */
+  function beforeBatch(before: (statements: D1PreparedStatement[], call: number) => Promise<void>): D1Database {
+    let calls = 0;
+    return new Proxy(d1, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            calls += 1;
+            await before(statements, calls);
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async function acme(seatLimit: number | null): Promise<void> {
+    await db
+      .insertInto(ORGANIZATIONS_TABLE)
+      .values(
+        Organization.encode({
+          id: ORG,
+          name: "Acme",
+          slug: "acme",
+          logo: null,
+          seatLimit,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      )
+      .execute();
+  }
+
+  beforeEach(async () => {
+    await d1.exec("DROP TABLE IF EXISTS adopter_links");
+    await d1.exec("CREATE TABLE adopter_links (membership_id TEXT NOT NULL, invitation_id TEXT)");
+  });
+
+  const ada = { userId: ADA, email: "ada@example.com" };
+
+  test("runs in the acceptance's batch, after the membership insert, told the invitation", async () => {
+    const minted = await offer({ role: "admin" });
+    const joined: MembershipJoined[] = [];
+    const batches: number[] = [];
+    const accepted = await acceptInvitation(
+      beforeBatch(async (statements) => void batches.push(statements.length)),
+      catalog,
+      { token: minted.token, session: ada, now: NOW },
+      {
+        onJoin: (binding, event) => {
+          joined.push(event);
+          return link(binding, event);
+        },
+      },
+    );
+
+    expect(accepted.joined).toBe(true);
+    // One batch: the membership, the claim, and the adopter's statement.
+    expect(batches).toEqual([3]);
+    expect(joined).toEqual([
+      {
+        organizationId: ORG,
+        membershipId: accepted.membershipId,
+        userId: ADA,
+        role: "admin",
+        via: "invitation",
+        invitationId: minted.invitation.id,
+      },
+    ]);
+    expect(await links()).toEqual([{ membership_id: accepted.membershipId, invitation_id: minted.invitation.id }]);
+  });
+
+  test("**a statement that fails rolls the acceptance back, and the invitation can still be redeemed**", async () => {
+    const minted = await offer();
+    const error = await refusal(() =>
+      acceptInvitation(d1, catalog, { token: minted.token, session: ada, now: NOW }, { onJoin: failing }),
+    );
+    expect(error.payload.code).toBe("core/internal");
+    expect(await membershipCount()).toBe(0);
+    expect((await listInvitations(db, ORG)).map((row) => row.status)).toEqual(["pending"]);
+
+    const accepted = await acceptInvitation(
+      d1,
+      catalog,
+      { token: minted.token, session: ada, now: NOW },
+      { onJoin: link },
+    );
+    expect(accepted.joined).toBe(true);
+    expect(await links()).toEqual([{ membership_id: accepted.membershipId, invitation_id: minted.invitation.id }]);
+  });
+
+  test("somebody already a member begins nothing, so onJoin does not run", async () => {
+    const minted = await offer();
+    await acceptInvitation(d1, catalog, { token: minted.token, session: ada, now: NOW });
+    const second = await offer();
+    let built = 0;
+    const accepted = await acceptInvitation(
+      d1,
+      catalog,
+      { token: second.token, session: ada, now: NOW },
+      {
+        onJoin: () => {
+          built += 1;
+          return [];
+        },
+      },
+    );
+    expect(accepted.joined).toBe(false);
+    expect(built).toBe(0);
+  });
+
+  test("an offer withdrawn between the read and the batch writes neither row", async () => {
+    const minted = await offer();
+    const racing = beforeBatch(async () => {
+      await db
+        .updateTable(INVITATIONS_TABLE)
+        .set({ status: "canceled" })
+        .where("id", "=", minted.invitation.id)
+        .execute();
+    });
+    const error = await refusal(() =>
+      acceptInvitation(racing, catalog, { token: minted.token, session: ada, now: NOW }, { onJoin: unconditional }),
+    );
+    expect(error.payload.code).toBe("organization/invitation_invalid");
+    expect(await membershipCount()).toBe(0);
+    expect(await links()).toEqual([]);
+  });
+
+  test("the last seat going between the read and the batch is the seat refusal, and writes neither row", async () => {
+    await acme(1);
+    const minted = await offer();
+    const racing = beforeBatch(async () => {
+      await db
+        .insertInto(MEMBERSHIPS_TABLE)
+        .values(
+          Membership.encode({
+            id: crypto.randomUUID(),
+            organizationId: ORG,
+            userId: "user-0",
+            role: "member",
+            createdAt: NOW,
+          }),
+        )
+        .execute();
+    });
+    const error = await refusal(() =>
+      acceptInvitation(racing, catalog, { token: minted.token, session: ada, now: NOW }, { onJoin: unconditional }),
+    );
+    expect(error.payload.code).toBe("organization/seat_limit_reached");
+    expect(await membershipCount()).toBe(1);
+    expect(await links()).toEqual([]);
+    expect((await listInvitations(db, ORG)).map((row) => row.status)).toEqual(["pending"]);
+  });
+
+  test("a suspension landing between the read and the batch writes neither row", async () => {
+    await acme(null);
+    const minted = await offer();
+    const racing = beforeBatch(async () => {
+      await db.updateTable(ORGANIZATIONS_TABLE).set({ suspendedAt: NOW.getTime() }).where("id", "=", ORG).execute();
+    });
+    const error = await refusal(() =>
+      acceptInvitation(racing, catalog, { token: minted.token, session: ada, now: NOW }, { onJoin: unconditional }),
+    );
+    expect(error.payload.code).toBe("organization/invitation_invalid");
+    expect(await membershipCount()).toBe(0);
+    expect(await links()).toEqual([]);
+  });
+
+  test("a commit that loses its connection answers as the join it was, and the rows land once", async () => {
+    const minted = await offer();
+    const flaky = beforeBatch(async (statements, call) => {
+      if (call > 1) return;
+      await d1.batch(statements);
+      throw new Error("D1_ERROR: Network connection lost");
+    });
+    const accepted = await acceptInvitation(
+      flaky,
+      catalog,
+      { token: minted.token, session: ada, now: NOW, newId: () => "33333333-3333-4333-8333-333333333333" },
+      { onJoin: unconditional },
+    );
+    expect(accepted.joined).toBe(true);
+    expect(accepted.membershipId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(await membershipCount()).toBe(1);
+    expect(await links()).toHaveLength(1);
+  });
+
+  test("a concurrent redemption's membership is reported as already there, and the adopter's rows roll back", async () => {
+    const minted = await offer();
+    // Another invitation to Ada, redeemed between this one's read and its batch.
+    const racing = beforeBatch(async (_statements, call) => {
+      if (call > 1) return;
+      await db
+        .insertInto(MEMBERSHIPS_TABLE)
+        .values(
+          Membership.encode({
+            id: crypto.randomUUID(),
+            organizationId: ORG,
+            userId: ADA,
+            role: "member",
+            createdAt: NOW,
+          }),
+        )
+        .execute();
+    });
+    const accepted = await acceptInvitation(
+      racing,
+      catalog,
+      { token: minted.token, session: ada, now: NOW },
+      { onJoin: unconditional },
+    );
+    expect(accepted.joined).toBe(false);
+    expect(accepted.invitation.status).toBe("accepted");
+    expect(await links()).toEqual([]);
+    expect(await listInvitations(db, ORG)).toHaveLength(0);
+  });
+
+  test("without onJoin the acceptance's batch is the two statements it always was", async () => {
+    const minted = await offer();
+    const batches: number[] = [];
+    await acceptInvitation(
+      beforeBatch(async (statements) => void batches.push(statements.length)),
+      catalog,
+      { token: minted.token, session: ada, now: NOW },
+      {},
+    );
+    expect(batches).toEqual([2]);
   });
 });

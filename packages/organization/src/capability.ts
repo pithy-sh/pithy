@@ -25,7 +25,12 @@ import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
-import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
+import {
+  founderRole,
+  type OrganizationCreateStatements,
+  type OrganizationDeleteSweep,
+  type OrganizationJoinStatements,
+} from "./provision/provision";
 import { organizationPurgeContribution, organizationUserPurge } from "./purge/contribution";
 import { organizationWorkflows } from "./purge/specs";
 import { type RoleCatalog, requireComposedPowers } from "./roles/roles";
@@ -184,6 +189,27 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    * Ordered first, so a statement may still read a membership while composing itself.
    */
   readonly onDelete?: OrganizationDeleteSweep;
+  /**
+   * Your own rows for a new organization, written in the transaction that founds it.
+   *
+   * Return statements, as for `onDelete`: they join the founding `d1.batch` after the organization and
+   * the founder's membership, so they may reference both, and a failure in any of them rolls the founding
+   * back. A derived slug's retry reuses them, so a founding that commits writes them once.
+   *
+   * Handed the binding and `{ organizationId, membershipId, founderUserId, name }`. Your own setup flow
+   * passes the same function to `createOrganization`.
+   */
+  readonly onCreate?: OrganizationCreateStatements;
+  /**
+   * Your own rows for a new membership, written in the transaction that begins it.
+   *
+   * Runs for founding (`via: "founded"`, after `onCreate`), an accepted invitation (`via: "invitation"`,
+   * with `invitationId`) and an operator's add (`via: "operator"`). Its statements join that batch after
+   * the membership insert, and a failure in any of them rolls the membership back; a failed acceptance
+   * leaves the invitation redeemable. An acceptance by somebody already a member begins nothing and runs
+   * nothing.
+   */
+  readonly onJoin?: OrganizationJoinStatements;
 } & OrganizationLifecycleHooks &
   OrganizationMembershipHooks;
 
@@ -234,6 +260,8 @@ export function organization<const Power extends string = never, const Role exte
     roles,
     ownership,
     onDelete,
+    onCreate,
+    onJoin,
     onOrganizationSuspended,
     onOrganizationReinstated,
     onOrganizationDeleted,
@@ -356,6 +384,8 @@ export function organization<const Power extends string = never, const Role exte
       config: resolved,
       ownership,
       onDelete,
+      onCreate,
+      onJoin,
       lifecycleHooks,
       membershipHooks,
       userLifecycle: () => wiring.users,

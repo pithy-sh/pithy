@@ -25,6 +25,7 @@ import {
   OrganizationNotFoundError,
   OrganizationSeatLimitReachedError,
 } from "../error/errors";
+import { compileStatements, type OrganizationWriteStatements } from "../provision/provision";
 import type { KitPower, RoleCatalog } from "../roles/roles";
 
 /**
@@ -402,7 +403,7 @@ function refuseSelfDemotion<Role extends string>(
  * A membership after a role change, and the role it held before.
  *
  * The before is returned rather than re-read because the role every rule above was decided from *is* the
- * before: a second read could see a later change and record a before this write never replaced (#831).
+ * before: a second read could see a later change and record a before this write never replaced.
  */
 export interface ChangedMembership<Role extends string> extends TargetMembership<Role> {
   /** The role it held when the change was decided. */
@@ -759,7 +760,7 @@ async function deleteMembership<Role extends string>(
 }
 
 /*
-  ## The operator's doors (#624)
+  ## The operator's doors
 
   Everything above is a member acting inside their own account, and every rule there is a rule about
   who may decide something about whom. Everything below is an operator acting through the control
@@ -938,6 +939,7 @@ export async function addMember<Power extends string, Role extends string>(
   d1: D1Database,
   catalog: RoleCatalog<Power, Role>,
   options: AddMemberOptions<Role>,
+  statements?: Pick<OrganizationWriteStatements, "onJoin">,
 ): Promise<AddedMember<Role>> {
   const db = organizationDatabase(d1);
   const role = declaredRole(catalog, options.role);
@@ -973,24 +975,65 @@ export async function addMember<Power extends string, Role extends string>(
   // Through the table's own codec, which is also where the id's shape and the role's bound are held.
   const row = Membership.encode(membership);
 
+  const adopters = compileStatements(
+    d1,
+    statements?.onJoin?.(d1, {
+      organizationId: membership.organizationId,
+      membershipId: membership.id,
+      userId: membership.userId,
+      role,
+      via: "operator",
+      invitationId: null,
+    }) ?? [],
+  );
+  const plain = prepared(d1, db.insertInto(MEMBERSHIPS_TABLE).values(row));
+
   // Whether this add went past the limit is what the insert found, not what the count said: a count
   // that saw room can be overtaken by another add before this one lands. So when the limit binds, the
   // seat-conditional insert always goes first, and only an override that it refuses writes past it.
   let overrodeSeatLimit = false;
   try {
     if (seatLimit === null) {
-      await db.insertInto(MEMBERSHIPS_TABLE).values(row).executeTakeFirst();
-    } else {
-      const result = await sql`
-        insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
-        select ${row.id}, ${row.organizationId}, ${row.userId}, ${row.role}, ${row.createdAt}
-        where (select count(*) from pithy_organization_memberships where organization_id = ${row.organizationId}) < ${seatLimit}
-      `.execute(db);
-      if ((result.numAffectedRows ?? 0n) === 0n) {
+      await d1.batch([plain, ...adopters]);
+    } else if (adopters.length === 0) {
+      const [result] = await d1.batch([
+        preparedSql(
+          d1,
+          sql`
+            insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
+            select ${row.id}, ${row.organizationId}, ${row.userId}, ${row.role}, ${row.createdAt}
+            where (select count(*) from pithy_organization_memberships where organization_id = ${row.organizationId}) < ${seatLimit}
+          `.compile(db),
+        ),
+      ]);
+      if ((result?.meta.changes ?? 0) === 0) {
         // The seat predicate matched nothing: the account was full, or the last seat went between the
         // count and the insert. Refused, unless the request said to go past it.
         if (!options.overrideSeatLimit) throw seatLimitReached(options.organizationId, seatLimit);
-        await db.insertInto(MEMBERSHIPS_TABLE).values(row).executeTakeFirst();
+        await d1.batch([plain]);
+        overrodeSeatLimit = true;
+      }
+    } else {
+      // The conditional insert above writes nothing when the account is full, and the batch would still
+      // commit the adopter's rows. So here the seat decides the organization id instead: no room, it is
+      // null, the column refuses it, and the whole batch rolls back.
+      const seated = preparedSql(
+        d1,
+        sql`
+          insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
+          select ${row.id},
+            case when (select count(*) from pithy_organization_memberships where organization_id = ${row.organizationId}) < ${seatLimit}
+              then ${row.organizationId} end,
+            ${row.userId}, ${row.role}, ${row.createdAt}
+        `.compile(db),
+      );
+      try {
+        await d1.batch([seated, ...adopters]);
+      } catch (cause) {
+        // Asked again: an account still full is the seat refusing, and anything else is the failure itself.
+        if ((await countMembers(db, options.organizationId)) < seatLimit) throw cause;
+        if (!options.overrideSeatLimit) throw seatLimitReached(options.organizationId, seatLimit);
+        await d1.batch([plain, ...adopters]);
         overrodeSeatLimit = true;
       }
     }
@@ -1220,6 +1263,10 @@ export async function removeMemberAsOperator<Power extends string, Role extends 
 
 /** Compile a Kysely query to a D1 statement, so it can join a `batch` transaction. */
 function prepared(d1: D1Database, query: { compile(): CompiledQuery }): D1PreparedStatement {
-  const compiled = query.compile();
+  return preparedSql(d1, query.compile());
+}
+
+/** Bind a compiled statement to D1, so it can join a `batch` transaction. */
+function preparedSql(d1: D1Database, compiled: CompiledQuery): D1PreparedStatement {
   return d1.prepare(compiled.sql).bind(...(compiled.parameters as unknown[]));
 }
