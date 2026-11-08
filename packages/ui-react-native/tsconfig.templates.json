@@ -24,6 +24,7 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "types": ["react-native"],
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": ["templates/**/*.ts", "templates/**/*.tsx"],

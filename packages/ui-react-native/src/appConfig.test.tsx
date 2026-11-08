@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 /** The Expo config the template answers, with `src/pithy-config.generated.ts` naming `universalLinkOrigin`. */
 async function expoConfig(universalLinkOrigin: string | null) {
-  vi.doMock("../templates/src/pithy-config.generated", () => ({
+  vi.doMock("../templates/src/pithy-config.generated.ts", () => ({
     default: { appScheme: "pithyapp", universalLinkOrigin, google: { webClientId: null, iosClientId: null } },
   }));
   const { default: config } = await import("../templates/app.config");
@@ -13,7 +13,7 @@ async function expoConfig(universalLinkOrigin: string | null) {
 }
 
 afterEach(() => {
-  vi.doUnmock("../templates/src/pithy-config.generated");
+  vi.doUnmock("../templates/src/pithy-config.generated.ts");
   vi.resetModules();
 });
 
