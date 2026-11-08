@@ -747,3 +747,49 @@ describe("no hand-rolled comment-json round-trips in capabilities/", () => {
     }
   });
 });
+
+describe("addCapability for a Worker that owns a binding", () => {
+  test("writes the owned database_name into each stanza, and a top-level database_id of its own", async () => {
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{\n  "ownBindings": ["DB"]\n}\n');
+    await addCapability({ workerDir: worker, manifest, project: "add-test" });
+
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as {
+      d1_databases?: { binding: string; database_name?: string; database_id?: string }[];
+      env: Record<string, { d1_databases?: { binding: string; database_name?: string; database_id?: string }[] }>;
+    };
+    expect(wrangler.d1_databases).toEqual([
+      {
+        binding: "DB",
+        database_name: `add-test-dev-${DEFAULT_WORKER}---db`,
+        database_id: `add-test-dev-${DEFAULT_WORKER}---db`,
+      },
+    ]);
+    expect(wrangler.env.staging?.d1_databases).toEqual([
+      { binding: "DB", database_name: `add-test-staging-${DEFAULT_WORKER}---db` },
+    ]);
+    expect(wrangler.env.prod?.d1_databases).toEqual([
+      { binding: "DB", database_name: `add-test-prod-${DEFAULT_WORKER}---db` },
+    ]);
+  });
+
+  test("leaves a shared binding exactly as it writes it today", async () => {
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{\n  "ownBindings": ["SESSIONS"]\n}\n');
+    await addCapability({ workerDir: worker, manifest, project: "add-test" });
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as {
+      d1_databases?: unknown[];
+    };
+    expect(wrangler.d1_databases).toEqual([{ binding: "DB", database_name: "add-test-dev-db" }]);
+  });
+
+  test("refuses to own a global binding, naming the binding and the capability", async () => {
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{\n  "ownBindings": ["EMAIL_SUPPRESSIONS"]\n}\n');
+    const global = CapabilityManifest.parse({
+      name: "email",
+      package: "@pithy-sh/email",
+      requiredBindings: [{ type: "d1", name: "EMAIL_SUPPRESSIONS", scope: "global" }],
+    });
+    await expect(addCapability({ workerDir: worker, manifest: global, project: "add-test" })).rejects.toThrow(
+      /owns EMAIL_SUPPRESSIONS, which email declares global/,
+    );
+  });
+});

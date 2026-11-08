@@ -102,11 +102,9 @@ export interface ProjectGlobalNaming extends BindingNaming {
  * the deploy name. A feature's name is `<project>-f<issue>-<slug>-<app>`, which already leads with the
  * project, so it is built on the directory.
  *
- * This was one string until #587, and the string was the deploy name, so every feature Worker carried the
- * project twice: `replay-f69-demo-replay-board`. That was not only untidy. The name is held to the Worker
- * cap of 63, and the doubled segment spent that budget where the truncation lands on the part that says
- * *which* Worker. Carrying both names is what lets each scope take the one its shape is built from, and
- * lets neither caller choose on the scope's behalf.
+ * Built on the deploy name, a feature Worker would carry the project twice (`replay-f69-demo-replay-board`),
+ * spending the Worker cap of 63 on the doubled segment. Carrying both names lets each scope take the one its
+ * shape is built from, and lets neither caller choose on the scope's behalf.
  */
 export interface ProvisionWorkerNames {
   /** The Worker's `apps/<app>` directory basename — the name a sibling's `service` binding targets it by. */
@@ -141,13 +139,15 @@ export interface ProvisionScope {
    *
    * **The naming is required, not defaulted.** A caller with nothing to say passes `{}` and gets the
    * name it always got; what it may not do is *omit* the question. `pithy add` and `pithy provision`
-   * both compose this name, from two different call paths, and the whole of #513 is that one of them
-   * had no way to hear "this resource is one per project" — so the app Worker bound three suppression
-   * databases where the email Worker bound one, and an unsubscribe on either was invisible to the other.
-   * A parameter with a default is a parameter a new call site inherits an answer to without ever
-   * reading the question.
+   * both compose this name, from two different call paths, and a path that cannot hear "this resource is
+   * one per project" binds per-environment copies of a resource meant to be one. A parameter with a default
+   * is a parameter a new call site inherits an answer to without ever reading the question.
+   *
+   * `owner` is the `apps/<owner>` Worker that lists the binding in `ownBindings`, when one does: that Worker's
+   * own resource, `<owner>---<binding>` in the thing segment. Absent is the shared resource. A `global` binding
+   * has no owner; `bindingResourceName` refuses one.
    */
-  resource(binding: string, kind: FeatureResourceKind, naming: BindingNaming): string;
+  resource(binding: string, kind: FeatureResourceKind, naming: BindingNaming, owner?: string): string;
   /**
    * Whether a binding that declares itself project-global is actually named that way here — and so
    * belongs to the project rather than to this run.
@@ -177,13 +177,13 @@ export interface ProvisionScope {
    * In a declared environment a `global` secret is the one name that does **not** take the scope's segment:
    * it is a single account-level value every declared environment binds, so it resolves to the project's
    * `<project>-global-<secret>`. A feature is the exception — it shares nothing with any other environment,
-   * so its entry for a `global` secret is its own (#643). See {@link featureScope}.
+   * so its entry for a `global` secret is its own. See {@link featureScope}.
    */
   secretEntry(secret: string, secretScope: SecretNameScope): string;
   /**
    * What a capability's host Worker and its Workflows are named from in this scope — handed, with the
    * capability, to `workflowHostName` and `workflowScriptName`. It is what an app Worker's cross-script
-   * `workflows` entry and the host's own config are both composed from (#643).
+   * `workflows` entry and the host's own config are both composed from.
    *
    * On the scope for the reason every other name is: a declared environment composes
    * `<project>-<env>-<capability>[-<job>]`, and a feature composes `<project>-f<issue>-<slug>-…`, because
@@ -191,7 +191,7 @@ export interface ProvisionScope {
    */
   readonly workflowHost: Omit<WorkflowHostNameParts, "capability">;
   /**
-   * The Artifacts namespace an `artifacts` binding names in this scope (#673): `<project>-<env>` in a declared
+   * The Artifacts namespace an `artifacts` binding names in this scope: `<project>-<env>` in a declared
    * environment, `<project>-f<issue>-<slug>--artifacts` in a feature. On the scope for the reason every other name
    * is: the stanza a run writes and the namespace it writes into it are one decision.
    */
@@ -224,8 +224,8 @@ function secretEntryName(project: string, secret: string, secretScope: SecretNam
  *
  * Written beside {@link secretEntryName} and shaped like it deliberately — the argument is the same
  * argument. A value defined as one value must have one name, or the scoping mints a second copy of it;
- * the only difference is that a secret's second copy is read and a database's is *written to*, which is
- * why this one is the bug where an unsubscribe recorded in `staging` was invisible in `prod` (#513).
+ * the only difference is that a secret's second copy is read and a database's is *written to*, so an
+ * unsubscribe recorded in `staging` would be invisible in `prod`.
  *
  * `thing` is `naming.resource` when the manifest states one and the binding name otherwise. Either way
  * it goes to the same composer, which kebabs it — so a binding passed verbatim keeps the name it has
@@ -234,14 +234,12 @@ function secretEntryName(project: string, secret: string, secretScope: SecretNam
  *
  * **Exported, because `pithy add` composes this name too and has no {@link ProvisionScope} to do it
  * with.** It writes a `database_name` into a `wrangler.jsonc` stanza long before an account is reached,
- * from a Worker's declared environment rather than a provisioning run's — and it is the writer that got
- * #513 wrong. Handing it the scoped name as a callback is what lets the *global* branch live here once:
- * a second copy of it in the writer is the arrangement this issue exists to end.
+ * from a Worker's declared environment rather than a provisioning run's. Handing it the scoped name as a
+ * callback is what lets the *global* branch live here once, with no second copy in the writer.
  *
  * **And exported for the third writer, which is the capability's own namer.** `suppressionDatabaseName`
- * and `supportBucketName` name the same two resources their manifests declare, and they composed them
- * with a second expression until #513 — which is how `<project>-global-email-suppressions` and
- * `<project>-staging-email-suppressions` came to be the same database under two names. They pass a
+ * and `supportBucketName` name the same two resources their manifests declare, through this function rather
+ * than a second expression that could name one database two ways. They pass a
  * {@link ProjectGlobalNaming} and no callback: a namer for a project-global resource has no environment,
  * so there is no scoped name for it to supply and the overload will not let it pretend otherwise.
  */
@@ -257,6 +255,7 @@ export function bindingResourceName(
   kind: FeatureResourceKind,
   naming: BindingNaming,
   scoped: (thing: string) => string,
+  owner?: string,
 ): string;
 export function bindingResourceName(
   project: string,
@@ -264,9 +263,20 @@ export function bindingResourceName(
   kind: FeatureResourceKind,
   naming: BindingNaming,
   scoped?: (thing: string) => string,
+  owner?: string,
 ): string {
   const thing = naming.resource ?? binding;
-  if (naming.scope === GLOBAL_SCOPE) return resourceNames(project).global[KIND_NAMER[kind]](thing);
+  if (naming.scope === GLOBAL_SCOPE) {
+    // One resource for the project by definition, so no Worker can own it. `ownBindings` refuses such an entry
+    // where it is read; this is the wall behind that.
+    if (owner !== undefined) {
+      throw new ValidationError({
+        message: `${owner} cannot own ${binding}. It is one resource for the whole project.`,
+        action: `Take ${binding} out of apps/${owner}/pithy.worker.jsonc ownBindings.`,
+      });
+    }
+    return resourceNames(project).global[KIND_NAMER[kind]](thing);
+  }
   // The second wall behind the overloads, not the first. A caller with no environment reaching a naming
   // that is not `global` has nothing this function could compose, and the honest answer is to say so
   // rather than return a name with a segment nobody chose.
@@ -285,7 +295,7 @@ export function bindingResourceName(
  *
  * The namespace, not one feature's names, because that is what has to stay disjoint: `pithy feature destroy`
  * deletes by exact name, and a feature Worker's name has no kind suffix, so a declared environment's name
- * that lands anywhere in here is one some branch's teardown can delete (#587). Every name {@link featureScope}
+ * that lands anywhere in here is one some branch's teardown can delete. Every name {@link featureScope}
  * composes is inside; {@link environmentScope} refuses to name a Worker inside, and `isValidEnvironment`
  * refuses every environment whose composed names could be.
  *
@@ -310,20 +320,11 @@ export function isFeatureName(project: string, name: string): boolean {
  *
  * **A declared name wins; the fallback is wrangler's own, `<script>-<env>`.**
  *
- * This reverses the rule that stood here until #580, and the reversal is worth reading rather than
- * assuming. The old rule *recomputed* `<script>-<env>` on every provision and wrote it over whatever the
- * stanza said, on the argument that wrangler has always appended the environment to the top-level `name`,
- * so every project that ever deployed is already at that address.
- *
- * That argument is still true about the **fallback**, and the fallback is unchanged: a stanza that names
- * nothing gets `<script>-<env>` and every existing adopter deploys exactly where they always did. What was
- * wrong was recomputing over a name somebody wrote down. Since #580 the starter template writes one —
- * `<project>-<env>-<worker>`, the shape every other resource here takes — so recompute would have made the
- * template's stamp pointless, and worse: it would have silently renamed the Worker of every project that
- * had taken the new shape, on their next `pithy provision`. A Worker script is a `refuse`-policy namespace
- * precisely because renaming one orphans the deployment, its routes, and every `service` binding pointing
- * at it. Doing that as a side effect of provisioning is the failure the old rule was written to prevent,
- * arriving from the other direction.
+ * A stanza that names nothing gets `<script>-<env>`, the address wrangler itself appends the environment to.
+ * The starter template writes `<project>-<env>-<worker>`, the shape every other resource here takes, and
+ * recomputing over it would rename the Worker on the next `pithy provision`. A Worker script is a
+ * `refuse`-policy namespace precisely because renaming one orphans the deployment, its routes, and every
+ * `service` binding pointing at it.
  *
  * So the name is read, not composed, when the file already holds one — and written out when it does not,
  * so a service binding and a deploy still agree on one string that is in the file.
@@ -337,14 +338,14 @@ export function environmentScope(project: string, environment: string): Provisio
     source: true,
     // A declared environment is one of the scopes a project-global resource is shared *between*.
     honorsGlobal: true,
-    resource: (binding, kind, naming) =>
-      bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing)),
+    resource: (binding, kind, naming, owner) =>
+      bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing, owner), owner),
     worker: ({ script }, declared) => {
       const name = declared ?? `${script}-${environment}`;
       // The environment rule already keeps every name composed from the environment out of a feature's
       // namespace. A declared name and wrangler's fallback are not composed from it — the stanza says one,
       // the deploy name leads the other — so either can still sit there, and a branch's teardown would
-      // delete the Worker (#587). Refused here, where the name is chosen, rather than spared at teardown.
+      // delete the Worker. Refused here, where the name is chosen, rather than spared at teardown.
       if (isFeatureName(project, name)) {
         throw new ValidationError({
           message: `The ${environment} Worker "${name}" is named the way a feature's Worker is.`,
@@ -371,8 +372,8 @@ export function environmentScope(project: string, environment: string): Provisio
  * **A feature takes a binding's {@link BindingNaming} and ignores it, and a secret's `global` scope with it.**
  * A global *database* is a resource a feature would **migrate** — `provisionFeature` runs `pithy migrate`
  * against everything it names — so honoring `global` would point one branch's schema changes at the project's
- * live suppression list, and point teardown at it afterwards. A global *secret* went the other way until #643:
- * a feature bound the project's copy. It no longer does. **Nothing is shared between a feature and any other
+ * live suppression list, and point teardown at it afterwards. A global *secret* is not shared either.
+ * **Nothing is shared between a feature and any other
  * feature, staging or prod** — the account and its one Secrets Store are the only containers that cannot be
  * split, and every entry inside the store is split. So a feature names its own entry for a `global` secret
  * too: a mintable one is minted for it, and a supplied one is reported missing under the feature's name rather
@@ -383,7 +384,7 @@ export function environmentScope(project: string, environment: string): Provisio
  * the kind, and the whole name is recomputed on teardown rather than looked up, so nothing outside the
  * feature reads the string.
  *
- * **And a declared Worker name is ignored here too — the other half of the #580 asymmetry.** A declared
+ * **And a declared Worker name is ignored here too.** A declared
  * environment's script name is the adopter's, written in a tracked file, and provisioning reads it. A
  * feature's is the kit's: it is composed from the branch, written into a generated config nobody commits,
  * and **recomputed on teardown**. Honoring a declared one would leave `pithy feature destroy` computing a
@@ -397,9 +398,9 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     // A feature owns every resource it names — see the docstring above for why a database and a secret
     // part company here.
     honorsGlobal: false,
-    resource: (binding, kind) => featureResourceName(identity, binding, kind),
+    resource: (binding, kind, _naming, owner) => featureResourceName(identity, binding, kind, owner),
     // The directory, not the deploy name: the head already carries the project, and the deploy name
-    // usually leads with it too, which composed `<project>-f<issue>-<slug>-<project>-<app>` (#587).
+    // usually leads with it too.
     worker: ({ app }) => featureWorkerName(identity, app),
     // Every entry the feature's, `global` included: see the docstring above.
     secretEntry: (secret) => featureSecretEntryName(identity, secret),
@@ -414,22 +415,21 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
 }
 
 /**
- * **Every script name one Worker can be deployed under in a feature — what teardown looks for (#592).**
+ * **Every script name one Worker can be deployed under in a feature — what teardown looks for.**
  *
- * The first is the name {@link featureScope} composes today, taken from the scope rather than composed a
- * second time, so provisioning and teardown cannot disagree about it. The second is the one it composed
- * until #587, from the deploy name: `<project>-f<issue>-<slug>-<project>-<app>`. A feature provisioned and
- * deployed before that upgrade is still running under it, and after its next deploy it runs under both —
- * so teardown looks for both. One entry when the two coincide, as they do for a Worker whose deploy name
- * is its directory.
+ * The first is the name {@link featureScope} composes, taken from the scope rather than composed a second
+ * time, so provisioning and teardown cannot disagree about it. The second is the older shape, from the deploy
+ * name: `<project>-f<issue>-<slug>-<project>-<app>`, which a long-lived feature may still be running under, so
+ * teardown looks for both. One entry when the two coincide, as they do for a Worker whose deploy name is its
+ * directory.
  *
  * **Exact names, never a prefix.** A prefix scan of `<project>-f<issue>-<slug>-` reaches a sibling whose
  * slug extends this one's. The exact names can still meet a sibling in one shape: the doubled name for
  * slug `demo` and deploy name `acme-api` is the current name for slug `demo-acme` and directory `api`, on
  * the same issue number. That is the same hyphen ambiguity every feature name here carries.
  *
- * **They cannot meet a declared environment's Worker**, which has no suffix either and is `<project>-<env>-<app>`
- * since #580: every name either shape yields is inside {@link isFeatureName}'s namespace, no environment may
+ * **They cannot meet a declared environment's Worker**, which has no suffix either and is `<project>-<env>-<app>`:
+ * every name either shape yields is inside {@link isFeatureName}'s namespace, no environment may
  * start with a feature's marker, and {@link environmentScope} refuses a declared or fallback Worker name inside
  * it. What that does not reach is a name nothing in the kit chose — a stanza written by hand and deployed
  * without `pithy provision --env` ever reading it, or another project on the account, as {@link isFeatureName}
@@ -441,8 +441,8 @@ export function featureWorkerScriptNames(identity: FeatureIdentity, worker: Prov
   try {
     beforeSingleProject = featureWorkerName(identity, worker.script);
   } catch (error) {
-    // Too long to compose whole (#643). The release that deployed that shape fitted it with a hash instead, so no
-    // exact name here would reach it anyway; teardown reaches the current name, which always composes.
+    // Too long to compose whole. That shape was fitted with a hash where it was deployed, so no exact name here
+    // would reach it anyway; teardown reaches the current name, which always composes.
     if (error instanceof ValidationError) return [current];
     throw error;
   }

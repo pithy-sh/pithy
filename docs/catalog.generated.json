@@ -715,6 +715,8 @@
         "--confirm",
         "--seed",
         "--no-seed",
+        "--repoint",
+        "--no-repoint",
         "--dry-run",
         "--dryRun",
         "--no-dry-run",

@@ -7,6 +7,7 @@ import {
   FEATURE_DERIVED_PROJECT_NAME,
   MAX_CAPABILITY_JOB,
   NAMESPACE_LIMITS,
+  OWNED_BINDING_SEPARATOR,
   WORKFLOW_DERIVED_PROJECT_NAME,
 } from "./limits";
 import { NAME_SEGMENT } from "./segment";
@@ -110,6 +111,68 @@ export function fitSegment(segment: string, budget: number): string {
   const hashLen = Math.min(6, Math.max(2, budget - 2));
   const headLen = Math.max(1, budget - hashLen - 1);
   return `${segment.slice(0, headLen).replace(/-+$/, "")}-${hash6(segment).slice(0, hashLen)}`;
+}
+
+/**
+ * The thing of a resource one Worker owns — `<worker>---<binding>`, each side kebabbed — unfitted.
+ *
+ * Empty when either side kebabs to nothing, which every caller refuses: a name with no owner or no binding is not
+ * an owned name.
+ */
+export function ownedThing(owner: string, binding: string): string {
+  const worker = kebab(owner);
+  const thing = kebab(binding);
+  return worker && thing ? `${worker}${OWNED_BINDING_SEPARATOR}${thing}` : "";
+}
+
+/**
+ * Fit an owned thing into `budget` characters: verbatim when it fits, otherwise a head of the Worker, the
+ * {@link OWNED_BINDING_SEPARATOR}, a head of the binding, and a hash of the whole thing.
+ *
+ * **The separator always survives.** {@link fitSegment} would cut through it or strip it, and the separator is what
+ * keeps an owned name apart from every shared name and out of every feature's namespace. So each side keeps at
+ * least one character, neither ends in a hyphen, and the result is `<w>---<b>-<hash>`. Deterministic in its inputs,
+ * so provision and doctor recompute one string.
+ */
+export function fitOwnedSegment(owner: string, binding: string, budget: number): string {
+  const full = ownedThing(owner, binding);
+  if (full.length <= budget) return full;
+  const worker = kebab(owner);
+  const thing = kebab(binding);
+  const hash = hash6(full);
+  // Text left for the two heads, after the separator and `-<hash>`.
+  const room = budget - OWNED_BINDING_SEPARATOR.length - 1 - hash.length;
+  if (room < 2) {
+    throw new InternalError({
+      message: `"${full}" cannot be fitted into ${budget} characters.`,
+      action: "Shorten the project, environment, Worker or binding name.",
+      detail: `An owned name keeps ${OWNED_BINDING_SEPARATOR}, a character of each side and a ${hash.length}-character hash.`,
+    });
+  }
+  // The binding keeps what it needs up to half the room, and the Worker takes the rest.
+  const bindingLength = Math.max(1, Math.min(thing.length, Math.floor(room / 2)));
+  const workerLength = Math.max(1, Math.min(worker.length, room - bindingLength));
+  const head = (segment: string, length: number): string => segment.slice(0, length).replace(/-+$/, "");
+  return `${head(worker, workerLength)}${OWNED_BINDING_SEPARATOR}${head(thing, bindingLength)}-${hash}`;
+}
+
+/**
+ * Compose `<project>-<env>-<worker>---<binding>`, fitted to `budget` — the name of a resource one Worker owns.
+ *
+ * {@link resourceName}'s rule with one difference: the thing is fitted by {@link fitOwnedSegment}, so the separator
+ * survives truncation. The project and environment are verbatim, and a head that leaves no room is refused.
+ */
+export function ownedResourceName(parts: ResourceNameParts & { owner: string }, budget: number): string {
+  const thing = ownedThing(parts.owner, parts.thing);
+  if (!thing) {
+    throw new ValidationError({
+      message: "An owned resource name needs a Worker and a binding.",
+      detail: `ownedResourceName received owner ${JSON.stringify(parts.owner)} and thing ${JSON.stringify(parts.thing)}.`,
+    });
+  }
+  // The shared composer validates the project and environment and checks the head leaves room; its head is ours.
+  const head = resourceName({ project: parts.project, env: parts.env, thing: "x" }, budget).slice(0, -"-x".length);
+  return `${head}-${fitOwnedSegment(parts.owner, parts.thing, budget - head.length - 1)}`;
 }
 
 /** The parts of a provisioned name. Every field is required — an absent segment is a naming bug, not a default. */

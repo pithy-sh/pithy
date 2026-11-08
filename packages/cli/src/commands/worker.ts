@@ -17,6 +17,7 @@ import { askDomains, writeDomains } from "../project/askDomains";
 import { loadProject, loadWorkerDomains, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
+import { reconcileOwnedDatabases } from "../project/ownedStanzas";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { reconcileServiceStanzas, type ServiceWorkerNames, serviceScripts } from "../project/serviceStanzas";
 import { bindableFrom, bindWorker, readServiceProject, unbindWorker } from "../project/workerBind";
@@ -199,6 +200,19 @@ const WorkerSyncPayload = z
           .describe("One environment's service bindings."),
       )
       .describe("What the app's service bindings wrote, per environment."),
+    ownedBindings: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment written — `dev` for the top-level stanza."),
+            binding: z.string().describe("The D1 binding."),
+            field: z.enum(["database_name", "database_id"]).describe("The field written or removed."),
+            from: z.string().optional().describe("What it said before. Absent when the field was not there."),
+            to: z.string().optional().describe("What it says now. Absent when the field was removed."),
+          })
+          .describe("One field one D1 entry changed."),
+      )
+      .describe("What `ownBindings` changed in the Worker's D1 entries: its own names, and its own local store."),
   })
   .describe("What `pithy worker sync` wrote.");
 
@@ -240,10 +254,7 @@ const add = withContract(
             `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
           );
         }
-        // Three states, not two. A reconciled run that pinned nothing used to print the sentence below it —
-        // "run pithy feature sync to assign a port" — immediately after a sync had assigned one, because the
-        // port lookup could not find it (#229). The lookup is fixed; the branch stays three-way so the
-        // sentence about assigning a port is only ever printed where none has been.
+        // Three states, not two: the sentence about assigning a port is only ever printed where none has been.
         if (report.port !== null) {
           process.stdout.write(`Pinned to port ${report.port}.\n`);
         } else if (report.reconciled) {
@@ -295,15 +306,13 @@ const list = withContract(
         }
         const rows = workers.map((worker) => {
           const port = worker.port === null ? "—" : String(worker.port);
-          // `off here` rather than `manual`, and the distinction is the point (#548): a worker that does
-          // not start is never a property of the project any more, so the word has to say whose decision
-          // it was. `manual` read like a setting somebody would find in a committed file, and there is no
-          // longer any such file to find.
+          // `off here`, because whether a worker starts is this machine's decision, never a property of the
+          // project, and the word has to say whose decision it was.
           const auto = worker.autostart ? "autostart" : "off here";
           // The deployed name leads the row, because it is the string the Cloudflare dashboard shows and
           // the one `--worker`, `remove` and `rename` all also accept. The directory is what the adopter
           // acts on, so it is named too rather than left to be inferred from the deployed one — the two
-          // are free to be unrelated, which is the whole reason they are separate fields (#144).
+          // are free to be unrelated, which is the whole reason they are separate fields.
           return { name: worker.deployedAs, description: dim(`${worker.worker}  ${auto}  port ${port}`) };
         });
         process.stdout.write(`${formatList(rows)}\n`);
@@ -511,7 +520,7 @@ const unbind = withContract(
  * name, and `vars.WORKER`. This is the command that moves all three at once, and points every other Worker's
  * service binding at the new name; `pithy doctor` is what catches a rename done by hand.
  *
- * **`--from` and `--to`, so the `worker` group reads one way (#617).** `bind` and `unbind` name every Worker by
+ * **`--from` and `--to`, so the `worker` group reads one way.** `bind` and `unbind` name every Worker by
  * flag, because a binding has a direction. The positional `rename <old> <new>` is still accepted, and says once
  * which flags it stands for.
  */
@@ -586,7 +595,7 @@ const rename = withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: WorkerRenamePayload,
     mutates: true,
@@ -638,16 +647,13 @@ function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDo
 
 /**
  * `pithy worker sync` — write what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`: the
- * route and `vars.BASE_URL` its `domains` block implies, and the app capability's Workflows and cron
- * schedule, for every environment it declares.
+ * route and `vars.BASE_URL` its `domains` block implies, the app capability's Workflows and cron schedule, and
+ * the D1 names its `pithy.worker.jsonc` `ownBindings` imply, for every environment it declares.
  *
  * **One command for one job: the declaration is the truth, this is what makes wrangler agree with it.**
- * A library capability's Workflows arrive with `pithy <capability> provision`. The adopter's own had no
- * command at all, so the binding table was hand-written per environment against a naming rule that only
- * fails at deploy. `domains` had the same hole and a worse ending: `applyDomains` writes the route, and the
- * only way to reach it was an interactive prompt during `pithy init` or `pithy worker add`, so a
- * declaration added by hand routed nowhere and `doctor` and `deploy` both called it healthy (#264). This is
- * the command `pithy doctor` names when it reports that fault.
+ * A library capability's Workflows arrive with `pithy <capability> provision`; the adopter's own, a `domains`
+ * block added by hand, and an `ownBindings` entry added after the bindings were written arrive here. This is
+ * the command `pithy doctor` names when it reports a route the declaration implies and the stanza lacks.
  *
  * It writes config and nothing else — no Cloudflare call, no deploy — so it is safe to run on any branch,
  * at any time, as often as you like. A second run reports "already in sync" and touches no file.
@@ -685,7 +691,36 @@ const sync = withContract(
         const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
 
         const app = target.config.app;
-        if (!app && domains === undefined) {
+        // The D1 names `ownBindings` implies — and, for an entry taken out, the ones it no longer does. Asked of
+        // every Worker composing a database, because the second half has nothing listed to trigger it.
+        const ownBindings = target.target.ownBindings ?? [];
+        const composesDatabase = target.capabilities.some((capability) =>
+          capability.requiredBindings.some((binding) => binding.type === "d1"),
+        );
+        // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
+        // once deployed, so a guessed project would name a Workflow another owns. A script name and a database
+        // name are the same.
+        // A Worker owning nothing has nothing to reconcile without a project name, so only the app or an owned
+        // binding makes the name required.
+        const project =
+          app || ownBindings.length > 0
+            ? await loadProject(projectDir).then(requireProjectName)
+            : composesDatabase
+              ? await loadProject(projectDir)
+                  .then(requireProjectName)
+                  .catch(() => undefined)
+              : undefined;
+        const ownedBindings =
+          project && composesDatabase
+            ? await reconcileOwnedDatabases({
+                workerDir: target.dir,
+                project,
+                capabilities: target.capabilities,
+                ownBindings,
+                ...(env === undefined ? {} : { env }),
+              })
+            : [];
+        if (!app && domains === undefined && ownBindings.length === 0 && ownedBindings.length === 0) {
           throw new NotFoundError({
             message: `${target.name} declares neither domains nor an app capability.`,
             action:
@@ -693,21 +728,18 @@ const sync = withContract(
           });
         }
 
-        // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
-        // once deployed, so a guessed project would name a Workflow another owns. A script name is the same.
-        const project = app ? await loadProject(projectDir).then(requireProjectName) : undefined;
         const runs =
           app && project
             ? await reconcileAppWorkflows({
                 workerDir: target.dir,
                 project,
                 app,
-                // Their adopter-hosted jobs' entries and crons are the adopter's, and stay (#622).
+                // Their adopter-hosted jobs' entries and crons are the adopter's, and stay.
                 capabilities: target.config.capabilities,
                 ...(env === undefined ? {} : { env }),
               })
             : [];
-        // The app's service bindings, each at the script its target deploys as per environment (#617).
+        // The app's service bindings, each at the script its target deploys as per environment.
         const declared = (app?.requiredBindings ?? []).flatMap((binding) =>
           binding.type === "service" && binding.service !== undefined
             ? [{ binding: binding.name, target: binding.service }]
@@ -725,7 +757,7 @@ const sync = withContract(
 
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs, serviceRuns })}\n`,
+            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs, serviceRuns, ownedBindings })}\n`,
           );
           return;
         }
@@ -734,13 +766,15 @@ const sync = withContract(
         if (
           routes.every((route) => !route.changed) &&
           runs.every((run) => !run.changed) &&
-          serviceRuns.every((run) => !run.changed)
+          serviceRuns.every((run) => !run.changed) &&
+          ownedBindings.length === 0
         ) {
           // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
           // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
           // job's binding out — so a run per environment saying nothing is exactly the empty case.
           const nothing =
             routes.length === 0 &&
+            ownBindings.length === 0 &&
             serviceRuns.length === 0 &&
             runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
           process.stdout.write(
@@ -765,6 +799,13 @@ const sync = withContract(
           if (!run.changed) continue;
           const bound = run.services.map((entry) => `${entry.binding} to ${entry.service}`).join(", ");
           process.stdout.write(`${run.env}: ${bound}.\n`);
+        }
+        for (const change of ownedBindings) {
+          process.stdout.write(
+            change.to === undefined
+              ? `${change.env}: ${change.binding} ${change.field} removed.\n`
+              : `${change.env}: ${change.binding} ${change.field} ${change.to}.\n`,
+          );
         }
         // Cloudflare resolves class_name in the script the binding names, and that script is this one.
         const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];

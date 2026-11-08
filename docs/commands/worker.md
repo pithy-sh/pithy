@@ -33,7 +33,7 @@ pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
 | `--dry-run` | `rename` | `false` | Show the plan and write nothing. Every refusal still applies, the live-script check included |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
-| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
+| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron, its D1 names. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all seven | `false` | One line of machine-readable output |
 
 ## What it does
@@ -48,13 +48,15 @@ It also names **answers recorded for a checkout that is gone**. Those answers ar
 
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database. **It refuses while another Worker binds the one going**, and names every one: their service bindings would name a script nothing deploys. Unbind each first.
 
-**`sync`** writes what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`. Two halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
+**`sync`** writes what the Worker's `pithy.config.ts` and `pithy.worker.jsonc` declare into its `wrangler.jsonc`. Several halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
 
 The first half is the address. A `domains` block names where the Worker answers per environment, and `sync` writes the `custom_domain` route and the `vars.BASE_URL` it implies. **This is the only non-interactive way to get that route written.** Before it, the route was written by the domain prompt during `pithy init` or `pithy worker add` and nowhere else, so a `domains` block added by hand — the documented way to add an environment — declared an address nothing served: `pithy doctor` reported it healthy, `pithy deploy` shipped it, and the Worker answered on nothing. Doctor now reports that as a missing route and names this command. Running it twice changes nothing and writes nothing.
 
 The second half writes the app capability's declared Workflows and cron triggers, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, nor is one you wrote for a library job your own Worker hosts (`@pithy-sh/auth`'s purge, `@pithy-sh/payments`' usage pass), `triggers.crons` is set to exactly the declared schedules plus any such job's schedule already there, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
 
 The third half is the app's service bindings: each declared one written into `services` in every stanza, at the script its target deploys as there, as `bind` writes it. An entry you wrote by hand is left as it is.
+
+The fourth half is the Worker's D1 entries against its `ownBindings`. A binding listed after its entries were written still names the shared database, and one taken out still names the Worker's own, so each entry naming the other of the pair gets the `database_name` `pithy provision` composes for this Worker. An environment stanza that already holds a real `database_id` is left alone, for `pithy provision --repoint` to move, and a name chosen by hand is never rewritten. The top-level stanza, which is local dev's, also gets a `database_id` of its own for an owned binding, and loses it when the entry is taken out, so `pithy dev`, `migrate` and `seed` keep the two databases apart. Only names the kit composed are rewritten: a name you chose is yours, and `pithy doctor` reports it. An environment stanza that already holds a real `database_id` is left for `pithy provision --env <env> --repoint`, because renaming it here would point the name at one database and the id at another. A `scope: "global"` binding in `ownBindings` is refused, naming the capability.
 
 **`pithy doctor` and `pithy deploy --env <name>` read the Workflow half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
 
@@ -77,6 +79,20 @@ Two things it deliberately leaves alone: the app capability's `name` in `pithy.c
 **Every other Worker's binding follows the rename.** Each `service:` in another app's `pithy.config.ts` that names it, by its directory or its deploy name, becomes the new directory name, and each `services` entry naming one of the old scripts takes the script its stanza deploys as now. The binding names stay, because that app's code reads them. `rebound` names the Workers it rewrote.
 
 What `rename` does not touch is everything outside the Worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run, so a hand-rename that misses one fails CI instead of a deploy.
+
+## Owning a binding: `ownBindings`
+
+Every binding is shared by name: two Workers that both declare `DB` are backed by one database. A Worker that lists a binding in `ownBindings` in its `pithy.worker.jsonc` gets a resource of its own instead, for D1, KV, R2 and queues, and its code still reads `env.DB`:
+
+```jsonc
+// apps/billing/pithy.worker.jsonc
+{
+  // Bindings this Worker gets its own resource for. Everything else is shared by name.
+  "ownBindings": ["DB", "SESSIONS"]
+}
+```
+
+`pithy add` writes the owned name into each stanza for a binding already listed, `sync` reconciles one listed later, and `pithy provision` creates it. [`NAMING.md`](../NAMING.md#shared-by-default-owned-when-a-worker-says-so) states the rule and the name; [`provision.md`](provision.md#owning-a-binding-and---repoint) says what happens to a binding that moves between shared and owned.
 
 ## `--json`
 
@@ -172,7 +188,7 @@ $ pithy worker rename --from api --to board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}]}
+{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[]}
 ```
 
 | key | type | meaning |
@@ -200,6 +216,12 @@ $ pithy worker sync --worker api --json
 | `serviceRuns[].services[].binding` | `string` | The binding name in the Worker's env |
 | `serviceRuns[].services[].service` | `string` | The script it calls in that environment |
 | `serviceRuns[].changed` | `boolean` | Whether that stanza moved |
+| `ownedBindings` | `object[]` | One entry per field `ownBindings` changed in the Worker's D1 entries. Empty when nothing moved, which a re-run always is |
+| `ownedBindings[].env` | `string` | The environment written. `dev` names the top-level stanza |
+| `ownedBindings[].binding` | `string` | The D1 binding |
+| `ownedBindings[].field` | `"database_name" \| "database_id"` | The field written or removed. `database_id` only ever moves in the top-level stanza |
+| `ownedBindings[].from` | `string` | What it said before. Absent when the field was not there |
+| `ownedBindings[].to` | `string` | What it says now. Absent when the field was removed |
 
 ```
 $ pithy worker bind --from app-a --to app-b --json
@@ -259,7 +281,7 @@ Could not read api's wrangler.jsonc.
 Fix the file, then run the rename again — this command edits it.
 ```
 
-**Nothing to sync.** `sync` writes what `domains` and an `app` capability declare, and a Worker with neither has nothing to write.
+**Nothing to sync.** `sync` writes what `domains`, an `app` capability and `ownBindings` declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write.
 
 ```
 api declares neither domains nor an app capability.

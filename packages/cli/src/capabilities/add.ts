@@ -25,6 +25,7 @@ import {
   type WranglerStanza,
 } from "../project/bindingEntries";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { readOwnership } from "../project/workerManifest";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { addAgain, addCallerOf } from "./addCommand";
 import { optionValue } from "./configConstants";
@@ -368,12 +369,14 @@ async function updateWrangler({ workerDir, manifest, project }: AddCapabilityOpt
 
   const bindings = wiredBindings(manifest);
   const kvNamespaces: ProposedName[] = [];
+  const owns = await readOwnership(workerDir);
   for (const { env, stanza } of envStanzas(config)) {
     kvNamespaces.push(
       ...appendBindings(stanza, bindings, {
         ...(project === undefined ? {} : { project }),
         env,
         capability: manifest.name,
+        ...(owns === undefined ? {} : { owns, topLevel: stanza === config }),
       }),
     );
   }

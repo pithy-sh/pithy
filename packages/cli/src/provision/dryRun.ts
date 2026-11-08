@@ -17,7 +17,7 @@ import type { SecretsStore } from "./store";
 
 /**
  * **`pithy provision --dry-run`: the real provisioning, in a copy of the project, against an account that is
- * only read (#697).**
+ * only read.**
  *
  * Provisioning is not described here, for the reason `pithy add --dry-run` is not: the find-or-create loop,
  * the declines, the scoped script names, the service targets and the stanza writer each have rules of their
@@ -75,6 +75,11 @@ export interface PlanProvisionOptions {
   seed: boolean;
   /** The project's `seed.productionEnvironments`, carried to the migrations' refusals. */
   productionEnvironments?: readonly string[];
+  /**
+   * Whether the run would repoint. The plan's run always does, so every repoint is listed; without `--repoint` the
+   * plan says the run refuses them.
+   */
+  repoint?: boolean;
   /** The run itself — `provisionEnvironment` or `provisionFeature` — over the seams it is handed. */
   run: (seams: ProvisionPlanSeams) => Promise<ProvisionReport>;
 }
@@ -174,20 +179,35 @@ export async function planProvision(options: PlanProvisionOptions): Promise<Prov
   });
 
   const resources: PlanResource[] = report.resources.map((resource) => {
-    const base = { kind: resource.kind, name: resource.name, binding: resource.binding, env };
+    const base = {
+      kind: resource.kind,
+      name: resource.name,
+      binding: resource.binding,
+      env,
+      ...(resource.owner !== undefined ? { owner: resource.owner } : {}),
+      workers: resource.workers,
+    };
     return resource.created ? { ...base, action: "create" } : { ...base, action: "adopt", id: resource.id };
   });
   const secrets: PlanSecret[] = report.secretBindings
     .filter((secret) => secret.bound)
     .map((secret) => ({ name: secret.secret, env, action: secret.minted ? "mint" : "bind", where: secret.entry }));
   const notes: string[] = [...copied];
+  for (const repoint of report.repoints) {
+    notes.push(
+      `Repoints ${repoint.worker}'s ${repoint.binding} from ${repoint.current} to ${repoint.next}. ${repoint.current} keeps its data.`,
+    );
+  }
+  if (report.repoints.length > 0 && options.repoint !== true) {
+    notes.push("The run refuses to repoint without --repoint, and creates nothing.");
+  }
   if (options.seed) notes.push(`Then loads the seed fixtures into ${env}.`);
 
   return { report, plan: { ...emptyPlan(), files, resources, migrations, secrets, notes } };
 }
 
 /**
- * **What a feature's run does after its resources, which a plan does not run (#697).** A feature deploys a
+ * **What a feature's run does after its resources, which a plan does not run.** A feature deploys a
  * kit Worker per host its capabilities compose, then binds each app Worker to them, creates their indexes
  * and their `d1` secrets. Uploading is a write, so the plan names each upload and stops there; and a
  * feature composing `secrets` gets its own master key first, which is a write to the account's store.

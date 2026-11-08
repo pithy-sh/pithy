@@ -4,7 +4,7 @@
 import { z } from "zod";
 
 /**
- * **One plan shape for every `--dry-run` (#697).**
+ * **One plan shape for every `--dry-run`.**
  *
  * A dry run exists so an agent can show a person what a command will change before it changes it, and
  * that only works if the agent can read every command's answer the same way. Five commands planned before
@@ -59,6 +59,14 @@ export const PlanResource = z
       .describe("The kind of Cloudflare resource."),
     name: z.string().describe("Its name in the account."),
     binding: z.string().optional().describe("The Worker binding it backs, when it backs one."),
+    owner: z
+      .string()
+      .optional()
+      .describe("The apps/<owner> Worker it is that Worker's own for, from its ownBindings. Absent when it is shared."),
+    workers: z
+      .array(z.string().describe("A Worker's deploy name."))
+      .optional()
+      .describe("The Workers whose stanza it is written into, when it backs a binding."),
     env: z.string().optional().describe("The environment it belongs to."),
     action: z
       .enum(["create", "adopt", "upload", "unknown"])

@@ -4,31 +4,31 @@
 import { ValidationError } from "../error/pithyError";
 import { featureMarker, isFeatureMarker } from "./environment";
 import { FEATURE_TAIL_SEPARATOR, MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
-import { assertValidProjectName, kebab } from "./resource";
+import { assertValidProjectName, kebab, ownedThing } from "./resource";
 
 /**
  * The names a feature environment provisions under: `<project>-f<issue>-<slug>--<binding>-<kind>` for a
- * resource, `<project>-f<issue>-<slug>--<worker>` for a Worker script.
+ * resource, `<project>-f<issue>-<slug>--<owner>---<binding>-<kind>` for a resource one Worker owns, and
+ * `<project>-f<issue>-<slug>--<worker>` for a Worker script.
  *
- * **Two hyphens after the slug, and a project with no `f<digits>` segment (#643).** Together they make every
- * feature name parse back to exactly one (project, issue, slug): the double hyphen is something no other name
- * Pithy composes can hold ({@link FEATURE_TAIL_SEPARATOR}), and the first `f<digits>` segment is the issue's,
- * because the project may carry none ({@link assertFeatureProject}). Before them, project `acme-f12-x`'s `prod`
- * and project `acme`'s branch `feature/12-x-prod` composed every name between them, and a branch whose slug
- * was a hyphen-prefix of a sibling's could compose the sibling's database. See {@link parseFeatureName}.
+ * **Two hyphens after the slug, and a project with no `f<digits>` segment.** Together they make every feature
+ * name parse back to exactly one (project, issue, slug): the first double hyphen ends the slug, and no name a
+ * declared environment composes holds one that is not followed by a third ({@link FEATURE_TAIL_SEPARATOR}), and
+ * the first `f<digits>` segment is the issue's, because the project may carry none ({@link assertFeatureProject}).
+ * Without them, project `acme-f12-x`'s `prod` and project `acme`'s branch `feature/12-x-prod` would compose names
+ * in common, and a branch whose slug is a hyphen-prefix of a sibling's could compose the sibling's database. See
+ * {@link parseFeatureName}.
  *
- * **No environment segment, and no Worker segment.** A feature *is* an environment, and two Workers that
- * declare the same binding are meant to share one resource — so the binding name, not the topology, is
- * where sharing is expressed.
+ * **No environment segment, and a Worker segment only for an owned binding.** A feature *is* an environment, and
+ * two Workers that declare the same binding share one resource unless one lists it in `ownBindings`.
  *
  * Every name here is **derived and recomputed**, never stored: `provision` and `destroy` both compute the
  * same string from `(identity, binding, kind)`, which is what lets teardown reconcile exactly rather than
  * scan a prefix a hyphenated sibling slug could ambiguously match.
  *
- * **Never truncated (#643).** These names used to fit a long slug with a hash, on the reasoning that a feature
- * name addresses nothing that outlives the feature. But a short hash is a slug some sibling branch can have
- * whole, so a fitted name was a name two features could compose. A slug that does not fit is refused instead,
- * naming the maximum ({@link assertFeatureSlugFits}), and every feature name is exactly its feature's.
+ * **Never truncated.** A short hash is a slug some sibling branch can have whole, so a fitted name would be a name
+ * two features could compose. A slug that does not fit is refused, naming the maximum
+ * ({@link assertFeatureSlugFits}), and every feature name is exactly its feature's.
  *
  * It lives in `core`, beside the rest of the naming rule, so the CLI and the facade compose one
  * implementation rather than two that drift.
@@ -41,7 +41,7 @@ export type FeatureResourceKind = "d1" | "kv" | "r2" | "queue";
 export const FEATURE_RESOURCE_KINDS: readonly FeatureResourceKind[] = ["d1", "kv", "r2", "queue"];
 
 /**
- * **The segment each kind ends a feature resource's name with — never more than `MAX_FEATURE_KIND` (#662).**
+ * **The segment each kind ends a feature resource's name with — never more than `MAX_FEATURE_KIND`.**
  *
  * `d1`, `kv` and `r2` spell themselves. A queue is `q`, and that is load-bearing: `MAX_FEATURE_KIND` is a term in
  * `FEATURE_DERIVED_PROJECT_NAME`, so spelling it `queue` would take the project budget from 26 to 23 — and a
@@ -70,8 +70,7 @@ export interface FeatureIdentity {
  *
  * `MAX_ISSUE_DIGITS` is a term in {@link FEATURE_DERIVED_PROJECT_NAME}, so an eight-digit issue would
  * quietly spend a character every project name was already accepted against. It is also the cheapest
- * possible check that the value is an issue number at all — `featureResourceName` used to interpolate
- * whatever string it was handed straight into a Cloudflare name.
+ * possible check that the value is an issue number at all, before it is interpolated into a Cloudflare name.
  */
 function assertIssue(issue: string): void {
   if (new RegExp(`^[0-9]{1,${MAX_ISSUE_DIGITS}}$`).test(issue)) return;
@@ -83,9 +82,8 @@ function assertIssue(issue: string): void {
 }
 
 /**
- * **The issue as a name carries it: its digits, without leading zeros (#643).** `feature/0643-foo` and
- * `feature/643-foo` are one issue, so they are one feature and compose one set of names. Read as strings they
- * were two features, and their rate-limit namespaces collided every time. `0` stays `0`.
+ * **The issue as a name carries it: its digits, without leading zeros.** `feature/0643-foo` and
+ * `feature/643-foo` are one issue, so they are one feature and compose one set of names. `0` stays `0`.
  */
 export function canonicalIssue(issue: string): string {
   assertIssue(issue);
@@ -93,7 +91,7 @@ export function canonicalIssue(issue: string): string {
 }
 
 /**
- * The `f<digits>` segment a project name carries, or `null` — the shape a feature's issue takes (#643).
+ * The `f<digits>` segment a project name carries, or `null` — the shape a feature's issue takes.
  *
  * Read after kebabbing, because the kebab is what reaches an account.
  */
@@ -102,7 +100,7 @@ export function featureMarkerInProjectName(project: string): string | null {
 }
 
 /**
- * **Refuse features for a project whose name carries an `f<digits>` segment (#643).**
+ * **Refuse features for a project whose name carries an `f<digits>` segment.**
  *
  * A feature name is read left to right: the project, then the first `f<digits>` segment, which is the issue.
  * A project named `acme-f12-x` puts that segment inside itself, and then its feature 3 on `y` and project `acme`'s
@@ -110,7 +108,7 @@ export function featureMarkerInProjectName(project: string): string | null {
  * the project obeys it too, where the two shapes meet.
  *
  * **Refused here, not at `requireProjectName`.** Such a project's staging and prod are untouched: no name they
- * compose holds {@link FEATURE_TAIL_SEPARATOR}, so no feature anywhere can compose one of theirs. Refusing the
+ * compose parses as a feature name ({@link parseFeatureName}), so no feature anywhere can compose one of theirs. Refusing the
  * name everywhere would break every command of a project that is otherwise sound. `pithy init` refuses a new one,
  * and `pithy doctor` names the segment an existing one carries. Nothing is renamed.
  */
@@ -144,19 +142,21 @@ export interface ParsedFeatureName {
 }
 
 /**
- * **Read a feature name back into its owner, or `null` when it is not one (#643).**
+ * **Read a feature name back into its owner, or `null` when it is not one.**
  *
- * Exact, because the shape leaves one reading: a feature name holds {@link FEATURE_TAIL_SEPARATOR} exactly once,
- * everything before it is `<project>-f<issue>-<slug>`, and the first `f<digits>` segment there is the issue,
- * since a project may carry none. Nothing else Pithy composes holds the separator at all.
+ * Exact, because the shape leaves one reading: a feature name splits at its first {@link FEATURE_TAIL_SEPARATOR},
+ * everything before it is `<project>-f<issue>-<slug>`, and the first `f<digits>` segment there is the issue, since
+ * a project may carry none. The thing after it may hold an owned binding's `---`, and **never starts with a
+ * hyphen**: the first `--` of every name a declared environment composes is the start of an owned `---`, so a thing
+ * starting with `-` is refused, and no environment's name reads as a feature's.
  */
 export function parseFeatureName(name: string): ParsedFeatureName | null {
   const at = name.indexOf(FEATURE_TAIL_SEPARATOR);
-  if (at < 0 || name.indexOf(FEATURE_TAIL_SEPARATOR, at + 1) >= 0) return null;
+  if (at < 0) return null;
   const thing = name.slice(at + FEATURE_TAIL_SEPARATOR.length);
   const segments = name.slice(0, at).split("-");
   const marker = segments.findIndex(isFeatureMarker);
-  if (thing === "" || marker < 1 || marker === segments.length - 1) return null;
+  if (thing === "" || thing.startsWith("-") || marker < 1 || marker === segments.length - 1) return null;
   if (segments.some((segment) => segment === "")) return null;
   return {
     project: segments.slice(0, marker).join("-"),
@@ -167,13 +167,11 @@ export function parseFeatureName(name: string): ParsedFeatureName | null {
 }
 
 /**
- * **Is this name one this feature composes?** The ownership check the isolation gates ask (#643).
+ * **Is this name one this feature composes?** The ownership check the isolation gates ask.
  *
  * Parsed, never prefix-matched, and exact: the name's project, issue and slug are this feature's, character for
- * character. `<project>-f<issue>-` is shared by every branch of one issue, so a prefix match reached siblings; and
- * a fitted form of the slug, which this used to accept, is a short hash some sibling can have as its whole slug
- * (`feature/12-login` owned `feature/12-c`). No feature name is fitted any more ({@link composeFeatureName}), so
- * there is nothing but the slug itself to accept.
+ * character. `<project>-f<issue>-` is shared by every branch of one issue, so a prefix match would reach siblings,
+ * and no feature name is fitted ({@link composeFeatureName}), so there is nothing but the slug itself to accept.
  */
 export function isFeatureOwnedName(identity: FeatureIdentity, name: string): boolean {
   const parsed = parseFeatureName(name);
@@ -197,11 +195,11 @@ export function featureSlugRoom(parts: FeatureHead, thing: string, limit: number
 }
 
 /**
- * Compose `<head>-<slug>--<tail><fixed>` whole, or refuse (#643).
+ * Compose `<head>-<slug>--<tail><fixed>` whole, or refuse.
  *
- * **Never truncated.** A fitted slug was a short hash, and a hash is a slug some sibling branch can have: the
- * review of 4828e1fc found `feature/12-login` owning `feature/12-c`'s names, and two long slugs of one issue
- * composing one database. A name that does not fit is refused, naming the longest slug that does, and
+ * **Never truncated.** A fitted slug is a short hash, and a hash is a slug some sibling branch can have whole, so
+ * `feature/12-login` would own `feature/12-c`'s names. A name that does not fit is refused, naming the longest
+ * slug that does, and
  * `pithy feature create` and `pithy provision --feature` refuse the branch before anything exists
  * ({@link assertFeatureSlugFits}). This is the backstop behind them: no path composes a feature name that is not
  * exactly its feature's.
@@ -220,8 +218,8 @@ function composeFeatureName(
     ["binding or worker", tail],
   ] as const) {
     if (value) continue;
-    // An empty segment composed `acme-f69--db-d1`, or a name ending in a dash. Neither is a legal
-    // bucket or script name, and both used to come out of here without a word.
+    // An empty segment would compose `acme-f69--db-d1`, or a name ending in a dash: neither is a legal bucket or
+    // script name.
     throw new ValidationError({
       message: `A feature resource name needs a ${role}.`,
       action: "Use letters, digits, and hyphens — something that survives kebabbing.",
@@ -281,7 +279,7 @@ export function maxFeatureSlug(parts: FeatureHead, shapes: readonly FeatureNameS
 }
 
 /**
- * **Refuse a branch whose slug cannot fit every name its feature composes (#643).** The one refusal
+ * **Refuse a branch whose slug cannot fit every name its feature composes.** The one refusal
  * `pithy feature create` and `pithy provision --feature` make, before a worktree or a resource exists, with the
  * project's maximum in the message. {@link composeFeatureName} refuses the same slug one name at a time; this says
  * it once, for all of them.
@@ -308,17 +306,23 @@ export function assertFeatureSlugFits(identity: FeatureIdentity, shapes: readonl
 
 /**
  * The full Cloudflare resource name for a feature's binding — `<project>-f<issue>-<slug>--<binding>-<kind>`, the
- * kind spelled by {@link FEATURE_KIND_SEGMENT}.
+ * kind spelled by {@link FEATURE_KIND_SEGMENT}. With an `owner`, the `apps/<owner>` Worker that lists the binding in
+ * `ownBindings`, it is `<project>-f<issue>-<slug>--<owner>---<binding>-<kind>`.
  *
  * Held to **R2's 63**, the strictest of the kinds a feature provisions and a queue's number too, so one shape is
  * legal for all of them: lowercase, hyphenated, alphanumeric at both ends. A D1 or KV name could be longer, but a
  * feature that provisions a bucket and a database wants them recognizably the same name.
  */
-export function featureResourceName(identity: FeatureIdentity, binding: string, kind: FeatureResourceKind): string {
+export function featureResourceName(
+  identity: FeatureIdentity,
+  binding: string,
+  kind: FeatureResourceKind,
+  owner?: string,
+): string {
   return composeFeatureName(
     identity,
     kebab(identity.slug),
-    kebab(binding),
+    owner === undefined ? kebab(binding) : ownedThing(owner, binding),
     `-${FEATURE_KIND_SEGMENT[kind]}`,
     NAMESPACE_LIMITS.r2.maxLength,
     NAMESPACE_LIMITS.r2.label,
@@ -337,8 +341,8 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
  * no documented Cloudflare cap, and holding it to the strictest kind's would hash
  * `secrets-encryption-keys` down to nothing for no reason.
  *
- * A `global` secret is named here too since #643: a feature shares nothing with any other environment, so
- * its entry for a global secret is its own rather than the project's `<project>-global-<secret>`.
+ * A `global` secret is named here too: a feature shares nothing with any other environment, so its entry for a
+ * global secret is its own rather than the project's `<project>-global-<secret>`.
  */
 export function featureSecretEntryName(identity: FeatureIdentity, secret: string): string {
   return composeFeatureName(
@@ -358,14 +362,12 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
  * binding must target, so RPC inside a feature environment reaches that feature's deployment rather than
  * production's.
  *
- * Held to the **Worker rule** ({@link NAMESPACE_LIMITS.worker}), which is the bug this used to have: it
- * floored the slug at one character and never touched the worker segment, so it ran unbounded — 69
- * characters for a worker called `collaboration-realtime-gateway`, 109 for a 70-character one. `apps/<name>`
- * has a charset rule and no length rule, so nothing upstream was going to stop it either.
+ * Held to the **Worker rule** ({@link NAMESPACE_LIMITS.worker}). `apps/<name>` has a charset rule and no length
+ * rule, so nothing upstream bounds the worker segment.
  *
  * **`app` is the `apps/<app>` directory, never the deploy name.** A scaffolded Worker deploys as
  * `<project>-<app>`, and handing that here composed `<project>-f<issue>-<slug>--<project>-<app>` — the
- * project twice, spent out of the budget above (#587). This function takes a string and cannot tell the
+ * project twice, spent out of the budget above. This function takes a string and cannot tell the
  * two apart, so the provisioning path reaches it only through `featureScope`, which is handed both names
  * and picks.
  */
@@ -380,11 +382,11 @@ export function featureWorkerName(identity: FeatureIdentity, app: string): strin
   );
 }
 
-/** The `<thing>` a feature's Artifacts namespace ends with, after {@link FEATURE_TAIL_SEPARATOR} (#673). */
+/** The `<thing>` a feature's Artifacts namespace ends with, after {@link FEATURE_TAIL_SEPARATOR}. */
 export const FEATURE_ARTIFACTS_THING = "artifacts";
 
 /**
- * A feature's **Artifacts namespace** — `<project>-f<issue>-<slug>--artifacts` (#673).
+ * A feature's **Artifacts namespace** — `<project>-f<issue>-<slug>--artifacts`.
  *
  * A declared environment's namespace is `<project>-<env>` and has no `<thing>`. A feature's needs one, because the
  * separator and what follows it are what make a name a feature name: {@link isFeatureOwnedName} reads this one back
@@ -404,7 +406,7 @@ export function featureArtifactsNamespace(identity: FeatureIdentity): string {
 }
 
 /**
- * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>--<capability>-<job>` (#643).
+ * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>--<capability>-<job>`.
  *
  * A Workflow name is account-wide, like a Worker's, so a feature's email host cannot run
  * `<project>-feature-email-send`: every open branch would deploy the same Workflow over every other's. It takes
@@ -426,7 +428,7 @@ export function featureWorkflowName(identity: FeatureIdentity, capability: strin
 }
 
 /**
- * The name of one of a feature's **Vectorize indexes** — `<project>-f<issue>-<slug>--<thing>` (#643).
+ * The name of one of a feature's **Vectorize indexes** — `<project>-f<issue>-<slug>--<thing>`.
  *
  * An index name is account-wide, so a feature's vector host cannot bind `<project>-feature-vector-<index>`: every
  * open branch would read and write one index. Held to the Vectorize limit and fitted the way every feature name

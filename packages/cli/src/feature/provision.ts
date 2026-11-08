@@ -25,6 +25,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { managerMintedSecrets, mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
 import { unhostableAppJobs } from "../project/appWorkflows";
 import { type KitDeployReport, summarizeKitDeploy } from "../project/deployKit";
+import { readOwnBindings } from "../project/workerManifest";
 import {
   type BackendRunner,
   defaultResolveWorkers,
@@ -65,6 +66,7 @@ import {
   readManifest,
   writeManifest,
 } from "./manifest";
+import { ownedBindingsOf } from "./ownedBindings";
 import { assertFeatureLimitersMap, assertNoDeclaredFeatureIds, readWorkerRatelimits } from "./ratelimits";
 import { assertFeatureSlugFitsSources } from "./slugBudget";
 
@@ -78,7 +80,7 @@ import { assertFeatureSlugFitsSources } from "./slugBudget";
  *
  * `destroy` reverses it: delete the manifest's Worker scripts and resources, then reconcile by recomputing
  * each expected name, so a partial-failed provision — or a feature provisioned before scripts were
- * recorded (#592) — still loses everything named for it. Not a `<script>-feature` Worker such a feature may
+ * recorded — still loses everything named for it. Not a `<script>-feature` Worker such a feature may
  * also have deployed: that name carries no feature identity, and every branch shared it.
  */
 
@@ -95,14 +97,14 @@ import { assertFeatureSlugFitsSources } from "./slugBudget";
  * for that binding and kind under this identity. The check needs nothing from the file but the entry's own
  * `binding`/`kind`, so a legitimate record still validates even after its capability is removed from config.
  * The name is all the file is trusted for: the id deleted is the one the account answers for that name, never
- * the id the entry states, so a feature's own name paired with production's id reaches nothing (#662).
+ * the id the entry states, so a feature's own name paired with production's id reaches nothing.
  */
 function isOwnedByFeature(identity: FeatureIdentity, resource: FeatureResource): boolean {
-  return resource.name === featureResourceName(identity, resource.binding, resource.kind);
+  return resource.name === featureResourceName(identity, resource.binding, resource.kind, resource.owner);
 }
 
 /**
- * The same rule for a recorded Worker script (#592): honored only when its name is one this feature could
+ * The same rule for a recorded Worker script: honored only when its name is one this feature could
  * have deployed that Worker under, recomputed from the entry's own two names. An entry naming
  * `acme-prod-api` beside `app: "api"` is a crafted instruction to delete production, and is ignored.
  */
@@ -124,10 +126,9 @@ function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManif
   ) {
     return;
   }
-  // **It names the feature the file belongs to, and never advises deleting it (#660 review).** The
-  // remedy used to be "Delete .pithy-feature.json and re-run" — and a reader who follows that has just
-  // thrown away the only record of what *that* feature provisioned, orphaning every resource in it. The
-  // file is somebody's teardown instructions; the run that cannot use them says whose they are.
+  // **It names the feature the file belongs to, and never advises deleting it.** The file is the only record
+  // of what *that* feature provisioned, so it is somebody's teardown instructions; the run that cannot use them
+  // says whose they are.
   throw new ValidationError({
     message: `The feature manifest in ${dir} belongs to ${manifest.project}-f${manifest.issue}-${manifest.slug}, not to ${identity.project}-f${identity.issue}-${identity.slug}.`,
     action: `Tear that feature down from its own worktree, or pass --branch feature/${canonicalIssue(manifest.issue)}-${manifest.slug} to tear it down from here. The file is the only record of what it provisioned, so keep it until it has been.`,
@@ -162,12 +163,12 @@ export interface ProvisionFeatureOptions {
   /**
    * Look up the account's `workers.dev` subdomain (`accountWorkersSubdomain` in a real run). A feature Worker
    * answers on `https://<script>.<subdomain>.workers.dev`, and this is how its stanza is stamped with that
-   * address (#643). Omitted, no address is stamped and the feature resolves to the local placeholder.
+   * address. Omitted, no address is stamped and the feature resolves to the local placeholder.
    */
   workersSubdomain?: () => Promise<string | null>;
   /** Worker-resolution seam (default: the real `apps/` resolver), so tests fix the worker set. */
   resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
-  /** Where each step is narrated as it happens. Forwarded verbatim; omitted means a silent run (#515). */
+  /** Where each step is narrated as it happens. Forwarded verbatim; omitted means a silent run. */
   onProgress?: ProvisionProgress;
   /**
    * The account's Secrets Store, when one is reachable. Given it, the feature's Workers get their
@@ -178,7 +179,7 @@ export interface ProvisionFeatureOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * **The feature's master key, created by the CLI with its own credentials (#643)** — `CloudflareSecretsProvisioner`
+   * **The feature's master key, created by the CLI with its own credentials** — `CloudflareSecretsProvisioner`
    * handed this feature, in a real run, creating the feature's own key entry only if absent. Called only when the
    * feature composes the secrets capability, and before anything binds the key. The feature's `SECRETS` database and
    * its migration are the generic provisioning's; its manager is one of the kit hosts {@link deployHosts} deploys.
@@ -188,32 +189,32 @@ export interface ProvisionFeatureOptions {
    */
   secrets?: Pick<SecretsProvisioner, "ensureMasterKey" | "ensureFieldKeys">;
   /**
-   * **The feature's own secrets manager, as a dispatcher (#643)** — `WorkflowSecretDispatcher` bound to this
+   * **The feature's own secrets manager, as a dispatcher** — `WorkflowSecretDispatcher` bound to this
    * feature, in a real run. Once the manager is deployed, every mintable `d1` secret is created through it by
    * `mintDeclaredSecrets`, exactly as `pithy secrets provision` creates a declared environment's: probed first,
    * written with `create`, never over a value that is there. Omitted, the `d1` secrets stay pending.
    */
   managers?: SecretDispatcher & SecretProbe;
   /**
-   * **The indexes a feature creates for its hosts (#643)** — `CloudflareVectorProvisioner`'s own `ensureIndex`
+   * **The indexes a feature creates for its hosts** — `CloudflareVectorProvisioner`'s own `ensureIndex`
    * and `ensureMetadataIndexes`, in a real run. Omitted, none are created and no app Worker is bound to one.
    */
   indexes?: FeatureIndexes;
   /**
-   * **Stand up every kit host the feature composes (#643)** — `deployKitWorkers` handed this feature, in a real
+   * **Stand up every kit host the feature composes** — `deployKitWorkers` handed this feature, in a real
    * run: the resolver and the gated deploy a declared environment's hosts go through. Called once the feature's
    * configs are written and migrated. Omitted, no host is deployed and no app Worker is bound to one.
    */
   deployHosts?: () => Promise<KitDeployReport>;
   /**
-   * The caller's own `pithy provision --feature` (#711), which a refusal naming the run again is built from, so it
+   * The caller's own `pithy provision --feature`, which a refusal naming the run again is built from, so it
    * carries every flag the caller gave. Absent, {@link featureProvisionCallerOf}.
    */
   caller?: Caller<"provision">;
 }
 
 /**
- * **Refuse a branch whose app declares a job nothing can host, naming the job and the fix (#650 review).**
+ * **Refuse a branch whose app declares a job nothing can host, naming the job and the fix.**
  *
  * One sentence for every unhostable job across every Worker on the branch, rather than the first one a writer
  * happened to reach: an adopter who added two classless jobs fixes both in one pass.
@@ -242,12 +243,12 @@ function assertAppWorkflowsHostable(workers: readonly ProvisionWorker[]): void {
  * stanza of a checked-in `wrangler.jsonc`, then migrated against. The scope carries both halves, so the
  * combination cannot be expressed. A declared environment is `pithy provision --env`'s job.
  *
- * **The report carries no `command` of its own** (#251). The command's name belongs to the command:
+ * **The report carries no `command` of its own**. The command's name belongs to the command:
  * `pithy provision` stamps `"provision"` on what it prints, and a second name stamped here would be a
  * caller's own field silently overwritten by a spread.
  */
 /**
- * **`pithy provision --feature` as a run with no command line behind it names itself (#711)** — a test, or a caller
+ * **`pithy provision --feature` as a run with no command line behind it names itself** — a test, or a caller
  * that drives {@link provisionFeature} directly. The command passes its own parsed arguments instead.
  */
 export function featureProvisionCallerOf(): Caller<"provision"> {
@@ -256,7 +257,7 @@ export function featureProvisionCallerOf(): Caller<"provision"> {
 
 /**
  * The refusal for a feature whose kit hosts did not all deploy: what failed, and the caller's own run to repeat once
- * it is fixed (#711) — every flag it was given, `--json` among them.
+ * it is fixed — every flag it was given, `--json` among them.
  */
 export function featureHostsRefusal(
   reasons: readonly string[],
@@ -278,23 +279,24 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const workers = await (options.resolveWorkers
     ? options.resolveWorkers(options.projectDir)
     : defaultResolveWorkers(options.projectDir, scope.stanza));
-  // Before anything is created: a slug too long for any name this feature composes (#643). Names are never
+  // Before anything is created: a slug too long for any name this feature composes. Names are never
   // truncated, so the branch is refused here, with the project's maximum, rather than one name at a time later.
   await assertFeatureSlugFitsSources(options.identity, {
     capabilities: options.capabilities,
     workers: workers.map(provisionWorkerNames),
+    owned: ownedBindingsOf(workers),
     projectDir: options.projectDir,
   });
-  // Before anything is created: an app Worker that would deploy under a kit host's name (F3 of #643's review).
+  // Before anything is created: an app Worker that would deploy under a kit host's name.
   assertNoFeatureHostCollision(options.identity, workers.map(provisionWorkerNames));
-  // Before anything is created: a job the app declares with no class to run it (#650 review). The stanza writer
+  // Before anything is created: a job the app declares with no class to run it. The stanza writer
   // refuses it too — `planAppWorkflows` cannot name a Workflow with no `className`, exactly as `pithy worker
-  // sync` cannot — but that writer runs after every resource and store entry, so the run threw with the feature
-  // already on the account and every re-run threw in the same place. Asked here, beside the slug budget, for the
+  // sync` cannot — but that writer runs after every resource and store entry, so a refusal there would leave the
+  // feature on the account and every re-run refusing in the same place. Asked here, beside the slug budget, for the
   // same reason that one is: a refusal that costs nothing is worth making before a run costs something.
   assertAppWorkflowsHostable(workers);
 
-  // **The feature's rate-limit namespaces, checked before anything is created (#643).** Every Worker's tracked
+  // **The feature's rate-limit namespaces, checked before anything is created.** Every Worker's tracked
   // config is read, so a declared id in the feature range is refused wherever it is, and every limiter the feature
   // binds must map to its fixed feature namespace — the one every feature binds for it, see `./ratelimits`.
   const store = options.store;
@@ -302,7 +304,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   assertNoDeclaredFeatureIds(ratelimits);
   assertFeatureLimitersMap(ratelimits);
 
-  // **The feature's master key, the one secret the CLI writes into the account for it (#643).** A feature has its
+  // **The feature's master key, the one secret the CLI writes into the account for it.** A feature has its
   // own `SECRETS` database and its own manager, and the manager seals every `d1` secret under whatever key the
   // store holds, once deployed. So the key is created only if absent, and a run that fails anywhere after it
   // exists is finished by the next one: there is no "the run that created the key" for correctness to hang on.
@@ -313,11 +315,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const composesSecrets = featureHostCapabilities(options.capabilities).includes("secrets");
   if (store && options.secrets && composesSecrets) {
     await options.secrets.ensureMasterKey(FEATURE_ENVIRONMENT);
-    // And its own field key (#390), which its app Workers with an encrypted field bind beside it.
+    // And its own field key, which its app Workers with an encrypted field bind beside it.
     await options.secrets.ensureFieldKeys(FEATURE_ENVIRONMENT);
   }
 
-  // **One record per run, filled by the minter below and read by the seed step (#660).** A feature is
+  // **One record per run, filled by the minter below and read by the seed step.** A feature is
   // provisioned and seeded in one process, and a `cf-secrets-store` value is readable for exactly the
   // stretch between those two — the store is write-only from the CLI.
   const minted = mintedThisRun();
@@ -367,19 +369,19 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               scope,
               storeId: store.storeId,
               exists: (name) => store.exists(name),
-              // **What makes `pithy feature` true (#321).** Every secret the registry declares mintable is created
+              // **What makes `pithy feature` true.** Every secret the registry declares mintable is created
               // here, in the branch's own entry, so nothing is shared with a declared environment.
               //
-              // Through the store's create-if-absent (#643): absence is checked first, and a run that loses a race
+              // Through the store's create-if-absent: absence is checked first, and a run that loses a race
               // for the same entry leaves the winner's value where it is rather than writing over it.
-              // **And remembered for the seed that follows, in memory (#660).** A feature's store entries
+              // **And remembered for the seed that follows, in memory.** A feature's store entries
               // are created here and never readable again, while its seed runs a few steps later in this
               // same process — so a fixture that must seal something under one of these values can only
               // do it now. Nothing minted, nothing remembered; a re-run hands the seed an empty channel.
               mint: storeSecretMinter({
                 // The store itself: `create` is what the minter needs, and its outcome is what decides
-                // whether this run may claim the value (#660 review). Adapting it to a plain `put` threw
-                // that answer away, and a discarded `present` is a record of a value nothing holds.
+                // whether this run may claim the value: a discarded `present` would be a record of a value
+                // nothing holds.
                 store,
                 environment: scope.stanza,
                 minted,
@@ -395,7 +397,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   });
   if (!options.deployHosts) return report;
 
-  // **The indexes the hosts bind that the generic provisioning has no kind for (#643)** — a vector host's
+  // **The indexes the hosts bind that the generic provisioning has no kind for** — a vector host's
   // Vectorize indexes, named for the feature and created with their declared shape, each only if absent. Before
   // the hosts deploy, because a deploy binding an index that does not exist is refused.
   if (options.indexes) {
@@ -445,7 +447,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     );
   }
 
-  // **The feature's `d1` secrets, created by its own manager (#643)** — `mintDeclaredSecrets`, the pass
+  // **The feature's `d1` secrets, created by its own manager** — `mintDeclaredSecrets`, the pass
   // `pithy secrets provision` runs, against the manager just deployed. It probes before it mints and writes
   // with `create`, so a secret that is there is never overwritten, a probe that fails is a failed run rather than
   // an absence, and a re-run after any failure creates exactly what is still missing.
@@ -462,14 +464,14 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   return { ...report, hosts: hosts.workers, ...(featureSecrets ? { featureSecrets } : {}) };
 }
 
-/** Whether a capability binds Artifacts — the only reason a teardown asks the account about repos (#673). */
+/** Whether a capability binds Artifacts — the only reason a teardown asks the account about repos. */
 function bindsArtifacts(capability: Capability): boolean {
   return capability.requiredBindings.some((binding) => binding.type === "artifacts");
 }
 
 /** One deleted resource in the teardown report — a Cloudflare resource, or a Worker script. */
 export interface DeprovisionedResource {
-  /** The resource kind. `worker` for a Worker script (#592). */
+  /** The resource kind. `worker` for a Worker script. */
   kind: TeardownKind;
   /** The resource name. */
   name: string;
@@ -482,7 +484,7 @@ export interface DeprovisionReport {
   /** Every resource deleted — from the manifest and from the expected-name reconcile. */
   deleted: DeprovisionedResource[];
   /**
-   * **Whether a manifest was actually read** — #660 review.
+   * **Whether a manifest was actually read**.
    *
    * Not whether one was looked for, and not whether the directory it would be in exists: a bare
    * `.worktrees/<issue>-<slug>` left behind by an earlier teardown satisfies both and holds no record.
@@ -498,15 +500,15 @@ function isDeletedList(value: unknown): value is DeprovisionedResource[] {
 }
 
 /**
- * **Where the record of a partial teardown rides out of a failure (#380).**
+ * **Where the record of a partial teardown rides out of a failure.**
  *
  * A teardown deletes real infrastructure one resource at a time and has no transaction across them. The
  * fourth delete throws, three databases are already gone, and the return value that would have named
  * them never happens — so the operator is told the teardown failed and nothing about what it destroyed.
- * That is the report `pithy feature destroy` exists to produce, and it was the one the throw took.
+ * That is the report `pithy feature destroy` exists to produce, so it rides out of the throw.
  *
  * The mechanism is `partialWriteReport`'s, the same one `mintDeclaredSecrets` carries its minted secrets
- * on (#324). Carried, never replaced: the failure the operator reads is the failure that happened.
+ * on. Carried, never replaced: the failure the operator reads is the failure that happened.
  */
 const deprovisionReport = partialWriteReport<DeprovisionedResource[]>("pithy.cli.deprovisionReport", isDeletedList);
 
@@ -523,7 +525,7 @@ export interface DeprovisionFeatureOptions {
   /** Where the feature's configs are read from — its own worktree, or the checkout standing in for it. */
   projectDir: string;
   /**
-   * Where the feature's `.pithy-feature.json` is, or `null` when this machine does not have it (#660).
+   * Where the feature's `.pithy-feature.json` is, or `null` when this machine does not have it.
    *
    * Omitted means {@link projectDir}, which is the inferred path: the run is standing in the feature.
    * `pithy feature destroy --branch` passes the feature's own worktree, or `null` for a runner — and a
@@ -542,22 +544,22 @@ export interface DeprovisionFeatureOptions {
   /** The provisioners to delete through. */
   provisioners: ResourceProvisioners;
   /**
-   * The account's Worker scripts (#592). Required beside `provisioners` rather than optional: a teardown
-   * that could run without it is the teardown that left every feature's Workers deployed.
+   * The account's Worker scripts. Required beside `provisioners` rather than optional: a teardown
+   * that could run without it would leave every feature's Workers deployed.
    */
   scripts: WorkerScripts;
   /**
-   * The account's Workflow definitions (#643). Required for the same reason: every kit host a feature deploys
+   * The account's Workflow definitions. Required for the same reason: every kit host a feature deploys
    * hosts Workflows, and Cloudflare does not say that deleting the script deletes them.
    */
   workflows: WorkflowDefinitions;
   /**
-   * The feature's own indexes (#643), recomputed from what the branch composes and deleted by name. Omitted when
+   * The feature's own indexes, recomputed from what the branch composes and deleted by name. Omitted when
    * no account is reachable for them.
    */
   indexes?: FeatureIndexes;
   /**
-   * The repos in the feature's own Artifacts namespace (#673), listed and deleted when anything the feature
+   * The repos in the feature's own Artifacts namespace, listed and deleted when anything the feature
    * composes binds `artifacts`, and then the namespace. Omitted when no account is reachable for them.
    */
   repos?: FeatureRepos;
@@ -566,7 +568,7 @@ export interface DeprovisionFeatureOptions {
    * feature deployed before scripts were recorded are recomputed from. Empty when they cannot be known;
    * the manifest's own record still runs.
    */
-  workers: readonly Pick<ProvisionWorker, "name" | "dir">[];
+  workers: readonly Pick<ProvisionWorker, "name" | "dir" | "ownBindings">[];
   /**
    * The account's Secrets Store, when one is reachable. Teardown removes every entry this feature could
    * have created — and only those. An entry left behind is a live credential in a flat, account-wide
@@ -580,11 +582,11 @@ export interface DeprovisionFeatureOptions {
 /**
  * Delete a feature's Workflows, its Worker scripts, then its Cloudflare resources and store entries.
  *
- * **Every kit host too (#643)**, by the name each registry host takes for this feature, and **every Workflow
+ * **Every kit host too**, by the name each registry host takes for this feature, and **every Workflow
  * those scripts host, explicitly and first** — Cloudflare does not document that deleting a script deletes its
  * Workflows, so teardown does not rely on it.
  *
- * **Scripts before resources (#592).** A script deployed against a database that is already gone answers on
+ * **Scripts before resources.** A script deployed against a database that is already gone answers on
  * workers.dev and fails on its first binding read; deleting it before its resources means there is never
  * a moment a reachable Worker is bound to nothing. Each script is the manifest's record, then every name
  * the current Workers could have deployed under — both shapes, see `featureWorkerScriptNames` — and each
@@ -605,7 +607,7 @@ export interface DeprovisionFeatureOptions {
  * between tearing down a branch and tearing down production is not a difference a flag should carry.
  */
 export async function deprovisionFeature(options: DeprovisionFeatureOptions): Promise<DeprovisionReport> {
-  // **The feature's own manifest, or none at all (#660).** `manifestDir` is the feature's worktree, and
+  // **The feature's own manifest, or none at all.** `manifestDir` is the feature's worktree, and
   // `null` says this machine does not have it — a runner tearing down a merged pull request. Falling back
   // to `projectDir` would read *a* manifest belonging to whatever the cwd is, which is either another
   // feature's teardown instructions or nothing; the caller reports the absence instead.
@@ -645,18 +647,29 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     await record("worker", name, name);
   };
 
-  // Everything from here destroys infrastructure, and `deleted` grows one resource at a time. A throw
-  // anywhere inside used to take the whole list with it — the resources were gone and the record of
-  // which ones was not, on the command whose entire output is that record (#380). It is carried on the
-  // failure instead, and the failure itself is rethrown untouched: teardown still stops, because a
+  // What each Worker owns, read before anything is deleted, so a manifest that will not parse stops the teardown
+  // here rather than halfway through it.
+  const owned = ownedBindingsOf(
+    await Promise.all(
+      options.workers.map(async (worker) => ({
+        dir: worker.dir,
+        ownBindings: worker.ownBindings ?? (await readOwnBindings(worker.dir)),
+        capabilities: options.capabilities,
+      })),
+    ),
+  );
+
+  // Everything from here destroys infrastructure, and `deleted` grows one resource at a time. A throw anywhere
+  // inside carries the list on the failure, since that record is the command's entire output, and the failure
+  // itself is rethrown untouched: teardown still stops, because a
   // delete that failed for a reason belonging to the account — a revoked token, a resource another
   // project holds — is not a reason to keep deleting.
   try {
     assertManifestBelongs(options.identity, manifest, options.manifestDir ?? options.projectDir);
     // Every script this feature could have deployed, named before anything is deleted: the manifest's record;
     // every name the current Workers could have deployed under — a feature provisioned before scripts were
-    // recorded has none in its manifest, and one deployed before #587 runs under the doubled shape; and every
-    // kit host this feature could have stood up (#643), whatever the branch composes now — a host deployed
+    // recorded has none in its manifest, and a long-lived one may run under the doubled shape; and every
+    // kit host this feature could have stood up, whatever the branch composes now — a host deployed
     // before its capability left the branch is still the feature's, and an exact name reaches nobody else's.
     const scripts = new Set<string>();
     for (const script of manifest?.scripts ?? []) {
@@ -667,7 +680,7 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     }
     for (const host of featureHostScripts(options.identity)) scripts.add(host.script);
 
-    // **Their Workflows first, by name, before the scripts that host them (#643).** Cloudflare documents that
+    // **Their Workflows first, by name, before the scripts that host them.** Cloudflare documents that
     // deleting a Workflow leaves its script alone, and says nothing of the reverse, so teardown does not rely on
     // a script taking its Workflows with it. Found by exact hosting-script name, so nothing else's is reached.
     for (const workflow of await options.workflows.hostedBy(scripts)) {
@@ -683,7 +696,7 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       }
     }
 
-    // **The repos in the feature's own Artifacts namespace (#673)**, after the scripts that bind them. Every repo in
+    // **The repos in the feature's own Artifacts namespace**, after the scripts that bind them. Every repo in
     // it, because the namespace is the feature's and nothing else's: `isFeatureOwnedName` reads it back as this
     // branch's alone. Asked only where something binds `artifacts`, because a project that never did holds no
     // `artifacts:write`, and a teardown refused for a permission it never needed is a teardown that leaks the rest.
@@ -720,30 +733,36 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       const found = await options.provisioners[kind].find(name);
       if (found) await remove(kind, name, found.id);
     }
+    // And every resource a Worker owns, by the owned name, from the branch's own `ownBindings`.
+    for (const { app, binding, kind } of owned) {
+      const name = featureResourceName(options.identity, binding, kind, app);
+      const found = await options.provisioners[kind].find(name);
+      if (found) await remove(kind, name, found.id);
+    }
 
     // The feature's own store entries, by recomputed name — the same rule the resources above follow, and
     // the same reason: an exact name is the only thing that cannot reach a sibling's or an environment's.
-    // Every one is the feature's own since #643, a `global` secret's included: `featureScope` names a feature's
+    // Every one is the feature's own, a `global` secret's included: `featureScope` names a feature's
     // entry for it, so removing that entry cannot touch the project's value.
     if (options.store) {
       const scope = featureScope(options.identity);
-      // The union, as provisioning bound it — never capability by capability, which asked each one alone whether
-      // it composed the secrets capability and so found email's link-signing key in no registry at all (#643).
+      // The union, as provisioning bound it — never capability by capability: asked alone whether it composes the
+      // secrets capability, email would find its link-signing key in no registry at all.
       const registry: SecretRegistry = workerSecretRegistry(options.capabilities) ?? {};
       for (const [binding, entry] of Object.entries(registry)) {
         if (entry.backend !== "cf-secrets-store" || entry.keyed) continue;
-        // `global` included: a feature's entry for a global secret is its own too (#643).
+        // `global` included: a feature's entry for a global secret is its own too.
         await options.store.remove(scope.secretEntry(binding, entry.scope));
       }
-      // The feature's master key, which no Worker's registry declares: the manager binds it (#643).
+      // The feature's master key, which no Worker's registry declares: the manager binds it.
       await options.store.remove(masterKeySecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
-      // And its field key (#390), which the manager binds whatever the registries say.
+      // And its field key, which the manager binds whatever the registries say.
       await options.store.remove(fieldKeysSecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
     }
-    // No rate-limit teardown: a feature's namespaces are fixed per limiter and shared by every feature (#643).
-    // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).
+    // No rate-limit teardown: a feature's namespaces are fixed per limiter and shared by every feature.
+    // Nothing to revoke: a feature's manager holds no Cloudflare API token.
 
-    // **The Artifacts namespace last of all (#673).** Cloudflare made it on the first repo and nothing else ever
+    // **The Artifacts namespace last of all.** Cloudflare made it on the first repo and nothing else ever
     // deletes it. A repo delete is answered 202 and finishes later, so the namespace can still answer 409 after
     // every retry: a passing state, not an account fault, and the one failure here that is expected. Last, so it
     // cannot leave the feature's D1, KV, R2, queues and store entries live behind it, and so the repos get the

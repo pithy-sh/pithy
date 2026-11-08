@@ -20,6 +20,8 @@ export interface WorkerTarget {
   dev?: WorkerDev;
   /** Whether the directory holds a `wrangler.jsonc`. `false` → a non-Worker process (deploy skips it). */
   hasWrangler?: boolean;
+  /** The bindings this Worker owns, from `pithy.worker.jsonc` `ownBindings`. Real discovery always sets it. */
+  ownBindings?: string[];
 }
 
 /** Just the `name` field of a `wrangler.jsonc` — the Worker's deployed name. */
@@ -49,7 +51,7 @@ interface WorkerDirectory {
 /**
  * **The discovery rule, once**: every `apps/<name>/` holding a `pithy.worker.jsonc` or a `wrangler.jsonc`, by
  * directory name. Synchronous, so a classifier building a sentence inside a `catch` reads the same set
- * {@link discoverWorkers} does, by the same test (#711).
+ * {@link discoverWorkers} does, by the same test.
  */
 function workerDirectories(projectDir: string): WorkerDirectory[] {
   let entries: string[];
@@ -105,6 +107,7 @@ async function toTarget(dir: string, fallbackName: string, hasWrangler: boolean)
     dir,
     dev: manifest?.dev ?? defaultWorkerDev(),
     hasWrangler,
+    ownBindings: manifest?.ownBindings ?? [],
   };
 }
 

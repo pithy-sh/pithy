@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { BindingSpec, type BindingType, TARGET_KINDS } from "@pithy-sh/core/src/capability/bindings";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -28,6 +29,7 @@ import { z } from "zod";
 interface BindingEntry {
   binding: string;
   database_name?: string;
+  database_id?: string;
   remote?: boolean;
 }
 
@@ -70,7 +72,7 @@ interface QueueProducer {
 }
 
 /**
- * One `queues.consumers` entry (#824): the queue this Worker consumes, how often a message is retried, and the
+ * One `queues.consumers` entry: the queue this Worker consumes, how often a message is retried, and the
  * queue an exhausted one goes to. Keyed by queue name, because wrangler gives a consumer no binding.
  */
 interface QueueConsumer {
@@ -110,7 +112,7 @@ interface DurableObjectMigration {
 /**
  * Every class a tag brings into the script, whichever verb brings it. A class an adopter created with
  * `new_classes`, renamed into place or transferred in already exists, and a second create for it is one
- * wrangler refuses (#662).
+ * wrangler refuses.
  */
 function classesRegisteredBy(migration: DurableObjectMigration): string[] {
   return [
@@ -124,7 +126,7 @@ function classesRegisteredBy(migration: DurableObjectMigration): string[] {
 /**
  * The classes a migration history leaves registered, replayed in order: a class a later tag deletes or
  * renames away is gone, and one created again after that is back. What `appendDurableObjectMigrations` asks
- * before allocating a tag, so a class retired with `deleted_classes` (#815) is created again rather than read
+ * before allocating a tag, so a class retired with `deleted_classes` is created again rather than read
  * as still registered.
  */
 export function liveDurableObjectClasses(migrations: readonly DurableObjectMigration[]): Set<string> {
@@ -185,7 +187,7 @@ export interface WranglerStanza {
 }
 
 /**
- * **The `wrangler.jsonc` key each binding kind lives under, spelled the way wrangler spells it (#662).**
+ * **The `wrangler.jsonc` key each binding kind lives under, spelled the way wrangler spells it.**
  *
  * The one table from a {@link BindingType} to the file. `project/wranglerInheritance.ts` derives what a new stanza
  * carries from it and `seedPolicy`, and `wranglerInheritance.test.ts` holds every value to a key wrangler does not
@@ -226,11 +228,9 @@ type CarriedArrayKind =
 /**
  * What one call to {@link appendBinding} did.
  *
- * **The writer answers "did I write it", because nothing else can.** `pithy upgrade` used to report the
- * bindings its *plan* named and never asked the writer whether any of them landed, so five capabilities'
- * Workflow bindings were counted as added, silently declined, and correctly reported missing by `pithy
- * doctor` seconds later (#318). A count derived from an intention is a claim about the future; this is
- * the return value that makes it a claim about the file.
+ * **The writer answers "did I write it", because nothing else can.** A caller counting the bindings its
+ * *plan* named would count a declined one as added. A count derived from an intention is a claim about the
+ * future; this is the return value that makes it a claim about the file.
  *
  * `skipped` carries a `reason` written for an operator reading a terminal, not for a log: it names what
  * the entry needed and did not have, so the next step is obvious.
@@ -251,7 +251,7 @@ export const ProposedName = z
     binding: z.string().describe("The Worker env binding the name is proposed for, e.g. `SESSIONS`."),
     env: z.string().describe("The environment whose stanza declares it — `dev` for the top-level one."),
     // `<project>-global-<thing>` where the binding declares its resource the project's rather than the
-    // environment's (#513).
+    // environment's.
     name: z.string().describe("The proposed resource name, `<project>-<env>-<thing>`."),
   })
   .describe("A name proposed for a resource the adopter creates themselves, composed by the one naming rule.");
@@ -265,6 +265,16 @@ export interface BindingScope {
   env: string;
   /** The capability the bindings belong to — the `<capability>` segment of a Workflow's deployed names. */
   capability: string;
+  /**
+   * What this Worker owns: its `apps/<worker>` directory and its `pithy.worker.jsonc` `ownBindings`. A listed
+   * binding's resource is named `<worker>---<binding>`. Absent owns nothing.
+   */
+  owns?: { worker: string; bindings: ReadonlySet<string> };
+  /**
+   * Whether this is the top-level stanza, which is local dev's. An owned D1 binding there gets a `database_id` of
+   * its own, so Miniflare, `pithy migrate` and `pithy seed` keep it apart from the shared one.
+   */
+  topLevel?: boolean;
 }
 
 /**
@@ -299,11 +309,9 @@ const RATE_LIMIT_PERIOD_SECONDS = 60;
  * capabilities were composed in. A positional counter would renumber every limiter the moment one was
  * removed, silently merging two budgets.
  *
- * **Stable is not retrofitted, and this docstring used to claim it was (#499).** It named `pithy upgrade`
- * retrofitting an older project among the things the derivation buys, and no command does that: a
- * limiter's stanza is written once at `pithy add` and never revisited, so a project scaffolded before this
- * function keeps the positional id it was given (`1001` where the kit now writes `3093`). Rewriting one is
- * not the obvious repair either — a `namespace_id` is a live budget's identity, so changing it
+ * **Stable is not retrofitted.** A limiter's stanza is written once at `pithy add` and never revisited, so a
+ * project scaffolded under an older derivation keeps the positional id it was given (`1001` where the kit now
+ * writes `3093`). Rewriting one is not the obvious repair either — a `namespace_id` is a live budget's identity, so changing it
  * re-partitions a counter under running traffic. The value is left alone and the difference is
  * **reported**: {@link generatedFieldDrift} is what `pithy doctor` compares, and the adopter decides.
  *
@@ -334,7 +342,7 @@ export interface GeneratedFieldDrift {
 /**
  * Where an environment's stanza disagrees with the value this writer derives for a binding **today**.
  *
- * A generated value whose derivation changes is never retrofitted (#499): the entry was written once, and
+ * A generated value whose derivation changes is never retrofitted: the entry was written once, and
  * every later command reads the binding by name alone — {@link stanzaHasBinding} says why, and it is right
  * to. So the only thing that can notice is a comparison, and this is it. Report-only by construction: it
  * returns a difference, it never writes one, because a `namespace_id` is a live budget's identity and the
@@ -348,8 +356,8 @@ export interface GeneratedFieldDrift {
  * - `simple.limit` and `simple.period` are the adopter's, said out loud by the constants above — "the
  *   number belongs in the adopter's config where they can tune it". A tuned limiter reported as drift is
  *   the feature working being called a fault.
- * - A D1 `database_name` is a *proposal*, not a derivation. An adopter pointing a binding at a database
- *   they already had is the case it exists to allow.
+ * - A D1 `database_name` is compared, but not here: `pithy doctor` reads it against the name `pithy provision`
+ *   composes for that Worker, owned or shared, in its own check (`doctor/declaredNames.ts`).
  * - A `workflows` entry is fully derived and genuinely worth comparing — and already is, by
  *   `project/workflows.ts`, which doctor renders in its own `Workflows:` block. A second comparison of one
  *   fact is how two reports come to disagree about it.
@@ -381,12 +389,11 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
 /**
  * The name to propose for a binding's resource, or `undefined` when there is nothing safe to propose.
  *
- * **Not always `<project>-<env>-<binding>`, and that is #513.** A binding whose manifest says its
- * resource is the project's rather than the environment's composes `<project>-global-<thing>`, so every
- * environment's stanza names the identical resource — which is what `EMAIL_SUPPRESSIONS` requires and
- * what this writer had no way to say. It wrote three per-environment suppression databases, `pithy email
- * provision` created the one global one, and an unsubscribe recorded through either was invisible to the
- * other. The spec is taken whole rather than by name for exactly that: the answer is on it.
+ * **Not always `<project>-<env>-<binding>`.** A binding whose manifest says its resource is the project's rather
+ * than the environment's composes `<project>-global-<thing>`, so every environment's stanza names the identical
+ * resource — which is what `EMAIL_SUPPRESSIONS` requires. The spec is taken whole rather than by name for exactly
+ * that: the answer is on it. And a binding this Worker lists in `ownBindings` composes `<worker>---<binding>` as
+ * its thing, the name `pithy provision` creates for it.
  *
  * **Through the same composer a provisioning run uses**, so the two writers cannot disagree about one
  * resource. The scoped half stays here as a callback because only this writer knows which stanza it is
@@ -409,9 +416,32 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
 function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv" | "queue"): string | undefined {
   const { project } = scope;
   if (project === undefined) return undefined;
+  const owner = ownerIn(scope, binding);
   if (binding.scope !== GLOBAL_SCOPE && !isValidEnvironment(scope.env)) return undefined;
   const names = resourceNames(project);
-  return bindingResourceName(project, binding.name, kind, binding, (thing) => names.env(scope.env)[kind](thing));
+  return bindingResourceName(
+    project,
+    binding.name,
+    kind,
+    binding,
+    (thing) => names.env(scope.env)[kind](thing, owner),
+    owner,
+  );
+}
+
+/**
+ * The owner `binding` is named for in this scope, or `undefined` when it is shared. A `scope: "global"` binding
+ * is one resource for the project by definition, so a Worker listing one is refused, naming the capability.
+ */
+export function ownerIn(scope: BindingScope, binding: BindingSpec): string | undefined {
+  if (scope.owns === undefined || !scope.owns.bindings.has(binding.name)) return undefined;
+  if (binding.scope === GLOBAL_SCOPE) {
+    throw new ValidationError({
+      message: `${scope.owns.worker} owns ${binding.name}, which ${scope.capability} declares global: one resource for the whole project.`,
+      action: `Take ${binding.name} out of ownBindings in apps/${scope.owns.worker}/pithy.worker.jsonc.`,
+    });
+  }
+  return scope.owns.worker;
 }
 
 /**
@@ -430,7 +460,7 @@ function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv
  *
  * **This writer has one shape, and it is the cross-Worker one.** A capability's Workflow class is
  * exported by that capability's host Worker, never by the app, so there is no same-Worker branch here to
- * be missing — #318 guessed there was. The same-Worker shape (`class_name`, no `script_name`) is a
+ * be missing. The same-Worker shape (`class_name`, no `script_name`) is a
  * different writer for a different owner: `project/appWorkflows.ts`, for jobs the adopter's **own** app
  * capability declares and its own script exports. Looking for it here finds a case this file will never
  * see.
@@ -439,9 +469,8 @@ function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv
  * either, so emitting a partial one would trade a failed request for a config that will not load.
  * `capabilities/requiredBindings.test.ts` is what makes that a build failure rather than a surprise.
  *
- * **Each refusal says why.** Returning a bare `undefined` is what let `pithy upgrade` count these as
- * written (#318): the caller had nothing to distinguish "wrote it" from "declined", so it reported the
- * plan. The reason is the operator's next step, in their words — the missing field, or the missing
+ * **Each refusal says why.** A bare `undefined` would leave the caller nothing to tell "wrote it" from
+ * "declined". The reason is the operator's next step, in their words — the missing field, or the missing
  * project name.
  */
 function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindingEntry | { reason: string } {
@@ -460,7 +489,7 @@ function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindi
 }
 
 /**
- * The `queues.consumers` entry for a consuming queue (#824). The dead-letter queue is named by the composer that names
+ * The `queues.consumers` entry for a consuming queue. The dead-letter queue is named by the composer that names
  * every queue, from its own binding and this one's scope, so it is the queue `pithy provision` creates for that
  * binding. A dead-letter queue this cannot name is left off rather than guessed: the consumer still delivers, and
  * Cloudflare drops an exhausted message instead of keeping it.
@@ -512,7 +541,7 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
       return (stanza.workflows ?? []).some((entry) => entry.binding === binding.name);
     case "queue": {
       // A consuming queue is two entries, and present only when both are: a producer with no consumer is a queue
-      // that fills and is never read (#824).
+      // that fills and is never read.
       const producer = (stanza.queues?.producers ?? []).find((entry) => entry.binding === binding.name);
       if (producer === undefined) return false;
       if (binding.consumer === undefined) return true;
@@ -557,9 +586,9 @@ function carriedEntry(binding: BindingSpec, kind: CarriedArrayKind): CarriedEntr
  * The writer emits a binding's **shape** — its name, and whatever the spec and the naming rule can state
  * offline. Resource identity that only provisioning knows stays absent: `database_id`, `id`, and
  * `bucket_name` are filled later by `pithy provision` or the capability's own provisioner. `database_name`
- * is the exception and it is a *proposal*, not an identity — wrangler accepts a D1 entry naming a database
- * that does not exist yet, and an adopter who leaves it alone gets a project-scoped name instead of
- * inventing `db`.
+ * is the exception: it is the name `pithy provision` will create, written ahead of any account, since wrangler
+ * accepts a D1 entry naming a database that does not exist yet. Provisioning writes the name it composes over
+ * whatever the entry says. The top-level stanza of an owned D1 binding also gets a `database_id`, its local store's.
  *
  * Returns {@link BindingWrite} — **what happened**, not what was meant to. The KV namespace title rides
  * on a `written` outcome, when this call wrote a KV binding and a name could be composed: **KV is
@@ -576,8 +605,17 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "d1": {
       stanza.d1_databases ??= [];
       const name = proposeName(scope, binding, "d1");
+      // An owned database's local store is its own: Miniflare keys a D1 store on `database_id`, else the binding.
+      const local = scope.topLevel === true && name !== undefined && ownerIn(scope, binding) !== undefined;
       stanza.d1_databases.push(
-        withRemote({ binding: binding.name, ...(name ? { database_name: name } : {}) }, binding),
+        withRemote(
+          {
+            binding: binding.name,
+            ...(name ? { database_name: name } : {}),
+            ...(local ? { database_id: name } : {}),
+          },
+          binding,
+        ),
       );
       return { outcome: "written" };
     }
@@ -655,7 +693,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       stanza.send_email.push(withRemote({ name: binding.name }, binding));
       return { outcome: "written" };
     case "artifacts": {
-      // `{ binding, namespace }`, and the namespace is this environment's, `<project>-<env>` (#673). An entry with
+      // `{ binding, namespace }`, and the namespace is this environment's, `<project>-<env>`. An entry with
       // no namespace is one wrangler refuses, so a namespace this cannot name is skipped and said, never half-written.
       if (scope.project === undefined) return { outcome: "skipped", reason: "no project name is resolved" };
       if (!isValidEnvironment(scope.env)) {
@@ -717,10 +755,8 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
  * written.** A tag is applied once and remembered by Cloudflare: the next deploy sends only the tags
  * *after* the last one applied. So a class appended into a tag that has already been deployed is sent to
  * nobody — the namespace is never created, and the deploy fails on a binding to a class with no migration
- * behind it. Every class used to merge into a single `v1`, and the comment here said why that was safe:
- * `@pithy-sh/multiplayer` was the only capability shipping a Durable Object, so every add was a first add.
- * #415 made `@pithy-sh/matchmaking` addable, which ends that — and `pithy add multiplayer` → `pithy deploy`
- * → `pithy add matchmaking` is the path its own README recommends.
+ * behind it. More than one capability ships a Durable Object, and `pithy add multiplayer` → `pithy deploy`
+ * → `pithy add matchmaking` is the path matchmaking's own README recommends.
  *
  * Splitting costs a never-deployed Worker nothing: wrangler applies `v1` then `v2` in order on the first
  * deploy, reaching the identical end state. **Idempotent**, because a class already named by *any* tag is
@@ -738,7 +774,7 @@ export function appendDurableObjectMigrations(config: WranglerStanza, bindings: 
   // yet — and one a later tag deleted is not (`liveDurableObjectClasses`).
   // This is the whole of the idempotency: a second `pithy add` of the same capability finds nothing new
   // and returns without touching the file. Any verb counts, not only the one the kit writes: an app's own
-  // class reaches this writer too, and an adopter registered it by hand (#662).
+  // class reaches this writer too, and an adopter registered it by hand.
   const registered = liveDurableObjectClasses(config.migrations);
   const fresh = [...new Set(classes)].filter((className) => !registered.has(className));
   if (fresh.length === 0) return;

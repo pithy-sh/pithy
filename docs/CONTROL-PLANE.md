@@ -115,7 +115,7 @@ The address changes: a custom domain, a renamed Worker, or a moved environment b
 
 A customer may register **several projects**, each its own connection with its own keypair. The dashboard resolves how many a customer has and offers a picker when there is more than one; a single project needs no ceremony.
 
-Sibling Workers are not separately addressable, and that is deliberate: the data being administered is shared through binding names rather than owned per Worker, so a second connection to a sibling would be a second credential onto the same rows.
+Sibling Workers are not separately addressable, and that is deliberate: the data being administered is shared through binding names by default ([`NAMING.md`](NAMING.md#shared-by-default-owned-when-a-worker-says-so)), so a second connection to a sibling would be a second credential onto the same rows.
 
 ### Without a dashboard
 
@@ -763,7 +763,7 @@ pithy mcp serve --connection pithy-acme-prod
 
 `pithy mcp` is the seam's second client in the CLI: a stdio MCP server whose tools are this table's admin routes, offered only where the connection's grant reaches, with its own key or, in CI, a workload trust. It registers through the `--public-key` and `--oidc-issuer` paths above. [`AGENT-ACCESS.md` §3](AGENT-ACCESS.md) and [`commands/mcp.md`](commands/mcp.md) describe it.
 
-Connection is **project-wide, per environment — never per Worker.** Workers share a resource by declaring the same binding name, so one user record lives in one D1 that several Workers touch. A per-Worker credential would produce views where a user is visible in one pane and absent from another.
+Connection is **project-wide, per environment — never per Worker.** Workers share a resource by binding name unless one owns it ([`NAMING.md`](NAMING.md#shared-by-default-owned-when-a-worker-says-so)), so one user record lives in one D1 that several Workers touch. A per-Worker credential would produce views where a user is visible in one pane and absent from another.
 
 ### Which of these go through the seam
 

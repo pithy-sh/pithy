@@ -12,7 +12,7 @@ import {
   featureWorkerName,
 } from "./feature";
 import { NAMESPACE_LIMITS, type NamespaceLimit } from "./limits";
-import { assertValidProjectName, kebab, resourceName } from "./resource";
+import { assertValidProjectName, kebab, ownedResourceName, resourceName } from "./resource";
 
 /**
  * Every Cloudflare name a project composes, behind one object — **the facade**.
@@ -57,14 +57,19 @@ export interface ScopedNames {
   worker(capability: string): string;
   /** One durable job's Workflow — `<project>-<env>-<capability>-<job>`. Refused, not truncated, past 64. */
   workflow(capability: string, job: string): string;
-  /** A D1 database. No Cloudflare cap; Pithy's ceiling, truncated with a stable hash. */
-  d1(binding: string): string;
-  /** A KV namespace title. Cloudflare's 512, not the 63 this used to be held to. */
-  kv(binding: string): string;
-  /** An R2 bucket. Cloudflare's 63 — the one namespace where that number was always right. */
-  r2(binding: string): string;
-  /** A Queue. Cloudflare's 63, truncated with a stable hash like a bucket (#662). */
-  queue(binding: string): string;
+  /**
+   * A D1 database. No Cloudflare cap; Pithy's ceiling, truncated with a stable hash.
+   *
+   * `owner` is the `apps/<owner>` Worker that owns the binding, when one does: the name is then
+   * `<project>-<env>-<owner>---<binding>`. The same argument on {@link kv}, {@link r2} and {@link queue}.
+   */
+  d1(binding: string, owner?: string): string;
+  /** A KV namespace title. Cloudflare's 512. */
+  kv(binding: string, owner?: string): string;
+  /** An R2 bucket. Cloudflare's 63. */
+  r2(binding: string, owner?: string): string;
+  /** A Queue. Cloudflare's 63, truncated with a stable hash like a bucket. */
+  queue(binding: string, owner?: string): string;
   /** A Vectorize index. 64 bytes, refused rather than truncated: a renamed index has no vectors. */
   vectorizeIndex(index: string): string;
   /** A Secrets Store entry. No Cloudflare cap; Pithy's ceiling. */
@@ -79,7 +84,7 @@ export interface ScopedNames {
  */
 export interface EnvironmentNames extends ScopedNames {
   /**
-   * The Artifacts namespace — `<project>-<env>`, with no `<thing>` (#673). One per environment, so a feature's
+   * The Artifacts namespace — `<project>-<env>`, with no `<thing>`. One per environment, so a feature's
    * repos never sit beside production's and the per-namespace rate limit splits per environment. There is no
    * global one, because a namespace shared across environments is exactly that mix.
    */
@@ -88,15 +93,18 @@ export interface EnvironmentNames extends ScopedNames {
 
 /** The names a feature environment provisions under, with the project already bound. */
 export interface FeatureNames {
-  /** A feature's D1, KV, R2 or Queue resource — `<project>-f<issue>-<slug>--<binding>-<kind>`. */
-  resource(binding: string, kind: FeatureResourceKind): string;
+  /**
+   * A feature's D1, KV, R2 or Queue resource — `<project>-f<issue>-<slug>--<binding>-<kind>`, or
+   * `<project>-f<issue>-<slug>--<owner>---<binding>-<kind>` for a binding the `apps/<owner>` Worker owns.
+   */
+  resource(binding: string, kind: FeatureResourceKind, owner?: string): string;
   /**
    * A feature's Worker script — `<project>-f<issue>-<slug>-<app>`, from the `apps/<app>` directory and
-   * never the deploy name, which already leads with the project (#587).
+   * never the deploy name, which already leads with the project.
    */
   worker(app: string): string;
   /**
-   * A feature's Artifacts namespace — `<project>-f<issue>-<slug>--artifacts` (#673). The tail is what makes it a
+   * A feature's Artifacts namespace — `<project>-f<issue>-<slug>--artifacts`. The tail is what makes it a
    * feature name `isFeatureOwnedName` reads back, so teardown reaps this feature's repos and no sibling's.
    */
   artifactsNamespace(): string;
@@ -130,9 +138,12 @@ export interface ProjectNames {
  * or a secret, which is an adopter's string, so it is kebabbed into shape instead. Merging the two would
  * either start mangling a capability name or stop normalizing a binding.
  */
-function scopedName(project: string, scope: string, thing: string, limit: NamespaceLimit): string {
+function scopedName(project: string, scope: string, thing: string, limit: NamespaceLimit, owner?: string): string {
   if (limit.policy === "truncate") {
-    const name = resourceName({ project, env: scope, thing }, limit.maxLength);
+    const name =
+      owner === undefined
+        ? resourceName({ project, env: scope, thing }, limit.maxLength)
+        : ownedResourceName({ project, env: scope, thing, owner }, limit.maxLength);
     if (name.length < limit.minLength) {
       throw new InternalError({
         message: `"${name}" is too short for ${limit.label}.`,
@@ -181,10 +192,10 @@ function scopedNames(project: string, scope: string): ScopedNames {
   return {
     worker: (capability) => workflowHostName({ project, capability, env: scope }),
     workflow: (capability, job) => workflowScriptName({ project, capability, job, env: scope }),
-    d1: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.d1),
-    kv: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.kv),
-    r2: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.r2),
-    queue: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.queue),
+    d1: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.d1, owner),
+    kv: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.kv, owner),
+    r2: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.r2, owner),
+    queue: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.queue, owner),
     vectorizeIndex: (index) => scopedName(project, scope, index, NAMESPACE_LIMITS.vectorizeIndex),
     secretEntry: (secret) => scopedName(project, scope, secret, NAMESPACE_LIMITS.secretEntry),
     apiToken: (profile) => scopedName(project, scope, profile, NAMESPACE_LIMITS.apiToken),
@@ -215,7 +226,7 @@ export function resourceNames(project: string): ProjectNames {
     feature(identity): FeatureNames {
       const full: FeatureIdentity = { ...identity, project: normalized };
       return {
-        resource: (binding, kind) => featureResourceName(full, binding, kind),
+        resource: (binding, kind, owner) => featureResourceName(full, binding, kind, owner),
         worker: (app) => featureWorkerName(full, app),
         artifactsNamespace: () => featureArtifactsNamespace(full),
       };

@@ -11,7 +11,7 @@ import { requireManagedEnvironment } from "../project/environment";
 import type { ProvisionedDeclines, ProvisionedResource, ProvisionReport } from "../provision/environment";
 import { provisionNext } from "../terminal/nextSteps";
 import { expectConforms } from "../test-utils/payloadContract";
-import { provisionProgress, runProvision, writeReport } from "./provision";
+import { describeOwnership, provisionProgress, runProvision, writeReport } from "./provision";
 
 /**
  * **Exactly one of `--env` and `--feature`, refused at the flag.**
@@ -117,6 +117,8 @@ describe("pithy provision reports what it left out", () => {
     services: [],
     secretBindings: [],
     declined: [],
+    ownership: [],
+    repoints: [],
     configs: [],
     committed: true,
   };
@@ -260,7 +262,9 @@ describe("pithy provision narrates the run it is doing", () => {
   /** A complete report — one of everything, so the `--json` pin covers the whole payload. */
   const full: ProvisionReport = {
     env: "staging",
-    resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "d1-1", created: true }],
+    resources: [
+      { kind: "d1", binding: "DB", name: "replay-staging-db", id: "d1-1", created: true, workers: ["board"] },
+    ],
     workers: [{ worker: "board", name: "board-staging" }],
     services: [{ binding: "COLLAB", service: "collab-staging" }],
     secretBindings: [
@@ -273,6 +277,8 @@ describe("pithy provision narrates the run it is doing", () => {
       },
     ],
     declined: [],
+    ownership: [],
+    repoints: [],
     // In `provisionEnvironment`'s own key order, so the `--json` literal below is the real line and not a
     // reordering of it.
     manifestFaults: [],
@@ -305,11 +311,13 @@ describe("pithy provision narrates the run it is doing", () => {
   const JSON_LINE = `${[
     '{"command":"provision"',
     '"env":"staging"',
-    '"resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"d1-1","created":true}]',
+    '"resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"d1-1","created":true,"workers":["board"]}]',
     '"workers":[{"worker":"board","name":"board-staging"}]',
     '"services":[{"binding":"COLLAB","service":"collab-staging"}]',
     '"secretBindings":[{"secret":"session-key","binding":"SESSION_KEY","entry":"replay-staging-session-key","bound":true,"minted":false}]',
     '"declined":[]',
+    '"ownership":[]',
+    '"repoints":[]',
     '"manifestFaults":[]',
     '"configs":[{"worker":"board","path":"apps/board/wrangler.jsonc","ids":1}]',
     '"committed":true',
@@ -527,5 +535,31 @@ describe("pithy provision narrates the run it is doing", () => {
     expect(captured(() => writeReport(full, { json: false, seeded: false, pending, registry }))).toContain(
       "replay-staging-db: created.",
     );
+  });
+});
+
+describe("pithy provision reports ownBindings", () => {
+  test("names an entry that owns nothing, and a repoint with what keeps its data", () => {
+    expect(
+      describeOwnership({
+        ownership: [{ worker: "my-app-other", owned: [], unrecognized: ["DBB"] }],
+        repoints: [
+          {
+            worker: "my-app-other",
+            binding: "DB",
+            kind: "d1",
+            current: "my-app-staging-db",
+            next: "my-app-staging-other---db",
+          },
+        ],
+      }),
+    ).toEqual([
+      "my-app-other lists DBB in ownBindings. Nothing it composes declares it, so it owns nothing.",
+      "my-app-other's DB now points at my-app-staging-other---db. my-app-staging-db keeps its data.",
+    ]);
+  });
+
+  test("says nothing for a project that owns nothing", () => {
+    expect(describeOwnership({ ownership: [], repoints: [] })).toEqual([]);
   });
 });

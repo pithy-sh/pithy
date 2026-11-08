@@ -34,8 +34,8 @@ export type LimitSource = "cloudflare" | "pithy";
  * database, a KV namespace, a bucket, a secret entry, a token. Truncation is deterministic and
  * hash-disambiguated, so provision and teardown still agree, and a failed CI run is avoided.
  *
- * **A feature's names are refused in every namespace, whatever its policy here (#643).** A fitted slug is a
- * short hash, and a hash is a slug another branch can have whole; see `composeFeatureName` in `./feature`.
+ * **A feature's names are refused in every namespace, whatever its policy here.** A fitted slug is a short hash,
+ * and a hash is a slug another branch can have whole; see `composeFeatureName` in `./feature`.
  */
 export type OverflowPolicy = "refuse" | "truncate";
 
@@ -111,7 +111,7 @@ export const NAMESPACE_LIMITS = {
    * A Queue name: **1 to 63 characters**, lowercase letters, digits and dashes, starting and ending with a letter
    * or number ([Queues · Get started](https://developers.cloudflare.com/queues/get-started/), verified
    * 2026-10-18). Truncated rather than refused: Pithy recomputes a queue's name from its binding on every run,
-   * as it does a bucket's, so a deterministic hash is safe (#662). The same 63 as R2, so a feature's queue fits
+   * as it does a bucket's, so a deterministic hash is safe. The same 63 as R2, so a feature's queue fits
    * the shape {@link FEATURE_DERIVED_PROJECT_NAME} is derived against and moves no budget.
    */
   queue: { label: "a Queue name", maxLength: 63, minLength: 1, policy: "truncate", source: "cloudflare" },
@@ -119,7 +119,7 @@ export const NAMESPACE_LIMITS = {
    * An Artifacts namespace: **2 to 63 characters**, starting with a letter or digit, the rest letters, digits, `.`,
    * `_` and `-` ([Artifacts · Limits](https://developers.cloudflare.com/artifacts/platform/limits/), verified
    * 2026-10-18). Truncated rather than refused: the kit derives it from the project and the environment on every
-   * run, like an R2 bucket name, and the longest project and environment compose 34 characters, so it never is (#673).
+   * run, like an R2 bucket name, and the longest project and environment compose 34 characters, so it never is.
    */
   artifactsNamespace: {
     label: "an Artifacts namespace name",
@@ -133,7 +133,7 @@ export const NAMESPACE_LIMITS = {
    * `-` ([Artifacts · Limits](https://developers.cloudflare.com/artifacts/platform/limits/), verified 2026-10-18) —
    * and **the length is ours**: that page states one for a namespace and none for a repo, so 2 to 63 mirrors the
    * namespace rather than inventing a second number. Refused, never truncated: a repo name is either a UUID or a
-   * name somebody chose, and a name somebody chose is never silently shortened (#673).
+   * name somebody chose, and a name somebody chose is never silently shortened.
    */
   artifactsRepo: { label: "an Artifacts repo name", maxLength: 63, minLength: 2, policy: "refuse", source: "pithy" },
   /**
@@ -194,14 +194,14 @@ export const MAX_ISSUE_DIGITS = 6;
 /**
  * The slug length a feature resource name keeps verbatim at the worst legal project name.
  *
- * Eleven — it was twelve until {@link FEATURE_TAIL_SEPARATOR} took a character of it (#643). About where a
- * feature slug stops being readable in a listing. A slug past a feature's budget is refused, not fitted (#643),
- * so this is the room the project-name cap guarantees every project's features at the worst legal input.
+ * Eleven, with {@link FEATURE_TAIL_SEPARATOR} taking the twelfth character. About where a feature slug stops being
+ * readable in a listing. A slug past a feature's budget is refused, not fitted, so this is the room the project-name
+ * cap guarantees every project's features at the worst legal input.
  */
 export const MIN_LEGIBLE_SLUG = 11;
 
 /**
- * **What stands between a feature's slug and whatever it names: two hyphens (#643).**
+ * **What stands between a feature's slug and whatever it names: two hyphens.**
  *
  * `<project>-f<issue>-<slug>--<thing>`. Nothing else Pithy composes can contain it: every other segment is
  * kebabbed, and a kebab never holds two hyphens in a row. So a name holding it is a feature's and a name without
@@ -209,10 +209,22 @@ export const MIN_LEGIBLE_SLUG = 11;
  * called — and it ends the slug unambiguously, so `feature/12-x` binding `PROD_DB` and `feature/12-x-prod`
  * binding `DB` no longer compose one database between them.
  *
- * It cost the slug a character: {@link MIN_LEGIBLE_SLUG} gave one up so {@link FEATURE_DERIVED_PROJECT_NAME},
- * and with it every project name already accepted, stays where it was.
+ * It costs the slug a character, which {@link MIN_LEGIBLE_SLUG} accounts for, so
+ * {@link FEATURE_DERIVED_PROJECT_NAME} holds every project name already accepted.
  */
 export const FEATURE_TAIL_SEPARATOR = "--";
+
+/**
+ * **What joins an owning Worker to the binding it owns: three hyphens.** `<worker>---<binding>` is the thing of a
+ * resource one Worker owns, in a declared environment and in a feature alike.
+ *
+ * Three rather than {@link FEATURE_TAIL_SEPARATOR}'s two, so a declared environment still composes nothing a feature
+ * can: the first `--` in an owned environment name is followed by a hyphen, and in a feature name it never is,
+ * because a thing never starts with one. `parseFeatureName` refuses a thing that does. And it keeps an owned name
+ * apart from every shared one, because a kebab never holds a run of hyphens: Worker `business` owning `DB` is
+ * `business---db`, and a shared `BUSINESS_DB` is `business-db`.
+ */
+export const OWNED_BINDING_SEPARATOR = "---";
 
 /**
  * The binding length a feature resource name keeps verbatim at the worst legal project name.
@@ -226,7 +238,7 @@ export const FEATURE_TAIL_SEPARATOR = "--";
 export const MIN_VERBATIM_BINDING = 12;
 
 /**
- * The longest feature resource kind segment — `d1`, `kv`, `r2`, and a queue's `q` (#662). `feature.test.ts` pins
+ * The longest feature resource kind segment — `d1`, `kv`, `r2`, and a queue's `q`. `feature.test.ts` pins
  * every kind's `FEATURE_KIND_SEGMENT` to it, so a longer segment fails rather than shrinking every project's budget.
  */
 export const MAX_FEATURE_KIND = 2;

@@ -181,6 +181,8 @@ function provisionLines(registry: SecretRegistry, env: string): string[] {
       minted: false,
     })),
     declined: [],
+    ownership: [],
+    repoints: [],
     configs: [],
     committed: true,
   };

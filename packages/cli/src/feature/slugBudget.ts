@@ -24,9 +24,10 @@ import { provisionWorkerNames } from "../provision/environment";
 import { boundSecretNames, scopeHoldsSecret, workerSecretRegistry } from "../provision/secretBindings";
 import { provisionableBindings } from "./bindings";
 import { featureHostCapabilities, featureHostScripts, featureIndexesFor } from "./hosts";
+import { type OwnedBinding, ownedBindingsOf } from "./ownedBindings";
 
 /**
- * **How long a branch slug a project's features can carry (#643).**
+ * **How long a branch slug a project's features can carry.**
  *
  * Feature names are never truncated: a truncated slug was a short hash, and a hash is a slug some sibling branch
  * can have whole. So the slug has to fit every name the feature composes — every resource, Worker, kit host,
@@ -48,6 +49,11 @@ export interface FeatureNameSources {
   capabilities: readonly Capability[];
   /** The project's Workers, by directory and deploy name. */
   workers: readonly ProvisionWorkerNames[];
+  /**
+   * Every binding a Worker owns. An owned resource carries `<owner>---` before the binding, so only a project that
+   * declares `ownBindings` pays for the longer shape.
+   */
+  owned?: readonly OwnedBinding[];
   /** The project root, where a vector host's indexes are read from. */
   projectDir: string;
 }
@@ -72,14 +78,12 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   for (const { binding, kind } of provisionableBindings(sources.capabilities)) {
     add("r2", scope.resource(binding, kind, {}));
   }
+  for (const { app, binding, kind } of sources.owned ?? []) add("r2", scope.resource(binding, kind, {}, app));
   for (const worker of sources.workers) add("worker", scope.worker(worker));
   // Every registry host, composed or not: teardown names them all.
   for (const host of featureHostScripts(probe)) add("worker", host.script);
-  // **Every Workflow the branch composes, whoever owns it (#650).** This read the registry host first, so only
-  // a capability owning a kit Worker contributed a shape — and the app's own jobs own no host, because their
-  // classes are exported by the app's own `main`. A branch whose slug fitted every kit name and not the app's
-  // was therefore accepted here and refused by `composeFeatureName` at provision time, after the resources it
-  // had already created. A Workflow name is account-wide whichever script hosts it; the budget asks only that.
+  // **Every Workflow the branch composes, whoever owns it.** A Workflow name is account-wide whichever script hosts
+  // it, so the app's own jobs count as much as a kit host's.
   for (const capability of sources.capabilities) {
     for (const entry of Object.values(composeWorkflows([capability]))) {
       add("workflow", workflowScriptName({ ...scope.workflowHost, capability: capability.name, job: entry.job }));
@@ -99,7 +103,7 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   for (const index of await featureIndexesFor(sources.capabilities, sources.projectDir, probe)) {
     add("vectorizeIndex", index.name);
   }
-  // The feature's Artifacts namespace, where anything binds one (#673). Never the tightest today, since `artifacts`
+  // The feature's Artifacts namespace, where anything binds one. Never the tightest today, since `artifacts`
   // is shorter than any binding's tail, but a name the feature composes is a name the budget reads.
   if (sources.capabilities.some((capability) => capability.requiredBindings.some((b) => b.type === "artifacts"))) {
     add("artifactsNamespace", scope.artifactsNamespace);
@@ -133,6 +137,13 @@ export async function assertFeatureSlugFitsProject(
     {
       capabilities: projectCapabilities(workers),
       workers: workers.map(provisionWorkerNames),
+      owned: ownedBindingsOf(
+        workers.map((worker) => ({
+          dir: worker.dir,
+          ownBindings: worker.target.ownBindings ?? [],
+          capabilities: worker.capabilities,
+        })),
+      ),
       projectDir,
     },
   );

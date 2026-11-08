@@ -7,7 +7,7 @@ Create an environment's own Cloudflare resources, wire them into every Worker, a
 ## Synopsis
 
 ```
-pithy provision --env <environment> [--yes] [--confirm <phrase>] [--seed] [--dry-run] [--json [--events]]
+pithy provision --env <environment> [--yes] [--confirm <phrase>] [--seed] [--repoint] [--dry-run] [--json [--events]]
 pithy provision --feature [--dry-run] [--json [--events]]
 ```
 
@@ -17,7 +17,7 @@ One job, two spellings. `--env` provisions an environment the root `pithy.config
 
 ## Why one command
 
-Both modes create one Cloudflare resource per binding name across every Worker, write the ids into each Worker's config, and migrate. They differ only in **how the target environment is named** — declared in `pithy.config.ts`, or derived from the branch. That is a flag, not a different verb.
+Both modes create one Cloudflare resource per binding name across every Worker, and one more for each Worker that owns the binding, write the ids into each Worker's config, and migrate. They differ only in **how the target environment is named** — declared in `pithy.config.ts`, or derived from the branch. That is a flag, not a different verb.
 
 The safety is in the scope, not in the spelling. A `ProvisionScope` carries the resource naming **and** the `env.<name>` stanza the ids are written into, as one value — so a feature-named resource landing in a declared environment's stanza of a checked-in config is unexpressible rather than merely refused. Nothing about that depends on which words were typed, which is what leaves the command surface free to be whatever reads best.
 
@@ -65,6 +65,7 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 | `--yes` | `--env` | `false` | Confirm that this creates real Cloudflare resources. Required for every declared environment |
 | `--confirm <phrase>` | `--env` | — | Unlock a production environment non-interactively: `yes, i really want to provision <env>` |
 | `--seed` | `--env` | `false` | Also load seed fixtures once the schema is up. A prepared set run this way is offered the secrets **this run minted** — see below |
+| `--repoint` | `--env` | `false` | Point a binding at the resource this run names where its stanza points at the counterpart, because a Worker moved between shared and owned. Without it that run is refused. Refused with `--feature`, whose stanza is rewritten on every run — see [owning a binding](#owning-a-binding-and---repoint) |
 | `--dry-run` | both | `false` | Show the plan and write nothing: the resources it would create or adopt, the config edits, the secrets, the migrations. Needs neither `--yes` nor `--confirm` |
 | `--json` | both | `false` | One line of machine-readable output |
 | `--events` | both | `false` | With `--json`, a progress record per line as the run goes, closed by the `--json` document. Refused without `--json`: `--events needs --json.` `--events=true` and `--events=false` are read too, and any other value is refused, as is `--no-events=<value>`, which the parse does not read. |
@@ -74,9 +75,9 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 ## What it does
 
 1. **Resolves the scope.** The naming and the stanza come from one object, never two arguments: `<project>-<env>-<thing>` into `env.<env>` for a declared environment, `<project>-f<issue>-<slug>-<thing>` into `env.feature` for a branch's. That is what makes a name whose environment segment disagrees with the stanza it lives in unexpressible rather than merely discouraged.
-2. **Provisions one resource per binding name**, across the union of every Worker's capabilities. Two Workers that both declare `DB` share one database; a Worker that wants its own declares a different binding.
+2. **Provisions one resource per binding, shared by default and owned through `ownBindings`**, across the union of every Worker's capabilities. Two Workers that both declare `DB` share one database. A Worker that lists `DB` in its `pithy.worker.jsonc` `ownBindings` gets its own, `<project>-<env>-<worker>---db` ([`NAMING.md`](../NAMING.md#shared-by-default-owned-when-a-worker-says-so)). A resource is keyed on its kind, its binding and its owner, and two of one kind under one name are refused before anything is created.
 3. **Adopts rather than duplicates.** Every resource is matched by name before it is created, so a re-run is a no-op and a database an adopter made by hand under the right name is taken up rather than shadowed by a second one.
-4. **Writes the ids into each Worker's config**, under `env.<name>` — and a Worker receives only the bindings its own config declares. The D1 entry gets its `database_name` alongside its `database_id`, because `pithy add` proposes the name offline and this is the step that makes the proposal true. The stanza is created when it is absent, so an environment declared after the project was scaffolded needs no hand-editing. Every `artifacts` entry the top level declares is bound in every stanza, each naming this scope's own namespace, `<project>-<env>` or `<project>-f<issue>-<slug>--artifacts`, so a branch's repos never sit beside production's. Nothing is created for it: Cloudflare makes the namespace on its first repo.
+4. **Writes the ids into each Worker's config**, under `env.<name>` — and a Worker receives only the bindings its own config declares, each at its own resource: the shared one, or the one it owns. The D1 entry gets its `database_name` alongside its `database_id`, and the name is the one this run composes for that Worker, written over whatever the entry said. A name chosen by hand is not adopted; `pithy doctor`'s `Resource names:` block reports one before a run rewrites it. The stanza is created when it is absent, so an environment declared after the project was scaffolded needs no hand-editing. Every `artifacts` entry the top level declares is bound in every stanza, each naming this scope's own namespace, `<project>-<env>` or `<project>-f<issue>-<slug>--artifacts`, so a branch's repos never sit beside production's. Nothing is created for it: Cloudflare makes the namespace on its first repo.
 5. **Writes the `secrets_store_secrets` stanza** for every `cf-secrets-store` secret the Worker's own registry declares, when a Secrets Store id is in hand. `pithy add` deliberately could not write it — the entry needs a `store_id` and a `secret_name` that do not exist until an account has been reached — so a Worker deployed without `SECRETS_ENCRYPTION_KEYS` and failed at its first request. A Worker that holds an [encrypted field](../PRIVACY.md#encrypted-fields) binds the field key, `PITHY_FIELD_KEYS`, whether or not it composes `secrets`. A declared secret whose entry has not been created is reported rather than bound: wrangler refuses a config naming an absent entry, so binding it would turn one missing value into a failed deploy of the whole Worker. **A feature binds no `RUNTIME_CF_API_TOKEN`, and is not told it is missing.** Nothing mints the application's one Cloudflare token for a feature, so branch code never holds it, and a line asking for a mint the feature would never bind is a line no run could clear.
 6. **Creates the secrets that have no decision in them.** A registry entry declares whether its value is *arbitrary* — a signing key, an ingest secret: any random string works, because nothing outside the project has to agree with it. Provisioning mints those and binds them in the same pass. It still stops for a *supplied* secret — an OAuth client secret, a payment rail's key — because a random string there authenticates against nothing. Absence is checked first, always: an existing value is never replaced, and replacing one is rotation, which is a separate and deliberate act. No minted value is printed, logged, or put in an audit event; the run reports that the secret was created and which entry it went to. It is handed to one place: **this run's own seed step**, as `context.mintedThisRun` on a prepared set — `--seed` here, and always on `--feature`. The Secrets Store is write-only from the CLI, so that is the only moment a fixture can seal anything under one of these values, and after the run it is unrecoverable by design. A re-run mints nothing and offers an empty channel; a standalone `pithy seed` mints nothing either. See [`SEED.md`](../SEED.md#what-this-run-just-minted-contextmintedthisrun). A supplied secret gets the line that names the two commands that finish it — ``SESSION_SIGNING_KEY has no store entry yet. Run pithy secrets create SESSION_SIGNING_KEY --env staging to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.`` — and an entry the kit *can* compose a value for, including `SECRETS_ENCRYPTION_KEYS`, gets the other one: `` `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It creates the store entries and writes the stanza. `` Which of the two you get is one decision, taken in one place, and `pithy doctor` prints the same answer for the same finding.
 7. **Retargets `service` bindings** at this environment's copy of the callee: an `apps/` Worker resolved through its real deploy name rather than its `apps/<name>` directory, a kit Worker named by its capability (`email`) at the host this environment deploys. An app declares its own with `pithy worker bind` ([`worker.md`](worker.md)).
@@ -154,11 +155,30 @@ Your own reason is printed back verbatim — it is required in `declinedBindings
 
 Every line but the first says **nothing was left out**, and none of them is noise:
 
-- **`Created anyway for <workers>`.** Provisioning is per binding *name*, which is how two Workers share a database. One Worker declining `ASSETS` while a sibling still declares it leaves the resource in place and the declining Worker's stanza without it. A line that called this a skip would send you looking for a resource that exists.
+- **`Created anyway for <workers>`.** A binding no Worker owns is one resource for every Worker that declares it, which is how two Workers share a database. One Worker declining `ASSETS` while a sibling still declares it leaves the resource in place and the declining Worker's stanza without it. A line that called this a skip would send you looking for a resource that exists.
 - **A decline that names nothing, or that is refused.** A one-character slip in the binding name is the likeliest typo in a decline, and it resolves against nothing. So does a decline of a binding a capability requires, or of a Workflow or Durable Object. Each is reported and none is fatal.
 - **A declaration that cannot be read.** One typo in the block and *every* declined resource is created. Without this line that run is byte-identical to a project that declines nothing.
 
 **`Not created by this run` is the exact claim, and no larger one.** Provisioning adds bindings and never removes them, so declining something an earlier run already provisioned leaves the resource in your account and the binding in the Worker's stanza. Delete both by hand; `pithy doctor` names the environments the binding survives in.
+
+## Owning a binding, and `--repoint`
+
+A binding a Worker lists in `ownBindings` gets that Worker a resource of its own, and every other binding stays shared. The report names both: each row in `resources` carries the Workers its id was written into, and an owned row carries its `owner`. An entry naming no D1, KV, R2 or queue binding the Worker composes owns nothing, and the run says so:
+
+```
+api lists DBB in ownBindings. Nothing it composes declares it, so it owns nothing.
+```
+
+**A `scope: "global"` binding cannot be owned.** It is one resource for the project by definition, so the entry is refused before anything is created, naming the binding and the capability that declares it global.
+
+**Moving a binding between shared and owned moves no rows.** Listing a binding in `ownBindings` names that Worker a new, empty resource, while its stanza still points at the shared one; taking the entry out does the reverse. A declared environment whose stanza points a binding at that counterpart is refused before anything is created, naming the Worker, the binding, both names, and that the current resource keeps its data:
+
+```
+my-app-other's DB points at my-app-staging-db. This run names my-app-staging-other---db. my-app-staging-db keeps its data.
+Move the data yourself if it should follow. Then run pithy provision --env staging --yes --repoint. Or put ownBindings back the way it was.
+```
+
+`--repoint` performs it, and the run says each binding it moved: `my-app-other's DB now points at my-app-staging-other---db. my-app-staging-db keeps its data.` Nothing is copied and nothing is deleted. For a production environment the remedy is a person's decision rather than a command. `--dry-run` lists every repoint as a note, and says when the run would refuse them. A stanza pointing at anything else, a deleted database or a name chosen by hand, is written over as it always was.
 
 ## The secrets it cannot create
 
@@ -214,6 +234,7 @@ The phrase names its environment, so one typed for `staging` cannot be pasted in
 - **Files.** Each Worker's `wrangler.jsonc` edit, as a diff of the bytes the run writes. For `--feature`, the generated config under `.wrangler/` and the feature's `.pithy-feature.json` record.
 - **Secrets.** Each `cf-secrets-store` secret it would bind, and each it would `mint`, by name and entry. The Secrets Store is asked whether an entry exists and is written nothing. A secret it cannot create stays in `pendingSecrets`, as it does on the run.
 - **Migrations.** A database it would create has applied nothing, so every migration it carries is listed. An adopted one is read for what it has applied, as `pithy migrate --dry-run` reads it.
+- **Repoints.** Each binding the run would move between shared and owned, as a note naming both resources. Without `--repoint` a last note says the run refuses them and creates nothing.
 - **What it does not run.** `--seed` and `--feature` seed once the schema is up, and the plan says so in a note. `--feature` then deploys its kit Workers, binds each app Worker to them, and creates their indexes and `d1` secrets: each upload is a `resource` with `action` `upload`, and the rest is a note.
 
 It asks for no confirmation and no production phrase, because nothing it does needs one. Every refusal the run makes before its first write still stands, and comes first — missing credentials, a missing declaration, a slug that does not fit, a `service` binding naming a Worker the project does not have, an account the project does not claim. Without `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` there is no plan: the dry run is refused `core/precondition_failed`, exit 3, exactly as the run would be, because a plan the run would refuse is a promise nobody can keep. The text output is the plan's lines, the pending-secret lines, and `Dry run. Nothing written.` in place of `Done.`
@@ -248,12 +269,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","schemaVersion":2,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.","dryRun":false}
+{"command":"provision","schemaVersion":2,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true,"workers":["replay-board"]}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"ownership":[],"repoints":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.","dryRun":false}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","schemaVersion":2,"env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
+{"command":"provision","schemaVersion":2,"env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true,"workers":["replay-board"]}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"ownership":[],"repoints":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
 ```
 
 | key | type | meaning |
@@ -267,6 +288,8 @@ $ pithy provision --feature --json
 | `resources[].name` | `string` | The full Cloudflare resource name |
 | `resources[].id` | `string` | The Cloudflare-assigned id — a D1 uuid, a KV namespace id, a queue id, or the bucket name for R2 |
 | `resources[].created` | `boolean` | True when this run created it; false when a resource of that name already existed and was adopted |
+| `resources[].owner` | `string` | The `apps/<owner>` Worker it belongs to, from that Worker's `ownBindings`. Absent on a resource every declaring Worker shares |
+| `resources[].workers` | `string[]` | The Workers whose stanza its id was written into, by deploy name: every Worker sharing it, or the one that owns it |
 | `workers` | `object[]` | Each Worker and the script name it deploys under in this environment |
 | `workers[].worker` | `string` | The Worker's own deploy name — its `wrangler.jsonc` `name` |
 | `workers[].name` | `string` | The scoped script name written into `env.<name>`. A declared environment keeps the name its stanza declares, else `<worker>-<env>`; a feature composes `<project>-f<issue>-<slug>-<app>` from the `apps/<app>` directory, so the project appears once |
@@ -289,7 +312,17 @@ $ pithy provision --feature --json
 | `declined[].declines[].type` | `"d1" \| "kv" \| "r2" \| …` | The kind of resource it refers to. Absent on `unrecognized`, which names no binding to have a kind |
 | `declined[].declines[].capability` | `string` | The composed capability that declares it. Absent on `unrecognized` |
 | `declined[].declines[].reason` | `string` | Your own reason, verbatim |
-| `declined[].declines[].wantedBy` | `string[]` | `honored` only: other Workers that declare the same binding and did not decline it. **Non-empty means the resource was created anyway** — provisioning is per binding name, and that is how two Workers share a database. Only this Worker's stanza leaves it out |
+| `declined[].declines[].wantedBy` | `string[]` | `honored` only: other Workers that declare the same binding and did not decline it. **Non-empty means the resource was created anyway** — a binding no Worker owns is one resource for every Worker sharing it. Only Workers that share it count: a sibling that owns the binding has its own resource, and a Worker declining a binding it owns declines its own, so nothing is created for it. Only this Worker's stanza leaves it out |
+| `ownership` | `object[]` | One entry per Worker that lists `ownBindings`. Empty for a project that owns nothing |
+| `ownership[].worker` | `string` | The Worker's own deploy name |
+| `ownership[].owned` | `string[]` | The bindings it owns a resource for |
+| `ownership[].unrecognized` | `string[]` | Entries naming no D1, KV, R2 or queue binding it composes. They own nothing |
+| `repoints` | `object[]` | `--env --repoint` only: each binding whose stanza pointed at its counterpart and now points at the resource this run names. Under `--dry-run`, every repoint the run would make |
+| `repoints[].worker` | `string` | The Worker's own deploy name |
+| `repoints[].binding` | `string` | The binding |
+| `repoints[].kind` | `"d1" \| "kv" \| "r2" \| "queue"` | The resource type |
+| `repoints[].current` | `string` | The resource the stanza pointed at, by name. It keeps its data |
+| `repoints[].next` | `string` | The resource it points at now |
 | `manifestFaults` | array | Installed packages shipping a manifest that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].file` | string | The manifest file within that package: `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` |
