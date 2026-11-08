@@ -189,10 +189,10 @@ The screen sets are decided as for `react`, against the Worker the app calls, wi
 **`pithy ui sync --app <name>`.** Rewrites the app's generated config from the Worker its manifest names, or the one `--worker` names. The projections, every environment's, and the origins are the Worker's and are rewritten, with two exceptions: an origin you set for an environment the Worker names none for is kept, and so is a dev origin that is not this machine's loopback. Your four values are kept, except a rail a flag sets now. A `--worker` other than the one the manifest names points the app at it: the manifest's `ui.worker` is rewritten, so the next sync without `--worker` finds the same Worker. Every rail is held to the Worker again, so one it has stopped enabling is refused by name. A file that is not the config Pithy writes is refused rather than overwritten; delete it to start from the defaults. `--check` writes nothing and exits 1 when the file is behind the Worker, in any environment's projection.
 
 ```
-$ pithy ui add react-native --worker api --no-auth --no-payments --ios-rail apple --web-rail stripe
+$ pithy ui add react-native --worker api --no-auth --no-payments --ios-rail none
 Scaffolded a react-native app into apps/app. It calls api. Bare template.
-16 files created.
-Rails: iOS apple, Android none, web stripe.
+18 files created.
+Rails: iOS none, Android none, web none.
 apps/app/src/pithy-config.generated.ts holds api's config. Set appScheme and universalLinkOrigin there before a store build.
 When api composes auth, its trustedOrigins needs "app://".
 Change api's config, then run pithy ui sync --app app --worker api.
