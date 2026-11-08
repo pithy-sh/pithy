@@ -17,7 +17,8 @@ import { HOME_SCREEN, HOME_TEST, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templat
  * on the day it arrives. Three are seeded: the sign-in screen's, with the auth screens, and one of the two home
  * screen tests, beside whichever home screen was written. The project's root `vitest.config.ts` leaves an app that
  * brings its own config to it, because its `node` project runs plain Node, where `react-native`'s untransformed
- * Flow fails to parse before a test runs.
+ * Flow fails to parse before a test runs. A root config that does not leave the app out, such as one scaffolded
+ * before it learned to, gets no runner and no seeded test: `pithy ui add` leaves them out and says how to add them.
  *
  * The kit's own gates for the other screens stay here. They are written against the kit's tree and its fixtures,
  * and an app's copy of a screen is the adopter's to change, so the alarm for what the kit ships rings in the kit.

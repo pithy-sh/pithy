@@ -41,6 +41,17 @@ function manifest(context: UiStubContext): UiStubFile[] {
   return files;
 }
 
+/**
+ * What the app's screen tests are made of: the runner's config and every seeded test, the runner's dev
+ * dependencies, and the script that runs them. `pithy ui add` leaves all of it out of an app whose project's root
+ * `vitest.config.ts` would collect those tests in plain Node.
+ */
+export const SCREEN_TESTS = {
+  isFile: (path: string): boolean => path === "vitest.config.ts" || /\.test\.tsx?$/.test(path),
+  devDependencies: ["@pithy-sh/ui-react-native", "@testing-library/react", "happy-dom", "vitest"],
+  script: "test",
+} as const;
+
 /** Expo SDK 57 on React Native 0.86, each native module at the version that SDK bundles. */
 export const reactNativeStub: UiStub = {
   id: "react-native",

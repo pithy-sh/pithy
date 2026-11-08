@@ -64,7 +64,9 @@ A screen's `./payments-store` goes to `testing/payments-store.ts`, which loads t
 
 ## Adding it to an existing app
 
-`pithy init --react-native` and `pithy ui add react-native` write all of this. An app scaffolded before needs four steps.
+`pithy init --react-native` and `pithy ui add react-native` write all of this, except in a project whose root `vitest.config.ts` would run the app's tests in plain Node. There, `pithy ui add react-native` writes no screen tests and prints the one line that adds them: add `"apps/<app>/**"` to the root config's `node` project `exclude`, then run the same command again.
+
+An app scaffolded before this release can also be set up by hand, in four steps.
 
 1. Add the devDependencies to `apps/<app>/package.json`: `vitest`, `happy-dom`, `@testing-library/react` and `@pithy-sh/ui-react-native`, at the range the app's other `@pithy-sh/*` packages use. `react-native-web` is already a dependency. Then install.
 2. Write `apps/<app>/vitest.config.ts` as above.
@@ -75,7 +77,7 @@ A screen's `./payments-store` goes to `testing/payments-store.ts`, which loads t
 exclude: ["apps/*/src/**/*.workers.test.{ts,tsx}", "apps/<app>/**"],
 ```
 
-A project scaffolded now does this for itself: its root config leaves out any `apps/<name>` with a `vitest.config.ts` of its own.
+A project scaffolded now does step 4 for itself: its root config leaves out any `apps/<name>` with a `vitest.config.ts` of its own.
 
 ## License
 

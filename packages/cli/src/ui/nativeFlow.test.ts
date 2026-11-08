@@ -234,6 +234,28 @@ describe("pithy ui add react-native", () => {
     expect(report.scripts).toEqual(["start", "android", "ios", "web", "test"]);
   });
 
+  test("a root config that would run the app's tests in plain Node gets no screen tests, and the report says how", async () => {
+    await writeFile(
+      join(projectDir, "vitest.config.ts"),
+      'export default { test: { projects: [{ test: { name: "node", include: ["apps/*/src/**/*.test.{ts,tsx}"] } }] } };\n',
+    );
+    const report = await runUiAdd(options(BARE));
+    expect(report.screenTests?.seeded).toBe(false);
+    expect(report.screenTests?.remedy).toBe(
+      'Add "apps/app/**" to the node project\'s exclude in the root vitest.config.ts, then run pithy ui add react-native --app app --worker api to add them.',
+    );
+    expect(report.created.filter((path) => path === "vitest.config.ts" || path.endsWith(".test.tsx"))).toEqual([]);
+    expect(report.scripts).not.toContain("test");
+    expect(report.devDependencies).not.toContain("vitest");
+    expect(report.created).toContain("src/routes/app/home.tsx");
+  });
+
+  test("with no root config collecting them, the screen tests are written", async () => {
+    const report = await runUiAdd(options(BARE));
+    expect(report.screenTests).toEqual({ seeded: true, remedy: null });
+    expect(report.created).toEqual(expect.arrayContaining(["vitest.config.ts", "src/routes/app/home.test.tsx"]));
+  });
+
   test("a kit package nothing has a range for is reported, not guessed", async () => {
     const report = await runUiAdd({ ...options(BARE), kitRanges: { installedFrom: [], latest: async () => null } });
     const expected = importedKitPackages(await templateTexts()).filter((name) => !ANSWERED.includes(name));

@@ -128,6 +128,12 @@ export interface UiAddReport {
    * generated config from the Worker, keeping the adopter's choices.
    */
   backfill?: boolean;
+  /**
+   * For an Expo app: whether its screen tests were written — the runner's config, the seeded tests, the runner's
+   * dev dependencies and the `test` script — and, when they were left out because the project's root
+   * `vitest.config.ts` would run them in plain Node, the one line that adds them.
+   */
+  screenTests?: { seeded: boolean; remedy: string | null };
   /** Whether the auth template was included. */
   auth: boolean;
   /** Whether the payments screens were included. */

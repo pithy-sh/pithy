@@ -25,6 +25,8 @@ import type { UiAddOptions, UiAddReport, UiSyncReport } from "./flow";
 import { importedKitPackages, kitRangesFor } from "./kitRanges";
 import { buildGeneratedConfig, generatedConfigFile, originsFor } from "./nativeConfig";
 import { backendRails, type RailPlatform, resolveRails, type UiRailPrompt } from "./rails";
+import { SCREEN_TESTS } from "./reactNative";
+import { rootLeavesApp, screenTestsRemedy } from "./rootRunner";
 import { scaffoldFiles } from "./scaffold";
 import { resolveScreenSets } from "./screens";
 import type { UiStub } from "./stubs";
@@ -141,6 +143,17 @@ function starterPackage(app: string): string {
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 
+/** The stub's dev dependencies and scripts, without the screen-test runner's. */
+function withoutScreenTests(stub: UiStub): Pick<UiStub, "devDependencies" | "scripts"> {
+  const devDependencies = Object.fromEntries(
+    Object.entries(stub.devDependencies).filter(
+      ([name]) => !(SCREEN_TESTS.devDependencies as readonly string[]).includes(name),
+    ),
+  );
+  const { [SCREEN_TESTS.script]: _, ...scripts } = stub.scripts;
+  return { devDependencies, scripts };
+}
+
 /** Every file a native add may create or edit, absolute — what a failure has to put back. */
 function touchedPaths(appDir: string, planned: Record<string, string>): string[] {
   return [
@@ -178,6 +191,10 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
   });
 
   const files = await loadStubFiles(stub, { worker, app, ...screens, packageManager });
+  // A root config that would run the app's tests in plain Node turns the project's test run red the day they
+  // arrive, so the screen tests wait until it leaves the app to the app's own runner.
+  const screenTests = await rootLeavesApp(options.projectDir, app);
+  if (!screenTests) for (const rel of Object.keys(files)) if (SCREEN_TESTS.isFile(rel)) delete files[rel];
   const built = buildGeneratedConfig({
     config: options.config,
     app,
@@ -208,7 +225,11 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
     importedKitPackages(files).filter((name) => !(name in stub.dependencies) && !(name in stub.devDependencies)),
     { projectDir: options.projectDir, workerDir: options.workerDir, ...options.kitRanges },
   );
-  const packaged: UiStub = { ...stub, dependencies: { ...stub.dependencies, ...kit.ranges } };
+  const packaged: UiStub = {
+    ...stub,
+    dependencies: { ...stub.dependencies, ...kit.ranges },
+    ...(screenTests ? {} : withoutScreenTests(stub)),
+  };
 
   // The scaffold never overwrites, so a config already on disk is rewritten here instead.
   const { [GENERATED_CONFIG_PATH]: _, ...scaffolded } = files;
@@ -253,6 +274,15 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
     untrustedOrigins: untrustedOrigins(options.config, generated),
     unresolvedPackages: kit.unresolved,
     backfill: existing,
+    screenTests: screenTests
+      ? { seeded: true, remedy: null }
+      : {
+          seeded: false,
+          remedy: screenTestsRemedy(
+            app,
+            pithyCommand("ui add", { args: ["react-native"], flags: { "--app": app, "--worker": worker } }),
+          ),
+        },
     ...screens,
     created: result.written.written,
     skipped: result.written.skipped,

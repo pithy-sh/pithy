@@ -123,6 +123,7 @@ function writeNativeAdded(
     untrustedOrigins?: string[] | undefined;
     unresolvedPackages?: string[] | undefined;
     backfill?: boolean | undefined;
+    screenTests?: { seeded: boolean; remedy: string | null } | undefined;
   },
   template: string,
   composesAuth: boolean,
@@ -154,6 +155,10 @@ function writeNativeAdded(
   }
   for (const name of report.unresolvedPackages ?? []) {
     process.stdout.write(`No range found for ${name}. Add one to apps/${report.app}/package.json.\n`);
+  }
+  if (report.screenTests?.seeded === false) {
+    process.stdout.write("Screen tests not added: the root vitest.config.ts would run them in plain Node.\n");
+    if (report.screenTests.remedy !== null) process.stdout.write(`${report.screenTests.remedy}\n`);
   }
   const sync = pithyCommand("ui sync", { flags: { "--app": report.app, "--worker": report.worker } });
   process.stdout.write(`Change ${report.worker}'s config, then run ${sync}.\n`);
@@ -217,6 +222,22 @@ const UiAddPayload = z
       .describe(
         "Whether the app already existed, so this run added screens to it and rewrote its generated config from the Worker, keeping its rails, `appScheme`, `universalLinkOrigin` and Google client ids. Only for `react-native`.",
       ),
+    screenTests: z
+      .object({
+        seeded: z
+          .boolean()
+          .describe(
+            "Whether the app's screen tests were written: `vitest.config.ts`, the seeded tests, the runner's dev dependencies and the `test` script.",
+          ),
+        remedy: z
+          .string()
+          .nullable()
+          .describe(
+            "When they were left out, because the project's root `vitest.config.ts` would run them in plain Node: the one line that adds them. `null` when they were written.",
+          ),
+      })
+      .optional()
+      .describe("The app's screen tests, and why they were left out when they were. Only for `react-native`."),
     auth: z.boolean().describe("Whether the sign-in screens were included."),
     payments: z.boolean().describe("Whether the paywall screens were included."),
     organization: z.boolean().describe("Whether the account chooser and the invitation screen were included."),
