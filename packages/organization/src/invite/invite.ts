@@ -23,6 +23,7 @@ import {
   OrganizationSeatLimitReachedError,
 } from "../error/errors";
 import { organizationStanding } from "../lifecycle/state";
+import { compileStatements, type OrganizationWriteStatements } from "../provision/provision";
 import type { RoleCatalog } from "../roles/roles";
 import { invitationDigest, mintInvitationToken } from "./token";
 
@@ -387,6 +388,7 @@ export async function acceptInvitation<Power extends string, Role extends string
   d1: D1Database,
   catalog: RoleCatalog<Power, Role>,
   options: AcceptInvitationOptions,
+  statements?: Pick<OrganizationWriteStatements, "onJoin">,
 ): Promise<AcceptedInvitation<Role>> {
   const db = organizationDatabase(d1);
 
@@ -414,7 +416,7 @@ export async function acceptInvitation<Power extends string, Role extends string
     );
   }
 
-  // **A suspended or deleted organization takes no one in (#623).** Nobody can act in it, and a membership written
+  // **A suspended or deleted organization takes no one in.** Nobody can act in it, and a membership written
   // into a shut tenant is a row its restore would bring back and another tenant's `members: "sole"` would count.
   // The refusal is the dead-offer one, and the offer stays pending: a reinstatement makes it redeemable again.
   await refuseIfShut(db, invitation, options.now);
@@ -435,8 +437,8 @@ export async function acceptInvitation<Power extends string, Role extends string
     exactly what `ownership.ts` tells adopters to do, and what `unassignable` means — would have a live
     link that mints an owner nobody nominated and nobody accepted. Every other path that puts a role on
     a membership parses the assignable set: `invite` above, `changeRole`, and `requireTransferableRoles`
-    for the one role that is deliberately excluded. Acceptance was the exception, and an exception is a
-    second door.
+    for the one role that is deliberately excluded. Acceptance parsing anything wider would be a second
+    door.
 
     The refusal is the ordinary one, so a holder cannot tell a withdrawn offer from a role the project
     has since reserved.
@@ -472,7 +474,7 @@ export async function acceptInvitation<Power extends string, Role extends string
   }
 
   /*
-    **A full account refuses the join (#624).** An operator sets the seat limit and an operator's add
+    **A full account refuses the join.** An operator sets the seat limit and an operator's add
     counts against it; an offer accepted past it would make the limit a rule with a second door. Read in
     front for the sentence, and carried in both statements below for the rule, so two acceptances racing
     for the last seat cannot both land. The offer stays pending when this refuses: a seat that frees
@@ -520,6 +522,42 @@ export async function acceptInvitation<Power extends string, Role extends string
       and exists (select 1 from pithy_organization_memberships where id = ${membership.id})
   `;
 
+  const adopters =
+    statements?.onJoin?.(d1, {
+      organizationId: invitation.organizationId,
+      membershipId: membership.id,
+      userId: options.session.userId,
+      role: role.data,
+      via: "invitation",
+      invitationId: invitation.id,
+    }) ?? [];
+  if (adopters.length > 0) {
+    // The insert above writes nothing when its condition fails, and the batch would still commit the
+    // adopter's rows. So here the condition decides the organization id instead: false, it is null, the
+    // column refuses it, and the whole batch rolls back.
+    const guardedJoin = sql`
+      insert into pithy_organization_memberships (id, organization_id, user_id, role, created_at)
+      select ${membership.id},
+        case when exists (
+          select 1 from pithy_organization_invitations
+          where id = ${invitation.id} and status = 'pending'
+        ) and ${roomFor} and ${open} then ${membership.organizationId} end,
+        ${membership.userId}, ${membership.role}, ${membership.createdAt}
+    `;
+    return await joinWithAdopterStatements(d1, {
+      invitation,
+      membershipId: membership.id,
+      userId: options.session.userId,
+      role: role.data,
+      now: options.now,
+      batch: [
+        prepared(d1, guardedJoin.compile(db)),
+        prepared(d1, claim.compile(db)),
+        ...compileStatements(d1, adopters),
+      ],
+    });
+  }
+
   let written: D1Result<unknown>[] | undefined;
   try {
     written = await withD1Retry<D1Result<unknown>[] | undefined>(() =>
@@ -544,33 +582,7 @@ export async function acceptInvitation<Power extends string, Role extends string
         { cause },
       );
     }
-    /*
-      **The offer is spent here, and it was not before.**
-
-      `d1.batch` is a transaction, so the collision that brought us into this catch rolled the whole
-      batch back — including the `update … set status = 'accepted'` beside the insert. The row is still
-      `pending`. Reporting `accepted(invitation, …)` on top of that told the caller and the audit trail
-      that an offer had been consumed while it sat live in `listInvitations`, redeemable for the rest of
-      its TTL, with this module's own rule — *"consume the offer anyway, so no live token is left
-      pointing at an account this person is already in"* — stated and not held.
-
-      Conditional on `pending`, so the concurrent redemption that beat us here is not overwritten, and
-      unguarded on its result: if it matched nothing the other call has already spent it, which is the
-      same end state.
-    */
-    await db
-      .updateTable(INVITATIONS_TABLE)
-      .set({ status: "accepted", acceptedAt: SQLiteDate.encode(options.now) })
-      .where("id", "=", invitation.id)
-      .where("status", "=", "pending")
-      .execute();
-
-    return {
-      invitation: accepted(invitation, options.now),
-      membershipId: settled.id,
-      role: role.data,
-      joined: false,
-    };
+    return await alreadyJoined(db, invitation, settled.id, role.data, options.now);
   }
 
   // `undefined` is `withD1Retry`'s idempotency guard — a constraint failure on a *retry*, which it reads
@@ -594,6 +606,99 @@ export async function acceptInvitation<Power extends string, Role extends string
     role: role.data,
     joined: true,
   };
+}
+
+/**
+ * The answer for somebody whose membership a concurrent redemption wrote first.
+ *
+ * The batch that lost rolled back, claim included, so the offer is still `pending` and is spent here: no
+ * live token is left pointing at an account this person is already in. Conditional on `pending`, so a
+ * redemption that already spent it is not overwritten.
+ */
+async function alreadyJoined<Role extends string>(
+  db: OrganizationDatabase,
+  invitation: Invitation,
+  membershipId: string,
+  role: Role,
+  now: Date,
+): Promise<AcceptedInvitation<Role>> {
+  await db
+    .updateTable(INVITATIONS_TABLE)
+    .set({ status: "accepted", acceptedAt: SQLiteDate.encode(now) })
+    .where("id", "=", invitation.id)
+    .where("status", "=", "pending")
+    .execute();
+  return { invitation: accepted(invitation, now), membershipId, role, joined: false };
+}
+
+/**
+ * Run an acceptance whose batch carries the adopter's `onJoin` statements, and say what it did.
+ *
+ * Every way the batch can fail rolls back the adopter's rows with the membership and the claim, so the
+ * offer stays redeemable. What D1 holds afterwards decides the answer: this call's membership is a join
+ * that committed, somebody else's is a concurrent redemption, and none is the refusal the conditions
+ * now give, or a failure.
+ */
+async function joinWithAdopterStatements<Role extends string>(
+  d1: D1Database,
+  attempt: {
+    invitation: Invitation;
+    membershipId: string;
+    userId: string;
+    role: Role;
+    now: Date;
+    batch: D1PreparedStatement[];
+  },
+): Promise<AcceptedInvitation<Role>> {
+  const { invitation, now } = attempt;
+  const db = organizationDatabase(d1);
+  let failure: unknown;
+  try {
+    // `undefined` is `withD1Retry`'s idempotency guard, which is answered by the read below like a failure.
+    const written = await withD1Retry<D1Result<unknown>[] | undefined>(() => d1.batch(attempt.batch));
+    if (written !== undefined) {
+      return {
+        invitation: accepted(invitation, now),
+        membershipId: attempt.membershipId,
+        role: attempt.role,
+        joined: true,
+      };
+    }
+  } catch (cause) {
+    failure = cause;
+  }
+
+  const settled = await db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .select(["id"])
+    .where("organizationId", "=", invitation.organizationId)
+    .where("userId", "=", attempt.userId)
+    .executeTakeFirst();
+  if (settled?.id === attempt.membershipId) {
+    return {
+      invitation: accepted(invitation, now),
+      membershipId: attempt.membershipId,
+      role: attempt.role,
+      joined: true,
+    };
+  }
+  if (settled) return await alreadyJoined(db, invitation, settled.id, attempt.role, now);
+
+  // Nothing was written. Say which condition stopped it, asked again, and otherwise report the failure.
+  await refuseIfFull(db, invitation.organizationId);
+  const current = await db
+    .selectFrom(INVITATIONS_TABLE)
+    .select(["status"])
+    .where("id", "=", invitation.id)
+    .executeTakeFirst();
+  if (current?.status !== "pending") {
+    throw invitationInvalid(`invitation ${invitation.id} was no longer pending when the batch ran`);
+  }
+  await refuseIfShut(db, invitation, now);
+  throw new InternalError(
+    { message: "That invitation could not be accepted.", detail: `accepting invitation ${invitation.id} failed` },
+    { cause: failure },
+  );
 }
 
 /**
@@ -625,7 +730,7 @@ async function refuseIfFull(db: OrganizationDatabase, organizationId: string): P
 }
 
 /**
- * Refuse a join into an organization that is suspended or deleted (#623), with the refusal every dead offer gets.
+ * Refuse a join into an organization that is suspended or deleted, with the refusal every dead offer gets.
  *
  * An organization with no row is left to the paths that already answer for it: this decides lifecycle, not existence.
  */

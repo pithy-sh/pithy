@@ -108,7 +108,9 @@ import { MEMBERS_PATH_SEGMENT, readPeople } from "../people/people";
 import {
   createOrganization,
   deleteOrganization,
+  type OrganizationCreateStatements,
   type OrganizationDeleteSweep,
+  type OrganizationJoinStatements,
   renameOrganization,
   setLogo,
   updateOrganizationAsOperator,
@@ -574,6 +576,10 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
   readonly ownership?: OwnershipRoles<Role>;
   /** The adopter's own tenanted deletes, run in the transaction that deletes the account. */
   readonly onDelete?: OrganizationDeleteSweep;
+  /** The adopter's own rows for a new organization, written in the transaction that founds it. */
+  readonly onCreate?: OrganizationCreateStatements;
+  /** The adopter's own rows for a new membership, written in the transaction that begins it. */
+  readonly onJoin?: OrganizationJoinStatements;
   /**
    * The email enqueue seam.
    *
@@ -1237,13 +1243,18 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         }
         const who = session(c);
         const body = c.req.valid("json");
-        const created = await createOrganization(d1(c), catalog, {
-          name: body.name,
-          slug: body.slug,
-          founderUserId: who.userId,
-          now: clock(),
-          newId: ids,
-        });
+        const created = await createOrganization(
+          d1(c),
+          catalog,
+          {
+            name: body.name,
+            slug: body.slug,
+            founderUserId: who.userId,
+            now: clock(),
+            newId: ids,
+          },
+          { onCreate: options.onCreate, onJoin: options.onJoin },
+        );
         await record(c, {
           action: OrganizationAuditActions.created,
           actor: { organizationId: created.organization.id, userId: who.userId },
@@ -1893,12 +1904,17 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
           // No address to compare, so nothing to authorize. The same sentence as every other refusal.
           throw offerInvalid(`no user row for ${who.userId}; an invitation is redeemed by address and there is none`);
         }
-        const accepted = await acceptInvitation(d1(c), catalog, {
-          token: c.req.valid("json").token,
-          session: { userId: who.userId, email: me.email },
-          now: clock(),
-          newId: ids,
-        });
+        const accepted = await acceptInvitation(
+          d1(c),
+          catalog,
+          {
+            token: c.req.valid("json").token,
+            session: { userId: who.userId, email: me.email },
+            now: clock(),
+            newId: ids,
+          },
+          { onJoin: options.onJoin },
+        );
         await record(c, {
           action: OrganizationAuditActions.memberJoined,
           actor: { organizationId: accepted.invitation.organizationId, userId: who.userId },
@@ -2671,15 +2687,20 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             detail: `operator add of user ${body.userId}, who has no pithy_auth_users row`,
           });
         }
-        const added = await addMember(d1(c), catalog, {
-          organizationId,
-          userId: body.userId,
-          role: body.role,
-          overrideSeatLimit: body.overrideSeatLimit ?? false,
-          now: clock(),
-          newId: ids,
-          owner: ownerRule(organizationId),
-        });
+        const added = await addMember(
+          d1(c),
+          catalog,
+          {
+            organizationId,
+            userId: body.userId,
+            role: body.role,
+            overrideSeatLimit: body.overrideSeatLimit ?? false,
+            now: clock(),
+            newId: ids,
+            owner: ownerRule(organizationId),
+          },
+          { onJoin: options.onJoin },
+        );
         const mailed = await sendMembershipNotice(config, mailer(c), {
           notice: "memberAdded",
           to: person,

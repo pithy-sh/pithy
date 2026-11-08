@@ -177,8 +177,86 @@ export interface CreatedOrganization {
   readonly membership: Membership;
 }
 
+/** A statement an adopter's builder returns: anything Kysely can compile, over the adopter's own schema. */
+export type OrganizationStatement = { compile(): CompiledQuery };
+
+/** What {@link OrganizationCreateStatements} is told about the organization being founded. */
+export interface OrganizationCreated {
+  /** The new organization's id. Its row is written ahead of the adopter's statements. */
+  readonly organizationId: string;
+  /** The founder's membership id. Its row is written ahead of the adopter's statements too. */
+  readonly membershipId: string;
+  /** The signed-in person founding it. */
+  readonly founderUserId: string;
+  /** The display name, as the founder gave it. */
+  readonly name: string;
+}
+
+/**
+ * An adopter's own rows for a new organization: statements that join the batch that founds it.
+ *
+ * Handed the binding, like {@link OrganizationDeleteSweep}, so an adopter builds a Kysely over their own
+ * schema. The statements run after the organization and membership inserts, so they may reference both,
+ * and a failure in any of them rolls the founding back.
+ */
+export type OrganizationCreateStatements = (
+  d1: D1Database,
+  created: OrganizationCreated,
+) => readonly OrganizationStatement[];
+
+/** How a membership began: founding an organization, accepting an invitation, or an operator's add. */
+export type MembershipJoinedVia = "founded" | "invitation" | "operator";
+
+/** What {@link OrganizationJoinStatements} is told about the membership beginning. */
+export interface MembershipJoined {
+  /** The organization joined. */
+  readonly organizationId: string;
+  /** The new membership's id. Its row is written ahead of the adopter's statements. */
+  readonly membershipId: string;
+  /** The person who joined. */
+  readonly userId: string;
+  /** The role the membership holds, as a name from the project's catalog. */
+  readonly role: string;
+  /** How the membership began. */
+  readonly via: MembershipJoinedVia;
+  /** The accepted invitation's id when `via` is `"invitation"`, and null otherwise. */
+  readonly invitationId: string | null;
+}
+
+/**
+ * An adopter's own rows for a new membership: statements that join the batch that writes it.
+ *
+ * Runs for every membership that begins, through founding, an accepted invitation or an operator's add,
+ * and never for an acceptance by somebody who was already a member. The statements run after the
+ * membership insert, and a failure in any of them rolls the membership back, along with whatever else
+ * that batch wrote.
+ */
+export type OrganizationJoinStatements = (d1: D1Database, joined: MembershipJoined) => readonly OrganizationStatement[];
+
+/**
+ * The statement builders an organization's writes take, as `organization()` was handed them.
+ *
+ * An adopter's own flow passes the same functions it gave `organization()`, so its rows begin the same
+ * way whichever door the organization or membership came through.
+ */
+export interface OrganizationWriteStatements {
+  /** Joins the founding batch. */
+  readonly onCreate?: OrganizationCreateStatements;
+  /** Joins every batch that writes a new membership. */
+  readonly onJoin?: OrganizationJoinStatements;
+}
+
+/** Compile an adopter's statements for a batch. */
+export function compileStatements(d1: D1Database, statements: readonly OrganizationStatement[]): D1PreparedStatement[] {
+  return statements.map((statement) => compile(d1, statement));
+}
+
 /**
  * Found an organization and make its founder an administrator. One D1 batch, so the pair is atomic.
+ *
+ * `statements` adds the adopter's own rows to that batch: `onCreate`'s, then `onJoin`'s with `via:
+ * "founded"`, both after the two inserts. Each builder runs once, after the input has been validated, and
+ * a derived slug's retry reuses what they returned, so a founding that commits writes their rows once.
  *
  * A taken slug refuses with {@link OrganizationSlugTakenError}, decided by asking the database *after*
  * the write failed rather than by checking first. A check-then-insert has a window between the two, and
@@ -202,6 +280,7 @@ export async function createOrganization<Power extends string, Role extends stri
   d1: D1Database,
   catalog: RoleCatalog<Power, Role>,
   input: CreateOrganizationInput,
+  statements?: OrganizationWriteStatements,
 ): Promise<CreatedOrganization> {
   const now = input.now ?? new Date();
   const newId = input.newId ?? (() => crypto.randomUUID());
@@ -213,6 +292,28 @@ export async function createOrganization<Power extends string, Role extends stri
   const organizationId = newId();
   const membershipId = newId();
 
+  // Built on the first attempt, once its rows have encoded, and reused by every retry.
+  let built: readonly OrganizationStatement[] | undefined;
+  const adopterStatements = (): readonly OrganizationStatement[] => {
+    built ??= [
+      ...(statements?.onCreate?.(d1, {
+        organizationId,
+        membershipId,
+        founderUserId: input.founderUserId,
+        name: input.name,
+      }) ?? []),
+      ...(statements?.onJoin?.(d1, {
+        organizationId,
+        membershipId,
+        userId: input.founderUserId,
+        role,
+        via: "founded",
+        invitationId: null,
+      }) ?? []),
+    ];
+    return built;
+  };
+
   const base = input.slug ?? deriveSlug(input.name);
   const attempts = input.slug === undefined ? DERIVED_SLUG_ATTEMPTS : 1;
 
@@ -221,7 +322,7 @@ export async function createOrganization<Power extends string, Role extends stri
     const length = SUFFIX_LENGTHS[attempt - 1];
     const slug = length === undefined ? base : suffixSlug(base, newSuffix(length));
     try {
-      return await foundOrganization(d1, { organizationId, membershipId, slug, role, now, input });
+      return await foundOrganization(d1, { organizationId, membershipId, slug, role, now, input, adopterStatements });
     } catch (error) {
       if (!isSlugTaken(error)) throw error;
       refusal = error;
@@ -254,6 +355,7 @@ async function foundOrganization<Role extends string>(
     role: Role;
     now: Date;
     input: CreateOrganizationInput;
+    adopterStatements: () => readonly OrganizationStatement[];
   },
 ): Promise<CreatedOrganization> {
   // No logo. An account begins without one and a caller draws initials for it, which is an answer
@@ -286,12 +388,15 @@ async function foundOrganization<Role extends string>(
   }
 
   const db = organizationDatabase(d1);
+  const adopters = attempt.adopterStatements();
   let written: D1Result<unknown>[] | undefined;
   try {
     written = await withD1Retry<D1Result<unknown>[] | undefined>(() =>
       d1.batch([
         compile(d1, db.insertInto(ORGANIZATIONS_TABLE).values(rows.organization)),
         compile(d1, db.insertInto(MEMBERSHIPS_TABLE).values(rows.membership)),
+        // The adopter's, last, so they may reference both rows.
+        ...compileStatements(d1, adopters),
       ]),
     );
   } catch (cause) {
@@ -358,7 +463,7 @@ function foundingFailure(taken: boolean, slug: string, reason: string, cause?: u
 
 /**
  * What a rename needs. The slug is not among them: a member never changes one. The one function that does
- * is {@link updateOrganizationAsOperator}, an operator's act behind a control-plane scope (#624).
+ * is {@link updateOrganizationAsOperator}, an operator's act behind a control-plane scope.
  */
 export interface RenameOrganizationInput {
   /** Which account. Resolved from the acting selection by the caller, never from a request field. */
@@ -494,7 +599,7 @@ async function slugHolder(
 }
 
 /**
- * Change an account's name, its short name, or its seat limit — the operator's edit (#624).
+ * Change an account's name, its short name, or its seat limit — the operator's edit.
  *
  * **The short name moves here and nowhere else.** A member renames; only an operator re-addresses an
  * account, because every link and log line that names it by slug is somebody else's. A slug another
@@ -550,26 +655,18 @@ export async function updateOrganizationAsOperator(d1: D1Database, input: Operat
 /**
  * What an adopter contributes to a deletion: their own statements, against **their own** tables.
  *
- * **The binding, not a Kysely** — and the first version of this handed over `OrganizationDatabase`,
- * which was wrong in a way that only showed when somebody tried to use it. That handle is typed over
- * this capability's five tables, so an adopter naming `projects` had to cast every table name and every
- * column to `never` to get past the compiler. A seam whose correct use requires defeating the type
- * system is a seam that will be used incorrectly.
- *
- * Handed the binding, an adopter builds their own typed Kysely — `dashDatabase(d1).deleteFrom("projects")`
- * — and gets their schema checked rather than erased. This capability only ever compiles what it is
- * given, which is all it needs to know.
+ * **The binding, not a Kysely.** `OrganizationDatabase` is typed over this capability's tables, so an
+ * adopter naming `projects` through it would have to cast past the compiler. Handed the binding, they
+ * build their own typed Kysely — `dashDatabase(d1).deleteFrom("projects")` — and their schema is checked.
+ * This capability only compiles what it is given.
  */
-export type OrganizationDeleteSweep = (
-  d1: D1Database,
-  organizationId: string,
-) => readonly { compile(): CompiledQuery }[];
+export type OrganizationDeleteSweep = (d1: D1Database, organizationId: string) => readonly OrganizationStatement[];
 
 /**
  * Delete an organization, and everything that pointed at it — **including the adopter's own rows.**
  *
  * **Children first, in one batch.** Referential integrity across a capability boundary is held by the
- * writers rather than by a constraint (see the migration, and `#569` for what D1 actually enforces), and
+ * writers rather than by a constraint (see the migration for what D1 actually enforces), and
  * a partial delete is the worst of the two outcomes: a membership naming an account that is gone still
  * answers *yes* to "is this person a member of `X`", and an acting row still points a live session at it.
  * One transaction means the account and every claim on it end together.
@@ -577,9 +674,8 @@ export type OrganizationDeleteSweep = (
  * ## The adopter's tables go in the same transaction, and that is the whole point of the seam
  *
  * Every adopter who composes this has tables keyed on `organizationId` — that is what tenancy *is* — and
- * this capability cannot see them. Until `#570` it swept its own five and stopped, which left an
- * adopter's rows behind for an account that no longer existed. For the first adopter those rows are
- * connections to customers' production Workers, so what outlived the deletion was a credential.
+ * this capability cannot see them. Swept alone, its own tables would go and an adopter's rows would
+ * outlive the account, and when those rows hold credentials, so would the credentials.
  *
  * `sweep` is handed the **binding** so an adopter can build a Kysely over their own schema, and returns
  * statements that are appended **ahead** of this capability's own — so one may still name a membership

@@ -6,7 +6,7 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import { CamelCasePlugin, Kysely } from "kysely";
+import { CamelCasePlugin, Kysely, sql } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -18,6 +18,9 @@ import {
   createOrganization,
   deleteOrganization,
   founderRole,
+  type MembershipJoined,
+  type OrganizationCreated,
+  type OrganizationCreateStatements,
   renameOrganization,
   setLogo,
   updateOrganizationAsOperator,
@@ -847,15 +850,10 @@ describe("deleteOrganization", () => {
 
 describe("the adopter's own tenanted rows go with the account", () => {
   /*
-    **`#570`.** Every adopter who composes this has tables keyed on `organizationId` — that is what
-    tenancy is — and this capability cannot see them. It swept its own five and stopped, which left their
-    rows behind for an account that no longer existed. For the first adopter those rows are connections
-    to customers' production Workers, so what outlived the deletion was a credential.
-
-    The seam takes statements rather than doing the work, and they join the same batch. That is the half
-    worth testing: not that the rows go, but that when one of the adopter's statements fails, the
-    *account* is still there. A callback after the delete could not offer that, and its failure mode is
-    precisely the state the issue is about.
+    Every adopter who composes this has tables keyed on `organizationId`, and this capability cannot see
+    them. The seam takes statements rather than doing the work, and they join the same batch. That is the
+    half worth testing: not that the rows go, but that when the batch fails, the *account* and the
+    adopter's rows are both still there.
   */
 
   /**
@@ -903,13 +901,9 @@ describe("the adopter's own tenanted rows go with the account", () => {
 
   test("**their rows survive a failure anywhere in the delete**", async () => {
     /*
-      The property the batch buys, and the one an "after the fact" sweep cannot offer.
-
-      The naive version of this test failed the adopter's *own* statement — which proves nothing, because
-      that fails before the batch either way and the account survives under both arrangements. I wrote
-      that first, planted the bug it was supposed to catch, and watched it pass. The distinction only
-      shows when the adopter's statement **succeeds** and something later goes wrong: in the batch, their
-      delete rolls back with the account; outside it, their rows are gone and the account is not.
+      The property the batch buys, and the one an "after the fact" sweep cannot offer. The adopter's
+      statement has to **succeed** and something later fail: in the batch, their delete rolls back with the
+      account; outside it, their rows would be gone and the account would not.
     */
     await theirTable();
     const created = await createOrganization(env.DB, NESTING, {
@@ -969,5 +963,211 @@ describe("the adopter's own tenanted rows go with the account", () => {
       theirs(d1).deleteFrom("adopterConnections").where("id", "=", membership.id),
     ]);
     expect(await theirRows(created.organization.id)).toBe(0);
+  });
+});
+
+describe("the adopter's own rows begin with the account", () => {
+  /** A Kysely over the adopter's own schema: a log of what their builders wrote, in order. */
+  function theirs(d1: D1Database): Kysely<{
+    adopterRows: { seq?: number; kind: string; organizationId: string; membershipId: string | null };
+  }> {
+    return new Kysely({ dialect: new D1Dialect({ database: d1 }), plugins: [new CamelCasePlugin()] });
+  }
+
+  async function theirTable(): Promise<void> {
+    await env.DB.prepare("drop table if exists adopter_rows").run();
+    await env.DB.prepare(
+      "create table adopter_rows (seq integer primary key autoincrement, kind text not null, organization_id text not null, membership_id text)",
+    ).run();
+  }
+
+  async function theirRows(): Promise<{ kind: string; organization_id: string; membership_id: string | null }[]> {
+    const { results } = await env.DB.prepare(
+      "select kind, organization_id, membership_id from adopter_rows order by seq",
+    ).all<{ kind: string; organization_id: string; membership_id: string | null }>();
+    return results;
+  }
+
+  /**
+   * A settings row copied out of the founder's membership, so it lands only when the membership is already
+   * written: run ahead of the inserts, the select finds nothing and the row is missing.
+   */
+  const settings: OrganizationCreateStatements = (d1, { membershipId }) => [
+    {
+      compile: () =>
+        sql`insert into adopter_rows (kind, organization_id, membership_id)
+          select 'settings', organization_id, id from pithy_organization_memberships where id = ${membershipId}`.compile(
+          theirs(d1),
+        ),
+    },
+  ];
+
+  beforeEach(theirTable);
+
+  test("onCreate's statements run in the founding batch, after both inserts", async () => {
+    const batches: number[] = [];
+    const watched = wrapping(env.DB, async (statements) => void batches.push(statements.length));
+
+    const { organization, membership } = await createOrganization(
+      watched,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      { onCreate: settings },
+    );
+
+    // One batch: the organization, the membership, and the adopter's statement.
+    expect(batches).toEqual([3]);
+    expect(await theirRows()).toEqual([
+      { kind: "settings", organization_id: organization.id, membership_id: membership.id },
+    ]);
+  });
+
+  test("onCreate is told the ids, the founder and the name", async () => {
+    const seen: OrganizationCreated[] = [];
+    const { organization, membership } = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: (_d1, created) => {
+          seen.push(created);
+          return [];
+        },
+      },
+    );
+    expect(seen).toEqual([
+      { organizationId: organization.id, membershipId: membership.id, founderUserId: FOUNDER, name: "Acme Games" },
+    ]);
+  });
+
+  test("**a statement from onCreate that fails rolls the founding back**", async () => {
+    const failure = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: (d1, { organizationId }) => [
+          theirs(d1).insertInto("adopterRows").values({ kind: "settings", organizationId, membershipId: null }),
+          // The second statement violates the adopter's own NOT NULL, after the first has run.
+          theirs(d1)
+            .insertInto("adopterRows")
+            .values({ kind: null as never, organizationId, membershipId: null }),
+        ],
+      },
+    ).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("core/internal");
+    expect(await count("pithy_organization_organizations")).toBe(0);
+    expect(await count("pithy_organization_memberships")).toBe(0);
+    expect(await theirRows()).toEqual([]);
+  });
+
+  test("**a derived slug's retry reuses the same ids and statements, and the rows land once**", async () => {
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", slug: "acme-games", founderUserId: STRANGER });
+    await env.DB.prepare("delete from adopter_rows").run();
+
+    let built = 0;
+    const attempts: number[] = [];
+    const watched = wrapping(env.DB, async (statements) => void attempts.push(statements.length));
+    const { organization, membership } = await createOrganization(
+      watched,
+      NESTING,
+      { name: "Acme Games", founderUserId: FOUNDER, newSuffix: (length) => "q".repeat(length) },
+      {
+        onCreate: (d1, created) => {
+          built += 1;
+          return settings(d1, created);
+        },
+      },
+    );
+
+    expect(organization.slug).toBe("acme-games-qqqq");
+    // Two attempts, each carrying the one statement the builder returned the one time it ran.
+    expect(built).toBe(1);
+    expect(attempts).toEqual([3, 3]);
+    expect(await theirRows()).toEqual([
+      { kind: "settings", organization_id: organization.id, membership_id: membership.id },
+    ]);
+  });
+
+  test("a commit that loses its connection writes the rows once", async () => {
+    let batches = 0;
+    const flaky = wrapping(env.DB, async (statements) => {
+      batches += 1;
+      if (batches > 1) return;
+      await env.DB.batch(statements);
+      throw new Error("D1_ERROR: Network connection lost");
+    });
+
+    const { organization } = await createOrganization(
+      flaky,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      { onCreate: settings },
+    );
+
+    expect(await theirRows()).toHaveLength(1);
+    expect((await theirRows())[0]?.organization_id).toBe(organization.id);
+  });
+
+  test("onJoin runs for the founder, after onCreate, in the same batch", async () => {
+    const batches: number[] = [];
+    const watched = wrapping(env.DB, async (statements) => void batches.push(statements.length));
+    const joined: MembershipJoined[] = [];
+
+    const { organization, membership } = await createOrganization(
+      watched,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: settings,
+        onJoin: (d1, event) => {
+          joined.push(event);
+          return [
+            theirs(d1)
+              .insertInto("adopterRows")
+              .values({ kind: "profile", organizationId: event.organizationId, membershipId: event.membershipId }),
+          ];
+        },
+      },
+    );
+
+    expect(batches).toEqual([4]);
+    expect(joined).toEqual([
+      {
+        organizationId: organization.id,
+        membershipId: membership.id,
+        userId: FOUNDER,
+        role: "admin",
+        via: "founded",
+        invitationId: null,
+      },
+    ]);
+    expect((await theirRows()).map((row) => row.kind)).toEqual(["settings", "profile"]);
+  });
+
+  test("a founding the input refuses never runs the builders", async () => {
+    let built = 0;
+    const failure = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "Not A Slug", founderUserId: FOUNDER },
+      {
+        onCreate: () => {
+          built += 1;
+          return [];
+        },
+      },
+    ).catch((error: unknown) => error);
+    expect(codeOf(failure)).toBe("validation/invalid_input");
+    expect(built).toBe(0);
+  });
+
+  test("without builders the founding batch is the two inserts it always was", async () => {
+    const batches: number[] = [];
+    const watched = wrapping(env.DB, async (statements) => void batches.push(statements.length));
+    await createOrganization(watched, NESTING, { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER }, {});
+    await createOrganization(watched, NESTING, { name: "Beta", slug: "beta", founderUserId: FOUNDER });
+    expect(batches).toEqual([2, 2]);
   });
 });
