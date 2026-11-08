@@ -12,19 +12,18 @@ import { readSource, sourcePaths } from "./sourceFiles";
 /**
  * The gates. **No test in this repository resolves the operator's real machine or their real account.**
  *
- * Two defects in two weeks, and one shape between them. #200: `bun run test` minted 36 real AES master
- * keys into a maintainer's `~/.config/pithy` and wrote `SECRETS_STORE_ID` into their real
- * `cloudflare.json`, because `addBootstrap.test.ts` passed no `paths` seam and nothing made the config
- * directory fake. #198: unit suites authenticated against a live Cloudflare account, because
- * `cloudflareEnv` overlays `process.env` per key — correct, and CI depends on it — and every developer
- * who has run `pithy deploy` has a token exported. Both are **a test resolving a real thing because no
- * config said otherwise**, and both were fixed once, in one package, leaving the other twenty exposed.
+ * Two ways a test reaches the real machine, and one shape between them. A test that passes no `paths` seam
+ * resolves the operator's real `~/.config/pithy`, and can mint real AES master keys there and write
+ * `SECRETS_STORE_ID` into their real `cloudflare.json`. And a unit suite can authenticate against a live
+ * Cloudflare account, because `cloudflareEnv` overlays `process.env` per key — correct, and CI depends on
+ * it — and every developer who has run `pithy deploy` has a token exported. Both are **a test resolving a
+ * real thing because no config said otherwise**, and a guard in one package leaves every other exposed.
  *
- * So the rule is stated about every config rather than about the two that were caught.
+ * So the rule is stated about every config rather than about one.
  *
- * **It loads the configs; it does not read them.** A source scan would have passed the exact bug #198
- * records: the guard was added as a *second* `env:` key on one object literal, which JavaScript discards
- * without a word, so the text said covered and the run was not. This imports each config and inspects
+ * **It loads the configs; it does not read them.** A source scan passes a guard written as a *second*
+ * `env:` key on one object literal, which JavaScript discards without a word, so the text says covered and
+ * the run is not. This imports each config and inspects
  * the object vitest will actually be handed, which is the only artifact that cannot lie about what took
  * effect. A guard that is present but inert fails here exactly like a missing one — and that is worth
  * more than the missing case, because an inert guard reads as covered to everyone who checks.
@@ -34,8 +33,8 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * accepted from either level and `setupFiles` is required on the project itself. Getting that backwards
  * is how a config acquires a guard that never runs.
  *
- * **Workers projects are exempt from the two guards above, and from nothing else. State that precisely,
- * because for a while it was stated loosely and the looseness was the hole (#437).**
+ * **Workers projects are exempt from the two guards above, and from nothing else. That is stated
+ * precisely, because a loose statement of it is a hole.**
  *
  * *Exempt:* the blank-credential `env` pin and the config-directory setup. workerd inherits nothing from
  * the host, so there is no ambient credential to blank and no real home directory to resolve. Either
@@ -45,16 +44,15 @@ import { readSource, sourcePaths } from "./sourceFiles";
  *
  * *Not exempt:* everything a workers config **declares**. Inheritance and declaration are different
  * questions and the exemption only ever answered the first. A `bindings` entry writes into workerd's
- * `process.env` by design, so `CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN` was #198 walking
- * back in through the exempt door with nothing to stop it. Two gates below close that, and they are
+ * `process.env` by design, so `CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN` would bring the
+ * operator's credential in through the exempt door. Two gates below close that, and they are
  * halves rather than duplicates: every workers project loads `vitest.workers.setup.ts`, which refuses a
  * credential *visible inside workerd*, and neither a workers config nor any repository module it imports
  * may read `process.env` at all, which refuses the *declaration* on a machine where it happens to
  * evaluate to nothing.
  *
- * **That is asserted, not probed.** It used to be a sentence here reporting a count taken once on
- * workerd `1.20260730.1`; #433 moved the harness to `1.20260820.1` and the sentence would have gone
- * stale without a word — in the file that justifies dropping a guard, which is the worst place for a
+ * **That is asserted, not probed.** A count taken once on one workerd release goes stale without a word
+ * the day the harness moves — in the file that justifies dropping a guard, which is the worst place for a
  * fact nothing checks. {@link WORKERD_ENV_EVIDENCE} pins the exact key set from inside workerd, and
  * the citation is resolved below rather than left as prose that rots the same way. What it pins is now
  * core's own exact set; the portable half of its claim runs in all seventeen projects instead.
@@ -65,7 +63,9 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * `templates/starter/vitest.workers.config.ts` can state neither setup file: both are absolute paths
  * only this checkout has. It is dropped from the walk that loads configs for that reason, and a reader
  * counting eighteen files against seventeen projects has found this paragraph rather than a gap. They
- * are also not a workspace member, so `bun run test` never runs them.
+ * are also not a workspace member, so `bun run test` never runs them. A package's `templates/` is the same:
+ * `@pithy-sh/ui-react-native`'s `vitest.config.ts` is copied into an app by `pithy ui add react-native`, and
+ * the kit runs its seeded tests through its own config instead.
  *
  * **The source scan covers it, because that exemption does not reach.** A requirement-gate names a path;
  * a prohibition-gate names a text, and `process.env` means the same thing in every checkout. Splitting
@@ -74,7 +74,7 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * ship from here and reach *their* account. Applying one exclusion to both walks was reasoning from the
  * gate that had a reason to the gate that did not.
  *
- * The walk is `ci/sourceFiles.ts` — the one every other tripwire in this tree reads it through (#185).
+ * The walk is `ci/sourceFiles.ts` — the one every other tripwire in this tree reads it through.
  */
 
 /** The repository root. This file lives at `packages/cli/src/ci/`; the anchor test below proves it. */
@@ -106,8 +106,8 @@ const TEMPLATE_WORKERS_CONFIG = "templates/starter/vitest.workers.config.ts";
 /**
  * The workers population as it stands. Both gates below are over a filtered list, and a filter that
  * matched nothing would satisfy either in silence — so each states the real number rather than a floor
- * it is comfortable with. An anti-vacuity guard set below the population is shape 8 of #326's taxonomy:
- * it passes for exactly the broken walk it was written to catch.
+ * it is comfortable with. An anti-vacuity guard set below the population passes for exactly the broken
+ * walk it was written to catch.
  *
  * A floor rather than an equality, because a capability landing with a workers suite raises it and that
  * is not a defect. What is asserted exactly is that the two walks agree with *each other* — this is the
@@ -116,7 +116,7 @@ const TEMPLATE_WORKERS_CONFIG = "templates/starter/vitest.workers.config.ts";
 const WORKERS_PROJECTS = 17;
 
 /**
- * The opt-in that lets a suite resolve the operator's real config directory (`stateDir`, #200). It
+ * The opt-in that lets a suite resolve the operator's real config directory (`stateDir`). It
  * exists for a suite that means it. A unit config that set it would hand the exemption to everything.
  */
 const ALLOW_REAL = "PITHY_ALLOW_REAL_CONFIG_DIR";
@@ -138,8 +138,7 @@ const WORKERS_PLUGIN = "@cloudflare/vitest-plugin";
  * The root guard now reads the bindings as well, so the leak above is caught either way. This stays
  * because the flag is a fact about the runtime the capabilities are tested on, not only about the
  * guard: without it a suite exercises a workerd the deployed Worker is not, and a new capability's
- * config is written by copying a sibling's — which is exactly how eight of them came to share one wrong
- * compatibility date (#388).
+ * config is written by copying a sibling's, which is how one wrong compatibility date spreads to many.
  *
  * `compatibilityDates.test.ts` reads the sibling half of this line for the same population, and for the
  * same reason it reads text: the miniflare options are closed over inside the plugin, so the loaded
@@ -150,10 +149,9 @@ const NODEJS_COMPAT = "nodejs_compat";
 /**
  * The measurement the workers exemption rests on, written down once and resolved below.
  *
- * #433 asserted the key set and then cited the assertion in a comment — which is the same defect one
- * level out. `grep` found this path in prose and nowhere else: no `existsSync`, no import, nothing that
- * runs. Rename or delete the file and the exemption over every workers project in the tree is justified
- * by a citation to nothing, green.
+ * A path cited only in prose is checked by nothing: no `existsSync`, no import, nothing that runs. Rename or
+ * delete the file and the exemption over every workers project in the tree is justified by a citation to
+ * nothing, green. So the citation is resolved below.
  */
 const WORKERD_ENV_EVIDENCE = "packages/core/src/worker/envIsolation.workers.test.ts";
 
@@ -162,7 +160,7 @@ const EVIDENCE_CITATIONS = ["CONTRIBUTING.md"];
 
 /**
  * The configs vitest is actually invoked with. A `vitest.workers.config.ts` is reached as a project.
- * `vitest.windows.config.ts` is the CLI's Windows set (#702): invoked by its own script, on its own runner,
+ * `vitest.windows.config.ts` is the CLI's Windows set: invoked by its own script, on its own runner,
  * and held to the same isolation as the default config it was split from.
  */
 function isEntryConfig(name: string): boolean {
@@ -272,20 +270,18 @@ function resolveImport(specifier: string, from: string): string | null {
 }
 
 /**
- * Every repository file a config pulls in, transitively — **derived rather than listed**, which is the
- * whole of #437's third finding.
+ * Every repository file a config pulls in, transitively — **derived rather than listed**.
  *
- * The ban below used to read the eighteen config files and nothing else, while its own docblock rejected
- * a narrower rule "walked around by a helper that reads the environment one call away". A helper one
- * call away is exactly what `../../vitest.shared` is: all seventeen import it, and an
+ * A ban that read the config files and nothing else would be walked around by a helper that reads the
+ * environment one call away. A helper one call away is exactly what `../../vitest.shared` is: all
+ * seventeen import it, and an
  * `export const HOST_TOKEN = process.env.CLOUDFLARE_API_TOKEN ?? ""` added there would be invisible to a
  * file-name-scoped scan and would flow straight into a `bindings` entry.
  *
  * Naming the two modules a config imports today would close it and go stale on the third. So the graph
  * is walked instead: relative specifiers only, transitively, which today reaches `vitest.shared.ts`,
- * `compatibility.ts` and `@pithy-sh/cloudflare`'s `env/devVars` — that last one is bundled into workerd
- * and had a hand-written paragraph asking a reader not to make it read the environment. It has a gate
- * now.
+ * `compatibility.ts` and `@pithy-sh/cloudflare`'s `env/devVars`, which is bundled into workerd, so the gate
+ * holds it to reading no environment.
  *
  * **The setup file is deliberately not in this graph, and must not be.** `vitest.shared.ts` reaches
  * `vitest.workers.setup.ts` through `new URL(…)`, which is a path rather than an import — and reading
@@ -398,7 +394,9 @@ let unresolvedImports: string[] = [];
  * paragraph at the top for which, and why the other one covers the template instead.
  */
 function outsideTemplates(path: string): boolean {
-  return relative(REPO_ROOT, path).split(sep)[0] !== "templates";
+  const [top, , below] = relative(REPO_ROOT, path).split(sep);
+  // A package's `templates/` too: `pithy ui add react-native` copies its `vitest.config.ts` into an app verbatim.
+  return top !== "templates" && !(top === "packages" && below === "templates");
 }
 
 beforeAll(async () => {
@@ -473,19 +471,18 @@ describe("the workers exemption cites evidence that exists", () => {
 });
 
 /**
- * #437. **Every workers project certifies its own environment, and the set is what is certified.**
+ * **Every workers project certifies its own environment, and the set is what is certified.**
  *
  * The exemption above is right about inheritance and says nothing about declaration. A `bindings` entry
  * in a workers config puts a host-computed value into workerd's `process.env` by design — five configs
  * declare `SECRETS_ENCRYPTION_KEYS: devEncryptionKeys()`, which is a key minted for the test and is
  * fine — and the shape one line over is `CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN`, which
- * is #198 walking back in through the exempt door.
+ * brings the operator's credential in through the exempt door.
  *
  * So the portable half of {@link WORKERD_ENV_EVIDENCE} — no Cloudflare credential is visible from inside
  * workerd, whatever put it there — is a repository-root setup file that all seventeen load, and this is
  * the gate that every one of them does. Read off the loaded config object, like everything else here:
- * a `setupFiles` key shadowed by a second one on the same literal fails exactly like a missing one, and
- * that is the bug #198 was.
+ * a `setupFiles` key shadowed by a second one on the same literal fails exactly like a missing one.
  *
  * **The guard throws rather than asserts.** It sits above every `node_modules/` holding vitest, so it
  * can import no bare specifier and has no `expect` — the same wall `vitest.setup.ts` documents. What it
@@ -570,7 +567,7 @@ describe("every workers project certifies its own environment", () => {
 });
 
 /**
- * #437, the other half. **No workers config reads the operator's environment.**
+ * The other half. **No workers config reads the operator's environment.**
  *
  * The guard above cannot close this on its own, and the reason is measured rather than argued. A
  * declaration reading the operator's shell carries nothing on a machine with no token exported — every
@@ -658,7 +655,7 @@ describe("no workers config reads the operator's environment", () => {
 });
 
 /**
- * #200. **No suite resolves the operator's real Pithy config directory.**
+ * **No suite resolves the operator's real Pithy config directory.**
  *
  * Stated about every project, unit and integration alike. A live suite needs the real account; it has
  * never needed the directory holding the operator's minted dev master keys.
@@ -666,7 +663,7 @@ describe("no workers config reads the operator's environment", () => {
  * This is the floor, not the fix. `stateDir` refuses to resolve the real directory under vitest at all
  * (`notifier/state.ts`), which is what catches a test that forgets its seam *at the moment of the
  * mistake*. A safe default still lets a test opt back into the real directory by accident; a resolver
- * that refuses cannot. Both, because #200 asked for both and gave the reason.
+ * that refuses cannot. So both.
  */
 describe("no suite resolves the operator's real Pithy config directory", () => {
   test("every project loads the shared config-directory setup", () => {
@@ -686,7 +683,7 @@ describe("no suite resolves the operator's real Pithy config directory", () => {
 });
 
 /**
- * #198. **No unit suite can resolve a Cloudflare credential from the ambient environment.**
+ * **No unit suite can resolve a Cloudflare credential from the ambient environment.**
  *
  * `CLOUDFLARE_ENV_KEYS` is the list, imported rather than restated, so a fifth key is covered by the
  * commit that adds it — and so this gate and the configs it checks cannot drift apart into two lists
@@ -717,7 +714,7 @@ describe("no unit suite can resolve a Cloudflare credential", () => {
 });
 
 /**
- * #697. **No unit suite inherits a shell's `PITHY_NONINTERACTIVE`.** An agent exports it once, and an
+ * **No unit suite inherits a shell's `PITHY_NONINTERACTIVE`.** An agent exports it once, and an
  * in-process suite that attaches a fake terminal to reach a prompt would otherwise reach a refusal.
  * The real constant, imported, so a rename in `terminal/inputMode.ts` cannot leave the pin behind.
  */
@@ -736,19 +733,17 @@ describe("no unit suite inherits a shell's prompt switch", () => {
 });
 
 /**
- * **Every unit and workers project states both budgets, and none of them takes vitest's (#361).**
+ * **Every unit and workers project states both budgets, and none of them takes vitest's.**
  *
- * The defect this refuses is the one that produced #361: twenty-two of twenty-three packages had never
- * written a `testTimeout` or a `hookTimeout`, so they ran on vitest's 5,000ms and 10,000ms — numbers
- * nobody chose, applied to workers suites that spawn workerd and talk to real D1, on a machine whose
- * own `bun run test` starts twenty-three packages at `--concurrency=50%`. Three packages went red on
- * three consecutive full runs, each passing alone straight afterwards.
+ * A package that writes no `testTimeout` or `hookTimeout` runs on vitest's 5,000ms and 10,000ms — numbers
+ * nobody chose, applied to workers suites that spawn workerd and talk to real D1, on a machine whose own
+ * `bun run test` starts every package at `--concurrency=50%`. Such a package goes red under a full run and
+ * passes alone straight afterwards.
  *
  * It is gated here rather than left to review for the reason the rest of this file exists: a config is
  * a place to forget, and the packages that forgot were not the ones anybody was looking at. A new
  * capability is scaffolded by copying a sibling's config, so the *next* package to be added inherits
- * whichever one it was copied from — which is exactly how one package came to have a budget and the
- * other twenty-two did not.
+ * whichever one it was copied from.
  *
  * **Equality, not a floor.** A config free to state any number it liked would drift back to whatever
  * made a red run go away, one package at a time, and that is the re-run habit written into a config.
@@ -765,7 +760,7 @@ describe("no unit suite inherits a shell's prompt switch", () => {
  *
  * The copy earns its keep here. A gate that imported the constant would follow it anywhere it went,
  * including down: an edit dropping `testTimeout` back to 5,000 would move both sides at once and stay
- * green, which is the shape of gate #326 was written about. Written out, changing the policy takes two
+ * green. Written out, changing the policy takes two
  * edits, and the second one is a test going red in front of whoever made the first.
  */
 const EXPECTED_BUDGETS = { testTimeout: 60_000, hookTimeout: 120_000 } as const;
@@ -786,7 +781,7 @@ describe("every unit project states its budgets rather than inheriting vitest's"
   });
 
   test("and there are projects to have checked, so a walk that found none cannot pass", () => {
-    // The vacuity guard #326 exists for. Every assertion above is over a filtered list, and a filter
+    // The vacuity guard. Every assertion above is over a filtered list, and a filter
     // that matched nothing would satisfy all of them in silence.
     expect(projects.filter((project) => !project.integration).length).toBeGreaterThan(20);
   });

@@ -1,52 +1,42 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
+import { nativeTestProject } from "./src/testing/vitest";
 
 /**
- * Two projects. `node` checks the library: the manifest, the version and the generated config's shape.
+ * `node` checks the library: the manifest, the version and the generated config's shape.
  *
- * `native` renders the templates. React Native's own entry is untransformed Flow that only Metro can load, so
- * `react-native` is aliased to `react-native-web`, which implements the same components over the DOM, and the
- * render lands in happy-dom. What that proves is the screen's logic and its use of the theme; the templates are
- * typechecked against React Native's own types separately, by `tsconfig.templates.json`.
- *
- * Every native module a template reaches for is aliased to a stand-in under `testing/`, which keeps the one
- * behavior the kit relies on and lets a test drive the rest: the secure store is a map that outlives a mount, the
- * store's purchase listener is something a test fires. A test imports the stand-in by its relative path to reach
- * those controls; it is the same module the alias loads. `testing/reset.ts` returns each one to a fresh install
- * after every test.
+ * `native` renders the templates, and it is the project `nativeTestProject` gives an app, so the kit tests the
+ * preset apps get. `native-bare-home` is the same preset, for the one seeded test whose import names a path the
+ * tree holds under another name. The templates are typechecked against React Native's own types separately, by
+ * `tsconfig.templates.json`. A test reaches a stand-in's controls by its relative path under `testing/` or by its
+ * package path, and both are the module the alias loads. The app's own payments-store files are the templates'.
  */
-const here = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
-
-const NATIVE_STUBS: Readonly<Record<string, string>> = {
-  "expo-secure-store": "./testing/expo-secure-store.ts",
-  "expo-crypto": "./testing/expo-crypto.ts",
-  "expo-router": "./testing/expo-router.ts",
-  "expo-web-browser": "./testing/expo-web-browser.ts",
-  "expo-linking": "./testing/expo-linking.ts",
-  "expo-localization": "./testing/expo-localization.ts",
-  "expo-apple-authentication": "./testing/expo-apple-authentication.ts",
-  "expo-iap": "./testing/expo-iap.ts",
-  "react-native-webview": "./testing/react-native-webview.ts",
-  "@react-native-async-storage/async-storage": "./testing/async-storage.ts",
-  "@react-native-google-signin/google-signin": "./testing/google-signin.ts",
-};
+const native = nativeTestProject({
+  include: ["src/**/*.test.tsx", "templates/**/*.test.tsx"],
+  src: "templates/src",
+});
 
 /**
- * Metro's `require.context`, reached through `globalThis` under test. The module runner hands every module its own
- * `require`, which has no `context`, so a test that stubs `globalThis.require` could never reach the call
- * `route-modules.ts` makes. Metro reads the call literally, so the template keeps writing it bare.
+ * The bare home screen's test, which imports `./home` because that is where the scaffold writes the screen. In the
+ * tree the bare screen is `home.bare.tsx` beside the auth one, so this project points `./home` at it.
  */
-const metroRequireContext = {
-  name: "metro-require-context",
-  transform(code: string): string | undefined {
-    return code.includes("require.context(")
-      ? code.replaceAll("require.context(", "globalThis.require.context(")
-      : undefined;
-  },
-};
+const BARE_HOME_TEST = "templates/src/routes/app/home.bare.test.tsx";
+const bareHome = nativeTestProject({ include: [BARE_HOME_TEST], src: "templates/src", name: "native-bare-home" });
 
-const escapeRegExp = (name: string): string => name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+/** A preset project with the kit's own budgets, config directory and unset account. */
+function kitNative(project: typeof native, exclude: string[] = []): typeof native {
+  return {
+    ...project,
+    test: {
+      ...project.test,
+      ...UNIT_BUDGETS,
+      exclude: ["node_modules/**", ...exclude],
+      env: { ...NO_ACCOUNT },
+      setupFiles: [CONFIG_DIR_SETUP, ...(project.test?.setupFiles ?? [])],
+    },
+  };
+}
 
 export default defineConfig({
   test: {
@@ -64,28 +54,17 @@ export default defineConfig({
           setupFiles: [CONFIG_DIR_SETUP],
         },
       },
+      kitNative(native, [BARE_HOME_TEST]),
       {
-        esbuild: { jsx: "automatic" },
-        plugins: [metroRequireContext],
+        ...kitNative(bareHome),
         resolve: {
           alias: [
-            { find: /^react-native$/, replacement: here("./node_modules/react-native-web") },
-            ...Object.entries(NATIVE_STUBS).map(([name, stub]) => ({
-              find: new RegExp(`^${escapeRegExp(name)}$`),
-              replacement: here(stub),
-            })),
-            // Metro picks `payments-store.native.ts` or `payments-store.ts` by platform; the stand-in picks per call.
-            { find: /^\.\/payments-store$/, replacement: here("./testing/payments-store.ts") },
+            {
+              find: /^\.\/home$/,
+              replacement: fileURLToPath(new URL("./templates/src/routes/app/home.bare.tsx", import.meta.url)),
+            },
+            ...((bareHome.resolve?.alias ?? []) as { find: RegExp; replacement: string }[]),
           ],
-        },
-        test: {
-          ...UNIT_BUDGETS,
-          name: "native",
-          environment: "happy-dom",
-          include: ["src/**/*.test.tsx", "templates/**/*.test.tsx"],
-          exclude: ["node_modules/**"],
-          env: { ...NO_ACCOUNT },
-          setupFiles: [CONFIG_DIR_SETUP, here("./testing/metro.ts"), here("./testing/reset.ts")],
         },
       },
     ],

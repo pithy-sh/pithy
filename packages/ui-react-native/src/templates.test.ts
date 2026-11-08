@@ -4,7 +4,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { describe, expect, test } from "vitest";
-import { APP_TOKEN, HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "./templates";
+import { APP_TOKEN, HOME_SCREEN, HOME_TEST, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "./templates";
 
 /** Every file in the template tree, as paths relative to it, POSIX-separated. */
 async function treeFiles(dir: string = TEMPLATE_DIR): Promise<string[]> {
@@ -17,7 +17,17 @@ async function treeFiles(dir: string = TEMPLATE_DIR): Promise<string[]> {
   return found.sort();
 }
 
-const declared = (): string[] => [...Object.values(TEMPLATE_GROUPS).flat(), HOME_SCREEN.auth, HOME_SCREEN.bare].sort();
+const declared = (): string[] =>
+  [
+    ...Object.values(TEMPLATE_GROUPS).flat(),
+    HOME_SCREEN.auth,
+    HOME_SCREEN.bare,
+    // The auth home test's tree path is its target, so only the bare one adds a path.
+    ...new Set([HOME_TEST.auth, HOME_TEST.bare]),
+  ].sort();
+
+/** The `include` the app's own `vitest.config.ts` hands the preset. */
+const APP_INCLUDE = 'include: ["src/**/*.test.{ts,tsx}"]';
 
 describe("the React Native template library", () => {
   test("every declared path exists on disk", async () => {
@@ -38,8 +48,25 @@ describe("the React Native template library", () => {
     expect(new Set(paths).size).toBe(paths.length);
   });
 
-  test("nothing in the tree is a test: the templates' tests live in this package's src/", async () => {
-    expect((await treeFiles()).filter((path) => /\.(test|spec)\.tsx?$/.test(path))).toEqual([]);
+  test("the only tests in the tree are the ones an app is seeded with, each collected by the app's runner", async () => {
+    const tests = (await treeFiles()).filter((path) => /\.(test|spec)\.tsx?$/.test(path));
+    expect(tests).toEqual([
+      "src/routes/app/home.bare.test.tsx",
+      "src/routes/app/home.test.tsx",
+      "src/routes/pithy/sign-in.test.tsx",
+    ]);
+    expect(await readFile(join(TEMPLATE_DIR, "vitest.config.ts"), "utf8")).toContain(APP_INCLUDE);
+    for (const path of tests)
+      expect(path, `${path} is outside the app's src/, which its runner collects`).toMatch(/^src\/.*\.test\.tsx$/);
+  });
+
+  test("the sign-in test rides with the sign-in screen, and each home test with its home screen", () => {
+    expect(TEMPLATE_GROUPS.auth).toContain("src/routes/pithy/sign-in.tsx");
+    expect(TEMPLATE_GROUPS.auth).toContain("src/routes/pithy/sign-in.test.tsx");
+    expect(TEMPLATE_GROUPS.base).toContain("vitest.config.ts");
+    expect(HOME_TEST.target).toBe(HOME_SCREEN.target.replace(/\.tsx$/, ".test.tsx"));
+    expect(HOME_TEST.bare).toBe(HOME_SCREEN.bare.replace(/\.tsx$/, ".test.tsx"));
+    expect(HOME_TEST.auth).toBe(HOME_SCREEN.auth.replace(/\.tsx$/, ".test.tsx"));
   });
 
   test("every screen ui-react ships has its counterpart here, at the same path", () => {

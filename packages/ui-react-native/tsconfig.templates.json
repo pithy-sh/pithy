@@ -28,5 +28,7 @@
     "noEmit": true
   },
   "include": ["templates/**/*.ts", "templates/**/*.tsx"],
-  "exclude": ["templates/**/*.test.ts", "templates/**/*.test.tsx"]
+  // The seeded tests and the app's `vitest.config.ts` run under Vitest in Node and happy-dom, not in the app, so
+  // `tsconfig.native.json` checks them with the DOM lib this program leaves out.
+  "exclude": ["templates/**/*.test.ts", "templates/**/*.test.tsx", "templates/vitest.config.ts"]
 }

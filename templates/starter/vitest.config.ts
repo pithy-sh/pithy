@@ -86,6 +86,21 @@ function oneReact(): { find: RegExp; replacement: string }[] {
 
 const ONE_REACT = oneReact();
 
+/**
+ * The `apps/*` that bring a `vitest.config.ts` of their own, such as the Expo app `pithy ui add react-native`
+ * writes. Their tests run under that config, with that app's `test` script, and are kept out of the `node`
+ * project below: a screen that imports `react-native` cannot load in plain Node, whose parser fails on React
+ * Native's untransformed Flow before a test runs.
+ */
+function ownRunners(): string[] {
+  const apps = join(PROJECT_ROOT, "apps");
+  if (!existsSync(apps)) return [];
+  return readdirSync(apps, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(apps, entry.name, "vitest.config.ts")))
+    .map((entry) => entry.name)
+    .sort();
+}
+
 // Two projects, split by runtime, because a Pithy project has two runtimes.
 //
 // `node` runs plain unit tests in Node — codecs, pure logic, anything with no binding in it.
@@ -115,7 +130,7 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["apps/*/src/**/*.test.{ts,tsx}"],
-          exclude: ["apps/*/src/**/*.workers.test.{ts,tsx}"],
+          exclude: ["apps/*/src/**/*.workers.test.{ts,tsx}", ...ownRunners().map((app) => `apps/${app}/**`)],
         },
       },
       "./vitest.workers.config.ts",

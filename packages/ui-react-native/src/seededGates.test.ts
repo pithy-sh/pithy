@@ -4,45 +4,51 @@
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { describe, expect, test } from "vitest";
-import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templates";
+import { HOME_SCREEN, HOME_TEST, TEMPLATE_DIR, TEMPLATE_GROUPS } from "./templates";
 
 /**
  * **The ledger for `docs/CONVENTIONS.md` § *Seeded files*, for the React Native templates: every file
- * `pithy ui add react-native` seeds is held by a gate the kit keeps, with the wall that kept it here, or is
- * ungated for a reason written down.**
+ * `pithy ui add react-native` seeds is a gate the app runs, is held by one seeded beside it, is held by a gate the
+ * kit keeps with the wall that kept it here, or is ungated for a reason written down.**
  *
- * None of these files ships with a gate beside it, and that is a wall found by trying rather than a choice. The
- * Expo app gets no test runner of its own: its `package.json` carries Expo's start scripts and no `vitest`. The
- * only runner that reaches it is the project's root `vitest.config.ts`, whose `node` project collects
- * `apps/*\/src/**\/*.test.{ts,tsx}` in plain Node. A module that imports `react-native` does not load there:
- * React Native's entry is untransformed Flow, and the import fails to parse before a test runs. This package's
- * own `vitest.config.ts` is what makes the screens testable — `react-native` aliased to `react-native-web`,
- * happy-dom, a stand-in under `testing/` for every native module, and a transform for Metro's
- * `require.context` — and an adopter's project has none of it. A gate seeded beside one of these screens would
- * not pass over nothing; it would turn the adopter's `bun run test` red on the day it arrived.
+ * The app has a runner of its own: `vitest.config.ts`, on `nativeTestProject` from
+ * `@pithy-sh/ui-react-native/testing/vitest`, run by the app's `test` script. It renders the screens through
+ * `react-native-web` in happy-dom with a stand-in for every native module, so a gate seeded beside a screen passes
+ * on the day it arrives. Three are seeded: the sign-in screen's, with the auth screens, and one of the two home
+ * screen tests, beside whichever home screen was written. The project's root `vitest.config.ts` leaves an app that
+ * brings its own config to it, because its `node` project runs plain Node, where `react-native`'s untransformed
+ * Flow fails to parse before a test runs.
+ *
+ * The kit's own gates for the other screens stay here. They are written against the kit's tree and its fixtures,
+ * and an app's copy of a screen is the adopter's to change, so the alarm for what the kit ships rings in the kit.
  *
  * ## What this can check, and what it cannot
  *
- * It cannot tell whether a file has an invariant, whether a kept gate really holds it, or whether a decline is
- * true. What it does is make the decision due when a path joins `TEMPLATE_GROUPS`, and refuse to let it rot: a
- * file with no entry is red, an entry for a file that left is red, and a kept gate must be a file that exists in
- * this package outside the template tree and names its subject.
+ * It cannot tell whether a file has an invariant, whether a gate really holds it, or whether a decline is true.
+ * What it does is make the decision due when a path joins `TEMPLATE_GROUPS`, and refuse to let it rot: a file with
+ * no entry is red, an entry for a file that left is red, a kept gate must be a file that exists in this package
+ * outside the template tree and names its subject, and a seeded gate must be a test in the tree that the app's
+ * runner collects and that sits beside what it holds.
  *
- * The one wall it can check is the runner's. An entry that says its gate could not travel because the scaffolded
- * runner cannot load the subject is held to that: the subject's own imports, followed through the tree, must
- * reach `react-native` or Metro's `require.context`. A file that loads in plain Node cannot claim it, and has to
- * argue the other wall or decline.
+ * The one wall it can check is the runner's. An entry that says its gate stayed because the project's root Node
+ * runner cannot load the subject is held to that: the subject's own imports, followed through the tree, must reach
+ * `react-native` or Metro's `require.context`. A file that loads in plain Node cannot claim it, and has to argue
+ * the other wall or decline.
  */
 
-/** Why a kept gate could not travel with its subject. */
+/** Why a kept gate stayed in the kit rather than going with its subject. */
 type Wall =
-  /** The project's runner cannot load the subject: its imports reach `react-native` or `require.context`. */
+  /** The project's root Node runner cannot load the subject: its imports reach `react-native` or `require.context`. */
   | "runner"
   /** The party who can break the invariant is the kit, so the alarm belongs where the fix can be made. */
   | "kit";
 
-/** How a seeded file is held. Exactly one of these, and the sentence is the point of either. */
+/** How a seeded file is held. Exactly one of these, and the sentence is the point of each. */
 type Held =
+  /** The file is a test the app's runner collects, and the sentence says what it holds. */
+  | { readonly gate: string }
+  /** Held by the test seeded beside it, by its path in the tree, which the app's runner collects. */
+  | { readonly seededGate: string; readonly why: string }
   /** Held by a test in this package's `src/`, by its path from the package root, with the wall that kept it. */
   | { readonly keptGate: string; readonly wall: Wall; readonly why: string }
   /** No gate, and why. A decline with an argument is an answer; a shrug is not. */
@@ -70,6 +76,10 @@ const LEDGER: Record<string, Held> = {
   "tsconfig.json": {
     ungated:
       "Nothing in the app runs it. The app's scripts are Expo's, and Metro transpiles without type-checking, so the compiler options here drive the editor's checker and nothing a build or a test passes or fails on. A narrowed `include` shows as diagnostics missing from the file that is open, not as a green run over nothing.",
+  },
+  "vitest.config.ts": {
+    ungated:
+      "It is the runner the seeded gates need, and it is three lines on `nativeTestProject`, which carries the aliases, the stand-ins, the Metro transform and the setup files so the app holds none of them. Breaking it is loud: every seeded test fails to load. `src/testing/vitest.test.ts` holds the preset, the kit's own `native` project is built from it, and the CLI's `src/ui/nativeTests.e2e.test.ts` runs a scaffolded app's `test` script against the packed package.",
   },
   "app/_layout.tsx": {
     keptGate: "src/app.test.tsx",
@@ -146,6 +156,9 @@ const LEDGER: Record<string, Held> = {
     keptGate: "src/signIn.test.tsx",
     wall: "runner",
     why: "The answer is the same whether or not an address can sign in, and an authorization URL naming no client is refused rather than followed. It imports `react-native` and the native sign-in modules, so no test of it loads in the project's Node runner.",
+  },
+  "src/routes/pithy/sign-in.test.tsx": {
+    gate: "The sign-in screen on the web mails its link from the page's own origin and keeps nothing on the device; on a phone it mails a code to the Worker's origin with the session the secure store holds. It drives the secure-store stand-in by its package path, which is how an adopter learns to drive the rest.",
   },
   "src/routes/pithy/otp.tsx": {
     keptGate: "src/otp.test.tsx",
@@ -246,8 +259,14 @@ const LEDGER: Record<string, Held> = {
 
   // ── the home screen, in both variants ────────────────────────────────────────────────────────────
   "src/routes/app/home.tsx": {
-    ungated:
-      "It is the adopter's from the moment it is written: `src/routes/app/` is the one directory Pithy writes once and never touches again. It reads who is signed in from `session.tsx` and restates nothing, so an edit that breaks it breaks the render. `src/home.test.tsx` holds the kit's template to rendering.",
+    seededGate: "src/routes/app/home.test.tsx",
+    why: "It is the adopter's from the moment it is written, and so is the test beside it: `src/routes/app/` is the one directory Pithy writes once and never touches again. The test holds what the template promises — a signed-out visitor is sent to sign in, the session is read from the secure store on a phone, and signing out forgets it — until the adopter changes the screen and the test with it. `src/home.test.tsx` holds the kit's template too.",
+  },
+  "src/routes/app/home.test.tsx": {
+    gate: "The signed-in home screen asks for a session, reads it from the page's cookie on the web and from the secure store on a phone, and signing out tells the Worker, forgets the stored session and goes to the sign-in screen.",
+  },
+  "src/routes/app/home.bare.test.tsx": {
+    gate: "The bare home screen asks the Worker's health route, on the page's own origin on the web and on the Worker's origin on a phone, and says unreachable when nothing answers. Written as `src/routes/app/home.test.tsx`, beside the bare screen written as `home.tsx`.",
   },
   "src/routes/app/home.bare.tsx": {
     keptGate: "src/home.test.tsx",
@@ -259,8 +278,19 @@ const LEDGER: Record<string, Held> = {
 /** This package's root. `TEMPLATE_DIR` is `<package>/templates`. */
 const PACKAGE_ROOT: string = join(TEMPLATE_DIR, "..");
 
-/** Every path any group or the home screen declares. */
-const SUBJECTS: string[] = [...Object.values(TEMPLATE_GROUPS).flat(), HOME_SCREEN.auth, HOME_SCREEN.bare];
+/** Every path any group, the home screen or its test declares. */
+const SUBJECTS: string[] = [
+  ...new Set([
+    ...Object.values(TEMPLATE_GROUPS).flat(),
+    HOME_SCREEN.auth,
+    HOME_SCREEN.bare,
+    HOME_TEST.auth,
+    HOME_TEST.bare,
+  ]),
+];
+
+/** The tests the app's own `vitest.config.ts` collects: `src/**\/*.test.{ts,tsx}`. */
+const APP_RUNNER_COLLECTS = /^src\/(?:[^/]+\/)*[^/]+\.test\.tsx?$/;
 
 /** A path without its extension: how a test names the module it imports. */
 const stem = (path: string): string => path.replace(/\.[cm]?[jt]sx?$/, "");
@@ -344,6 +374,40 @@ describe("every kept gate is real", () => {
   });
 });
 
+describe("every seeded gate is real", () => {
+  test("it is a test the app's runner collects, beside the file it holds, with what it holds", () => {
+    let checked = 0;
+    for (const [subject, held] of Object.entries(LEDGER)) {
+      if (!("gate" in held)) continue;
+      expect(APP_RUNNER_COLLECTS.test(subject), `${subject} is a seeded gate the app's runner does not collect`).toBe(
+        true,
+      );
+      expect(SUBJECTS, `${subject} sits beside nothing the app is seeded with`).toContain(
+        subject.replace(/\.test\.tsx?$/, ".tsx"),
+      );
+      expect(held.gate.length, `${subject} is a gate and says almost nothing about what it holds`).toBeGreaterThan(80);
+      checked += 1;
+    }
+    expect(checked, "the seeded-gate sweep no longer reads every seeded test").toBe(3);
+  });
+
+  test("a file held by a seeded gate names one the ledger calls a gate, and the gate imports it", async () => {
+    let checked = 0;
+    for (const [subject, held] of Object.entries(LEDGER)) {
+      if (!("seededGate" in held)) continue;
+      expect(
+        "gate" in (LEDGER[held.seededGate] ?? {}),
+        `${subject} is held by ${held.seededGate}, which is no seeded gate`,
+      ).toBe(true);
+      const text = await readFile(join(TEMPLATE_DIR, held.seededGate), "utf8");
+      expect(text, `${held.seededGate} never imports ${subject}`).toContain(`"./${posix.basename(stem(subject))}"`);
+      expect(held.why.length).toBeGreaterThan(80);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("the runner wall is checked, not claimed", () => {
   test("the reading is calibrated before it is trusted", async () => {
     // A screen reaches `react-native`, and the route registration reaches `require.context`.
@@ -376,7 +440,8 @@ describe("the runner wall is checked, not claimed", () => {
 
 describe("the floors", () => {
   test("the tree is the size the ledger was written about", () => {
-    // Near-exact rather than comfortable: thirty-nine subjects across six groups and two home variants.
-    expect(SUBJECTS.length).toBeGreaterThanOrEqual(39);
+    // Near-exact rather than comfortable: forty-three subjects across six groups and two home variants, each with
+    // its test.
+    expect(SUBJECTS.length).toBeGreaterThanOrEqual(43);
   });
 });

@@ -39,6 +39,17 @@ function projecting(name: string, projection: Record<string, unknown>, extra: Re
 
 const BARE: WorkerConfig = { capabilities: [] };
 
+/**
+ * The kit packages the flow looks no range up for: the ones the stub declares itself, and `@pithy-sh/auth`, which
+ * the backend's own `package.json` answers for in these tests.
+ */
+const ANSWERED = [
+  ...Object.keys({ ...reactNativeStub.dependencies, ...reactNativeStub.devDependencies }).filter((name) =>
+    name.startsWith("@pithy-sh/"),
+  ),
+  "@pithy-sh/auth",
+];
+
 /** A backend selling through Apple and Stripe, signing in, and answering on a production domain. */
 const SELLING: WorkerConfig = {
   capabilities: [
@@ -172,6 +183,7 @@ describe("pithy ui add react-native", () => {
       main: string;
       private: boolean;
       dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
       scripts: Record<string, string>;
     };
     expect(pkg).toMatchObject({ name: "app", main: "expo-router/entry", private: true });
@@ -188,12 +200,22 @@ describe("pithy ui add react-native", () => {
     // next answer: here, the registry's latest.
     const imported = importedKitPackages(await templateTexts());
     for (const name of imported) {
-      if (["@pithy-sh/auth", "@pithy-sh/core", "@pithy-sh/i18n", "@pithy-sh/ui-core"].includes(name)) continue;
+      if (ANSWERED.includes(name)) continue;
       expect(pkg.dependencies[name], name).toBe("^0.9.0");
     }
+    // The screen tests' runner is a dev dependency at the stub's own range, never a runtime one.
+    expect(pkg.dependencies["@pithy-sh/ui-react-native"]).toBeUndefined();
+    expect(pkg.devDependencies).toMatchObject({
+      "@pithy-sh/ui-react-native": reactNativeStub.devDependencies["@pithy-sh/ui-react-native"],
+      vitest: "^4.1.0",
+      "happy-dom": "^20.11.1",
+      "@testing-library/react": "16.3.3",
+    });
     expect(imported).toContain("@pithy-sh/payments");
     // Nothing the written templates do not import.
-    for (const name of Object.keys(pkg.dependencies).filter((dep) => dep.startsWith("@pithy-sh/"))) {
+    for (const name of Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).filter((dep) =>
+      dep.startsWith("@pithy-sh/"),
+    )) {
       expect(imported, name).toContain(name);
     }
     expect(report.unresolvedPackages).toEqual([]);
@@ -205,16 +227,16 @@ describe("pithy ui add react-native", () => {
       android: "expo start --android",
       ios: "expo start --ios",
       web: "expo start --web",
+      test: "vitest run",
     });
     expect(report.dependencies).toContain("expo");
-    expect(report.scripts).toEqual(["start", "android", "ios", "web"]);
+    expect(report.devDependencies).toContain("vitest");
+    expect(report.scripts).toEqual(["start", "android", "ios", "web", "test"]);
   });
 
   test("a kit package nothing has a range for is reported, not guessed", async () => {
     const report = await runUiAdd({ ...options(BARE), kitRanges: { installedFrom: [], latest: async () => null } });
-    const expected = importedKitPackages(await templateTexts()).filter(
-      (name) => !["@pithy-sh/auth", "@pithy-sh/core", "@pithy-sh/i18n", "@pithy-sh/ui-core"].includes(name),
-    );
+    const expected = importedKitPackages(await templateTexts()).filter((name) => !ANSWERED.includes(name));
     expect(expected).toContain("@pithy-sh/payments");
     expect(report.unresolvedPackages).toEqual(expected);
     const pkg = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")) as {

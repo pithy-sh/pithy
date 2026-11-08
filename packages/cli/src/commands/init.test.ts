@@ -751,6 +751,28 @@ describe("the React Native offer", () => {
     expect(output.match(/Run pithy setup, then pithy dev\./g)).toHaveLength(1);
   });
 
+  test("--target both --react-native gives the app a screen-test runner on the kit's preset, and a home test", async () => {
+    const target = join(dir, "tested");
+    await runCaptured("init", ["--dir", target, "--name", "acme", "--target", "both", "--react-native", "--json"]);
+    const app = join(target, "apps", "app");
+    const config = await readFile(join(app, "vitest.config.ts"), "utf8");
+    expect(config).toContain('import { nativeTestProject } from "@pithy-sh/ui-react-native/testing/vitest";');
+    expect(config).toContain('nativeTestProject({ include: ["src/**/*.test.{ts,tsx}"] })');
+    const pkg = JSON.parse(await readFile(join(app, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(pkg.scripts.test).toBe("vitest run");
+    expect(Object.keys(pkg.devDependencies)).toEqual(
+      expect.arrayContaining(["vitest", "happy-dom", "@testing-library/react", "@pithy-sh/ui-react-native"]),
+    );
+    expect(pkg.dependencies["react-native-web"]).toBeDefined();
+    // No auth is composed, so the home screen is the bare one, and its test is the bare one's.
+    expect(await readFile(join(app, "src", "routes", "app", "home.test.tsx"), "utf8")).toContain("health route");
+    await expect(readFile(join(app, "src", "routes", "pithy", "sign-in.test.tsx"), "utf8")).rejects.toThrow();
+  });
+
   test("no flag and no human adds no app", async () => {
     const target = join(dir, "plain");
     const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]);

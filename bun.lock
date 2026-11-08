@@ -912,10 +912,12 @@
       },
       "peerDependencies": {
         "react": "^19.0.0",
+        "vitest": "^4.1.0",
         "zod": "^4.4.0",
       },
       "optionalPeers": [
         "react",
+        "vitest",
         "zod",
       ],
     },

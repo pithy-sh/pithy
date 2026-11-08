@@ -2,13 +2,17 @@
   // The `.tsx` tests, which render the templates through `react-native-web` into happy-dom. They need the DOM lib to
   // read what rendered, and they import templates that import `react-native`, whose global declarations collide with
   // the DOM lib's. `skipLibCheck` hides that collision in the declarations; the templates themselves are checked
-  // against React Native alone by `tsconfig.templates.json`.
+  // against React Native alone by `tsconfig.templates.json`. The tests the templates seed into an app, and the app's
+  // `vitest.config.ts`, are checked here.
   "extends": "@pithy-sh/tsconfig/base.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "types": [],
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // The app's `vitest.config.ts` imports the preset by its package path, which resolves to the build; this
+    // program checks it against the source, so it needs no build of this package first.
+    "paths": { "@pithy-sh/ui-react-native/testing/vitest": ["./src/testing/vitest.ts"] }
   },
-  "include": ["src/**/*.tsx", "testing/**/*.ts"]
+  "include": ["src/**/*.tsx", "testing/**/*.ts", "templates/**/*.test.tsx", "templates/vitest.config.ts"]
 }

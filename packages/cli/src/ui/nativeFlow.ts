@@ -205,7 +205,7 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
     }
   }
   const kit = await kitRangesFor(
-    importedKitPackages(files).filter((name) => !(name in stub.dependencies)),
+    importedKitPackages(files).filter((name) => !(name in stub.dependencies) && !(name in stub.devDependencies)),
     { projectDir: options.projectDir, workerDir: options.workerDir, ...options.kitRanges },
   );
   const packaged: UiStub = { ...stub, dependencies: { ...stub.dependencies, ...kit.ranges } };
