@@ -380,7 +380,6 @@
     "packages/cli/src/ci/storeWriteNames.test.ts": 7,
     "packages/cli/src/ci/storeWriteNames.ts": 3,
     "packages/cli/src/ci/sweepPopulation.test.ts": 5,
-    "packages/cli/src/ci/testIsolation.test.ts": 25,
     "packages/cli/src/ci/thrownPromises.test.ts": 4,
     "packages/cli/src/ci/turboInputs.test.ts": 12,
     "packages/cli/src/ci/windowsSuite.test.ts": 2,

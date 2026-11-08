@@ -52,10 +52,37 @@ describe("the react-native stub's manifest", () => {
     expect(reactNativeStub.manifest(EVERYTHING)).toEqual(reactNativeStub.manifest(EVERYTHING));
   });
 
-  test("the bare scaffold is the base group and the bare home screen, written where the auth one would be", () => {
+  test("the bare scaffold is the base group and the bare home screen with its test, written where the auth ones would be", () => {
     const files = reactNativeStub.manifest(BARE);
-    expect(files.map((file) => file.target)).toEqual([...TEMPLATE_GROUPS.base, "src/routes/app/home.tsx"]);
-    expect(files.at(-1)).toEqual({ source: "src/routes/app/home.bare.tsx", target: "src/routes/app/home.tsx" });
+    expect(files.map((file) => file.target)).toEqual([
+      ...TEMPLATE_GROUPS.base,
+      "src/routes/app/home.tsx",
+      "src/routes/app/home.test.tsx",
+    ]);
+    expect(files.slice(-2)).toEqual([
+      { source: "src/routes/app/home.bare.tsx", target: "src/routes/app/home.tsx" },
+      { source: "src/routes/app/home.bare.test.tsx", target: "src/routes/app/home.test.tsx" },
+    ]);
+  });
+
+  test("every scaffold writes the screen-test runner, and exactly one home test, the one for the home screen written", () => {
+    for (const context of [BARE, EVERYTHING]) {
+      const files = reactNativeStub.manifest(context);
+      expect(files.map((file) => file.target)).toContain("vitest.config.ts");
+      const homes = files.filter((file) => file.target.startsWith("src/routes/app/home"));
+      expect(homes.map((file) => file.target)).toEqual(["src/routes/app/home.tsx", "src/routes/app/home.test.tsx"]);
+      const [screen, test] = homes;
+      expect(test?.source).toBe(screen?.source.replace(/\.tsx$/, ".test.tsx"));
+    }
+  });
+
+  test("the sign-in test rides with the sign-in screen", () => {
+    expect(reactNativeStub.manifest(BARE).map((file) => file.target)).not.toContain(
+      "src/routes/pithy/sign-in.test.tsx",
+    );
+    expect(reactNativeStub.manifest(EVERYTHING).map((file) => file.target)).toContain(
+      "src/routes/pithy/sign-in.test.tsx",
+    );
   });
 
   test("the screen sets stack, and none of them is written twice", () => {
@@ -91,13 +118,28 @@ describe("the react-native stub's packages", () => {
   test("every third-party pin admits the version @pithy-sh/ui-react-native checks the templates against", async () => {
     const checked = (await manifestOf("@pithy-sh/ui-react-native")).devDependencies;
     let compared = 0;
-    for (const [name, range] of Object.entries(reactNativeStub.dependencies)) {
+    // The runner's packages too, which render the same templates; a types package runs nothing, so it is left out.
+    const runner = Object.entries(reactNativeStub.devDependencies).filter(([name]) => !name.startsWith("@types/"));
+    for (const [name, range] of [...Object.entries(reactNativeStub.dependencies), ...runner]) {
       const version = checked[name];
       if (name.startsWith("@pithy-sh/") || version === undefined || range === null) continue;
       compared += 1;
       expect(admits(range, version.replace(/^[~^]/, "")), `${name}: ${range} against ${version}`).toBe(true);
     }
-    expect(compared, "compared no pin at all").toBeGreaterThanOrEqual(15);
+    expect(compared, "compared no pin at all").toBeGreaterThanOrEqual(18);
+  });
+
+  test("the screen tests run under the app's own test script, on the runner the kit tests its templates with", async () => {
+    expect(reactNativeStub.scripts.test).toBe("vitest run");
+    expect(Object.keys(reactNativeStub.devDependencies)).toEqual(
+      expect.arrayContaining(["vitest", "happy-dom", "@testing-library/react", "@pithy-sh/ui-react-native"]),
+    );
+    expect(reactNativeStub.devDependencies["@pithy-sh/ui-react-native"]).toBe(
+      kitRange((await manifestOf("@pithy-sh/ui-react-native")).version),
+    );
+    // The tests render through it, and the web build already needs it: one range, in dependencies.
+    expect(reactNativeStub.dependencies["react-native-web"]).toBeDefined();
+    expect(reactNativeStub.devDependencies["react-native-web"]).toBeUndefined();
   });
 
   test("React Native 0.86 on Expo SDK 57, with React held at the repository's 19.2.8", () => {

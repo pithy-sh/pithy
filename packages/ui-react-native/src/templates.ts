@@ -26,7 +26,8 @@ export const TEMPLATE_DIR: string = join(dirname(fileURLToPath(import.meta.url))
  * the theme. Every other group is a screen set that rides on a capability being composed, with the helpers only
  * those screens use. The home screen is not in a group: {@link HOME_SCREEN} picks one of its two variants.
  *
- * Tests for these files live in this package's `src/`, not in the tree, so nothing here is a test.
+ * Tests for these files live in this package's `src/`. The tree holds only the tests an app is seeded with, which
+ * run under the app's own `vitest.config.ts`: the sign-in screen's here, and the home screen's in {@link HOME_TEST}.
  */
 export const TEMPLATE_GROUPS = {
   base: [
@@ -34,6 +35,7 @@ export const TEMPLATE_GROUPS = {
     "metro.config.js",
     "metro-proxy.cjs",
     "tsconfig.json",
+    "vitest.config.ts",
     "app/_layout.tsx",
     "app/index.tsx",
     "app/[...pithy].tsx",
@@ -51,6 +53,7 @@ export const TEMPLATE_GROUPS = {
     "src/turnstile.tsx",
     "src/useTurnstileWeb.ts",
     "src/routes/pithy/sign-in.tsx",
+    "src/routes/pithy/sign-in.test.tsx",
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
     "src/routes/pithy/account-suspended.tsx",
@@ -83,6 +86,16 @@ export const HOME_SCREEN = {
   target: "src/routes/app/home.tsx",
   auth: "src/routes/app/home.tsx",
   bare: "src/routes/app/home.bare.tsx",
+} as const;
+
+/**
+ * The home screen's test, in the same two variants, chosen the same way: exactly one is written, beside the home
+ * screen. Each imports `./home`, the path the scaffold writes the screen to.
+ */
+export const HOME_TEST = {
+  target: "src/routes/app/home.test.tsx",
+  auth: "src/routes/app/home.test.tsx",
+  bare: "src/routes/app/home.bare.test.tsx",
 } as const;
 
 /** The token the templates use where the name of the Worker the app calls belongs. */

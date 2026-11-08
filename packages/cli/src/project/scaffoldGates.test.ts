@@ -624,3 +624,51 @@ describe("the starter's alias when there is no React to point at", () => {
     expect(await aliasIn(root)).toEqual([]);
   });
 });
+
+/**
+ * **An app that brings its own `vitest.config.ts` is left to it.** The Expo app's screen tests import
+ * `react-native`, which plain Node cannot parse, so the starter's `node` project collecting them would turn the
+ * project's `test` script red the day the app arrived. The copied config's `node` project is read for its exclude.
+ */
+describe("the starter's node project and an app with its own runner", () => {
+  const VITEST = dirname(createRequire(import.meta.url).resolve("vitest/package.json"));
+  const roots: string[] = [];
+
+  async function excludeIn(apps: Record<string, string[]>): Promise<string[]> {
+    const root = await mkdtemp(join(tmpdir(), "pithy-ownrunner-"));
+    roots.push(root);
+    await mkdir(join(root, "node_modules"), { recursive: true });
+    await symlink(VITEST, join(root, "node_modules", "vitest"));
+    await cp(join(REPO, "templates", "starter", "vitest.config.ts"), join(root, "vitest.config.ts"));
+    for (const [app, files] of Object.entries(apps)) {
+      await mkdir(join(root, "apps", app), { recursive: true });
+      for (const file of files) await writeFile(join(root, "apps", app, file), "export default {};\n");
+    }
+    const module = (await import(join(root, "vitest.config.ts"))) as {
+      default: { test: { projects: [{ test: { name: string; exclude: string[] } }] } };
+    };
+    const node = module.default.test.projects[0].test;
+    expect(node.name).toBe("node");
+    return node.exclude;
+  }
+
+  afterAll(async () => {
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  });
+
+  test("excludes every app holding a vitest.config.ts, and only those", async () => {
+    const exclude = await excludeIn({
+      api: ["wrangler.jsonc"],
+      app: ["vitest.config.ts"],
+      mobile: ["vitest.config.ts"],
+    });
+    expect(exclude).toContain("apps/app/**");
+    expect(exclude).toContain("apps/mobile/**");
+    expect(exclude.some((pattern) => pattern.startsWith("apps/api"))).toBe(false);
+    expect(exclude).toContain("apps/*/src/**/*.workers.test.{ts,tsx}");
+  });
+
+  test("a project with no such app excludes only the Workers tests", async () => {
+    expect(await excludeIn({ api: ["wrangler.jsonc"] })).toEqual(["apps/*/src/**/*.workers.test.{ts,tsx}"]);
+  });
+});

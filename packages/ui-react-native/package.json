@@ -11,6 +11,7 @@
     "dist",
     "src",
     "templates",
+    "testing",
     "!src/**/*.test.*",
     "!dist/**/*.test.*"
   ],
@@ -22,22 +23,34 @@
     "./src/*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
+    },
+    "./testing/vitest": {
+      "types": "./dist/testing/vitest.d.ts",
+      "default": "./dist/testing/vitest.js"
+    },
+    "./testing/*": {
+      "types": "./testing/*.ts",
+      "default": "./testing/*.ts"
     }
   },
   "scripts": {
     "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
     "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.templates.json && bun check -p tsconfig.native.json",
     "test": "vitest run",
-    "test:node": "vitest run --project=node --project=native",
+    "test:node": "vitest run --project=node --project=native --project=native-bare-home",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
   "peerDependencies": {
     "react": "^19.0.0",
+    "vitest": "^4.1.0",
     "zod": "^4.4.0"
   },
   "peerDependenciesMeta": {
     "react": {
+      "optional": true
+    },
+    "vitest": {
       "optional": true
     },
     "zod": {

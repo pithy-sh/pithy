@@ -6,10 +6,12 @@ import { UI_CORE_VERSION } from "@pithy-sh/ui-core/src/version";
 import {
   APP_TOKEN,
   HOME_SCREEN,
+  HOME_TEST,
   TEMPLATE_DIR,
   TEMPLATE_GROUPS,
   WORKER_TOKEN,
 } from "@pithy-sh/ui-react-native/src/templates";
+import { UI_REACT_NATIVE_VERSION } from "@pithy-sh/ui-react-native/src/version";
 import { kitRange } from "../project/scaffold";
 import type { UiStub, UiStubContext, UiStubFile } from "./stubs";
 
@@ -30,6 +32,7 @@ function inPlace(paths: readonly string[]): UiStubFile[] {
 function manifest(context: UiStubContext): UiStubFile[] {
   const files = inPlace(TEMPLATE_GROUPS.base);
   files.push({ source: context.auth ? HOME_SCREEN.auth : HOME_SCREEN.bare, target: HOME_SCREEN.target });
+  files.push({ source: context.auth ? HOME_TEST.auth : HOME_TEST.bare, target: HOME_TEST.target });
   if (context.auth) files.push(...inPlace(TEMPLATE_GROUPS.auth));
   if (context.payments) files.push(...inPlace(TEMPLATE_GROUPS.payments));
   if (context.organization) files.push(...inPlace(TEMPLATE_GROUPS.organization));
@@ -37,6 +40,17 @@ function manifest(context: UiStubContext): UiStubFile[] {
   if (context.mcp) files.push(...inPlace(TEMPLATE_GROUPS.mcp));
   return files;
 }
+
+/**
+ * What the app's screen tests are made of: the runner's config and every seeded test, the runner's dev
+ * dependencies, and the script that runs them. `pithy ui add` leaves all of it out of an app whose project's root
+ * `vitest.config.ts` would collect those tests in plain Node.
+ */
+export const SCREEN_TESTS = {
+  isFile: (path: string): boolean => path === "vitest.config.ts" || /\.test\.tsx?$/.test(path),
+  devDependencies: ["@pithy-sh/ui-react-native", "@testing-library/react", "happy-dom", "vitest"],
+  script: "test",
+} as const;
 
 /** Expo SDK 57 on React Native 0.86, each native module at the version that SDK bundles. */
 export const reactNativeStub: UiStub = {
@@ -74,8 +88,14 @@ export const reactNativeStub: UiStub = {
     "react-native-web": "~0.21.0",
     "react-native-webview": "13.16.1",
   },
+  // The screen tests' runner: Vitest in happy-dom, on the stand-ins `@pithy-sh/ui-react-native/testing` publishes.
+  // `react-native-web`, which the tests render through, is already a dependency for the web build.
   devDependencies: {
+    "@pithy-sh/ui-react-native": kitRange(UI_REACT_NATIVE_VERSION),
+    "@testing-library/react": "16.3.3",
     "@types/react": "^19.2.18",
+    "happy-dom": "^20.11.1",
+    vitest: "^4.1.0",
   },
   // Expo's Metro server on the port `pithy dev` pins for the app. `pithy dev` reads its output through a pipe, and
   // with no terminal attached Expo CLI prints `Waiting on <url>` once Metro listens. The URL may be styled, so only
@@ -89,5 +109,6 @@ export const reactNativeStub: UiStub = {
     android: "expo start --android",
     ios: "expo start --ios",
     web: "expo start --web",
+    test: "vitest run",
   },
 };
