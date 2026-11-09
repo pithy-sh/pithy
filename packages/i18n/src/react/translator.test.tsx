@@ -101,6 +101,33 @@ describe("no provider at all", () => {
   });
 });
 
+describe("a provider given null", () => {
+  test("reads exactly as no provider at all, so a provider can stay mounted while its catalog loads", () => {
+    // A provider that appears only once a catalog lands changes the tree above every screen and remounts them all.
+    // Mounted from the first render with `null`, it holds the tree still and the screens read their own English.
+    const bare = renderToStaticMarkup(<Probe fallback={BAKED_EN} />);
+    const held = renderToStaticMarkup(
+      <TranslatorProvider value={null}>
+        <Probe fallback={BAKED_EN} />
+      </TranslatorProvider>,
+    );
+    expect(held).toBe(bare);
+  });
+
+  test("a null nearer the screen shadows a provider further out", () => {
+    const answers = rendered(
+      renderToStaticMarkup(
+        <TranslatorProvider value={SPANISH}>
+          <TranslatorProvider value={null}>
+            <Probe fallback={BAKED_EN} />
+          </TranslatorProvider>
+        </TranslatorProvider>,
+      ),
+    );
+    expect(answers["app/greeting"]).toBe("Hello.");
+  });
+});
+
 describe("with a provider", () => {
   const answers = rendered(
     renderToStaticMarkup(

@@ -86,8 +86,15 @@ function overlay(primary: Translator, fallback: MessageCatalog): Translator {
   };
 }
 
-/** Mount a resolved locale over a subtree. Everything under it reads the same translator. */
-export function TranslatorProvider({ value, children }: { value: TranslatorValue; children: ReactNode }) {
+/**
+ * Mount a resolved locale over a subtree. Everything under it reads the same translator.
+ *
+ * `null` mounts no translator: the subtree reads exactly as it would with no provider, each screen in its own
+ * English. Mount the provider from the first render and pass `null` until a catalog lands, rather than wrapping the
+ * subtree in it only once one has. Adding the provider later changes the element tree above every screen, so React
+ * remounts all of them and each loses its state.
+ */
+export function TranslatorProvider({ value, children }: { value: TranslatorValue | null; children: ReactNode }) {
   return <TranslatorContext.Provider value={value}>{children}</TranslatorContext.Provider>;
 }
 

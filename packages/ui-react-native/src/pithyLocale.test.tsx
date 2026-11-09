@@ -3,14 +3,14 @@
 
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { I18nManager, Platform, Pressable, Text } from "react-native";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { asyncStorage } from "../testing/async-storage";
 import { localization } from "../testing/expo-localization";
 
-const projection = vi.hoisted(() => ({
-  value: {
+const projection = vi.hoisted(() => {
+  const composed: Record<string, unknown> = {
     enabled: true,
     supportedLocales: ["en", "es", "ar"],
     defaultLocale: "en",
@@ -18,8 +18,9 @@ const projection = vi.hoisted(() => ({
     storageKey: "pithy.locale",
     browserResolvers: ["query", "account", "storage", "navigator", "server", "default"],
     exceptions: {},
-  } as Record<string, unknown>,
-}));
+  };
+  return { composed, value: composed };
+});
 
 vi.mock("../templates/src/pithy-config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../templates/src/pithy-config")>()),
@@ -137,5 +138,53 @@ describe("on the web", () => {
     localization.setDevice(["es"]);
     await mount("web");
     expect(await screen.findByText("One moment.")).toBeTruthy();
+  });
+});
+
+/**
+ * The tree above a screen holds still while the catalog lands, so a screen under `<PithyLocale>` mounts once and
+ * keeps its state. A provider that appears over the screens once the catalog arrives remounts every one of them, and
+ * on the web a remount over `<Slot />` under `StrictMode` sends a deep link back to `/`.
+ */
+describe("while the catalog lands", () => {
+  beforeEach(() => {
+    projection.value = projection.composed;
+  });
+
+  async function mountCounting(platform: "ios" | "web") {
+    const { PithyLocale, Probe } = await load(platform);
+    const seen = { mounts: 0 };
+    function Screen(): ReactNode {
+      useEffect(() => {
+        seen.mounts += 1;
+      }, []);
+      return <Probe />;
+    }
+    await act(async () => {
+      render(
+        <PithyLocale>
+          <Screen />
+        </PithyLocale>,
+      );
+    });
+    return seen;
+  }
+
+  test("a screen on a phone mounts once", async () => {
+    localization.setDevice(["es"]);
+    const seen = await mountCounting("ios");
+    expect(await screen.findByText("Un momento.")).toBeTruthy();
+    expect(seen.mounts).toBe(1);
+  });
+
+  test("a screen on the web mounts once", async () => {
+    window.history.replaceState(null, "", "/?lang=es");
+    try {
+      const seen = await mountCounting("web");
+      expect(await screen.findByText("Un momento.")).toBeTruthy();
+      expect(seen.mounts).toBe(1);
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 });

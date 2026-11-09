@@ -89,7 +89,7 @@ const LEDGER: Record<string, Held> = {
   "app/_layout.tsx": {
     keptGate: "src/app.test.tsx",
     wall: "runner",
-    why: "The root layout puts the locale over whatever route expo-router resolved; `src/storeTransactions.test.tsx` mounts it too, for the store listener it runs when the payments screens were written. It imports expo-router and the locale provider, which reach `react-native`, so no test of it loads in the project's Node runner.",
+    why: "The root layout puts the locale over whatever route expo-router resolved, under `StrictMode`; `src/webDeepLink.test.tsx` opens it on the web through the real expo-router, and `src/storeTransactions.test.tsx` mounts it too, for the store listener it runs when the payments screens were written. It imports expo-router and the locale provider, which reach `react-native`, so no test of it loads in the project's Node runner.",
   },
   "app/index.tsx": {
     keptGate: "src/app.test.tsx",

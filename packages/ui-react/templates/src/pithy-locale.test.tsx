@@ -2,7 +2,7 @@
 
 import { KIT_CATALOGS } from "@pithy-sh/i18n/src/catalogs/kit";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 
@@ -135,6 +135,35 @@ test(
       translated,
     );
     expect(document.documentElement.lang, "the document declares a language nothing negotiated").toBe(CANARY_LOCALE);
+  },
+  CASE_TIMEOUT_MS,
+);
+
+test(
+  "a screen under it mounts once while the catalog lands",
+  async () => {
+    // A provider that appears over the app once the catalog arrives remounts every screen under it, and each loses
+    // whatever it held: a half-typed form, a read in flight, the route the router resolved.
+    const seen = { mounts: 0 };
+    function Screen(): ReactNode {
+      useEffect(() => {
+        seen.mounts += 1;
+      }, []);
+      return <Probe />;
+    }
+    const { PithyLocale } = await import("./pithy-locale");
+    const container = document.body.appendChild(document.createElement("div"));
+    await act(async () => {
+      createRoot(container).render(
+        <PithyLocale>
+          <Screen />
+        </PithyLocale>,
+      );
+    });
+    await untilTranslated(container);
+
+    expect(container.textContent).toBe(KIT_CATALOGS[CANARY_LOCALE]?.[KEY]);
+    expect(seen.mounts, "the screen remounted when the catalog landed").toBe(1);
   },
   CASE_TIMEOUT_MS,
 );

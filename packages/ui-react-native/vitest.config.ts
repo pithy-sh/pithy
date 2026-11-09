@@ -24,6 +24,61 @@ const native = nativeTestProject({
 const BARE_HOME_TEST = "templates/src/routes/app/home.bare.test.tsx";
 const bareHome = nativeTestProject({ include: [BARE_HOME_TEST], src: "templates/src", name: "native-bare-home" });
 
+/**
+ * The deep-link test, which runs the real `expo-router` on the web instead of its stand-in. Vitest's dependency
+ * optimizer bundles `expo-router` for the browser as Metro's web build does: `react-native` as `react-native-web`,
+ * `.web` files first, `EXPO_OS` set to `web`, and assets inlined. React and the testing library are bundled with it so
+ * the router and the test render through one React. Metro's `require.context` setup is left out, because the bundle
+ * reaches `require` by the global name that setup replaces.
+ */
+const WEB_ROUTER_TEST = "src/webDeepLink.test.tsx";
+const WEB_EXTENSIONS = [".web.tsx", ".web.ts", ".web.js", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"];
+const WEB_DEFINE = { __DEV__: "true", "process.env.EXPO_OS": JSON.stringify("web") };
+const webRouterBase = nativeTestProject({ include: [WEB_ROUTER_TEST], src: "templates/src", name: "web-router" });
+const webRouter: typeof native = {
+  ...webRouterBase,
+  define: WEB_DEFINE,
+  resolve: {
+    extensions: WEB_EXTENSIONS,
+    alias: [
+      { find: /^react-native$/, replacement: "react-native-web" },
+      ...((webRouterBase.resolve?.alias ?? []) as { find: RegExp; replacement: string }[]).filter(
+        (rule) => !rule.find.test("expo-router") && !rule.find.test("expo-linking"),
+      ),
+    ],
+  },
+  optimizeDeps: {
+    rolldownOptions: {
+      resolve: { extensions: WEB_EXTENSIONS },
+      moduleTypes: { ".js": "jsx", ".png": "dataurl", ".ttf": "dataurl" },
+      transform: { define: WEB_DEFINE },
+      // `expo-modules-core` imports types by value from its TypeScript sources.
+      shimMissingExports: true,
+    },
+  },
+  test: {
+    ...webRouterBase.test,
+    setupFiles: [webRouterBase.test?.setupFiles ?? []].flat().filter((file) => !file.endsWith("metro.ts")),
+    deps: {
+      optimizer: {
+        client: {
+          enabled: true,
+          include: [
+            "react",
+            "react/jsx-runtime",
+            "react/jsx-dev-runtime",
+            "react-dom",
+            "react-dom/client",
+            "react-native-web",
+            "@testing-library/react",
+            "expo-router",
+          ],
+        },
+      },
+    },
+  },
+};
+
 /** A preset project with the kit's own budgets, config directory and unset account. */
 function kitNative(project: typeof native, exclude: string[] = []): typeof native {
   return {
@@ -54,7 +109,8 @@ export default defineConfig({
           setupFiles: [CONFIG_DIR_SETUP],
         },
       },
-      kitNative(native, [BARE_HOME_TEST]),
+      kitNative(native, [BARE_HOME_TEST, WEB_ROUTER_TEST]),
+      kitNative(webRouter),
       {
         ...kitNative(bareHome),
         resolve: {

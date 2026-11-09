@@ -191,7 +191,7 @@ createRoot(container).render(
 );
 ```
 
-`PithyLocale` does two things that have to be one thing. It negotiates the reader's locale from `virtual:pithy/i18n` — the query parameter, this device's memory, whatever the server put on `<html lang>`, in the order your `pithy.config.ts` configured — and it puts `lang` and `dir` on the document. Then it loads that locale's catalog and mounts a `TranslatorProvider` over the app, so every screen under it renders those words.
+`PithyLocale` does two things that have to be one thing. It negotiates the reader's locale from `virtual:pithy/i18n` — the query parameter, this device's memory, whatever the server put on `<html lang>`, in the order your `pithy.config.ts` configured — and it puts `lang` and `dir` on the document. Then it loads that locale's catalog into a `TranslatorProvider` over the app, so every screen under it renders those words. The provider is mounted from the first render and holds `null` until the catalog lands, which reads exactly as no provider, so each screen shows its own English meanwhile. Keep it that way if you edit the file: a provider that wraps the app only once the catalog arrives changes the tree above every screen, and React remounts them all, each losing its state.
 
 **Both come from the same resolved value, and that is the point of the file.** `lang` is a promise to assistive technology: a screen reader believes it, switches voice, and pronounces what follows with that language's phonetics. A page that declares `es` and renders English is worse for that reader than one that never negotiated at all — so the attribute and the words are one statement here, and `src/pithy-locale.test.tsx` is the gate that keeps them one after the file is yours.
 

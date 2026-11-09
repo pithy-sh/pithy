@@ -15,9 +15,13 @@ import type { TranslatorSource } from "./translator";
 /** What the hook hands back: what to mount, what was chosen, and how to choose again. */
 export interface NegotiatedLocale {
   /**
-   * Pass this straight to `TranslatorProvider`. `null` until the locale's catalog has loaded — and
-   * permanently `null` for a project with no `i18n` composed, which is the same branch and needs no
-   * second one: render the children untouched and every screen keeps its baked English.
+   * Pass this straight to `TranslatorProvider`, `null` included. It is `null` until the locale's catalog has loaded,
+   * and permanently `null` for a project with no `i18n` composed; a provider given `null` mounts no translator, so
+   * every screen keeps its baked English and neither case needs a branch of its own.
+   *
+   * Mount the provider from the first render rather than only once `source` is non-null. Wrapping the children in it
+   * when the catalog lands changes the element tree above every screen, so React remounts all of them and each loses
+   * its state, a router's current route included.
    */
   readonly source: TranslatorSource | null;
   /** The catalog locale in force — the words the app has. */
@@ -93,7 +97,7 @@ const UNNEGOTIATED_LOCALE = "en";
  * project that never composed `i18n` projects it, and the hook then negotiates nothing, downloads no
  * chunk, writes nothing to `localStorage`, and leaves the `lang` `index.html` declared exactly where it
  * is: `source` stays `null` permanently, `locale` is `en`, and `choose` does nothing. `source === null`
- * is the same null a caller already renders through while a catalog is in flight — so the screen shows
+ * is the same null the caller's provider already takes while a catalog is in flight — so the screen shows
  * the English it was scaffolded with, byte for byte as it did before any of this landed, and removing
  * the capability puts the app back where it started.
  */
@@ -186,7 +190,7 @@ export function useNegotiatedLocale(
     // Only once the catalog for *this* locale has landed. Mounting the previous locale's catalog under
     // the new locale's tag is a page that says it is Spanish and reads English. This is also the one
     // test the uncomposed case has to pass: nothing ever loads a catalog there, so `kit` stays undefined
-    // and no provider is ever mounted over screens already rendering their baked English.
+    // and the provider never mounts a translator over screens already rendering their baked English.
     if (kit?.locale !== locale) return null;
     return {
       catalogLocale: locale,

@@ -88,9 +88,9 @@ export interface PithyLocaleProps {
  */
 export function PithyLocale({ children, messages }: PithyLocaleProps): ReactNode {
   // A per-locale chunk that will not load — a 404 after a deploy, an offline tab — must not leave the provider
-  // unmounted with `lang` already changed on the document: a screen reader believes the attribute and mispronounces
-  // English. An empty catalog mounts the provider, so every screen falls through to the English it was scaffolded
-  // with, which is what is actually on screen.
+  // holding nothing with `lang` already changed on the document: a screen reader believes the attribute and
+  // mispronounces English. An empty catalog fills the provider, so every screen falls through to the English it was
+  // scaffolded with, which is what is actually on screen.
   const kit =
     useRead(
       `catalog:${locale?.catalogLocale ?? ""}`,
@@ -99,21 +99,28 @@ export function PithyLocale({ children, messages }: PithyLocaleProps): ReactNode
       { skip: locale === null },
     ).value ?? null;
 
-  if (locale === null || kit === null) return children;
+  if (locale === null) return children;
+  // Mounted from the first render, holding `null` until the catalog lands, so the tree above the app never changes
+  // shape. A provider that appeared only once the catalog arrived would remount every screen under it, and each would
+  // lose its state.
   return (
     <TranslatorProvider
-      value={{
-        // The tag `lang` carries, and the words the kit has.
-        catalogLocale: locale.catalogLocale,
-        // The tag the reader actually asked for, region and all — `es-AR` where `catalogLocale` is
-        // `es`. `Intl` supports it natively whether or not anyone wrote a string for it, so keeping the
-        // two apart is what gives Buenos Aires Spanish sentences and Argentine dates. Passing one value
-        // to both is the collapse this pair exists to prevent.
-        formattingLocale: locale.formattingLocale,
-        // Yours first, then the kit's. Each screen's own English is appended by `useTranslator`, last,
-        // which is what makes a key nobody translated still render a sentence.
-        layers: [messages?.[locale.catalogLocale], kit],
-      }}
+      value={
+        kit === null
+          ? null
+          : {
+              // The tag `lang` carries, and the words the kit has.
+              catalogLocale: locale.catalogLocale,
+              // The tag the reader actually asked for, region and all — `es-AR` where `catalogLocale` is
+              // `es`. `Intl` supports it natively whether or not anyone wrote a string for it, so keeping the
+              // two apart is what gives Buenos Aires Spanish sentences and Argentine dates. Passing one value
+              // to both is the collapse this pair exists to prevent.
+              formattingLocale: locale.formattingLocale,
+              // Yours first, then the kit's. Each screen's own English is appended by `useTranslator`, last,
+              // which is what makes a key nobody translated still render a sentence.
+              layers: [messages?.[locale.catalogLocale], kit],
+            }
+      }
     >
       {children}
     </TranslatorProvider>
