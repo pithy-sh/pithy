@@ -75,4 +75,50 @@ describe("pithy worker sync with ownBindings", () => {
     await runCaptured("worker sync", ["--worker", "other", "--json"]);
     expect(await topLevel()).toEqual([{ binding: "DB", database_name: "my-app-dev-db" }]);
   });
+
+  test("refuses to own a global binding though the Worker composes no database", async () => {
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      APP_CONFIG.replace('{ type: "d1", name: "DB" }', '{ type: "r2", name: "SUPPORT_BUCKET", scope: "global" }'),
+    );
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{\n  "ownBindings": ["SUPPORT_BUCKET"]\n}\n');
+    const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    const err: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => err.push(String(chunk)) > 0) as never);
+    const exited = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exited");
+    }) as never);
+    await runCaptured("worker sync", ["--worker", "other", "--json"]).catch(() => undefined);
+    expect(exited).toHaveBeenCalled();
+    expect(JSON.parse(err.join("").trim()).error.message).toMatch(/owns SUPPORT_BUCKET, which app declares global/);
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(before);
+  });
+
+  test("refuses to own a binding the installed manifest declares global, before it writes the route its domains imply", async () => {
+    // The shipped email package in the Worker's own node_modules, and a capability object that, like the
+    // shipped one, says nothing of `scope`: the manifest is the only place EMAIL_SUPPRESSIONS is global.
+    await linkKitPackages(worker, ["email"]);
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      `import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+
+const email = defineCapability({ name: "email", requiredBindings: [{ type: "d1", name: "EMAIL_SUPPRESSIONS" }] });
+
+export default { domains: { prod: { pattern: "api.acme.com", zone: "acme.com" } }, capabilities: [email] };
+`,
+    );
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{\n  "ownBindings": ["EMAIL_SUPPRESSIONS"]\n}\n');
+    const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    const err: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => err.push(String(chunk)) > 0) as never);
+    const exited = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exited");
+    }) as never);
+    await runCaptured("worker sync", ["--worker", "other", "--json"]).catch(() => undefined);
+    expect(exited).toHaveBeenCalled();
+    expect(JSON.parse(err.join("").trim()).error.message).toMatch(
+      /owns EMAIL_SUPPRESSIONS, which email declares global/,
+    );
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(before);
+  });
 });

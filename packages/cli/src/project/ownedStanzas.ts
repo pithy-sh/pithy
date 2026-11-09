@@ -4,8 +4,10 @@
 import { basename } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
-import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { GLOBAL_SCOPE, isValidEnvironment, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { type BindingNaming, environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { type BindingDeclaration, resolveBindingNamings } from "../capabilities/bindingNamings";
+import { provisionableBindings } from "../feature/bindings";
 import { isAddressable } from "../provision/repoint";
 import { envStanzas, type WranglerStanza } from "./bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -17,6 +19,9 @@ import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
  * the Worker's own. So each entry naming the other one of the pair is rewritten: the `database_name` to the name
  * `pithy provision` composes for this Worker, and, in the top-level stanza that is local dev's, the `database_id`
  * that gives an owned database its own Miniflare store.
+ *
+ * A binding's `scope` and `resource` come from its manifest, through the resolution `pithy provision` uses. A
+ * `global` binding is one resource for the project: it is never rewritten, and owning one is refused.
  *
  * **Only names the kit composed are rewritten.** An entry naming anything else is the adopter's, and `pithy doctor`
  * reports it. And an environment stanza that already holds a real `database_id` is left for
@@ -38,34 +43,56 @@ export interface OwnedStanzaChange {
   to?: string;
 }
 
-/** Reconcile `options.workerDir`'s D1 entries with its `ownBindings`, and say what changed. */
-export async function reconcileOwnedDatabases(options: {
+/** What names a Worker's bindings, and which of them it lists as its own. */
+export interface OwnedBindingsInput {
   /** The Worker's directory: its basename is the owner segment. */
   workerDir: string;
   /** The project, from the root `pithy.config.ts`. */
   project: string;
-  /** The capabilities the Worker composes: what declares each D1 binding, and how it is named. */
+  /** The capabilities the Worker composes: what declares each binding. */
   capabilities: readonly Capability[];
+  /** The Worker's composed manifests and its app's own instance: how each binding is named. */
+  declarations: readonly BindingDeclaration[];
   /** The Worker's `pithy.worker.jsonc` `ownBindings`. */
   ownBindings: readonly string[];
-  /** Only this environment's stanza, when one is named. */
-  env?: string;
-}): Promise<OwnedStanzaChange[]> {
-  const config = (await readWranglerConfig(options.workerDir)) as WranglerStanza;
-  const worker = basename(options.workerDir);
-  const owned = new Set(options.ownBindings);
-  const names = resourceNames(options.project);
-  const specs = new Map<string, { capability: string; resource?: string; global: boolean }>();
+}
+
+/** One composed binding: its kind, the capability that answers for it, its naming, and whether it is global. */
+interface OwnedBindingSpec {
+  type: string;
+  capability: string;
+  naming: BindingNaming;
+  global: boolean;
+}
+
+/** Every binding the Worker composes, of every kind, by name. */
+function bindingSpecs(options: OwnedBindingsInput): Map<string, OwnedBindingSpec> {
+  const namings = resolveBindingNamings({
+    manifests: options.declarations,
+    capabilities: new Set(options.capabilities.map((capability) => capability.name)),
+    bindings: provisionableBindings(options.capabilities),
+    scope: environmentScope(options.project, LOCAL_ENVIRONMENT),
+  });
+  const specs = new Map<string, OwnedBindingSpec>();
   for (const capability of options.capabilities) {
     for (const spec of capability.requiredBindings) {
-      if (spec.type !== "d1" || specs.has(spec.name)) continue;
+      if (specs.has(spec.name)) continue;
+      const declared = namings.get(spec.name);
+      const naming = declared?.naming ?? {};
+      // The manifest's declaration, else the composed instance's: either one saying `global` makes it global.
+      const global = naming.scope === GLOBAL_SCOPE || spec.scope === GLOBAL_SCOPE;
       specs.set(spec.name, {
-        capability: capability.name,
-        ...(spec.resource ? { resource: spec.resource } : {}),
-        global: spec.scope === GLOBAL_SCOPE,
+        type: spec.type,
+        capability: declared?.naming.scope === GLOBAL_SCOPE ? declared.capability : capability.name,
+        naming,
+        global,
       });
     }
   }
+  return specs;
+}
+
+function refuse(worker: string, owned: Iterable<string>, specs: Map<string, OwnedBindingSpec>): void {
   for (const binding of owned) {
     const spec = specs.get(binding);
     if (spec?.global) {
@@ -75,6 +102,31 @@ export async function reconcileOwnedDatabases(options: {
       });
     }
   }
+}
+
+/**
+ * Throw when `ownBindings` lists a global binding of any kind, D1 or not. It reads no file, so a command that
+ * writes anything else into `wrangler.jsonc` asks it first and writes nothing when it throws.
+ */
+export function refuseOwnedGlobals(options: OwnedBindingsInput): void {
+  refuse(basename(options.workerDir), options.ownBindings, bindingSpecs(options));
+}
+
+/**
+ * Reconcile `options.workerDir`'s D1 entries with its `ownBindings`, and say what changed. A global binding of any
+ * kind in `ownBindings` is refused before anything is written.
+ */
+export async function reconcileOwnedDatabases(
+  options: OwnedBindingsInput & {
+    /** Only this environment's stanza, when one is named. */
+    env?: string;
+  },
+): Promise<OwnedStanzaChange[]> {
+  const worker = basename(options.workerDir);
+  const owned = new Set(options.ownBindings);
+  const specs = bindingSpecs(options);
+  refuse(worker, owned, specs);
+  const config = (await readWranglerConfig(options.workerDir)) as WranglerStanza;
 
   const changes: OwnedStanzaChange[] = [];
   for (const { env, stanza } of envStanzas(config)) {
@@ -83,10 +135,10 @@ export async function reconcileOwnedDatabases(options: {
     const topLevel = stanza === config;
     for (const entry of stanza.d1_databases ?? []) {
       const spec = specs.get(entry.binding);
-      if (spec === undefined || spec.global) continue;
-      const thing = spec.resource ?? entry.binding;
-      const shared = names.env(env).d1(thing);
-      const own = names.env(env).d1(thing, worker);
+      if (spec === undefined || spec.type !== "d1" || spec.global) continue;
+      const scope = environmentScope(options.project, env);
+      const shared = scope.resource(entry.binding, "d1", spec.naming);
+      const own = scope.resource(entry.binding, "d1", spec.naming, worker);
       const isOwned = owned.has(entry.binding);
       const want = isOwned ? own : shared;
       const other = isOwned ? shared : own;

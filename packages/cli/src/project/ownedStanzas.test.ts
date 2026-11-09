@@ -15,6 +15,12 @@ const controlplane = defineCapability({
   requiredBindings: [{ type: "d1", name: "DB" }] satisfies BindingSpecInput[],
 });
 
+/** The two fields of a manifest a naming reads, parsed through the same `BindingSpec` contract. */
+const manifest = (name: string, requiredBindings: BindingSpecInput[]) => {
+  const parsed = defineCapability({ name, requiredBindings });
+  return { name: parsed.name, requiredBindings: parsed.requiredBindings };
+};
+
 interface Entry {
   binding: string;
   database_name?: string;
@@ -53,7 +59,13 @@ afterEach(async () => {
 const read = async (): Promise<Config> =>
   parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Config;
 const reconcile = (ownBindings: string[]) =>
-  reconcileOwnedDatabases({ workerDir: worker, project: "my-app", capabilities: [controlplane], ownBindings });
+  reconcileOwnedDatabases({
+    workerDir: worker,
+    project: "my-app",
+    capabilities: [controlplane],
+    declarations: [],
+    ownBindings,
+  });
 
 describe("reconcileOwnedDatabases", () => {
   test("gives an owned binding its own name everywhere, and its own top-level database_id", async () => {
@@ -116,8 +128,86 @@ describe("reconcileOwnedDatabases", () => {
         workerDir: worker,
         project: "my-app",
         capabilities: [email],
+        declarations: [],
         ownBindings: ["EMAIL_SUPPRESSIONS"],
       }),
     ).rejects.toThrow(/owns EMAIL_SUPPRESSIONS, which email declares global/);
+  });
+
+  test("refuses a binding its manifest declares global though the capability object does not, and rewrites nothing", async () => {
+    const email = defineCapability({
+      name: "email",
+      requiredBindings: [{ type: "d1", name: "EMAIL_SUPPRESSIONS" }] satisfies BindingSpecInput[],
+    });
+    const config = `{
+  "name": "my-app-other",
+  "d1_databases": [{ "binding": "EMAIL_SUPPRESSIONS", "database_name": "my-app-global-email-suppressions" }],
+  "env": {
+    "staging": { "d1_databases": [{ "binding": "EMAIL_SUPPRESSIONS", "database_name": "my-app-global-email-suppressions" }] }
+  }
+}
+`;
+    await writeFile(join(worker, "wrangler.jsonc"), config);
+    await expect(
+      reconcileOwnedDatabases({
+        workerDir: worker,
+        project: "my-app",
+        capabilities: [email],
+        declarations: [manifest("email", [{ type: "d1", name: "EMAIL_SUPPRESSIONS", scope: "global" }])],
+        ownBindings: ["EMAIL_SUPPRESSIONS"],
+      }),
+    ).rejects.toThrow(/owns EMAIL_SUPPRESSIONS, which email declares global/);
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(config);
+  });
+
+  test("refuses to own a global R2 binding its manifest declares, as it does a D1 one", async () => {
+    const support = defineCapability({
+      name: "support",
+      requiredBindings: [{ type: "r2", name: "SUPPORT_BUCKET" }] satisfies BindingSpecInput[],
+    });
+    const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    await expect(
+      reconcileOwnedDatabases({
+        workerDir: worker,
+        project: "my-app",
+        capabilities: [support],
+        declarations: [
+          manifest("support", [{ type: "r2", name: "SUPPORT_BUCKET", scope: "global", resource: "support" }]),
+        ],
+        ownBindings: ["SUPPORT_BUCKET"],
+      }),
+    ).rejects.toThrow(/owns SUPPORT_BUCKET, which support declares global/);
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(before);
+  });
+
+  test("names a resource: binding by the resource its manifest declares, as provision does", async () => {
+    const ledger = defineCapability({
+      name: "ledger",
+      requiredBindings: [{ type: "d1", name: "LEDGER_DB" }] satisfies BindingSpecInput[],
+    });
+    await writeFile(
+      join(worker, "wrangler.jsonc"),
+      `{
+  "name": "my-app-other",
+  "env": { "staging": { "d1_databases": [{ "binding": "LEDGER_DB", "database_name": "my-app-staging-ledger" }] } }
+}
+`,
+    );
+    const changes = await reconcileOwnedDatabases({
+      workerDir: worker,
+      project: "my-app",
+      capabilities: [ledger],
+      declarations: [manifest("ledger", [{ type: "d1", name: "LEDGER_DB", resource: "ledger" }])],
+      ownBindings: ["LEDGER_DB"],
+    });
+    expect(changes).toEqual([
+      {
+        env: "staging",
+        binding: "LEDGER_DB",
+        field: "database_name",
+        from: "my-app-staging-ledger",
+        to: "my-app-staging-other---ledger",
+      },
+    ]);
   });
 });

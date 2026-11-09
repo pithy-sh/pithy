@@ -7,6 +7,8 @@ import { remedy } from "@pithy-sh/core/src/cli/command";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { type BindingDeclaration, bindingDeclarations, resolveBindingNamings } from "../capabilities/bindingNamings";
+import { composedManifests } from "../capabilities/manifests";
 import { provisionableBindings } from "../feature/bindings";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, requireProjectName } from "../project/config";
@@ -17,9 +19,12 @@ import { readWranglerConfig } from "../project/wrangler";
  *
  * A D1 `database_name`, an R2 `bucket_name` and a queue producer's `queue` are names a stanza states, and
  * `pithy provision` writes the name it composes over them: `<project>-<env>-<binding>` for a binding the Worker
- * shares, `<project>-<env>-<worker>---<binding>` for one it lists in `ownBindings`. A name that says anything else
+ * shares, `<project>-<env>-<worker>---<binding>` for one it lists in `ownBindings`, and what the binding's manifest
+ * declares with `scope` and `resource`, read through the same resolution provision reads them through. A `global`
+ * binding is `<project>-global-<thing>` in every environment and has no owner. A name that says anything else
  * is a stanza and a run that will disagree, and the one place the disagreement shows is the run that rewrites it.
- * So the finding is reported first, here, with both ways out: own the binding, or let provision repoint it.
+ * So the finding is reported first, here, with the ways out: own the binding, where it can be owned, or let
+ * provision repoint it.
  *
  * Report-only. It reads the files and the composition and writes nothing; a hand-chosen name may be the one the
  * adopter meant, until they say which. An `ownBindings` entry naming nothing the Worker composes is reported beside
@@ -44,6 +49,8 @@ export interface DeclaredNameMismatch {
   expected: string;
   /** Whether the Worker owns the binding. */
   owned: boolean;
+  /** Whether the binding's manifest declares it `scope: "global"`: one resource for the project, never owned. */
+  global: boolean;
 }
 
 /** One `ownBindings` entry naming no D1, KV, R2 or queue binding the Worker composes. */
@@ -72,6 +79,8 @@ export interface DeclaredNamesWorker {
   capabilities: readonly Capability[];
   /** Its `pithy.worker.jsonc` `ownBindings`. */
   ownBindings: readonly string[];
+  /** Its composed manifests and its app's own instance: where each binding's `scope` and `resource` are declared. */
+  declarations: readonly BindingDeclaration[];
 }
 
 /** The fields of one stanza this reads. */
@@ -99,11 +108,15 @@ function declaredNames(stanza: NamedStanza): { kind: DeclaredNameMismatch["kind"
 
 /** The real composition: every Worker under `apps/`, composed for `env`. */
 async function resolveFor(projectDir: string, env: string): Promise<DeclaredNamesWorker[]> {
-  return (await resolveWorkersFor(env, { projectDir })).map((worker) => ({
-    dir: worker.dir,
-    capabilities: worker.capabilities,
-    ownBindings: worker.target.ownBindings ?? [],
-  }));
+  const workers = await resolveWorkersFor(env, { projectDir });
+  return Promise.all(
+    workers.map(async (worker) => ({
+      dir: worker.dir,
+      capabilities: worker.capabilities,
+      ownBindings: worker.target.ownBindings ?? [],
+      declarations: bindingDeclarations((await composedManifests(projectDir, worker.dir)).manifests, worker.config.app),
+    })),
+  );
 }
 
 /** Check every declared environment's stanzas. Never throws: a broken project gets `could-not-check`. */
@@ -127,7 +140,16 @@ export async function checkDeclaredNames(
   try {
     for (const env of environments) {
       const scope = environmentScope(project, env);
-      for (const worker of await resolve(env)) {
+      const workers = await resolve(env);
+      // The environment's whole composition, as `pithy provision --env` resolves it.
+      const composed = workers.flatMap((worker) => worker.capabilities);
+      const namings = resolveBindingNamings({
+        manifests: workers.flatMap((worker) => worker.declarations),
+        capabilities: new Set(composed.map((capability) => capability.name)),
+        bindings: provisionableBindings(composed),
+        scope,
+      });
+      for (const worker of workers) {
         const app = basename(worker.dir);
         const provisionable = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
         for (const binding of worker.ownBindings) {
@@ -147,12 +169,9 @@ export async function checkDeclaredNames(
             .find((candidate) => candidate.name === declared.binding && candidate.type === declared.kind);
           // A binding nothing composes is the adopter's own, and provision does not name it.
           if (spec === undefined) continue;
-          const global = spec.scope === GLOBAL_SCOPE;
+          const naming = namings.get(declared.binding)?.naming ?? {};
+          const global = naming.scope === GLOBAL_SCOPE;
           const owned = !global && worker.ownBindings.includes(declared.binding);
-          const naming = {
-            ...(spec.scope ? { scope: spec.scope } : {}),
-            ...(spec.resource ? { resource: spec.resource } : {}),
-          };
           const expected = scope.resource(declared.binding, declared.kind, naming, owned ? app : undefined);
           if (expected === declared.name) continue;
           mismatches.push({
@@ -163,6 +182,7 @@ export async function checkDeclaredNames(
             declared: declared.name,
             expected,
             owned,
+            global,
           });
         }
       }
@@ -174,7 +194,7 @@ export async function checkDeclaredNames(
   return { state: mismatches.length + stale.length > 0 ? "drifted" : "ok", mismatches, unrecognized: stale };
 }
 
-/** One mismatch in a sentence, with both ways out. */
+/** One mismatch in a sentence, with the ways out. A global binding cannot be owned, so it is offered only the repoint. */
 export function describeDeclaredName(
   mismatch: DeclaredNameMismatch,
   productionEnvironments: readonly string[] = [],
@@ -184,9 +204,10 @@ export function describeDeclaredName(
     { flags: { "--env": mismatch.env, "--yes": true, "--repoint": true } },
     { productionEnvironments },
   );
-  const own = mismatch.owned
-    ? ""
-    : ` For a resource of this Worker's own, add ${mismatch.binding} to ownBindings in apps/${mismatch.worker}/pithy.worker.jsonc.`;
+  const own =
+    mismatch.owned || mismatch.global
+      ? ""
+      : ` For a resource of this Worker's own, add ${mismatch.binding} to ownBindings in apps/${mismatch.worker}/pithy.worker.jsonc.`;
   return `${mismatch.env} names ${mismatch.binding} ${mismatch.declared}. Provisioning names it ${mismatch.expected}.${own} ${repoint.say((command) => `For provision's name, run ${command}.`)}`;
 }
 
