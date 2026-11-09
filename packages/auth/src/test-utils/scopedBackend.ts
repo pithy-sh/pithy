@@ -18,12 +18,12 @@ import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 
 /**
- * The fixtures a workers suite needs to put a **real** `auth()` in front of a request (#560).
+ * The fixtures a workers suite needs to put a **real** `auth()` in front of a request.
  *
- * The scope gates in `leaderboard`, `rating` and `ledger` were each tested against a stub middleware that
- * wrote `c.var.auth` itself, so every one of them passed while nothing real could ever open it. A suite
- * built on this composes the actual capability through `createBackend` and signs a user in with the actual
- * Better Auth instance, so what reaches a gate is what a deployed Worker would put there.
+ * A gate tested against a stub middleware that writes `c.var.auth` itself passes whether or not anything
+ * real can open it. A suite built on this composes the actual capability through `createBackend` and signs
+ * a user in with the actual Better Auth instance, so what reaches a gate is what a deployed Worker would put
+ * there.
  *
  * It holds the pieces and not the composition. Which capabilities sit beside auth is the suite's own
  * statement, and so is the probe it reads the request through.
@@ -96,7 +96,8 @@ export function scopedWorkerEnv(env: Record<string, unknown>, db: unknown = env.
 }
 
 /**
- * Sign a user in by OTP against the same database the composed backend reads, and return a bearer token.
+ * Sign a user in by OTP against the same database the composed backend reads, and return a bearer token and
+ * the session cookie the same sign-in sets, as a `cookie` header value.
  *
  * Directly through Better Auth rather than over HTTP: the sign-in flow is not what these suites are about,
  * and the session row it writes is exactly the one a request presenting the token resolves.
@@ -104,7 +105,7 @@ export function scopedWorkerEnv(env: Record<string, unknown>, db: unknown = env.
 export async function signInScoped(
   db: D1Database,
   address = "player@test.com",
-): Promise<{ token: string; userId: string }> {
+): Promise<{ token: string; userId: string; cookie: string }> {
   const mailbox: { template: string; code?: string }[] = [];
   const instance = makeAuth({
     db: authDatabase(db),
@@ -129,9 +130,14 @@ export async function signInScoped(
   await instance.api.sendVerificationOTP({ body: { email: address, type: "sign-in" }, headers: new Headers() });
   const otp = mailbox.find((m) => m.template === "otp");
   if (!otp?.code) throw new Error("no OTP was mailed");
-  const signedIn = await instance.api.signInEmailOTP({
+  const { headers, response } = await instance.api.signInEmailOTP({
     body: { email: address, otp: otp.code },
     headers: new Headers(),
+    returnHeaders: true,
   });
-  return { token: signedIn.token, userId: signedIn.user.id };
+  const cookie = headers
+    .getSetCookie()
+    .map((line) => line.split(";")[0])
+    .join("; ");
+  return { token: response.token, userId: response.user.id, cookie };
 }

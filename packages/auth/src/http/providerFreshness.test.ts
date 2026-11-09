@@ -43,6 +43,12 @@ describe("authenticationIsFresh", () => {
     expect(authenticationIsFresh(ago(30).toISOString(), NOW)).toBe(true);
   });
 
+  test("a window passed in replaces the provider-change one", () => {
+    expect(authenticationIsFresh(ago(PROVIDER_CHANGE_FRESH_AGE_SECONDS + 60), NOW, 3600)).toBe(true);
+    expect(authenticationIsFresh(ago(120), NOW, 60)).toBe(false);
+    expect(authenticationIsFresh(ago(60), NOW, 60)).toBe(true);
+  });
+
   test("the window is far shorter than a session's life, or it would gate nothing", () => {
     // The whole point is that a credential valid for days cannot silently attach a provider.
     expect(PROVIDER_CHANGE_FRESH_AGE_SECONDS).toBeLessThanOrEqual(60 * 60);
@@ -83,8 +89,7 @@ describe("requireFreshAuthentication", () => {
   }
 
   test("an authentication moments ago reaches the route", async () => {
-    // The assertion that matters. An earlier shape of this gate read a field nothing populated and so
-    // refused every caller — which reads as "linking is broken" and invites deleting the gate.
+    // A gate that refuses every caller reads as "linking is broken" and invites deleting the gate.
     expect((await run(signedIn(ago(30)))).outcome).toBe("passed");
   });
 
@@ -138,8 +143,8 @@ describe("both directions are gated", () => {
 
   test("unlinking is refused on a stale credential too, and says which direction it was", async () => {
     // `allowUnlinkingAll: true` means an attacker inside the window can strip *every* provider from an
-    // account. Better Auth guards this endpoint itself, but against `session.createdAt` — which a
-    // `/token/rotate` resets, and which is therefore the signal #558 exists to replace.
+    // account. Better Auth guards this endpoint itself, but against `session.createdAt`, which a
+    // `/token/rotate` resets.
     const { c, emitted } = ctx(new Date(Date.now() - 2 * 60 * 60 * 1000));
     const gate = requireFreshAuthentication("unlink");
     await expect(gate(c, async () => {})).rejects.toMatchObject({ payload: { code: "auth/session_not_fresh" } });

@@ -1450,6 +1450,14 @@
       "remedy": "Retry with backoff"
     },
     {
+      "code": "auth/recent_sign_in_required",
+      "status": 403,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
+    },
+    {
       "code": "auth/session_not_fresh",
       "status": 403,
       "exitClass": "person",

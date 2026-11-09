@@ -16,8 +16,8 @@ export const AuthAuditActions = {
    * A sign-out / session revocation completed — and **completed** is the load-bearing word.
    *
    * `/sign-out` answers `200 {"success":true}` whether or not it found a session to delete: an expired
-   * cookie, a bearer token (which it does not read) or a bare `curl` all get the same body. Recorded off
-   * the path, every one of them wrote a sign-out that signed nobody out. The evidence is a session row
+   * cookie, a bearer token (which it does not read) or a bare `curl` all get the same body, so the path is
+   * no evidence that anybody was signed out. The evidence is a session row
    * disappearing, which `../instance/auth.ts`'s `session.delete.after` observes and `../audit/evidence.ts`
    * carries to the emitter; with no session gone there is no event, because nothing happened.
    */
@@ -38,14 +38,13 @@ export const AuthAuditActions = {
    */
   magicLinkSent: "auth/magic_link_sent",
   /**
-   * An email OTP was requested and enqueued for delivery. Same claim, same evidence — and this is the
-   * endpoint that made the point (#627).
+   * An email OTP was requested and enqueued for delivery. Same claim, same evidence.
    *
    * It declines twice over and answers `200 {"success":true}` both times. Better Auth drops the
    * verification row and returns success rather than confirm that an address is registered, which is the
    * whole reason the response is shaped that way; and the kit's own `sendVerificationOTP` returns without
-   * queuing for any `type` but `sign-in`, because an OTP is a sign-in credential here. Read off the
-   * status, every one of those wrote a send that never happened.
+   * queuing for any `type` but `sign-in`, because an OTP is a sign-in credential here. The status says
+   * nothing about whether a message was made.
    *
    * **Two more declines sit under the send callback rather than over it, and they are not the same
    * thing as each other.** `@pithy-sh/email` withholds a message to a suppressed address — a hard bounce,
@@ -64,17 +63,13 @@ export const AuthAuditActions = {
   /**
    * A social account row was created — from here on that provider can sign in as this user.
    *
-   * **Emitted from the row, not from `/link-social`, and that is the whole of #627.** Minting the
-   * provider redirect is a request; the account row is created later at `/callback/:id` and may never be
-   * created at all — the person abandons the consent screen, the provider refuses, the linking gate
-   * rejects it. Recorded at the request, every one of those wrote a success row for a link that never
-   * happened, which makes "which providers can sign in as this account today" unanswerable from the
-   * trail that exists to answer it.
+   * **Emitted from the row, not from `/link-social`.** Minting the provider redirect is a request; the
+   * account row is created later at `/callback/:id` and may never be created at all — the person abandons
+   * the consent screen, the provider refuses, the linking gate rejects it. Only the row answers "which
+   * providers can sign in as this account today".
    *
-   * **A first social sign-up writes this too, deliberately.** The endpoint wiring this replaced refused
-   * to map `/callback/:id` because doing so "would mislabel every first sign-up as a link" — true of a
-   * *path*, which cannot tell a sign-up from a link. From the row it stops mattering: this event claims a
-   * provider can now sign in as this user, and a first social sign-up is exactly when that becomes true.
+   * **A first social sign-up writes this too, deliberately.** This event claims a provider can now sign in
+   * as this user, and a first social sign-up is exactly when that becomes true.
    * Pinned by `emit.workers.test.ts`, so the decision is asserted rather than inferred from the absence
    * of a branch.
    */
@@ -82,8 +77,7 @@ export const AuthAuditActions = {
   /**
    * A social account row was removed — that provider can no longer sign in as this user.
    *
-   * The other half of the same question, and it emitted nothing at all until #627: a provider was
-   * detached and the trail was silent. Emitted from the row for the same reason its twin is, which also
+   * The other half of the same question. Emitted from the row for the same reason its twin is, which also
    * means it covers every way a link ends — `/unlink-account`, and the cascade when a user is deleted —
    * rather than the one endpoint somebody remembered to wire. Both are driven in `emit.workers.test.ts`:
    * a sentence claiming a class is covered is not the same as a test that reddens when it stops being.
@@ -116,7 +110,7 @@ export const AuthAuditActions = {
   deviceRevoked: "auth/device_revoked",
   /**
    * Somebody tried to sign in with a provider this deployment enables and cannot serve — its credential
-   * would not resolve, so the instance was built without it (#381). Outcome `denied`, severity
+   * would not resolve, so the instance was built without it. Outcome `denied`, severity
    * `warning`.
    *
    * **This is the operator's channel, and it is why degrading is not the same as degrading silently.**
@@ -135,9 +129,19 @@ export const AuthAuditActions = {
    * account-takeover step". One is a person who left a tab open; a run of them against one user id is the
    * incident, and without the row there is nothing to count.
    *
-   * Mirrors the error code, which is this file's one precedent for doing so.
+   * Mirrors the error code.
    */
   sessionNotFresh: "auth/session_not_fresh",
+  /**
+   * Somebody signed in reached an app route gated by `requireRecentSignIn` without having signed in within
+   * that route's window. Outcome `denied`, severity `warning`, with the route's `purpose` in
+   * `metadata.purpose`.
+   *
+   * One action for every gated route, so one filter finds every refusal and the purpose says which route.
+   * A run of them against one user id is a stolen credential being walked toward something the app
+   * protects.
+   */
+  recentSignInRefused: "auth/recent_sign_in_refused",
 
   /**
    * The admin actions, emitted only from the control-plane surface (`http/adminRoutes.ts`) and always
@@ -157,7 +161,7 @@ export const AuthAuditActions = {
   adminUserRead: "auth/admin_user_read",
   /** The device registry was walked from the management surface. */
   adminDevicesListed: "auth/admin_devices_listed",
-  /** The verification ledger was read from the management surface (#829): counts and rows over a window. */
+  /** The verification ledger was read from the management surface: counts and rows over a window. */
   adminVerificationsListed: "auth/admin_verifications_listed",
   /** One named session was revoked from the management surface. */
   adminSessionRevoked: "auth/admin_session_revoked",
@@ -167,7 +171,7 @@ export const AuthAuditActions = {
   adminDeviceRevoked: "auth/admin_device_revoked",
 
   /**
-   * The account lifecycle (#620). Each is written by the transition in `../lifecycle/transitions.ts`, beside
+   * The account lifecycle. Each is written by the transition in `../lifecycle/transitions.ts`, beside
    * the `pithy_auth_user_lifecycle` row that records the same fact — the trail answers "who, from where", the
    * table answers "what happened to this account". The admin ones carry `actorType: "control-plane"`; the
    * self-service deletion carries the account's own holder, and the purge `system`.
@@ -175,7 +179,7 @@ export const AuthAuditActions = {
    * The dashboard's own `customer/user_suspended` and `customer/user_restored` are the client side of the
    * same events, recorded where the operator pressed the button.
    *
-   * **The suspend and reinstate routes record every call under the same action (#621)**, the ones the
+   * **The suspend and reinstate routes record every call under the same action**, the ones the
    * transition did not write included: a refusal as `denied` with its code in `metadata.code`, and a
    * reinstatement that found nothing to lift as a `success` with `metadata.changed: false`. A restated
    * suspension is the transition's own event, with `metadata.updated: true`. So one filter on the action
@@ -189,7 +193,7 @@ export const AuthAuditActions = {
   /** An account was deleted from the management surface, with its purge window starting now. */
   adminUserSoftDeleted: "auth/admin_user_soft_deleted",
   /**
-   * An account was deleted from the management surface with no window — its purge starts now (#622). Also
+   * An account was deleted from the management surface with no window — its purge starts now. Also
    * written when a hard deletion brings an already-deleted account's purge forward, with
    * `metadata.broughtForward: true`. Never written by omission: the route reaches it only for `mode: "hard"`.
    */
@@ -199,13 +203,13 @@ export const AuthAuditActions = {
   /** A deleted account's data was erased. Recorded once, when the last purge step has run. */
   adminUserPurged: "auth/admin_user_purged",
   /**
-   * One purge step answered for a capability's rows: erased them, or kept them under a stated basis (#814).
+   * One purge step answered for a capability's rows: erased them, or kept them under a stated basis.
    * `metadata.step` names the capability and `metadata.disposition` says which. The erasure attestation cites it
-   * by event id and chain position (#823).
+   * by event id and chain position.
    */
   adminUserPurgeStep: "auth/admin_user_purge_step",
   /**
-   * A purge gave up at the step `metadata.step` names, until the next daily pass starts it again (#823). The
+   * A purge gave up at the step `metadata.step` names, until the next daily pass starts it again. The
    * erasure attestation cites it, and names every failed purge in a period.
    */
   adminUserPurgeFailed: "auth/admin_user_purge_failed",
@@ -213,7 +217,7 @@ export const AuthAuditActions = {
   userSelfDeleted: "auth/user_self_deleted",
   /**
    * Everything the kit holds about one account was exported from the management surface — an access request
-   * answered (#622). A **disclosure**, and the largest one on this surface: it carries every composed
+   * answered. A **disclosure**, and the largest one on this surface: it carries every composed
    * capability's rows about the person. Recorded with the caller, the reason they gave, and which capabilities
    * answered; never with any of the data.
    */

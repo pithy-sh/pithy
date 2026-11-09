@@ -181,6 +181,22 @@ const AuthSessionNotFreshPublic = z
   })
   .describe("The session is authentic but the holder authenticated too long ago to attach a provider (403).");
 
+const AuthRecentSignInRequiredPublic = z
+  .object({
+    code: z
+      .literal("auth/recent_sign_in_required")
+      .describe(
+        "The caller is signed in, but not recently enough for this route, which the app gated with `requireRecentSignIn`. The window is the app's, per route. The remedy is the same for every client and every such route: sign in again, which starts a session with a new sign-in time, then retry. A separate code from `auth/forbidden` because that remedy is specific and cheap. Nothing was changed.",
+      ),
+    status: z
+      .literal(403)
+      .describe(
+        "Forbidden — a real, current credential was presented and is not sufficient for this route. Not 401, which is what a caller with no credential gets: a client that cannot tell the two apart does not know whether to sign in again or to retry.",
+      ),
+    ...publicFields,
+  })
+  .describe("The session is authentic but the holder signed in too long ago for this route (403).");
+
 const AuthAccountSuspendedPublic = z
   .object({
     code: z
@@ -2038,6 +2054,7 @@ export const KitPublicErrorPayload = z
     ForbiddenPublic,
     AuthProviderUnavailablePublic,
     AuthSessionNotFreshPublic,
+    AuthRecentSignInRequiredPublic,
     AuthAccountSuspendedPublic,
     AuthAccountDeletedPublic,
     AuthHandoffInvalidPublic,
@@ -2216,6 +2233,9 @@ const AuthProviderUnavailable = AuthProviderUnavailablePublic.extend(internalFie
 );
 const AuthSessionNotFresh = AuthSessionNotFreshPublic.extend(internalFields).describe(
   AuthSessionNotFreshPublic.description ?? "",
+);
+const AuthRecentSignInRequired = AuthRecentSignInRequiredPublic.extend(internalFields).describe(
+  AuthRecentSignInRequiredPublic.description ?? "",
 );
 const AuthAccountSuspended = AuthAccountSuspendedPublic.extend(internalFields).describe(
   AuthAccountSuspendedPublic.description ?? "",
@@ -2683,6 +2703,7 @@ export const KitErrorPayload = z
     Forbidden,
     AuthProviderUnavailable,
     AuthSessionNotFresh,
+    AuthRecentSignInRequired,
     AuthAccountSuspended,
     AuthAccountDeleted,
     AuthHandoffInvalid,

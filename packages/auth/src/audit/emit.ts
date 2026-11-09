@@ -36,8 +36,7 @@ async function safeEmit(emit: AuditEmit, event: Parameters<AuditEmit>[0]): Promi
 /**
  * What an endpoint must have *done* for its path event to be a success.
  *
- * **There is no "the response is its own evidence" member, and its removal is #627's last half.** A
- * non-2xx is sufficient evidence of a refusal and is nowhere near necessary: `/sign-out` answers
+ * **There is no "the response is its own evidence" member.** A non-2xx is sufficient evidence of a refusal and is nowhere near necessary: `/sign-out` answers
  * `200 {"success":true}` having deleted nothing, and `/email-otp/send-verification-otp` answers
  * `200 {"success":true}` having declined to send — Better Auth drops the verification row and returns
  * success rather than confirm that an address is registered (`plugins/email-otp/routes.mjs`), and the
@@ -85,21 +84,16 @@ export interface PathEvent {
  * The endpoints whose *path* names an audit action, what "success" means for each, and what a completed
  * response without it means instead.
  *
- * **A table rather than a chain of `if`s so the rule can be asserted over all of it.** #627's second
- * half was that every entry here wrote `outcome: "success"` for a request the endpoint had refused:
- * Better Auth catches an endpoint's `APIError` into a result and runs the `after` hooks over it anyway
- * (`better-auth/dist/api/dispatch.mjs`), so a 401 `/token` and a 400 `/email-otp/send-verification-otp`
- * both looked, from here, exactly like a request that worked. Naming the two paths somebody happened to
- * probe would have fixed those two; the exposure was every entry, including ones added later. So the
- * rule is `emitAfterRequest` reading the outcome, and the gate walks this table.
+ * **A table rather than a chain of `if`s so the rule can be asserted over all of it.** Better Auth
+ * catches an endpoint's `APIError` into a result and runs the `after` hooks over it anyway
+ * (`better-auth/dist/api/dispatch.mjs`), so a refused `/token` reaches the hook looking like one that
+ * worked. `emitAfterRequest` reads the outcome for every entry, and the gate walks this table.
  *
- * **Its third half was that a refusal can answer 200**, which the first fix could not see, and the
- * correction is the same shape: not a fifth branch for the endpoint somebody probed, but a column every
- * entry must fill. `evidence` has no "the response says so" member, so an entry that claims an outcome
- * it cannot evidence does not compile, and `emit.test.ts` walks the table asserting that an entry whose
- * evidence is absent never writes `success`.
+ * **A refusal can also answer 200**, so every entry fills `evidence`, which has no "the response says so"
+ * member: an entry that claims an outcome it cannot evidence does not compile, and `emit.test.ts` walks
+ * the table asserting that an entry whose evidence is absent never writes `success`.
  *
- * **No path maps to `oauth_linked`, and that is the correction #627 made first.** `/link-social` mints
+ * **No path maps to `oauth_linked`.** `/link-social` mints
  * a redirect, which is a request rather than an outcome; `/callback/:id` completes a sign-in *or* a link
  * and cannot be told apart by its path. The event that means "this provider can sign in as this user" is
  * the account row, so it is emitted from the row — see `emitProviderAccountChanged`.
@@ -372,7 +366,7 @@ export async function emitControlPlaneAction(
     userAgent?: string;
     requestId?: string;
     metadata?: Record<string, unknown>;
-    /** `success` unless the call was refused (`denied`) or broke (`failure`) — #621 records both. */
+    /** `success` unless the call was refused (`denied`) or broke (`failure`). */
     outcome?: "success" | "denied" | "failure";
   },
 ): Promise<void> {
@@ -396,8 +390,8 @@ export async function emitControlPlaneAction(
  *
  * `anonymous`, because the caller has no session yet by definition. `denied` rather than `failure`: the
  * request was refused deliberately by a rule this Worker holds, not lost to a fault. `warning` rather
- * than `critical` — the other sign-in methods are working, which is the entire point of #381, so this is
- * notable rather than alert-worthy.
+ * than `critical` — the other sign-in methods are still working, so this is notable rather than
+ * alert-worthy.
  *
  * `metadata.provider` is the provider id and nothing else. The secret name is derivable from it and is
  * still not written: an audit row is long-lived and queryable, and naming a store entry in one is a map
@@ -428,7 +422,7 @@ export type ProviderChange = "link" | "unlink";
  * three. Parsing it into a named shape means the emitter below is holding a value that never contained
  * a provider token, so no later edit spreading "the account" into `metadata` can leak one — the guard
  * is structural instead of a rule somebody has to remember. The provider-asserted email is not here
- * either, and is not stored on this row to begin with: #627 does not widen what is retained.
+ * either, and is not stored on this row to begin with.
  */
 export const ProviderAccount = z
   .object({
@@ -456,9 +450,8 @@ const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
  *
  * **Called from the `account` database hooks, and the row is the point.** An operator's question is
  * "which providers can sign in as this account today, and when did that change"; the account table is
- * the answer to the first half, so the second half has to be recorded where that table changes. Wiring
- * this to an endpoint instead is what #627 was: `/link-social` recorded an intention as an outcome, and
- * `/unlink-account` recorded nothing. From the row, an abandoned consent screen emits nothing because
+ * the answer to the first half, so the second half has to be recorded where that table changes. An
+ * endpoint records an intention, not an outcome. From the row, an abandoned consent screen emits nothing because
  * nothing happened, and every path that ends a link — the unlink endpoint, and the cascade when a user
  * is deleted — is covered without naming any of them.
  *
@@ -467,11 +460,11 @@ const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
  * filter on.
  *
  * **The actor is whoever caused the change, never the account it concerns.** The row's `userId` says
- * *whose* link it was, which is not the same question and is carried in `metadata.userId` instead. The
- * first cut of #627 conflated them: `delete.after` fires on every removal, the user-deletion cascade
- * included, so an operator deleting somebody's account wrote rows saying that person had detached their
- * own providers — from the operator's IP. A trail that misattributes an actor is worse than one that is
- * silent, because it reads as evidence. Three cases, and only three:
+ * *whose* link it was, which is not the same question and is carried in `metadata.userId` instead.
+ * `delete.after` fires on every removal, the user-deletion cascade included, so an operator deleting
+ * somebody's account must not write rows saying that person detached their own providers. A trail that
+ * misattributes an actor is worse than one that is silent, because it reads as evidence. Three cases,
+ * and only three:
  *
  * - An authenticated caller — `/unlink-account`, a link from a signed-in session, an operator's console
  *   endpoint — is `user`, named.
@@ -480,13 +473,12 @@ const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
  * - No request at all is `system`, with no actor id and no ip: there is no caller to name and nothing to
  *   borrow one from.
  *
- * **A cascade is not a fourth case, and an earlier revision of this list said it was.** `deleteWithHooks`
- * resolves its context from `getCurrentAuthContext()`, which is async-scoped to the dispatch, so the
- * cascade `internalAdapter.deleteUser` runs carries whatever context reached it: an operator deleting
- * somebody through an endpoint is named as the actor of every row it writes, with their address, because
- * they caused every one of them. `system` is what *no request* looks like — a queue consumer, a script,
- * a migration — not what a cascade looks like, and the two were written down here as the same thing. The
- * rule that does hold everywhere is the one above it: the account's owner is never the actor merely for
+ * **A cascade is not a fourth case.** `deleteWithHooks` resolves its context from
+ * `getCurrentAuthContext()`, which is async-scoped to the dispatch, so the cascade
+ * `internalAdapter.deleteUser` runs carries whatever context reached it: an operator deleting somebody
+ * through an endpoint is named as the actor of every row it writes, with their address, because they
+ * caused every one of them. `system` is what *no request* looks like — a queue consumer, a script, a
+ * migration — not what a cascade looks like. The rule that does hold everywhere is the one above it: the account's owner is never the actor merely for
  * owning the row. Both shapes are driven in `emit.workers.test.ts` rather than asserted here.
  *
  * Unparseable input is dropped rather than thrown. The write it describes has already happened, and an
@@ -551,6 +543,30 @@ export async function emitProviderChangeNotFresh(
     sessionId: context.sessionId,
     // Attaching an identity and stripping one are the same refusal and very different intentions.
     metadata: { change: context.change },
+    ...correlation(context.headers),
+  });
+}
+
+/**
+ * Emit a `recent_sign_in_refused` event — a signed-in caller reached an app route gated by
+ * `requireRecentSignIn` without a sign-in inside that route's window.
+ *
+ * `actorType: "user"`, for the same reason as {@link emitProviderChangeNotFresh}: the caller is
+ * authenticated and the user id is the whole value of the row. `metadata.purpose` is the app's own
+ * `domain/reason` for the route, which says what was being reached for.
+ */
+export async function emitRecentSignInRefused(
+  emit: AuditEmit,
+  context: { purpose: string; userId: string; sessionId: string; headers: Headers | undefined },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: AuthAuditActions.recentSignInRefused,
+    outcome: "denied",
+    severity: "warning",
+    actorType: "user",
+    actorId: context.userId,
+    sessionId: context.sessionId,
+    metadata: { purpose: context.purpose },
     ...correlation(context.headers),
   });
 }
