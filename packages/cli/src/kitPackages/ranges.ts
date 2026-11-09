@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join, posix } from "node:path";
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { parseSemver } from "@pithy-sh/core/src/semver/semver";
 import { compareVersions, parseVersion } from "../notifier/version";
 import type { PackageManager } from "../project/packageManager";
+import { workspaceMembers } from "../project/workspaceMembers";
 
 /**
  * The version ranges `pithy upgrade --packages` moves, and the one rule both it and `pithy doctor` read.
@@ -159,24 +160,15 @@ async function manifestSpecs(path: string, manifest: string): Promise<DeclaredSp
 }
 
 /**
- * Every `@pithy-sh/*` declaration in the root `package.json` and each `apps/*` manifest — `@pithy-sh/cli`
- * included, because the issue is every `@pithy-sh/*` dependency and the CLI is one. Root first, then the
- * Workers in name order, so a report reads the same on every machine.
+ * Every `@pithy-sh/*` declaration in each workspace member's manifest ({@link workspaceMembers}) —
+ * `@pithy-sh/cli` included, because the CLI is a `@pithy-sh/*` dependency like any other. Root first, then
+ * the members in path order, so a report reads the same on every machine.
  */
 export async function declaredSpecs(projectDir: string): Promise<DeclaredSpec[]> {
-  const specs = await manifestSpecs(join(projectDir, "package.json"), "package.json");
-  let workers: string[] = [];
-  try {
-    workers = (await readdir(join(projectDir, "apps"), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    // No `apps/` — nothing more is declared.
-  }
-  for (const worker of workers) {
-    const manifest = `apps/${worker}/package.json`;
-    specs.push(...(await manifestSpecs(join(projectDir, "apps", worker, "package.json"), manifest)));
+  const specs: DeclaredSpec[] = [];
+  for (const member of await workspaceMembers(projectDir)) {
+    const manifest = posix.join(member, "package.json");
+    specs.push(...(await manifestSpecs(join(projectDir, manifest), manifest)));
   }
   return specs;
 }
@@ -223,7 +215,7 @@ export const PACKAGES_LATEST_COMMAND = pithyCommand("upgrade", { flags: { "--pac
  * **The command that actually clears doctor's line for one package, or `null` when none does.**
  *
  * `specs` is every declaration of that one package. Each `null` is a case `--packages` would leave the line
- * where it is, so naming it would be the recommendation #634 was filed about: nothing declared (the copy is
+ * where it is, so naming it would recommend a command that leaves the line standing: nothing declared (the copy is
  * transitive, and the package that pulls it in is the one to move), an unmanaged spec or a linked checkout
  * (both left alone), and a `latest` no move lands on (deprecated, or a prerelease).
  *

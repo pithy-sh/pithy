@@ -24,7 +24,7 @@ import { fetchPackument, type Packument, type RegistryFetch } from "./registry";
  * What `pithy upgrade --packages` would do to each `@pithy-sh/*` declaration, decided before anything is
  * written.
  *
- * **Per manifest, never per package.** The root and each `apps/*` manifest can declare one package with two
+ * **Per manifest, never per package.** Each workspace member's manifest can declare one package with two
  * ranges, and each range is its own fact: rewriting one from the other's answer is how a Worker's pin gets
  * moved behind its back. So every entry below carries the manifest it came from.
  *

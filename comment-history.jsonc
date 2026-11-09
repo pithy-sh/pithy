@@ -695,8 +695,6 @@
     "packages/cli/src/help/groups.test.ts": 1,
     "packages/cli/src/help/groups.ts": 1,
     "packages/cli/src/jsonPretty.pty.test.ts": 1,
-    "packages/cli/src/kitPackages/ranges.ts": 1,
-    "packages/cli/src/kitPackages/templates.ts": 1,
     "packages/cli/src/main.test.ts": 1,
     "packages/cli/src/mcp/clients.ts": 1,
     "packages/cli/src/mcp/home.ts": 1,

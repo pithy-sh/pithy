@@ -57,7 +57,7 @@ const classify = (options: { from?: [string, TemplateTree][]; to?: TemplateTree;
       ],
     ),
     to: { version: "0.3.1", tree: options.to ?? V031 },
-    workers: [{ name: "board", files: options.files ?? BOARD }],
+    workers: [{ name: "board", directory: "board", files: options.files ?? BOARD }],
   });
 
 describe("classifyTemplates", () => {
@@ -93,10 +93,30 @@ describe("classifyTemplates", () => {
     const findings = classifyTemplates({
       from: new Map([["0.2.0", tree(ROUTER)]]),
       to: { version: "0.3.1", tree: tree(`${ROUTER}// new\n`) },
-      workers: [{ name: "board", files: new Map([["src/router.tsx", 'export const router = "board";\n']]) }],
+      workers: [
+        { name: "board", directory: "board", files: new Map([["src/router.tsx", 'export const router = "board";\n']]) },
+      ],
     });
     expect(findings).toEqual([
       { worker: "board", path: "src/router.tsx", change: "changed", copy: "untouched", from: "0.2.0" },
+    ]);
+  });
+
+  test("the worker token renders as the member's directory name, not the path it is reported by", () => {
+    const tree = (router: string): TemplateTree => new Map([["src/router.tsx", router]]);
+    const findings = classifyTemplates({
+      from: new Map([["0.2.0", tree(ROUTER)]]),
+      to: { version: "0.3.1", tree: tree(`${ROUTER}// new\n`) },
+      workers: [
+        {
+          name: "web/site",
+          directory: "site",
+          files: new Map([["src/router.tsx", 'export const router = "site";\n']]),
+        },
+      ],
+    });
+    expect(findings).toEqual([
+      { worker: "web/site", path: "src/router.tsx", change: "changed", copy: "untouched", from: "0.2.0" },
     ]);
   });
 
@@ -188,7 +208,7 @@ describe("classifyTemplates", () => {
         from: new Map([["0.3.0", V030]]),
         history: new Map(history),
         to: { version: "0.3.1", tree: V031 },
-        workers: [{ name: "board", files }],
+        workers: [{ name: "board", directory: "board", files }],
       }).filter((finding) => finding.change !== "added");
 
     test("a copy matching an older version is untouched from it, even where F and T agree", () => {
@@ -200,7 +220,7 @@ describe("classifyTemplates", () => {
           from: new Map([["0.3.0", v030]]),
           history: new Map([["0.2.0", V020]]),
           to: { version: "0.3.1", tree: V031 },
-          workers: [{ name: "board", files: untouched020 }],
+          workers: [{ name: "board", directory: "board", files: untouched020 }],
         }).filter((finding) => finding.change !== "added"),
       ).toEqual([
         { worker: "board", path: "client-env.d.ts", change: "changed", copy: "untouched", from: "0.2.0" },
@@ -330,6 +350,37 @@ describe("uncomparedApps", () => {
         await writeFile(join(dir, "apps", name, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub, build: [] } }));
       }
       expect(await uncomparedApps(dir)).toEqual(["phone", "tablet"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a workspace member outside apps/* is named by its path", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-templates-native-"));
+    try {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["mobile/*"] }));
+      await mkdir(join(dir, "mobile", "phone"), { recursive: true });
+      await writeFile(join(dir, "mobile", "phone", "package.json"), "{}");
+      await writeFile(
+        join(dir, "mobile", "phone", "pithy.worker.jsonc"),
+        JSON.stringify({ ui: { stub: "react-native", build: [] } }),
+      );
+      expect(await uncomparedApps(dir)).toEqual(["mobile/phone"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a member directly under the root is named ./<dir>, apart from an apps/* app of the same name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-templates-native-"));
+    try {
+      await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*", "mobile"] }));
+      for (const at of [join(dir, "mobile"), join(dir, "apps", "mobile")]) {
+        await mkdir(at, { recursive: true });
+        await writeFile(join(at, "package.json"), "{}");
+        await writeFile(join(at, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub: "react-native", build: [] } }));
+      }
+      expect(await uncomparedApps(dir)).toEqual(["mobile", "./mobile"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -482,6 +533,88 @@ describe("templateSections", () => {
       "https://registry.npmjs.org/@pithy-sh/ui-react/-/ui-react-0.3.1.tgz",
     ]);
   });
+
+  test("templates copied into a workspace member outside apps/* are found, and its installed copy is in F", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*", "web/*"] }));
+    await mkdir(join(dir, "web", "site"), { recursive: true });
+    await writeFile(join(dir, "web", "site", "package.json"), "{}");
+    await writeFile(
+      join(dir, "web", "site", "pithy.worker.jsonc"),
+      JSON.stringify({ ui: { stub: "react", build: [] } }),
+    );
+    await mkdir(join(dir, "web", "site", "src", "routes", "pithy"), { recursive: true });
+    await writeFile(
+      join(dir, "web", "site", "src", "routes", "pithy", "sign-in.tsx"),
+      V020.get("src/routes/pithy/sign-in.tsx") ?? "",
+    );
+    await installCopy(join(dir, "web", "site", "node_modules", "@pithy-sh", "ui-react"), "0.2.0", V020);
+    const sections = await templateSections({
+      projectDir: dir,
+      plan: heldPlan,
+      packuments: new Map([[UI, ui()]]),
+      fetch: registry(),
+    });
+    expect(sections[0]).toMatchObject({ state: "checked", from: ["0.2.0"] });
+    expect(sections[0]?.files).toContainEqual({
+      worker: "web/site",
+      path: "src/routes/pithy/sign-in.tsx",
+      change: "changed",
+      copy: "untouched",
+      from: "0.2.0",
+    });
+  });
+
+  test("a member outside apps/* renders the worker token as its directory name: its untouched copies need no history", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*", "web/*"] }));
+    await rm(join(dir, "apps", "board"), { recursive: true, force: true });
+    const site = join(dir, "web", "site");
+    await mkdir(site, { recursive: true });
+    await writeFile(join(site, "package.json"), "{}");
+    await writeFile(join(site, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub: "react", build: [] } }));
+    await mkdir(join(site, "src"), { recursive: true });
+    await writeFile(join(site, "src", "router.tsx"), ROUTER.replace("__PITHY_WORKER__", "site"));
+    await installCopy(join(dir, "node_modules", "@pithy-sh", "ui-react"), "0.2.0", V020);
+    const fetch = registry();
+    const doc = ui();
+    doc.versions["0.1.0"] = {
+      version: "0.1.0",
+      dist: { tarball: "https://registry.npmjs.org/x-0.1.0.tgz", integrity: "sha512-AA==" },
+    };
+    const sections = await templateSections({
+      projectDir: dir,
+      plan: heldPlan,
+      packuments: new Map([[UI, doc]]),
+      fetch,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sections[0]?.files.some((finding) => finding.path === "src/router.tsx")).toBe(false);
+  });
+
+  test("a member directly under the root and an apps/* Worker of the same directory name are reported apart", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*", "board"] }));
+    await writeFile(join(dir, "apps", "board", "package.json"), "{}");
+    await manifestedBoard(join(dir, "board"));
+    await installCopy(join(dir, "node_modules", "@pithy-sh", "ui-react"), "0.2.0", V020);
+    const sections = await templateSections({
+      projectDir: dir,
+      plan: heldPlan,
+      packuments: new Map([[UI, ui()]]),
+      fetch: registry(),
+    });
+    const workers = new Set(sections[0]?.files.map((finding) => finding.worker));
+    expect(workers).toEqual(new Set(["board", "./board"]));
+  });
+
+  /** A React front end at `at` holding the same copies as apps/board. */
+  async function manifestedBoard(at: string) {
+    await mkdir(at, { recursive: true });
+    await writeFile(join(at, "package.json"), "{}");
+    await writeFile(join(at, "pithy.worker.jsonc"), JSON.stringify({ ui: { stub: "react", build: [] } }));
+    for (const [path, text] of BOARD) {
+      await mkdir(dirname(join(at, path)), { recursive: true });
+      await writeFile(join(at, path), text);
+    }
+  }
 
   test("every copy placed by what is installed: no history is fetched", async () => {
     await installCopy(join(dir, "node_modules", "@pithy-sh", "ui-react"), "0.2.0", V020);

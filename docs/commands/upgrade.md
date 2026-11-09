@@ -86,7 +86,7 @@ Done.
 
 Without it, `upgrade` never moves a version. It reads the manifests installed and wires what they declare. `--packages` is the step before that: it moves the versions, then the reconcile reads the ones just installed.
 
-**Every `@pithy-sh/*` dependency, in every manifest.** The root `package.json` and each `apps/*/package.json`, `dependencies` and `devDependencies`, `@pithy-sh/cli` included. Each declaration is planned on its own, so a Worker that pins a package differently from the root keeps its own answer.
+**Every `@pithy-sh/*` dependency, in every workspace member's manifest.** The members are the root, every `apps/*` directory, and every directory the workspace globs match that holds a `package.json`: the root `package.json` `workspaces`, as an array or as `{ "packages": [...] }`, and `pnpm-workspace.yaml`'s `packages` when there is one. A `!` glob removes what the others matched, `node_modules` is never walked, a glob that leaves the project matches nothing, and a member two globs match is read once. A project with no `workspaces` reads the root and `apps/*`. A `package.json` outside the workspace is not one the package manager installs from, and is not moved. In each manifest, `dependencies` and `devDependencies` are read, `@pithy-sh/cli` included. Each declaration is planned on its own, so a member that pins a package differently from the root keeps its own answer, and `manifest` in the report is the member's path, such as `packages/shared/package.json`. A failed install restores every member's `package.json` byte for byte.
 
 **Within range by default.** `^x.y.z`, `~x.y.z` and an exact `x.y.z` are moved to the newest version the range admits, by rewriting the floor and keeping the operator: `^0.2.0` becomes `^0.2.3`. The floor is what makes the lockfile move. The candidates are the published versions that are not prereleases, not deprecated, and not newer than `latest`. Everything else is left alone and said so: `workspace:`, `link:`, `file:`, git and URL specs, tags, `*`, `>=`, `||` and x-ranges are not registry ranges, and a package linked in from a checkout is not the registry's to move.
 
@@ -117,7 +117,7 @@ Done.
 
 ### The templates a move changed
 
-`pithy ui add` copies `@pithy-sh/ui-react`'s templates into the Worker, and the copies are yours from then on. A version bump that changes a template leaves your copy on the old shape: the sign-in screen that still reads a refusal code the server no longer sends renders nothing, and nothing says why. So `--packages` reports, per Worker with a React front end, every copied file whose template changed between what is installed now and what the move installs.
+`pithy ui add` copies `@pithy-sh/ui-react`'s templates into the Worker, and the copies are yours from then on. A version bump that changes a template leaves your copy on the old shape: the sign-in screen that still reads a refusal code the server no longer sends renders nothing, and nothing says why. So `--packages` reports, per Worker with a React front end — any workspace member, not only `apps/*` — every copied file whose template changed between what is installed now and what the move installs.
 
 The comparison is by content, not by record. The installed versions are read from disk — the project's own `@pithy-sh/ui-react`, and the one each installed CLI resolves, since that is where `pithy ui add` reads its templates from. An installed copy already at the target is not a version anything moves from, and is left out of them. The target is read from disk when a copy of that exact version is installed, and otherwise from the published tarball, checked against its `sha512` integrity and read in memory. When a file of yours matches neither the target nor any installed version, up to eight older published versions are read the same way, only to place it: a Worker scaffolded from 0.2.0 whose dependency was later moved by hand still holds 0.2.0's copies. Your file at each template path is:
 
@@ -133,7 +133,7 @@ It runs on **every** move of the package that carries the templates, patch inclu
 
 A file moved off its template path is not seen; the comparison is by path.
 
-**React Native apps are not compared.** An app scaffolded by `pithy ui add react-native` holds `@pithy-sh/ui-react-native`'s templates, and this report reads `@pithy-sh/ui-react`'s alone. Each such app is named, `Templates: apps/<app> is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.`, and listed in `packages.uncompared`.
+**React Native apps are not compared.** An app scaffolded by `pithy ui add react-native` holds `@pithy-sh/ui-react-native`'s templates, and this report reads `@pithy-sh/ui-react`'s alone. Each such app is named by its path, `Templates: apps/<app> is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.` (or `mobile/tablet`, for a member outside `apps/`), and listed in `packages.uncompared`.
 
 `--dry-run --packages` fetches, plans and reports the templates, writes nothing and runs nothing, and reconciles as a dry run against what is installed now — saying so in one line, since the moves above it are not.
 
@@ -200,8 +200,8 @@ A Worker that could not be planned, or was refused, contributes nothing to `plan
 | `packages.templates[].from` | string[] | The installed versions compared from, ascending |
 | `packages.templates[].to` | string \| null | The target version, or `null` when it could not be resolved |
 | `packages.templates[].applied` | boolean | Whether this run installs `to` |
-| `packages.templates[].files` | array | One entry per file to look at, each with `worker`, `path` (relative to the Worker), `change` (`"changed"` \| `"added"` \| `"removed"`), `copy` (`"untouched"` \| `"edited"` \| `"absent"` \| `"present"`) and, for an untouched copy, `from` — the version it is a copy of |
-| `packages.uncompared` | string[] | Apps with a React Native front end, by `apps/` directory, whose templates the report does not compare. Absent when there are none |
+| `packages.templates[].files` | array | One entry per file to look at, each with `worker` (an `apps/*` Worker by its directory name, any other member by its path, and a member directly under the root as `./<dir>`), `path` (relative to the Worker), `change` (`"changed"` \| `"added"` \| `"removed"`), `copy` (`"untouched"` \| `"edited"` \| `"absent"` \| `"present"`) and, for an untouched copy, `from` — the version it is a copy of |
+| `packages.uncompared` | string[] | Apps with a React Native front end, named as `files[].worker` is, whose templates the report does not compare. Absent when there are none |
 
 ### `workers[]` when a Worker was refused
 
