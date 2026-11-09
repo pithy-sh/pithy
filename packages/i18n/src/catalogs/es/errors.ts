@@ -227,6 +227,7 @@ export const esErrors: MessageCatalog = {
   "organization/invitation_invalid": "Esa invitación ya no se puede aceptar.",
   "organization/last_administrator": "La organización se quedaría sin nadie que pueda administrarla.",
   "organization/slug_taken": "Ese identificador ya está en uso.",
+  "organization/idempotency_key_reused": "Esa clave ya creó una organización con otro nombre o identificador.",
   "organization/nomination_invalid": "No hay ninguna oferta de titularidad que puedas aceptar.",
   "organization/last_owner": "Es la única persona titular de la organización. Transfiere la titularidad primero.",
   "organization/already_member": "Esa persona ya es miembro de la organización.",

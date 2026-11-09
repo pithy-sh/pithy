@@ -41,7 +41,7 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
  * The tenancy capability: organizations, memberships, the roles a project declares, and the gates that
  * read them.
  *
- * It contributes six tables to the app `DB`, the route surface in `./http/routes.ts`, the control-plane
+ * It contributes seven tables to the app `DB`, the route surface in `./http/routes.ts`, the control-plane
  * reads and writes, the organization purge and its two Workflows, and a worked fixture. `@pithy-sh/auth` is a **hard peer** — a membership is a row keyed by a
  * user id this capability does not own, and every route here resolves a session before it resolves a
  * membership — so a Worker composing tenancy without sign-in is refused at assembly rather than serving

@@ -47,6 +47,7 @@ const NOW = new Date("2026-09-05T12:00:00.000Z");
 const DAY = 86_400_000;
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -419,7 +420,7 @@ describe("accepting", () => {
     expect(await roles()).toEqual({ [OLIVE]: "admin", [BOB]: "owner" });
     expect(transferred.newHolderMembershipId).toBe(bob);
     expect(transferred.previousHolderMembershipIds).toEqual([olive]);
-    // Whose they were, and what the new holder held before (#831): the trail records both sides of it.
+    // Whose they were, and what the new holder held before: the trail records both sides of it.
     expect(transferred.previousHolders).toEqual([{ id: olive, userId: OLIVE }]);
     expect(transferred.previousRole).toBe("member");
   });

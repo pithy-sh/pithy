@@ -26,7 +26,7 @@ import {
 } from "./transitions";
 
 /**
- * The organization transitions (#623), against real D1: each moves the columns and writes its history row in one
+ * The organization transitions, against real D1: each moves the columns and writes its history row in one
  * batch, says whether it moved anything, and fires its hook once per transition that happened.
  */
 
@@ -38,6 +38,7 @@ const OPERATOR = { type: "control-plane", id: "operator-1" } as const;
 const RESTORE = `POST /organizations/admin/organizations/${ACME}/restore`;
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -176,7 +177,7 @@ describe("suspendOrganization", () => {
 });
 
 describe("checkSuspension", () => {
-  // What a suspension refuses, asked without suspending (#813): the preview calls this, and so does the write.
+  // What a suspension refuses, asked without suspending: the preview calls this, and so does the write.
   test("answers the terms a suspension would take, and writes nothing", async () => {
     const until = new Date(NOW.getTime() + DAY);
     const terms = await checkSuspension(deps(), { organizationId: ACME, until, restoreRoute: RESTORE });

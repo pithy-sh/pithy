@@ -90,6 +90,7 @@ const PARALLEL = defineRoles({
 });
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -552,6 +553,340 @@ describe("createOrganization, with no slug supplied", () => {
 
     expect(codeOf(failure)).toBe("organization/slug_taken");
     expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+});
+
+/**
+ * Founding with an idempotency key: a client that lost the answer sends the same request again and gets the
+ * organization the key founded, rather than a second one. The record's primary key decides every race.
+ */
+describe("createOrganization, with an idempotency key", () => {
+  const KEY = "founding-7f3a";
+
+  async function foundingRows(): Promise<{ founder_user_id: string; organization_id: string; slug: string | null }[]> {
+    const { results } = await env.DB.prepare(
+      "select founder_user_id, organization_id, slug from pithy_organization_foundings order by created_at",
+    ).all<{ founder_user_id: string; organization_id: string; slug: string | null }>();
+    return results;
+  }
+
+  test("the first use founds the organization and records what the key founded", async () => {
+    const created = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      founderUserId: FOUNDER,
+      idempotencyKey: KEY,
+    });
+
+    expect(created.replayed).toBe(false);
+    expect(await foundingRows()).toEqual([
+      { founder_user_id: FOUNDER, organization_id: created.organization.id, slug: null },
+    ]);
+  });
+
+  test("a repeat by the same founder answers the same organization, and writes nothing", async () => {
+    let built = 0;
+    const statements = {
+      onCreate: () => {
+        built += 1;
+        return [];
+      },
+      onJoin: () => {
+        built += 1;
+        return [];
+      },
+    };
+    const input = { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input, statements);
+    const again = await createOrganization(env.DB, NESTING, input, statements);
+
+    expect(again.replayed).toBe(true);
+    expect(again.organization).toEqual(first.organization);
+    expect(again.membership).toEqual(first.membership);
+    expect(built).toBe(2);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_memberships")).toBe(1);
+    expect(await count("pithy_organization_foundings")).toBe(1);
+  });
+
+  test("a repeat answers the organization as it is now, the founder's role included", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input);
+    await env.DB.prepare("update pithy_organization_memberships set role = 'owner' where id = ?")
+      .bind(first.membership.id)
+      .run();
+
+    const again = await createOrganization(env.DB, NESTING, input);
+
+    expect(again.membership.role).toBe("owner");
+  });
+
+  test("the same key with a different name or slug refuses with `idempotency_key_reused`, and founds nothing", async () => {
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY });
+
+    for (const changed of [{ name: "Acme Studios" }, { name: "Acme Games", slug: "acme-games" }]) {
+      const failure = await createOrganization(env.DB, NESTING, {
+        ...changed,
+        founderUserId: FOUNDER,
+        idempotencyKey: KEY,
+      }).catch((error: unknown) => error);
+      expect(codeOf(failure)).toBe("organization/idempotency_key_reused");
+      expect((failure as PithyError).payload.status).toBe(409);
+    }
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_memberships")).toBe(1);
+  });
+
+  test("the refusal's detail never quotes the name either request asked for", async () => {
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY });
+    const failure = await createOrganization(env.DB, NESTING, {
+      name: "Acme Studios",
+      founderUserId: FOUNDER,
+      idempotencyKey: KEY,
+    }).catch((error: unknown) => error);
+    const detail = (failure as PithyError).payload.detail ?? "";
+    expect(detail).not.toContain("Acme Games");
+    expect(detail).not.toContain("Acme Studios");
+  });
+
+  test("another founder sending the same key founds their own organization", async () => {
+    const theirs = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      founderUserId: STRANGER,
+      idempotencyKey: KEY,
+    });
+    const ours = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      founderUserId: FOUNDER,
+      idempotencyKey: KEY,
+    });
+
+    expect(ours.replayed).toBe(false);
+    expect(ours.organization.id).not.toBe(theirs.organization.id);
+    expect(ours.membership.userId).toBe(FOUNDER);
+    expect(await count("pithy_organization_organizations")).toBe(2);
+  });
+
+  test("two concurrent foundings with one key found one organization, and the loser answers it", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const both = await Promise.all([
+      createOrganization(env.DB, NESTING, input),
+      createOrganization(env.DB, NESTING, input),
+    ]);
+
+    expect(both.map((created) => created.replayed).sort()).toEqual([false, true]);
+    expect(both[0].organization.id).toBe(both[1].organization.id);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_memberships")).toBe(1);
+  });
+
+  for (const slug of [undefined, "acme-games"]) {
+    test(`a founding that loses the race inside its batch answers the winner's organization (slug ${slug ?? "derived"})`, async () => {
+      // The winner commits between the loser's read of the record and the loser's batch, so the loser's batch is
+      // the one the primary key or the slug refuses.
+      let winner: string | undefined;
+      const racing = wrapping(env.DB, async () => {
+        if (winner !== undefined) return;
+        const created = await createOrganization(env.DB, NESTING, {
+          name: "Acme Games",
+          slug,
+          founderUserId: FOUNDER,
+          idempotencyKey: KEY,
+        });
+        winner = created.organization.id;
+      });
+
+      const loser = await createOrganization(racing, NESTING, {
+        name: "Acme Games",
+        slug,
+        founderUserId: FOUNDER,
+        idempotencyKey: KEY,
+      });
+
+      expect(loser.replayed).toBe(true);
+      expect(loser.organization.id).toBe(winner);
+      expect(await count("pithy_organization_organizations")).toBe(1);
+      expect(await count("pithy_organization_memberships")).toBe(1);
+    });
+  }
+
+  test("a loser that asked for a different name is refused, not answered", async () => {
+    let raced = false;
+    const racing = wrapping(env.DB, async () => {
+      if (raced) return;
+      raced = true;
+      await createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY });
+    });
+
+    const failure = await createOrganization(racing, NESTING, {
+      name: "Acme Studios",
+      founderUserId: FOUNDER,
+      idempotencyKey: KEY,
+    }).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/idempotency_key_reused");
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("a founding without a key writes no record, and two of them found two organizations", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER };
+    const first = await createOrganization(env.DB, NESTING, input);
+    const second = await createOrganization(env.DB, NESTING, input);
+
+    expect([first.replayed, second.replayed]).toEqual([false, false]);
+    expect(await count("pithy_organization_organizations")).toBe(2);
+    expect(await count("pithy_organization_foundings")).toBe(0);
+  });
+
+  test("a derived slug that retried on a taken one is answered as committed when the founding is repeated", async () => {
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", slug: "acme-games", founderUserId: STRANGER });
+    const input = {
+      name: "Acme Games",
+      founderUserId: FOUNDER,
+      idempotencyKey: KEY,
+      newSuffix: (length: number) => "q".repeat(length),
+    };
+
+    const first = await createOrganization(env.DB, NESTING, input);
+    const again = await createOrganization(env.DB, NESTING, input);
+
+    expect(first.organization.slug).toBe("acme-games-qqqq");
+    expect(again.replayed).toBe(true);
+    expect(again.organization.slug).toBe("acme-games-qqqq");
+    expect(await count("pithy_organization_organizations")).toBe(2);
+  });
+
+  test("a commit that loses its connection answers the founding once, and a repeat answers it again", async () => {
+    let batches = 0;
+    const flaky = wrapping(env.DB, async (statements) => {
+      batches += 1;
+      if (batches > 1) return;
+      await env.DB.batch(statements);
+      throw new Error("D1_ERROR: Network connection lost");
+    });
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+
+    const first = await createOrganization(flaky, NESTING, input);
+    const again = await createOrganization(env.DB, NESTING, input);
+
+    expect(first.replayed).toBe(false);
+    expect(again.organization.id).toBe(first.organization.id);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("deleting the organization deletes its record, and the key founds a new organization afterwards", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input);
+    const spared = await createOrganization(env.DB, NESTING, { ...input, idempotencyKey: "another-key" });
+
+    await deleteOrganization(env.DB, first.organization.id);
+    expect(await foundingRows()).toEqual([
+      { founder_user_id: FOUNDER, organization_id: spared.organization.id, slug: null },
+    ]);
+
+    const again = await createOrganization(env.DB, NESTING, input);
+    expect(again.replayed).toBe(false);
+    expect(again.organization.id).not.toBe(first.organization.id);
+  });
+
+  test("a repeat after the founder left the organization is the same 404 as everywhere else", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input);
+    await env.DB.prepare("delete from pithy_organization_memberships where id = ?").bind(first.membership.id).run();
+
+    const failure = await createOrganization(env.DB, NESTING, input).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/not_found");
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("a repeat for a soft-deleted organization is the 404 every door answers, and the key stays spent until the purge", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input);
+    await env.DB.prepare("update pithy_organization_organizations set deleted_at = ?, purge_after = ? where id = ?")
+      .bind(Date.now(), Date.now() + 30 * 86_400_000, first.organization.id)
+      .run();
+
+    const failure = await createOrganization(env.DB, NESTING, input).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/not_found");
+    expect((failure as PithyError).payload.status).toBe(404);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_foundings")).toBe(1);
+  });
+
+  test("a repeat for a restored organization answers it again", async () => {
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, input);
+    await env.DB.prepare("update pithy_organization_organizations set deleted_at = ?, purge_after = ? where id = ?")
+      .bind(Date.now(), Date.now() + 30 * 86_400_000, first.organization.id)
+      .run();
+    await env.DB.prepare(
+      "update pithy_organization_organizations set deleted_at = null, purge_after = null where id = ?",
+    )
+      .bind(first.organization.id)
+      .run();
+
+    const again = await createOrganization(env.DB, NESTING, input);
+
+    expect(again.replayed).toBe(true);
+    expect(again.organization.id).toBe(first.organization.id);
+  });
+
+  test("a repeat for a restored organization whose suspension is still in force is the 403 its members get", async () => {
+    const now = new Date("2026-11-08T12:00:00.000Z");
+    const until = new Date(now.getTime() + 86_400_000);
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, { ...input, now });
+    await env.DB.prepare(
+      "update pithy_organization_organizations set suspended_at = ?, suspended_until = ?, deleted_at = ?, purge_after = ? where id = ?",
+    )
+      .bind(now.getTime(), until.getTime(), now.getTime(), now.getTime() + 30 * 86_400_000, first.organization.id)
+      .run();
+    await env.DB.prepare(
+      "update pithy_organization_organizations set deleted_at = null, purge_after = null where id = ?",
+    )
+      .bind(first.organization.id)
+      .run();
+
+    const failure = await createOrganization(env.DB, NESTING, { ...input, now }).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/organization_suspended");
+    expect((failure as PithyError).payload.status).toBe(403);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("a repeat for a suspended organization is the 403 its members get, and answers it once the suspension ends", async () => {
+    const now = new Date("2026-11-08T12:00:00.000Z");
+    const until = new Date(now.getTime() + 86_400_000);
+    const input = { name: "Acme Games", founderUserId: FOUNDER, idempotencyKey: KEY };
+    const first = await createOrganization(env.DB, NESTING, { ...input, now });
+    await env.DB.prepare(
+      "update pithy_organization_organizations set suspended_at = ?, suspended_until = ? where id = ?",
+    )
+      .bind(now.getTime(), until.getTime(), first.organization.id)
+      .run();
+
+    const failure = await createOrganization(env.DB, NESTING, { ...input, now }).catch((error: unknown) => error);
+    expect(codeOf(failure)).toBe("organization/organization_suspended");
+    expect((failure as PithyError).payload.status).toBe(403);
+    expect((failure as PithyError).payload.params).toEqual({ suspendedUntil: until.toISOString() });
+
+    const after = await createOrganization(env.DB, NESTING, { ...input, now: until });
+    expect(after.replayed).toBe(true);
+    expect(after.organization.id).toBe(first.organization.id);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("a key the column would not hold never reaches the database", async () => {
+    for (const idempotencyKey of ["", "k".repeat(201)]) {
+      const failure = await createOrganization(env.DB, NESTING, {
+        name: "Acme Games",
+        founderUserId: FOUNDER,
+        idempotencyKey,
+      }).catch((error: unknown) => error);
+      expect(codeOf(failure)).toBe("validation/invalid_input");
+    }
+    expect(await count("pithy_organization_organizations")).toBe(0);
   });
 });
 

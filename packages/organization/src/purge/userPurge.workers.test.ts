@@ -14,9 +14,9 @@ import { defineRoles } from "../roles/roles";
 import { ORGANIZATION_USER_PURGE_SUMMARY, organizationUserPurge } from "./contribution";
 
 /**
- * This capability's part of a person's purge and export (#814), over real D1 migrated by its own set: their
- * memberships, selections, ownership offers and the invitations addressed to them are exported — never an
- * invitation's token digest — and then erased, and nobody else's row is touched.
+ * This capability's part of a person's purge and export, over real D1 migrated by its own set: their
+ * memberships, selections, ownership offers, founding records and the invitations addressed to them are exported —
+ * never an invitation's token digest — and then erased, and nobody else's row is touched.
  */
 
 const ACME = "11111111-1111-4111-8111-111111111111";
@@ -30,6 +30,7 @@ const DAN_IN_GAMMA = "dddddddd-0000-4000-8000-000000000007";
 const T = 1_700_000_000_000;
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -133,6 +134,11 @@ beforeEach(async () => {
     T + 1e9,
     T,
   );
+  // Ada founded Acme with a key, and Dan founded Gamma with one: hers go with her, his stay.
+  const founding =
+    "insert into pithy_organization_foundings (founder_user_id, idempotency_key, organization_id, name, slug, created_at) values (?, ?, ?, ?, ?, ?)";
+  await run(founding, "ada", "ada@example.test-laptop-1", ACME, "ACME", null, T);
+  await run(founding, "dan", "dan-phone-1", GAMMA, "GAMMA", "gamma", T);
 });
 
 describe("the organization user purge", () => {
@@ -150,7 +156,7 @@ describe("the organization user purge", () => {
     expect(typeof declared[1]?.export).toBe("function");
   });
 
-  test("exports the person's memberships, selections, offers and invitations, and never a token digest", async () => {
+  test("exports the person's memberships, selections, offers, foundings and invitations, and never a token digest", async () => {
     const data = await exportOf(context("Ada@Example.test"));
     expect(data.memberships).toEqual([
       expect.objectContaining({ id: ADA_IN_ACME, organizationId: ACME, role: "owner", organizationName: "ACME" }),
@@ -159,18 +165,26 @@ describe("the organization user purge", () => {
     expect(data.selections).toEqual([expect.objectContaining({ sessionId: SESSION, organizationId: ACME })]);
     expect((data.ownershipOffers as unknown[]).length).toBe(2);
     expect(data.invitations).toEqual([expect.objectContaining({ email: "ada@example.test", organizationId: BETA })]);
+    expect(data.foundings).toEqual([
+      expect.objectContaining({ idempotencyKey: "ada@example.test-laptop-1", organizationId: ACME, name: "ACME" }),
+    ]);
     expect(credentialFields(data)).toEqual([]);
     expect(JSON.stringify(data)).not.toContain("digest-to");
   });
 
-  test("erases them, and leaves Bob's and Dan's memberships, Gamma's offer to Dan and the invitation Ada sent Dan", async () => {
+  test("erases them, and leaves Bob's and Dan's memberships, Gamma's offer to Dan, Dan's founding and the invitation Ada sent Dan", async () => {
     await purge.erase(context("ada@example.test"));
     expect(await exportOf(context("ada@example.test"))).toEqual({
       memberships: [],
       selections: [],
       ownershipOffers: [],
       invitations: [],
+      foundings: [],
     });
+    const foundings = await env.DB.prepare("select founder_user_id from pithy_organization_foundings").all<{
+      founder_user_id: string;
+    }>();
+    expect(foundings.results.map((row) => row.founder_user_id)).toEqual(["dan"]);
     expect(await count("pithy_organization_memberships")).toBe(2);
     expect(await count("pithy_organization_invitations")).toBe(1);
     expect(await count("pithy_organization_organizations")).toBe(3);

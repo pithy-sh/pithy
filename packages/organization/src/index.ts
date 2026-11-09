@@ -52,12 +52,14 @@ export {
 export { ORGANIZATION_SUSPENDED, organizationRefusal } from "./client/lifecycle";
 export { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 export { ActingOrganization } from "./data/actingOrganization";
+export { FoundingIdempotencyKey, OrganizationFounding } from "./data/founding";
 export { Invitation, InvitationStatus } from "./data/invitation";
 export { MAX_ROLE_LENGTH, Membership } from "./data/membership";
 export { MAX_ORGANIZATION_NAME_LENGTH, MAX_SLUG_LENGTH, Organization } from "./data/organization";
 export { OwnershipNomination } from "./data/ownershipNomination";
 export {
   ACTING_TABLE,
+  FOUNDINGS_TABLE,
   INVITATIONS_TABLE,
   LIFECYCLE_TABLE,
   MEMBERSHIPS_TABLE,

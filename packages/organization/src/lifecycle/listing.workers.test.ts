@@ -16,6 +16,7 @@ const NOW = new Date("2026-10-23T12:00:00.000Z");
 const MINUTE = 60_000;
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",

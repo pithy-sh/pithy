@@ -160,6 +160,26 @@ export class OrganizationSlugTakenError extends PithyError {
   }
 }
 
+/**
+ * A founding reused an idempotency key the same founder already founded an organization with, asking for a different
+ * name or slug. A repeat that asks for the same ones is answered with that organization instead.
+ */
+export class OrganizationIdempotencyKeyReusedError extends PithyError {
+  constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "organization/idempotency_key_reused",
+        status: 409,
+        message: args.message ?? "That key already founded an organization with a different name or short name.",
+        action: args.action ?? "Send a new key for a new organization, or repeat the original request.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
 /** No standing ownership offer this caller may accept. */
 export class OrganizationNominationInvalidError extends PithyError {
   constructor(args: OrganizationErrorArgs = {}, options?: { cause?: unknown }) {
@@ -236,7 +256,7 @@ export class OrganizationSeatLimitReachedError extends PithyError {
 }
 
 /**
- * The organization a request acts in is suspended (#623). `params.suspendedUntil` names when it ends by itself,
+ * The organization a request acts in is suspended. `params.suspendedUntil` names when it ends by itself,
  * when it does.
  *
  * **A 403, and only ever to a proved member.** Somebody who is not in the organization still gets

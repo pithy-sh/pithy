@@ -116,6 +116,7 @@ type Role = (typeof catalog.roles)[number];
 const OWNERSHIP: OwnershipRoles<Role> = { confers: "owner", demotesTo: "admin" };
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -1554,6 +1555,87 @@ describe("founding an account", () => {
     const founded = await call("POST", BASE, { as: "user_founder", body: { name: "Cai's Studio" }, app: composed });
     expect(founded.status).toBe(201);
     expect((await json<{ organization: { slug: string } }>(founded)).organization.slug).toBe("cais-studio");
+  });
+
+  test("a repeat with the same idempotency key answers 200 with the same organization, and founds nothing", async () => {
+    await seedUser("user_founder");
+    let built = 0;
+    const app = buildApp({
+      onCreate: () => {
+        built += 1;
+        return [];
+      },
+    });
+    const body = { name: "New Studio", idempotencyKey: "founding-1" };
+    const first = await call("POST", BASE, { as: "user_founder", body, app });
+    const again = await call("POST", BASE, { as: "user_founder", body, app });
+
+    expect([first.status, again.status]).toEqual([201, 200]);
+    const founded = await json<{ organization: { id: string; slug: string; role: string } }>(first);
+    expect(await json<{ organization: unknown }>(again)).toEqual(founded);
+    expect(built).toBe(1);
+    expect(actionsRecorded()).toEqual(["organization/created"]);
+    const held = await db().selectFrom(MEMBERSHIPS_TABLE).select("id").where("userId", "=", "user_founder").execute();
+    expect(held).toHaveLength(1);
+    expect(
+      await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("name", "=", "New Studio").execute(),
+    ).toHaveLength(1);
+  });
+
+  test("two concurrent foundings with one key found one organization, and the loser answers 200", async () => {
+    await seedUser("user_founder");
+    const body = { name: "New Studio", idempotencyKey: "founding-1" };
+    const both = await Promise.all([
+      call("POST", BASE, { as: "user_founder", body }),
+      call("POST", BASE, { as: "user_founder", body }),
+    ]);
+
+    expect(both.map((response) => response.status).sort()).toEqual([200, 201]);
+    const ids = await Promise.all(
+      both.map(async (response) => (await json<{ organization: { id: string } }>(response)).organization.id),
+    );
+    expect(ids[0]).toBe(ids[1]);
+    expect(actionsRecorded()).toEqual(["organization/created"]);
+  });
+
+  test("the same key with a different name answers 409 `idempotency_key_reused`, and founds nothing", async () => {
+    await seedUser("user_founder");
+    await call("POST", BASE, { as: "user_founder", body: { name: "New Studio", idempotencyKey: "founding-1" } });
+    const reused = await call("POST", BASE, {
+      as: "user_founder",
+      body: { name: "Other Studio", idempotencyKey: "founding-1" },
+    });
+
+    expect(reused.status).toBe(409);
+    expect((await json<{ error: { code: string } }>(reused)).error.code).toBe("organization/idempotency_key_reused");
+    expect(
+      await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("name", "=", "Other Studio").execute(),
+    ).toEqual([]);
+    expect(actionsRecorded()).toEqual(["organization/created"]);
+  });
+
+  test("another person sending the same key founds their own organization", async () => {
+    await seedUser("user_founder");
+    await seedUser("user_second");
+    const body = { name: "New Studio", idempotencyKey: "founding-1" };
+    const first = await call("POST", BASE, { as: "user_founder", body });
+    const second = await call("POST", BASE, { as: "user_second", body });
+
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect((await json<{ organization: { id: string } }>(second)).organization.id).not.toBe(
+      (await json<{ organization: { id: string } }>(first)).organization.id,
+    );
+  });
+
+  test("a key the field would not hold is refused before anything is written", async () => {
+    await seedUser("user_founder");
+    for (const idempotencyKey of ["", "k".repeat(201)]) {
+      const refused = await call("POST", BASE, { as: "user_founder", body: { name: "New Studio", idempotencyKey } });
+      expect(refused.status).toBe(400);
+    }
+    expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("name", "=", "New Studio").execute()).toEqual(
+      [],
+    );
   });
 
   test("with self-service off the route refuses everybody, including an administrator", async () => {

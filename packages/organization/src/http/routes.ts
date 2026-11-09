@@ -1221,14 +1221,18 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
      * It does **not** move the acting selection. Creating a second account from a settings pane must not
      * silently move somebody out of the one they were working in; the client chooses the new account with
      * `POST {base}/acting` when that is what the person meant.
+     *
+     * A repeat carrying an `idempotencyKey` that already founded an organization answers 200 with it, and records
+     * nothing: the founding was audited once, when it happened.
      */
     app.post(
       base,
       describeRoute({
         summary: "Found an organization.",
-        description: "Refused for every caller while `allowSelfService` is off. Does not move the acting selection.",
+        description:
+          "Refused for every caller while `allowSelfService` is off. Does not move the acting selection. A repeat with the same `idempotencyKey` answers 200 with the organization the key founded.",
         verification: signedIn,
-        responses: { 201: OrganizationResponse },
+        responses: { 200: OrganizationResponse, 201: OrganizationResponse },
       }),
       csrf,
       requireAuth<Role>(),
@@ -1250,11 +1254,16 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             name: body.name,
             slug: body.slug,
             founderUserId: who.userId,
+            idempotencyKey: body.idempotencyKey,
             now: clock(),
             newId: ids,
           },
           { onCreate: options.onCreate, onJoin: options.onJoin },
         );
+        const answer = {
+          organization: organizationView(created.organization, created.membership.role, base),
+        } satisfies OrganizationResponse;
+        if (created.replayed) return c.json(answer, 200);
         await record(c, {
           action: OrganizationAuditActions.created,
           actor: { organizationId: created.organization.id, userId: who.userId },
@@ -1272,12 +1281,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             subjectUserId: who.userId,
           },
         });
-        return c.json(
-          {
-            organization: organizationView(created.organization, created.membership.role, base),
-          } satisfies OrganizationResponse,
-          201,
-        );
+        return c.json(answer, 201);
       },
     );
 

@@ -57,7 +57,7 @@ import {
 } from "./scopes";
 
 /**
- * The organization lifecycle (#623), over real D1, through a real Hono app with the real error codec — the four
+ * The organization lifecycle, over real D1, through a real Hono app with the real error codec — the four
  * control-plane routes, and what a suspension or deletion means at every door a member uses.
  *
  * The cast: Acme holds Ada (owner, also a member of Beta), Bob (admin, Acme only) and Cai (member, Acme only). So
@@ -106,6 +106,7 @@ type Role = (typeof catalog.roles)[number];
 const OWNERSHIP: OwnershipRoles<Role> = { confers: "owner", demotesTo: "admin" };
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -953,7 +954,7 @@ describe("the member cascade's wiring from the composed auth", () => {
   });
 });
 
-describe("previewing a member cascade (#813)", () => {
+describe("previewing a member cascade", () => {
   const SUSPEND_PREVIEW = `${ADMIN}/${ACME}/suspend/preview`;
   const DELETE_PREVIEW = `${ADMIN}/${ACME}/delete/preview`;
 
