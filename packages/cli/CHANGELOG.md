@@ -1,5 +1,14 @@
 # @pithy-sh/cli
 
+## 0.24.2
+
+### Patch Changes
+
+- [#979](https://github.com/pithy-sh/pithy/pull/979) [`492ecbd`](https://github.com/pithy-sh/pithy/commit/492ecbdaa630c332b3722e9184e4b5f3e4ac092f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui add` writes `happy-dom` `^21.0.4` into the app it scaffolds, the release with the fix for an import alias that could run host code.
+- Updated dependencies [[`2017338`](https://github.com/pithy-sh/pithy/commit/2017338ad931cfb25abcf5934ca32a02d57d5ff5), [`492ecbd`](https://github.com/pithy-sh/pithy/commit/492ecbdaa630c332b3722e9184e4b5f3e4ac092f)]:
+  - @pithy-sh/core@0.20.1
+  - @pithy-sh/email@0.10.3
+
 ## 0.24.1
 
 ### Patch Changes

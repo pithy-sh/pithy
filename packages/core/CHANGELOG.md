@@ -1,5 +1,11 @@
 # @pithy-sh/core
 
+## 0.20.1
+
+### Patch Changes
+
+- [#977](https://github.com/pithy-sh/pithy/pull/977) [`2017338`](https://github.com/pithy-sh/pithy/commit/2017338ad931cfb25abcf5934ca32a02d57d5ff5) Thanks [@kingmesal](https://github.com/kingmesal)! - A globally installed pithy finds the encrypted fields a project's capabilities declare, so setup and provision mint and bind the field key.
+
 ## 0.20.0
 
 ### Minor Changes

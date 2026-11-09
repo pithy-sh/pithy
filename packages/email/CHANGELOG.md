@@ -1,5 +1,16 @@
 # @pithy-sh/email
 
+## 0.10.3
+
+### Patch Changes
+
+- [#979](https://github.com/pithy-sh/pithy/pull/979) [`492ecbd`](https://github.com/pithy-sh/pithy/commit/492ecbdaa630c332b3722e9184e4b5f3e4ac092f) Thanks [@kingmesal](https://github.com/kingmesal)! - Email's bounce handler and support's inbound parser run on postal-mime 4.0.8, and the bounce classifier matches a Message-ID within one line, so crafted mail no longer costs quadratic CPU.
+  
+  Security: A message with a header of many RFC 2047 encoded words made email's bounce handler and support's inbound parser spend quadratic CPU, and a bounce body of unclosed Message-ID lines did the same to the bounce classifier, so anyone who could send the app mail could stall the Worker that received it.
+- Updated dependencies [[`2017338`](https://github.com/pithy-sh/pithy/commit/2017338ad931cfb25abcf5934ca32a02d57d5ff5)]:
+  - @pithy-sh/core@0.20.1
+  - @pithy-sh/secrets@0.6.8
+
 ## 0.10.2
 
 ### Patch Changes

@@ -129,7 +129,7 @@
     },
     "packages/cli": {
       "name": "@pithy-sh/cli",
-      "version": "0.24.1",
+      "version": "0.24.2",
       "bin": {
         "pithy": "./dist/bin.js",
       },
@@ -249,7 +249,7 @@
     },
     "packages/core": {
       "name": "@pithy-sh/core",
-      "version": "0.20.0",
+      "version": "0.20.1",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -275,7 +275,7 @@
     },
     "packages/email": {
       "name": "@pithy-sh/email",
-      "version": "0.10.2",
+      "version": "0.10.3",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -309,7 +309,7 @@
     },
     "packages/i18n": {
       "name": "@pithy-sh/i18n",
-      "version": "0.20.0",
+      "version": "0.20.1",
       "devDependencies": {
         "@cloudflare/vitest-plugin": "^1.4.2",
         "@pithy-sh/auth": "workspace:*",
@@ -703,7 +703,7 @@
     },
     "packages/support": {
       "name": "@pithy-sh/support",
-      "version": "0.8.2",
+      "version": "0.8.3",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -955,7 +955,7 @@
     },
     "packages/vite": {
       "name": "@pithy-sh/vite",
-      "version": "0.20.0",
+      "version": "0.20.1",
       "devDependencies": {
         "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/consent": "workspace:*",
