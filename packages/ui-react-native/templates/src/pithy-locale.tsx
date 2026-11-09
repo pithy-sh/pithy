@@ -72,19 +72,25 @@ function ReloadNotice(): ReactNode {
   );
 }
 
-/** Mount the negotiated locale over the app. Until the catalog lands, screens render their own English. */
+/**
+ * Mount the negotiated locale over the app. Until the catalog lands, screens render their own English.
+ *
+ * The provider is there from the first render, holding `null` until the catalog lands, so the tree above the screens
+ * never changes shape. A provider that appeared only once the catalog arrived would remount every screen under it,
+ * and on the web, under `StrictMode`, that remount sends a deep link such as `/sign-in` back to `/`.
+ */
 export function PithyLocale({ children, messages }: PithyLocaleProps): ReactNode {
   const negotiated = useNegotiatedLocale(i18nProjection, { messages, environment });
   const choice = useMemo(
     () => ({ locale: negotiated.locale, choose: negotiated.choose }),
     [negotiated.locale, negotiated.choose],
   );
-  const body = (
-    <LocaleChoiceContext value={choice}>
-      {negotiated.reloadRequired ? <ReloadNotice /> : null}
-      {children}
-    </LocaleChoiceContext>
+  return (
+    <TranslatorProvider value={negotiated.source}>
+      <LocaleChoiceContext value={choice}>
+        {negotiated.reloadRequired ? <ReloadNotice /> : null}
+        {children}
+      </LocaleChoiceContext>
+    </TranslatorProvider>
   );
-  if (negotiated.source === null) return body;
-  return <TranslatorProvider value={negotiated.source}>{body}</TranslatorProvider>;
 }

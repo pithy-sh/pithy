@@ -37,7 +37,7 @@
     "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts",
     "typecheck": "bun check -p tsconfig.json && bun check -p tsconfig.templates.json && bun check -p tsconfig.native.json",
     "test": "vitest run",
-    "test:node": "vitest run --project=node --project=native --project=native-bare-home",
+    "test:node": "vitest run --project=node --project=native --project=native-bare-home --project=web-router",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },

@@ -191,7 +191,7 @@ The screen sets are decided as for `react`, against the Worker the app calls, wi
 ```
 $ pithy ui add react-native --worker api --no-auth --no-payments --ios-rail none
 Scaffolded a react-native app into apps/app. It calls api. Bare template.
-18 files created.
+19 files created.
 Rails: iOS none, Android none, web none.
 apps/app/src/pithy-config.generated.ts holds api's config. Set appScheme and universalLinkOrigin there before a store build.
 When api composes auth, its trustedOrigins needs "app://".
