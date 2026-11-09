@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hasEncryptedFields } from "@pithy-sh/core/src/privacy/encrypted";
 import { fieldKeysRegistryEntry, masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { readDevSecrets } from "../devSecrets/file";
 import type { DevSecretsTarget } from "../devSecrets/targets";
 import { removeTempDir } from "../test-utils/tempRepo";
@@ -154,5 +155,63 @@ describe("mintLocalSecrets — the field key", () => {
     expect(JSON.stringify(file.PITHY_FIELD_KEYS)).toContain("currentVersion");
 
     expect((await mintLocalSecrets({ projectDir: dir, targets, paths })).minted).toEqual([]);
+  });
+});
+
+/**
+ * A library capability declaring an encrypted table, as a project's own package writes it. It is loaded through the
+ * project's copy of core, so the CLI's copy never saw it marked.
+ */
+const LEDGER = `
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { encrypted, encryptedTable, hasEncryptedFields } from "@pithy-sh/core/src/privacy/encrypted";
+import { z } from "zod";
+
+export const projectHasEncryptedFields = hasEncryptedFields;
+
+const Account = encryptedTable(
+  z.object({ id: z.string().describe("id"), number: encrypted(z.string().describe("The number.")) }),
+  { name: "account", key: "id" },
+);
+
+export const ledger = defineCapability({
+  name: "ledger",
+  requiredBindings: [{ type: "d1", name: "DB" }],
+  databases: { ledger: { binding: "DB", tables: { accounts: Account } } },
+});
+`;
+
+describe("mintLocalSecrets — a project's copy of core", () => {
+  test("plans the field key for a Worker composing a capability whose table the project's core marked", async () => {
+    // Inside the package, so the config's imports resolve against the workspace and vitest transforms it.
+    const dir = await mkdtemp(join(import.meta.dirname, "..", "..", ".e2e-mint-copies-"));
+    try {
+      const config = await configDir();
+      await writeFile(join(dir, "pithy.config.ts"), `export default { name: "mint-copies" };\n`);
+      const workerDir = join(dir, "apps", "api");
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: "mint-copies-api" }));
+      await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: {} }));
+      await writeFile(join(workerDir, "ledger.ts"), LEDGER);
+      await writeFile(
+        join(workerDir, "pithy.config.ts"),
+        `import { ledger } from "./ledger";\nexport default { capabilities: [ledger] };\n`,
+      );
+
+      // Every module loaded from here on is a fresh instance: the project's core, beside the CLI's already bound.
+      vi.resetModules();
+      const report = await mintLocalSecrets({
+        projectDir: dir,
+        dryRun: true,
+        paths: { env: { PITHY_CONFIG_DIR: config } },
+      });
+
+      const project = await import(join(workerDir, "ledger.ts"));
+      expect(project.projectHasEncryptedFields).not.toBe(hasEncryptedFields);
+      expect(report.minted).toEqual(["PITHY_FIELD_KEYS"]);
+      expect(await readDevSecrets(report.path)).toEqual({});
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

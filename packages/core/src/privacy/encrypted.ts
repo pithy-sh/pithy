@@ -10,10 +10,10 @@ import { PRIVACY_META_KEY, rankPrivacyClasses } from "./classes";
 import { classifyPrivacy } from "./classify";
 
 /**
- * **A field says how it rests, beside what it is** (#390).
+ * **A field says how it rests, beside what it is.**
  *
- * #132 gave a field a privacy class: a claim about what the field **is**, which changes no stored column. This is the
- * other half of the sentence, the claim about how it is **stored**. `phi()` says a diagnosis is health data;
+ * A privacy class is a claim about what a field **is**, which changes no stored column. This is the other half of
+ * the sentence, the claim about how it is **stored**. `phi()` says a diagnosis is health data;
  * `encrypted()` says it rests in D1 as an AES-256-GCM envelope rather than as plaintext. Either may be marked alone,
  * and the two compose: the inventory reports both, so *which of your PHI fields are encrypted at rest?* is a
  * derivation, not a second list.
@@ -175,13 +175,35 @@ export interface EncryptedSpec {
 }
 
 /**
- * Every encrypted field's spec, by the definition its schema object shares with each clone. `.describe()` and
- * `.meta()` clone a schema onto the same definition, and a privacy marker over the field is a `.meta()`, so a
- * described, marked or re-described encrypted field is found here exactly as the original is.
+ * The key an encrypted field's definition carries its {@link EncryptedMark} under: the spec, and the definition it was
+ * written on. Global, so two copies of core agree.
  */
-const specs = new WeakMap<object, EncryptedSpec>();
+export const ENCRYPTED_SPEC = Symbol.for("pithy.encryptedSpec");
 
-/** A schema's definition object, the key {@link specs} is held under. */
+/** What a definition holds under {@link ENCRYPTED_SPEC}: the spec, and the definition it was written on. */
+interface EncryptedMark {
+  readonly def: object;
+  readonly spec: EncryptedSpec;
+}
+
+/**
+ * Write a field's spec on its definition, which the schema object shares with each clone. `.describe()` and `.meta()`
+ * clone a schema onto the same definition, and a privacy marker over the field is a `.meta()`, so a described, marked
+ * or re-described encrypted field is found exactly as the original is. A refinement copies the definition's
+ * properties onto a new one, so the mark names the definition it belongs to, and a copied mark is not read.
+ */
+function markEncrypted(def: object, spec: EncryptedSpec): void {
+  const mark: EncryptedMark = { def, spec };
+  Object.defineProperty(def, ENCRYPTED_SPEC, { value: mark, configurable: true });
+}
+
+/** The spec written on exactly this definition, or `undefined`. */
+function readEncrypted(def: object): EncryptedSpec | undefined {
+  const mark = (def as { [ENCRYPTED_SPEC]?: Partial<EncryptedMark> })[ENCRYPTED_SPEC];
+  return typeof mark === "object" && mark !== null && mark.def === def ? mark.spec : undefined;
+}
+
+/** A schema's definition object, where {@link ENCRYPTED_SPEC} is written. */
 function defOf(schema: z.ZodType): { type: string; innerType?: z.ZodType } & Record<string, unknown> {
   return schema._zod.def as unknown as { type: string; innerType?: z.ZodType } & Record<string, unknown>;
 }
@@ -202,7 +224,7 @@ export function unwrapPresence(schema: z.ZodType): { node: z.ZodType; absent: bo
 
 /** The spec of an encrypted field, read through its presence wrappers, or `undefined` for any other schema. */
 export function encryptedSpecOf(schema: z.ZodType): EncryptedSpec | undefined {
-  return specs.get(unwrapPresence(schema).node._zod.def);
+  return readEncrypted(unwrapPresence(schema).node._zod.def);
 }
 
 /**
@@ -248,7 +270,7 @@ export function encrypted<I extends z.ZodType, const N extends BlindIndexNormali
   if (classes.length === 1) meta[PRIVACY_META_KEY] = classes[0];
   else if (classes.length > 1) meta[PRIVACY_META_KEY] = classes;
   const field = sqliteJson(EncryptedEnvelope).meta(meta);
-  specs.set(field._zod.def, { inner: schema, index });
+  markEncrypted(field._zod.def, { inner: schema, index });
   return field as unknown as Encrypted<I, N>;
 }
 

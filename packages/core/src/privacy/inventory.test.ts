@@ -150,6 +150,11 @@ describe("privacyInventory references", () => {
       expect(sameAs?.startsWith("value.")).toBe(true);
       expect(listed.some((path) => path === sameAs || path.startsWith(`${sameAs}.`))).toBe(true);
     }
+    // A reference stands for paths it never wrote out, so it says nothing about encryption: never `false`.
+    expect(references.filter((field) => "encryptedAtRest" in field)).toEqual([]);
+    expect(fields.filter((field) => field.sameAs === undefined).every((field) => "encryptedAtRest" in field)).toBe(
+      true,
+    );
   });
 });
 

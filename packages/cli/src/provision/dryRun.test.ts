@@ -11,6 +11,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
+import { fieldKeysSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -302,6 +303,83 @@ describe("planProvision", () => {
     expect(calls).toContain(`exists ${scope.secretEntry("STRIPE_SECRET_KEY", "global")}`);
     expect(writes).toEqual([]);
     expect(await snapshotTree(dir)).toEqual(before);
+  });
+});
+
+/**
+ * **A Worker's field key is bound from the project's copy of core.** The CLI reads the project's capabilities with its
+ * own copy, so the encrypted field a project's capability declares has to be found across the two.
+ */
+describe("planProvision and a project's copy of core", () => {
+  test("binds the field key to a Worker composing a capability whose encrypted table the project's core marked", async () => {
+    vi.resetModules();
+    const project = {
+      capability: await import("@pithy-sh/core/src/capability/capability"),
+      encrypted: await import("@pithy-sh/core/src/privacy/encrypted"),
+    };
+    expect(project.capability.defineCapability).not.toBe(defineCapability);
+    const Account = project.encrypted.encryptedTable(
+      z.object({
+        id: z.string().describe("id"),
+        number: project.encrypted.encrypted(z.string().describe("The number.")),
+      }),
+      { name: "account", key: "id" },
+    );
+    const ledger = project.capability.defineCapability({
+      name: "ledger",
+      requiredBindings: [{ type: "d1", name: "DB" }],
+      databases: { ledger: { binding: "DB", tables: { accounts: Account } } },
+    });
+    // The manager rotates the field key, so a project holding one composes `secrets`.
+    const capabilities = [app, ledger, secrets({ registry: {} })];
+    workers[0] = { name: "replay-board", dir: workerDir, capabilities };
+    const fieldKeys = fieldKeysSecretName("replay", "staging");
+    const master = scope.secretEntry(MASTER_KEY_BINDING, "environment");
+    const store: SecretsStore = {
+      storeId: "store-1",
+      exists: async (name) => name === fieldKeys || name === master,
+      put: async () => {},
+      create: async () => "created",
+      remove: async () => true,
+    };
+    const { provisioners } = account({});
+
+    const { plan: planned } = await planProvision({
+      projectDir: dir,
+      project: "replay",
+      env: "staging",
+      account: null,
+      provisioners,
+      store,
+      seed: false,
+      run: (seams) =>
+        provisionEnvironment({
+          projectDir: seams.projectDir,
+          scope,
+          capabilities,
+          provisioners: seams.provisioners,
+          resolveWorkers: async () => seams.workers(workers),
+          secretBindings: async (workerCapabilities) =>
+            secretsStoreBindings({
+              registry: workerSecretRegistry(workerCapabilities) ?? {},
+              scope,
+              storeId: (seams.store as SecretsStore).storeId,
+              exists: (name) => (seams.store as SecretsStore).exists(name),
+            }),
+          seedData: false,
+          administersItself: false,
+          migrate: seams.migrate,
+          seed: seams.seed,
+          audit: seams.audit,
+        }),
+    });
+
+    expect(Plan.parse(planned).secrets).toContainEqual({
+      name: "PITHY_FIELD_KEYS",
+      env: "staging",
+      action: "bind",
+      where: fieldKeys,
+    });
   });
 });
 

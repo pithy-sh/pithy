@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
-import { isSqliteJson, SQLiteBoolean, SQLiteDate } from "../data/codecs";
+import { isSqliteBoolean, isSqliteDate, isSqliteJson } from "../data/codecs";
 import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacyClass } from "./classes";
 
 /**
- * **Reading a privacy marker off a schema, and every marker off a schema tree** (#132).
+ * **Reading a privacy marker off a schema, and every marker off a schema tree.**
  *
  * The marker is `meta({ privacy })` on the schema a marker was handed. {@link privacyOf} reads it through the
  * wrappers that are the same field — `pii(z.string()).optional()` is `pii` — and {@link classifyPrivacy} names
@@ -15,7 +15,7 @@ import { ownPrivacyClasses, privacyClasses, rankPrivacyClasses, strongestPrivacy
  * ## The redaction contract
  *
  * `redact`, `classifyPrivacy` and `Redacted<T>` all read the one record this module builds for a position, so they
- * agree on every one. The contract they keep is stated on #132 and in `docs/PRIVACY.md`:
+ * agree on every one. The contract they keep is stated here and in `docs/PRIVACY.md`:
  *
  * - **Walked exactly**: objects (strict, loose, catchall, and `pick`, `omit`, `partial`, `extend` of one), arrays,
  *   tuples and their rest, records, `Map` and `Set`; the wrappers `optional`, `nullable`, `default`, `catch` with a
@@ -94,9 +94,10 @@ export interface PrivacyField {
    */
   sameAs?: string;
   /**
-   * Whether the field rests encrypted in its store (#390): `true` for a field marked `encrypted()`, `false` for one
-   * that is not. Set by the inventory, on the observed side of #132's attestation split, and **absent where the core
-   * cannot say** — an assumed class, a reference, or a core older than #390 — never defaulted to `false`.
+   * Whether the field rests encrypted in its store: `true` for a field marked `encrypted()`, `false` for one that is
+   * not. Set by the inventory from the schemas the Worker runs, never from what a deploy attested, and **absent where
+   * the core cannot say** — an assumed class, a reference, or a core that does not report it — never defaulted to
+   * `false`.
    */
   encryptedAtRest?: boolean;
   /** Set on an encrypted field whose storage is not D1: nothing can prove it re-sealed, so it blocks retirement. */
@@ -612,7 +613,7 @@ export function privacyOf(schema: z.ZodType): string | null {
 function kitCodecOutput(schema: z.ZodType): z.ZodType | undefined {
   const def = defOf(schema);
   if (def.type !== "pipe") return undefined;
-  const kit = def === defOf(SQLiteDate) || def === defOf(SQLiteBoolean) || isSqliteJson(schema);
+  const kit = isSqliteDate(schema) || isSqliteBoolean(schema) || isSqliteJson(schema);
   return kit ? def.out : undefined;
 }
 

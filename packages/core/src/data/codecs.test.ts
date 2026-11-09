@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { fromZodError, PithyError } from "../error/pithyError";
 import {
   IanaTimezone,
+  isSqliteBoolean,
+  isSqliteDate,
+  isSqliteJson,
   isValidIanaTimezone,
   JsonDate,
   normalizeIanaTimezone,
@@ -264,5 +267,46 @@ describe("a codec reports, it does not throw", () => {
     const codec = sqliteJson(z.object({ a: z.number() }));
     expect(codec.parse(codec.encode({ a: 7 }))).toEqual({ a: 7 });
     expect(codec.encode(codec.parse('{"a":7}'))).toBe('{"a":7}');
+  });
+});
+
+describe("isSqliteJson", () => {
+  test("is the kit's JSON column and each clone of it, and no other codec of the same shape", () => {
+    const Column = sqliteJson(z.object({ a: z.string() }));
+    expect(isSqliteJson(Column)).toBe(true);
+    expect(isSqliteJson(Column.describe("again").meta({ x: 1 }))).toBe(true);
+    const lookalike = z.codec(z.union([z.string(), z.object({ a: z.string() })]), z.object({ a: z.string() }), {
+      decode: (value) => (typeof value === "string" ? JSON.parse(value) : value),
+      encode: (value) => JSON.stringify(value),
+    });
+    expect(isSqliteJson(lookalike)).toBe(false);
+    expect(isSqliteJson(z.string())).toBe(false);
+  });
+
+  test("a column another copy of core built is the kit's to this one", async () => {
+    vi.resetModules();
+    const other = await import("./codecs");
+    expect(other.sqliteJson).not.toBe(sqliteJson);
+    expect(isSqliteJson(other.sqliteJson(z.object({ a: z.string() })))).toBe(true);
+  });
+});
+
+describe("isSqliteDate and isSqliteBoolean", () => {
+  test("are each kit codec and its clones, and nothing else: JsonDate shares a decode body and is not a column codec", () => {
+    expect(isSqliteDate(SQLiteDate)).toBe(true);
+    expect(isSqliteDate(SQLiteDate.describe("When.").meta({ x: 1 }))).toBe(true);
+    expect(isSqliteDate(JsonDate)).toBe(false);
+    expect(isSqliteDate(SQLiteBoolean)).toBe(false);
+    expect(isSqliteBoolean(SQLiteBoolean.describe("Whether."))).toBe(true);
+    expect(isSqliteBoolean(SQLiteDate)).toBe(false);
+    expect(isSqliteBoolean(sqliteJson(z.boolean()))).toBe(false);
+  });
+
+  test("another copy of core's codecs are the kit's to this one", async () => {
+    vi.resetModules();
+    const other = await import("./codecs");
+    expect(other.SQLiteDate).not.toBe(SQLiteDate);
+    expect(isSqliteDate(other.SQLiteDate)).toBe(true);
+    expect(isSqliteBoolean(other.SQLiteBoolean)).toBe(true);
   });
 });

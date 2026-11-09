@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "../data/codecs";
 import { definePrivacyClass, pci, phi, pii, secret } from "./classes";
-import { classifyPrivacy, hasPrivacy, privacyOf } from "./classify";
+import { classifyPrivacy, hasPrivacy, privacyOf, walkPrivacy } from "./classify";
 import { redact } from "./redact";
 
 const Address = z
@@ -257,5 +257,52 @@ describe("each call keeps nothing for the next", () => {
     marker = definePrivacyClass({ name: "genome_cache" });
     expect(classifyPrivacy(Row)).toContainEqual({ path: "g", class: "genome_cache" });
     expect(hasPrivacy(Row, "genome_cache")).toBe(true);
+  });
+});
+
+/** A table whose kit codecs sit in unions beside an object, built from whichever copy of core is handed in. */
+function codecTable(
+  codecs: { SQLiteDate: z.ZodType; SQLiteBoolean: z.ZodType },
+  classes: { pii: typeof pii; pci: typeof pci; secret: typeof secret },
+) {
+  return z.object({
+    u: z.union([classes.pii(codecs.SQLiteDate), z.object({ email: z.string(), card: classes.pci(z.string()) })]),
+    v: z.union([classes.secret(codecs.SQLiteBoolean), z.array(z.object({ phone: z.string() }))]),
+  });
+}
+
+/** Every line a scan reports, covered and unmarked. */
+function scanned(schema: z.ZodType): string[] {
+  const lines: string[] = [];
+  walkPrivacy(schema, {
+    marked: (path, className) => void lines.push(`covered ${path} ${className}`),
+    unmarkedKey: (path) => void lines.push(`unmarked ${path}`),
+  });
+  return lines;
+}
+
+const CODEC_SCAN = [
+  "covered u pii",
+  "unmarked u.email",
+  "covered u.card pci",
+  "covered v secret",
+  "unmarked v[].phone",
+];
+
+describe("the kit's date and boolean codecs", () => {
+  test("are read as a value of their own, so a union beside an object still reaches the object's fields", () => {
+    expect(scanned(codecTable({ SQLiteDate, SQLiteBoolean }, { pii, pci, secret }))).toEqual(CODEC_SCAN);
+  });
+
+  test("another copy of core's codecs are the kit's to this one", async () => {
+    vi.resetModules();
+    const other = { codecs: await import("../data/codecs"), classes: await import("./classes") };
+    expect(other.codecs.SQLiteDate).not.toBe(SQLiteDate);
+    const table = codecTable(other.codecs, other.classes);
+
+    expect(scanned(table)).toEqual(CODEC_SCAN);
+    expect(classifyPrivacy(table)).toEqual(
+      classifyPrivacy(codecTable({ SQLiteDate, SQLiteBoolean }, { pii, pci, secret })),
+    );
   });
 });

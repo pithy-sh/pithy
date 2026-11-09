@@ -23,11 +23,10 @@ import { z } from "zod";
  * `{ success: false }`, and `parse` still throws — a `ZodError`, which
  * `fromZodError` maps to `validation/invalid_input` like every other failed parse.
  *
- * `JsonDate` and `SQLiteDate` threw an `InternalError` from inside `decode`, so a
- * malformed timestamp from a customer's Worker was a 500 rather than a rejected
- * field, on every pane that read a date (#358). The rule lives here rather than at
- * the readers because a `try`/`catch` at a call site is the same defect one frame
- * further out, and the next codec would not inherit it.
+ * A throw from inside `decode` would make a malformed timestamp from a customer's
+ * Worker a 500 rather than a rejected field, on every pane that reads a date. The
+ * rule lives here rather than at the readers because a `try`/`catch` at a call site
+ * is the same defect one frame further out, and the next codec would not inherit it.
  *
  * The offending value rides along as the issue's `input`, which is where Zod puts
  * it and which {@link fromZodError} drops — it keeps `path`, `message` and `code`
@@ -48,9 +47,19 @@ function isTruthy(value: unknown): boolean {
   return TRUTHY.includes(value);
 }
 
+/** The key SQLiteBoolean's decode carries. Global, so two copies of core agree on which codec is the kit's. */
+export const SQLITE_BOOLEAN_DECODE = Symbol.for("pithy.sqliteBooleanDecode");
+
+/** SQLiteBoolean's decode, carrying {@link SQLITE_BOOLEAN_DECODE}, so `isSqliteBoolean` can tell it by its decode. */
+function decodeBoolean(input: 0 | 1 | boolean | string): boolean {
+  return typeof input === "boolean" ? input : isTruthy(input);
+}
+
+Object.defineProperty(decodeBoolean, SQLITE_BOOLEAN_DECODE, { value: true });
+
 /** SQLiteBoolean: boolean ↔ 0|1. Decode is lenient (number/boolean/string). */
 export const SQLiteBoolean = z.codec(z.union([z.literal(0), z.literal(1), z.boolean(), z.string()]), z.boolean(), {
-  decode: (input: 0 | 1 | boolean | string): boolean => (typeof input === "boolean" ? input : isTruthy(input)),
+  decode: decodeBoolean,
   encode: (value: boolean): 0 | 1 => (value ? 1 : 0),
 });
 
@@ -72,9 +81,22 @@ function toDate(input: number | string | Date, payload: Payload<number | string 
   return parsed;
 }
 
+/** The key SQLiteDate's decode carries. Global, so two copies of core agree on which codec is the kit's. */
+export const SQLITE_DATE_DECODE = Symbol.for("pithy.sqliteDateDecode");
+
+/**
+ * SQLiteDate's decode, carrying {@link SQLITE_DATE_DECODE}, so `isSqliteDate` can tell it by its decode. Its own
+ * function rather than {@link toDate}, which `JsonDate` shares and which is not a column codec.
+ */
+function decodeSqliteDate(input: number | string | Date, payload: Payload<number | string | Date>): Date {
+  return toDate(input, payload);
+}
+
+Object.defineProperty(decodeSqliteDate, SQLITE_DATE_DECODE, { value: true });
+
 /** SQLiteDate: Date ↔ ms-epoch number. Decode accepts number/string/Date. */
 export const SQLiteDate = z.codec(z.union([z.number(), z.string(), z.date()]), z.date(), {
-  decode: toDate,
+  decode: decodeSqliteDate,
   encode: (value: Date): number => value.getTime(),
 });
 
@@ -84,12 +106,15 @@ export const JsonDate = z.codec(z.union([z.string(), z.number(), z.date()]), z.d
   encode: (value: Date): string => value.toISOString(),
 });
 
+/** The key sqliteJson's decode carries. Global, so two copies of core agree on which codec is the kit's. */
+export const SQLITE_JSON_DECODE = Symbol.for("pithy.sqliteJsonDecode");
+
 /**
  * sqliteJson's decode: a JSON string is parsed, an already-parsed value passes through. One function for every
- * column, so `isSqliteJson` can tell the kit's codec from any other by its decode.
+ * column, carrying {@link SQLITE_JSON_DECODE}, so `isSqliteJson` can tell the kit's codec from any other by its decode.
  *
- * **`JSON.parse` throws**, and it was reachable: a column holding text an older writer put there, or a payload a
- * customer's Worker returned, need not be a JSON document. That becomes an issue (#358).
+ * **`JSON.parse` throws**, and it is reachable: a column can hold text that is not a JSON document, and so can a
+ * payload a customer's Worker returns. That becomes an issue.
  */
 function decodeJson(value: unknown, payload: Payload<unknown>): unknown {
   if (typeof value !== "string") return value;
@@ -101,9 +126,11 @@ function decodeJson(value: unknown, payload: Payload<unknown>): unknown {
   }
 }
 
+Object.defineProperty(decodeJson, SQLITE_JSON_DECODE, { value: true });
+
 /**
  * sqliteJson's encode. **`JSON.stringify` throws** on a `BigInt` and on a cycle, either of which a schema can
- * legitimately admit, so that becomes an issue too (#358).
+ * legitimately admit, so that becomes an issue too.
  */
 function encodeJson(value: unknown, payload: Payload<unknown>): string {
   // The offending value is deliberately not carried onto the issue: it is the thing JSON could not hold, so a
@@ -155,8 +182,27 @@ export type SqliteJsonSchema<S> = S extends { readonly [kitJsonColumn]: infer T 
  * decode. `redact` walks such a column's fields one by one, and treats every other codec as opaque.
  */
 export function isSqliteJson(schema: z.ZodType): boolean {
+  return decodeCarries(schema, SQLITE_JSON_DECODE);
+}
+
+/** Whether a schema is the kit's `SQLiteDate`, or a clone of it, read by its decode. */
+export function isSqliteDate(schema: z.ZodType): boolean {
+  return decodeCarries(schema, SQLITE_DATE_DECODE);
+}
+
+/** Whether a schema is the kit's `SQLiteBoolean`, or a clone of it, read by its decode. */
+export function isSqliteBoolean(schema: z.ZodType): boolean {
+  return decodeCarries(schema, SQLITE_BOOLEAN_DECODE);
+}
+
+/** Whether a schema is a codec whose decode carries `key`. */
+function decodeCarries(schema: z.ZodType, key: symbol): boolean {
   const def = schema._zod.def as { type: string; transform?: unknown };
-  return def.type === "pipe" && def.transform === decodeJson;
+  return (
+    def.type === "pipe" &&
+    typeof def.transform === "function" &&
+    (def.transform as unknown as Record<symbol, unknown>)[key] === true
+  );
 }
 
 export const MAX_TIMEZONE_LENGTH = 64;

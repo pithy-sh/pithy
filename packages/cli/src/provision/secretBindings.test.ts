@@ -10,9 +10,9 @@ import { media } from "@pithy-sh/media/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { fieldKeysSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { secretsStoreBindings, workerSecretRegistry } from "./secretBindings";
+import { holdsEncryptedField, secretsStoreBindings, workerSecretRegistry } from "./secretBindings";
 
 /** A project registry beside the master key the capability merges in for itself. */
 const registry: SecretRegistry = {
@@ -444,5 +444,32 @@ describe("workerSecretRegistry — the field key", () => {
     expect(bound).toEqual([
       { binding: "PITHY_FIELD_KEYS", store_id: "store-1", secret_name: fieldKeysSecretName("acme", "staging") },
     ]);
+  });
+});
+
+describe("holdsEncryptedField — a project's copy of core", () => {
+  test("a capability the project's core defines holds the encrypted field its table declares", async () => {
+    vi.resetModules();
+    const project = {
+      capability: await import("@pithy-sh/core/src/capability/capability"),
+      encrypted: await import("@pithy-sh/core/src/privacy/encrypted"),
+    };
+    expect(project.capability.defineCapability).not.toBe(defineCapability);
+    expect(project.encrypted.encrypted).not.toBe(encrypted);
+    const Account = project.encrypted.encryptedTable(
+      z.object({
+        id: z.string().describe("id"),
+        number: project.encrypted.encrypted(z.string().describe("The number.")),
+      }),
+      { name: "account", key: "id" },
+    );
+    const ledger = project.capability.defineCapability({
+      name: "ledger",
+      requiredBindings: [],
+      databases: { ledger: { binding: "DB", tables: { accounts: Account } } },
+    });
+
+    expect(holdsEncryptedField([ledger])).toBe(true);
+    expect(Object.keys(workerSecretRegistry([ledger]) ?? {})).toEqual(["PITHY_FIELD_KEYS"]);
   });
 });
