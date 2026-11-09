@@ -46,6 +46,7 @@ export const esErrors: MessageCatalog = {
   "auth/forbidden": "No tienes permiso para hacer esto.",
   "auth/provider_unavailable": "Este método de acceso no está disponible ahora. Prueba con otro.",
   "auth/session_not_fresh": "Has entrado, pero no hace poco. Vuelve a entrar y reinténtalo. No se ha cambiado nada.",
+  "auth/recent_sign_in_required": "Vuelve a iniciar sesión para continuar. No se ha cambiado nada.",
   // The reason an operator gave is English we did not write, so it stays the payload's `message` and is
   // not here: a translating client renders this sentence and the screen shows the reason beside it.
   "auth/account_suspended": "Tu cuenta está suspendida.",

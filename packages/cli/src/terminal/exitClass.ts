@@ -245,6 +245,7 @@ export const EXIT_CLASS_BY_CODE = {
   "auth/account_deleted": "person",
   "auth/account_suspended": "person",
   "auth/handoff_invalid": "person",
+  "auth/recent_sign_in_required": "person",
   "auth/session_not_fresh": "person",
   "core/person_required": "person",
   "secrets/rotation_unrecorded": "person",
