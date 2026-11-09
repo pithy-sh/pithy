@@ -59,7 +59,7 @@ It ships `requireOrganization()` and `requirePower()`. It has no view of your ta
 
 Scoping a read keeps another tenant's rows away from this caller. It says nothing about what happens to *your* rows when the account they belong to is deleted — and this capability cannot answer that for you, because it has no view of your schema.
 
-Without help it deletes its own five tables and stops. Yours stay, keyed to an organization that no longer exists. If what they hold is inert, that is untidy. If it is a credential, the act everybody believes revoked it did not.
+Without help it deletes its own six tables and stops. Yours stay, keyed to an organization that no longer exists. If what they hold is inert, that is untidy. If it is a credential, the act everybody believes revoked it did not.
 
 So hand it the statements:
 

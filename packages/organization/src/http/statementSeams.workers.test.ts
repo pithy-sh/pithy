@@ -70,6 +70,7 @@ type Role = (typeof catalog.roles)[number];
 
 const TABLES = [
   "adopter_rows",
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",

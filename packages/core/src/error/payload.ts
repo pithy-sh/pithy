@@ -1761,6 +1761,18 @@ const OrganizationSuspendedPublic = z
   })
   .describe("The organization is suspended (403).");
 
+const OrganizationIdempotencyKeyReusedPublic = z
+  .object({
+    code: z
+      .literal("organization/idempotency_key_reused")
+      .describe(
+        "A founding sent an idempotency key the same person already founded an organization with, and asked for a different name or slug. A repeat asking for the same ones is answered with the organization the key founded, so this is a client reusing a key for a second organization. Nothing was founded.",
+      ),
+    status: z.literal(409).describe("Conflict — the key is spent on another request."),
+    ...publicFields,
+  })
+  .describe("That idempotency key founded a different organization (409).");
+
 // --- @pithy-sh/artifacts: Git repositories, ownership, grants and short-lived tokens ---
 
 const ArtifactsNotFoundPublic = z
@@ -2164,6 +2176,7 @@ export const KitPublicErrorPayload = z
     OrganizationAlreadyMemberPublic,
     OrganizationSeatLimitReachedPublic,
     OrganizationSuspendedPublic,
+    OrganizationIdempotencyKeyReusedPublic,
     ArtifactsNotFoundPublic,
     ArtifactsForbiddenPublic,
     ArtifactsInvalidNamePublic,
@@ -2620,6 +2633,9 @@ const OrganizationSeatLimitReached = OrganizationSeatLimitReachedPublic.extend(i
 const OrganizationSuspended = OrganizationSuspendedPublic.extend(internalFields).describe(
   OrganizationSuspendedPublic.description ?? "",
 );
+const OrganizationIdempotencyKeyReused = OrganizationIdempotencyKeyReusedPublic.extend(internalFields).describe(
+  OrganizationIdempotencyKeyReusedPublic.description ?? "",
+);
 
 const ArtifactsNotFound = ArtifactsNotFoundPublic.extend(internalFields).describe(
   ArtifactsNotFoundPublic.description ?? "",
@@ -2805,6 +2821,7 @@ export const KitErrorPayload = z
     OrganizationAlreadyMember,
     OrganizationSeatLimitReached,
     OrganizationSuspended,
+    OrganizationIdempotencyKeyReused,
     ArtifactsNotFound,
     ArtifactsForbidden,
     ArtifactsInvalidName,

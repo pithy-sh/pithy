@@ -14,8 +14,8 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * **A `dist` that has silently lost its types passes every other gate in this repository.**
  *
  * The code compiles, the schemas parse, the tests pass, `pithy migrate` runs — and the shipped
- * declaration says `payloadRedactedAt: any` where the source says `SQLiteDate.nullish()`, in a `.d.ts`
- * 900 bytes shorter than the correct one (#523). Nothing here reads the declarations: every suite
+ * declaration can say `payloadRedactedAt: any` where the source says `SQLiteDate.nullish()`. Nothing else
+ * here reads the declarations: every suite
  * imports the modules and asserts about *values*, and a value carries no evidence of the type that was
  * written down beside it. The only remaining detector was an adopter's `tsc`.
  *
@@ -27,9 +27,7 @@ import { readSource, sourcePaths } from "./sourceFiles";
  *
  * `z.input` is the SQLite row shape a repository **writes**; `z.output` is the app shape it **reads
  * back**. Adopter code is typed against both, so a run that reads one of them certifies half a package.
- * It read only `z.input` until the output side was degraded on purpose — `emailJob`'s `sendAt` to `any`,
- * confirmed by a probe compile — and this gate exited 0. Every assertion below is therefore generated
- * once per {@link Side}, from that side's own walk of the schema: a codec's `in` for input and its `out`
+ * Every assertion below is generated once per {@link Side}, from that side's own walk of the schema: a codec's `in` for input and its `out`
  * for output, which is why the value a field refuses is usually a different value on each side (`sendAt`
  * takes a number from SQLite and hands back a `Date`).
  *
@@ -38,8 +36,7 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * The failure is **optionality, not constructibility**. Degraded to `any`, a field's `_zod` internals
  * are unreachable, so neither `z.input` nor `z.output` can compute the key as optional and it reads as
  * **required**. A shape that supplies every field satisfies the precise type *and* the degraded one — it
- * carries strictly more information than either needs. The adopter code that broke, `devSeed.ts`, broke
- * because it **omits** that field.
+ * carries strictly more information than either needs. Adopter code breaks where it **omits** that field.
  *
  * So each shape here is every key that side requires and **not one optional key more**. Written the
  * natural way — a realistic-looking full row — this gate would be green while an adopter is broken, which
@@ -91,32 +88,30 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * ## What it does not cover
  *
  * - **Anything but table schemas.** Request schemas, response schemas, capability config, the `Capability`
- *   contract itself, every function signature in the kit: none of it is read here. The tables are where
- *   #523 was observed and they are one enumerable population; the same degradation in a route handler's
- *   declaration is invisible to this gate.
+ *   contract itself, every function signature in the kit: none of it is read here. The tables are one
+ *   enumerable population; the same degradation in a route handler's declaration is invisible to this gate.
  * - **Two fields' types, each on both of its sides:**
  *   `@pithy-sh/rating · pithyRatingRatings.state (input)`,
  *   `@pithy-sh/rating · pithyRatingRatings.state (output)`,
  *   `@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (input)` and
  *   `@pithy-sh/rating · pithyRatingOutcomePlayers.stateBefore (output)` — a rating's algorithm state, and
- *   the copy the outcome log (#818) keeps of it going into each game. Each is
+ *   the copy the outcome log keeps of it going into each game. Each is
  *   `sqliteJson(z.unknown())`, so both sides are `unknown` and there is no value TypeScript would refuse —
  *   degraded to `any` it reads exactly as it reads now, and the shape's key set is everything this gate
  *   can say about it. That is the whole list, and it is a list rather than a category on purpose: a reader
  *   has to be able to check the field they came here about, which "a field whose side admits everything"
- *   does not let them do. It measured 22 fields before `null` was added to {@link REJECTIONS} — every
- *   boolean column in the kit, because `SQLiteBoolean` decodes from `0 | 1 | boolean | string` and so admits
- *   all three scalars at once. {@link UNASSERTED} is the machine-readable copy and the tree is held to it
+ *   does not let them do. `null` is in {@link REJECTIONS} for every boolean column in the kit, because
+ *   `SQLiteBoolean` decodes from `0 | 1 | boolean | string` and so admits all three scalars at once. {@link UNASSERTED} is the machine-readable copy and the tree is held to it
  *   exactly, so an unnamed field cannot arrive quietly and a closed one cannot linger.
  * - **Narrowing, wherever no literal can be derived.** {@link SchemaKey.admits} is what assertion 4 writes
  *   its undirected line from, and the walk yields one only for a nullable, an enum, or a literal union.
  *   633 of the 1054 field-sides have none, so for those a declaration that *narrows* — `string` to a
  *   subtype, a union losing an arm the walk could not enumerate — is green. Assertions 1 to 3 cannot
  *   see it either: each says what a type must **refuse**, and a narrowed type still refuses everything
- *   it used to. Measured against the finished gate rather than reasoned about.
+ *   it used to.
  * - **Anything below the first level.** A field's type is read exactly one level deep, so a JSON
  *   column's inner object can lose a key or degrade a member to `any` and every assertion here still
- *   holds — which is the #523 defect itself, one level in. `sqliteJson(schema)` columns are where this
+ *   holds — the same degradation, one level in. `sqliteJson(schema)` columns are where this
  *   bites, and there are enough of them to matter.
  * - **The declarations themselves.** The generated program compiles with `skipLibCheck`, like an
  *   adopter's, so a `.d.ts` that is internally broken but still answers `z.input` and `z.output`
@@ -188,49 +183,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
 /**
  * The exact population, both directions, held the way {@link UNASSERTED} is.
  *
- * It was a floor of 95% and that is not a check. Dropping `pithyLeaderboardEntries` from the shipped
- * `leaderboardTables()` left 45 tables in 16 packages, which cleared a floor of 43 in 15 and exited 0
- * reporting `45 tables … 454 of 455` — a walk that lost a table, passing. Slack was there so that
- * deleting a table would not be a red build; the cost of that convenience is that the one failure the
- * number exists to catch fits inside it.
- *
- * So the count is exact and moves only when a person decides it should: adding or removing a table is a
- * one-line edit here, in the same commit, and any other movement is the walk having lost the tree.
- * Measured on 2026-09-09, and moved on 2026-09-13: `@pithy-sh/organization` is the seventeenth package
- * and brings five tables — organizations, memberships, invitations, ownership nominations, and the
- * per-session acting selection. Moved on 2026-10-18: `@pithy-sh/secrets` brings `pithy_secrets_tables`,
- * the registry of declared secret tables the at-rest rotation sweeps. Moved on 2026-10-18: `@pithy-sh/payments`
- * brings `pithy_payments_overrides`, `pithy_payments_meter_counters`, `pithy_payments_usage_reports` and
- * `pithy_payments_usage_runs` — the allowance overrides, the kit meters' per-period use, and the usage
- * reporting to the provider. Moved again the same day (#602): `@pithy-sh/secrets` brings
- * `pithy_secrets_reencryptions`, where a Worker records that the values it seals under a secret have moved
- * to its newest version — what a value rotation's retirement waits for. Moved on 2026-10-19 (#673):
- * `@pithy-sh/artifacts` is the eighteenth package and brings `pithy_artifacts_repos` and `pithy_artifacts_grants`
- * — who owns each Git repository, and each person's read or write grant on it. Moved on 2026-10-20 (#620):
- * `@pithy-sh/auth` brings `pithy_auth_user_lifecycle`, every suspension, deletion, restore and purge an
- * account went through, with who made it and why — the record that outlives the user row it names.
- * Moved on 2026-10-23 (#623): `@pithy-sh/organization` brings `pithy_organization_lifecycle`, every
- * suspension, deletion, restore and purge an organization went through, with who made it and why.
- * Moved on 2026-10-26 (#817): `@pithy-sh/leaderboard` brings `pithy_leaderboard_contributions`,
- * `pithy_leaderboard_moderations` and `pithy_leaderboard_stale_windows` — what each result put on each entry,
- * every operator act on an entry with its reason, and the windows waiting for a rank renumber.
- * Moved on 2026-10-26 (#818): `@pithy-sh/rating` brings `pithy_rating_outcomes`, `pithy_rating_outcome_players`
- * and `pithy_rating_adjustments` — every outcome rating applied, each participant's standing going in, and every
- * recalculation and reset the control plane made.
- * Moved on 2026-10-27 (#816): `@pithy-sh/support` brings `pithy_support_assignments`, every change of a
- * thread's assignee, with who had it before and who made the change.
- * Moved on 2026-10-27 (#832): `@pithy-sh/artifacts` brings `pithy_artifacts_tokens` and
- * `pithy_artifacts_revocations` — who each minted token was minted for, and the spent idempotency keys of
- * control-plane revocations.
- * Moved on 2026-10-27 (#820): `@pithy-sh/multiplayer` brings `pithy_multiplayer_sessions` and
- * `pithy_multiplayer_void_keys` — the index of sessions in flight, and every idempotency key spent voiding a result.
- * `@pithy-sh/support`'s `pithy_support_embeddings` holds the model that embedded each message into the semantic
- * index, which is what `pithy vector reprocess --index support-messages` re-embeds by.
- * `@pithy-sh/consent` brings `pithy_consent_records`,
- * `pithy_consent_documents` and `pithy_consent_merges` — every grant and withdrawal with its evidence, each signed
- * document kept once per hash, and every visitor merged into an account at sign-in.
+ * A floor is not a check: a walk that lost a table would clear it and exit 0. So the count is exact and
+ * moves only when a person decides it should: adding or removing a table is a one-line edit here, in the
+ * same commit, and any other movement is the walk having lost the tree.
  */
-export const CENSUS = { tables: 79, packages: 19 };
+export const CENSUS = { tables: 80, packages: 19 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.
@@ -239,8 +196,7 @@ export const CENSUS = { tables: 79, packages: 19 };
  * tree. Turbo does not apply `.gitignore` to an explicit glob, so every artifact a run of this repository
  * writes has to be excluded by hand in `turbo.jsonc` or it is hashed into those keys — and an artifact
  * this gate writes on every run would make four cache keys that can never hit twice.
- * `packages/cli/src/ci/turboInputs.test.ts` is the gate that says so, and it caught this exact directory
- * while it lived at `packages/cli/.dist-types`.
+ * `packages/cli/src/ci/turboInputs.test.ts` is the gate that says so.
  *
  * Named from the repository root rather than randomly, so a second run overwrites the first and a
  * failure names a path that is still there to open.
@@ -308,7 +264,7 @@ export interface SchemaKey {
    *
    * The other three assertions all say what a type must refuse, and a type that quietly *narrowed* still
    * refuses everything it used to. A dropped `ZodNullable` and an enum that lost an arm are both that,
-   * and both were invisible until this list existed.
+   * and nothing else catches either.
    */
   readonly admits: readonly string[];
   /** True when this side's kinds are known at all — the precondition for the `undefined` assertion. */
@@ -535,9 +491,8 @@ function refusalSentence(field: string, noun: string, side: Side): string {
  * nullable.
  *
  * **Every key, not only the required ones.** An optional key is absent from the shape by construction —
- * that is the point of a minimal shape — so before its value line existed, an optional field's type
- * could degrade to `any` with nothing to say so. It is the same degradation as #523, in the half of the
- * schema the shape deliberately cannot reach.
+ * that is the point of a minimal shape — so without its value line an optional field's type could degrade
+ * to `any` with nothing to say so: the same degradation, in the half of the schema the shape cannot reach.
  */
 export function schemaKeys(schema: ZodSchema, side: Side): SchemaKey[] {
   const keys: SchemaKey[] = [];
@@ -654,10 +609,8 @@ export function auditCoverage(tables: readonly ShippedTable[]): void {
 /**
  * Hold the walk to {@link CENSUS} exactly, in both directions.
  *
- * A floor is not a check. The one this replaced was 95% of the measured population, and dropping a whole
- * table from a shipped `tables.js` cleared it — 45 tables in 16 packages against a floor of 43 in 15,
- * reported as a pass. The exact number moves only when somebody edits it deliberately, in the commit that
- * adds or removes the table.
+ * A floor is not a check: a shipped `tables.js` that lost a whole table would clear it. The exact number
+ * moves only when somebody edits it deliberately, in the commit that adds or removes the table.
  */
 export function auditCensus(tables: readonly ShippedTable[]): void {
   const packages = new Set(tables.map((table) => table.package)).size;

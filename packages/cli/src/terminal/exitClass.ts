@@ -183,6 +183,7 @@ export const EXIT_CLASS_BY_CODE = {
   "organization/last_administrator": "precondition",
   "organization/not_found": "precondition",
   "organization/slug_taken": "precondition",
+  "organization/idempotency_key_reused": "precondition",
   "organization/last_owner": "precondition",
   "organization/already_member": "precondition",
   "organization/seat_limit_reached": "precondition",

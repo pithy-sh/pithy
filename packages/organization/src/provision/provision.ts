@@ -7,11 +7,14 @@ import { fromZodError, InternalError, PithyError } from "@pithy-sh/core/src/erro
 import { StoredImage } from "@pithy-sh/core/src/image/storedImage";
 import type { CompiledQuery } from "kysely";
 import { z } from "zod";
+import { organizationSuspended } from "../acting/acting";
+import { FoundingIdempotencyKey, OrganizationFounding } from "../data/founding";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import { deriveSlug, suffixSlug } from "../data/slug";
 import {
   ACTING_TABLE,
+  FOUNDINGS_TABLE,
   INVITATIONS_TABLE,
   MEMBERSHIPS_TABLE,
   ORGANIZATIONS_TABLE,
@@ -19,10 +22,13 @@ import {
   organizationDatabase,
 } from "../data/tables";
 import {
+  OrganizationIdempotencyKeyReusedError,
   OrganizationInvalidRoleCatalogError,
   OrganizationNotFoundError,
   OrganizationSlugTakenError,
+  OrganizationSuspendedError,
 } from "../error/errors";
+import { organizationStanding } from "../lifecycle/state";
 import type { RoleCatalog } from "../roles/roles";
 
 /**
@@ -128,6 +134,18 @@ export interface CreateOrganizationInput {
    * organization is its founder, and ownership is a separate thing somebody accepts.
    */
   readonly founderUserId: string;
+  /**
+   * A key the client chooses once per organization it means to found, so a retry after a lost answer finds that
+   * organization instead of founding a second one. Absent, every call founds.
+   *
+   * Per founder: another person's identical key founds their own organization. A repeat with the same `name` and
+   * `slug` returns the organization the key founded, with `replayed` set and nothing written. A repeat with a
+   * different `name` or `slug` refuses with {@link OrganizationIdempotencyKeyReusedError}. A repeat for an
+   * organization that is soft-deleted refuses with {@link OrganizationNotFoundError}, and for a suspended one with
+   * {@link OrganizationSuspendedError}. The key is freed when {@link deleteOrganization} erases the organization:
+   * an owner's own deletion, an operator's hard deletion, or the purge after a soft deletion.
+   */
+  readonly idempotencyKey?: string;
   /** The clock. One instant for both rows, injected so a test is deterministic. */
   readonly now?: Date;
   /** The id source. A seam: production passes nothing and gets `crypto.randomUUID`. */
@@ -178,6 +196,11 @@ export interface CreatedOrganization {
    * Its `role` is the one an `onCreate` statement set, when one did.
    */
   readonly membership: Membership;
+  /**
+   * True when {@link CreateOrganizationInput.idempotencyKey} had already founded this organization, so this call
+   * wrote nothing and ran no adopter statement. Both rows are read as they are now.
+   */
+  readonly replayed: boolean;
 }
 
 /** A statement an adopter's builder returns: anything Kysely can compile, over the adopter's own schema. */
@@ -319,9 +342,16 @@ export function compileStatements(d1: D1Database, statements: readonly Organizat
  * the statement runs, and two people founding *Acme Games* in the same second is the ordinary case for
  * a name, not an exotic one.
  *
- * With a `slug` in the input nothing about this changed: one attempt, and a collision is the caller's
- * to resolve. Renaming somebody's chosen address because it was taken is the one outcome worse than
- * refusing.
+ * With a `slug` in the input there is one attempt, and a collision is the caller's to resolve. Renaming
+ * somebody's chosen address because it was taken is the one outcome worse than refusing.
+ *
+ * ## An idempotency key makes a retry answer the founding it repeats
+ *
+ * With `idempotencyKey`, the batch also writes a founding record keyed on `(founderUserId, idempotencyKey)`. A
+ * call that finds the record returns the organization it names, with `replayed` set, and writes nothing. A call
+ * whose batch loses to a concurrent founding with the same key, on the record's primary key or on the slug, does
+ * the same with the winner's. Either refuses with {@link OrganizationIdempotencyKeyReusedError} when the name or
+ * slug asked for differs from the record's.
  */
 export async function createOrganization<Power extends string, Role extends string>(
   d1: D1Database,
@@ -333,6 +363,12 @@ export async function createOrganization<Power extends string, Role extends stri
   const newId = input.newId ?? (() => crypto.randomUUID());
   const newSuffix = input.newSuffix ?? randomSuffix;
   const role = founderRole(catalog);
+
+  const key = input.idempotencyKey === undefined ? undefined : idempotencyKeyOf(input.idempotencyKey);
+  if (key !== undefined) {
+    const prior = await foundingRecord(d1, input.founderUserId, key);
+    if (prior) return await replayFounding(d1, prior, input, now);
+  }
 
   // Minted once, outside the loop. A rolled-back attempt leaves no row to clash with, so a retry that
   // re-minted would only make the ids a function of how many races it lost.
@@ -371,6 +407,12 @@ export async function createOrganization<Power extends string, Role extends stri
     try {
       return await foundOrganization(d1, { organizationId, membershipId, slug, role, now, input, adopterStatements });
     } catch (error) {
+      // A concurrent founding with the same key that committed first is what refused this batch, on the record's
+      // primary key or on the slug: answer what it founded.
+      if (key !== undefined) {
+        const winner = await foundingRecord(d1, input.founderUserId, key);
+        if (winner && winner.organizationId !== organizationId) return await replayFounding(d1, winner, input, now);
+      }
       if (!isSlugTaken(error)) throw error;
       refusal = error;
     }
@@ -436,12 +478,33 @@ async function foundOrganization<Role extends string>(
 
   const db = organizationDatabase(d1);
   const adopters = attempt.adopterStatements();
+  const key = attempt.input.idempotencyKey;
+  // What the request asked for, so a repeat is matched against it whatever slug the derived path committed.
+  const record =
+    key === undefined
+      ? []
+      : [
+          compile(
+            d1,
+            db.insertInto(FOUNDINGS_TABLE).values(
+              OrganizationFounding.encode({
+                founderUserId: attempt.input.founderUserId,
+                idempotencyKey: key,
+                organizationId: organization.id,
+                name: attempt.input.name,
+                slug: attempt.input.slug ?? null,
+                createdAt: attempt.now,
+              }),
+            ),
+          ),
+        ];
   let written: D1Result<unknown>[] | undefined;
   try {
     written = await withD1Retry<D1Result<unknown>[] | undefined>(() =>
       d1.batch([
         compile(d1, db.insertInto(ORGANIZATIONS_TABLE).values(rows.organization)),
         compile(d1, db.insertInto(MEMBERSHIPS_TABLE).values(rows.membership)),
+        ...record,
         // The adopter's, last, so they may reference both rows.
         ...compileStatements(d1, adopters),
       ]),
@@ -473,7 +536,7 @@ async function foundOrganization<Role extends string>(
     }
   }
 
-  return await committedFounding(d1, organization.id, membership.id);
+  return { ...(await committedFounding(d1, organization.id, membership.id)), replayed: false };
 }
 
 /**
@@ -485,7 +548,7 @@ async function committedFounding(
   d1: D1Database,
   organizationId: string,
   membershipId: string,
-): Promise<CreatedOrganization> {
+): Promise<Omit<CreatedOrganization, "replayed">> {
   const db = organizationDatabase(d1);
   const organization = await db
     .selectFrom(ORGANIZATIONS_TABLE)
@@ -504,6 +567,77 @@ async function committedFounding(
     });
   }
   return { organization: Organization.parse(organization), membership: Membership.parse(membership) };
+}
+
+/** The key, held to the column's own bounds before it reaches a query. */
+function idempotencyKeyOf(value: string): string {
+  const key = FoundingIdempotencyKey.safeParse(value);
+  if (!key.success) throw fromZodError(key.error);
+  return key.data;
+}
+
+/** The founding a founder's key already made, if it made one. */
+async function foundingRecord(
+  d1: D1Database,
+  founderUserId: string,
+  idempotencyKey: string,
+): Promise<OrganizationFounding | undefined> {
+  const row = await organizationDatabase(d1)
+    .selectFrom(FOUNDINGS_TABLE)
+    .selectAll()
+    .where("founderUserId", "=", founderUserId)
+    .where("idempotencyKey", "=", idempotencyKey)
+    .executeTakeFirst();
+  return row ? OrganizationFounding.parse(row) : undefined;
+}
+
+/**
+ * Answer a repeated founding with the organization its key founded, read as it is now.
+ *
+ * A repeat asking for a different name or slug is a second organization under a spent key, and refuses. A founder
+ * who is no longer a member gets the same 404 as any organization they cannot see. The organization's standing at
+ * `now` is judged as every door judges it: a deleted one is that same 404, and a suspended one is the 403 its members
+ * get. The record outlives a soft deletion, so the key stays spent until the purge erases the organization.
+ */
+async function replayFounding(
+  d1: D1Database,
+  prior: OrganizationFounding,
+  input: CreateOrganizationInput,
+  now: Date,
+): Promise<CreatedOrganization> {
+  if (prior.name !== input.name || prior.slug !== (input.slug ?? null)) {
+    throw new OrganizationIdempotencyKeyReusedError({
+      detail: `idempotency key founded organization ${prior.organizationId} with a different ${prior.name === input.name ? "slug" : "name"}`,
+    });
+  }
+  const db = organizationDatabase(d1);
+  const organization = await db
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .selectAll()
+    .where("id", "=", prior.organizationId)
+    .executeTakeFirst();
+  const membership = await db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .selectAll()
+    .where("organizationId", "=", prior.organizationId)
+    .where("userId", "=", input.founderUserId)
+    .executeTakeFirst();
+  if (!organization || !membership) {
+    throw new OrganizationNotFoundError({
+      detail: `idempotency key founded organization ${prior.organizationId}, which the founder is no longer a member of`,
+    });
+  }
+  const founded = Organization.parse(organization);
+  const standing = organizationStanding(founded, now);
+  if (standing.state === "deleted") {
+    throw new OrganizationNotFoundError({
+      detail: `idempotency key founded organization ${prior.organizationId}, which is deleted`,
+    });
+  }
+  if (standing.state === "suspended") {
+    throw organizationSuspended(prior.organizationId, standing.until, "idempotency key replay");
+  }
+  return { organization: founded, membership: Membership.parse(membership), replayed: true };
 }
 
 /**
@@ -792,6 +926,7 @@ export async function deleteOrganization(
       compile(d1, db.deleteFrom(OWNERSHIP_NOMINATIONS_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(INVITATIONS_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(MEMBERSHIPS_TABLE).where("organizationId", "=", organizationId)),
+      compile(d1, db.deleteFrom(FOUNDINGS_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(ORGANIZATIONS_TABLE).where("id", "=", organizationId)),
     ]),
   );

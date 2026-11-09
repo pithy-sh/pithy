@@ -6,6 +6,7 @@ import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db"
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import { ActingOrganization } from "./actingOrganization";
+import { OrganizationFounding } from "./founding";
 import { Invitation } from "./invitation";
 import { Membership } from "./membership";
 import { Organization } from "./organization";
@@ -22,10 +23,12 @@ export const INVITATIONS_TABLE = "pithyOrganizationInvitations";
 export const OWNERSHIP_NOMINATIONS_TABLE = "pithyOrganizationOwnershipNominations";
 /** Which organization a session is acting in. → `pithy_organization_acting`. */
 export const ACTING_TABLE = "pithyOrganizationActing";
-/** Every lifecycle transition an organization went through (#623). → `pithy_organization_lifecycle`. */
+/** Every lifecycle transition an organization went through. → `pithy_organization_lifecycle`. */
 export const LIFECYCLE_TABLE = "pithyOrganizationLifecycle";
+/** Which organization each founder's idempotency key founded. → `pithy_organization_foundings`. */
+export const FOUNDINGS_TABLE = "pithyOrganizationFoundings";
 
-/** The tenancy tables map. All six are always present — none is behind a config flag. */
+/** The tenancy tables map. Every one is always present — none is behind a config flag. */
 export function organizationTables(): Record<string, z.ZodObject> {
   return {
     [ORGANIZATIONS_TABLE]: Organization,
@@ -34,6 +37,7 @@ export function organizationTables(): Record<string, z.ZodObject> {
     [OWNERSHIP_NOMINATIONS_TABLE]: OwnershipNomination,
     [ACTING_TABLE]: ActingOrganization,
     [LIFECYCLE_TABLE]: OrganizationLifecycleEvent,
+    [FOUNDINGS_TABLE]: OrganizationFounding,
   };
 }
 
@@ -45,6 +49,7 @@ export type OrganizationTables = {
   [OWNERSHIP_NOMINATIONS_TABLE]: typeof OwnershipNomination;
   [ACTING_TABLE]: typeof ActingOrganization;
   [LIFECYCLE_TABLE]: typeof OrganizationLifecycleEvent;
+  [FOUNDINGS_TABLE]: typeof OrganizationFounding;
 };
 export type OrganizationDatabase = Kysely<DatabaseSchema<OrganizationTables>>;
 
@@ -57,5 +62,6 @@ export function organizationDatabase(d1: D1Database): OrganizationDatabase {
     [OWNERSHIP_NOMINATIONS_TABLE]: OwnershipNomination,
     [ACTING_TABLE]: ActingOrganization,
     [LIFECYCLE_TABLE]: OrganizationLifecycleEvent,
+    [FOUNDINGS_TABLE]: OrganizationFounding,
   }) as unknown as OrganizationDatabase;
 }

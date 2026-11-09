@@ -26,7 +26,7 @@ import {
 } from "./cascade";
 
 /**
- * The member cascade (#623) over real D1 and `@pithy-sh/auth`'s own transitions: who it reaches, who it never
+ * The member cascade over real D1 and `@pithy-sh/auth`'s own transitions: who it reaches, who it never
  * touches, and what it reports for each.
  */
 
@@ -35,6 +35,7 @@ const BETA = "22222222-2222-4222-8222-222222222222";
 const NOW = new Date("2026-10-23T12:00:00.000Z");
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -227,7 +228,7 @@ describe("deleteSoleMembers", () => {
 });
 
 describe("planSuspension and planDeletion", () => {
-  // The preview's half (#813): the same selection the cascade runs, with nothing applied.
+  // The preview's half: the same selection the cascade runs, with nothing applied.
   const reads = () => ({ db: db(), auth: authDatabase(env.DB), now: NOW });
 
   /** Every auth lifecycle column and history row, to show a plan moved none of them. */

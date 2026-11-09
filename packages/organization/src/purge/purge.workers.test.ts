@@ -17,9 +17,16 @@ import type { Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { organization } from "../capability";
+import { OrganizationFounding } from "../data/founding";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
-import { LIFECYCLE_TABLE, MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";
+import {
+  FOUNDINGS_TABLE,
+  LIFECYCLE_TABLE,
+  MEMBERSHIPS_TABLE,
+  ORGANIZATIONS_TABLE,
+  organizationDatabase,
+} from "../data/tables";
 import { organizationErasureReader } from "../lifecycle/erasure";
 import { removeOrganization } from "../lifecycle/transitions";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
@@ -33,7 +40,7 @@ import { organizationPurgeInstanceId } from "./start";
 import { purgeAudit, runOrganizationPurge, runOrganizationPurgeDue } from "./workflow";
 
 /**
- * The organization purge end to end over real D1 (#623): this capability's contribution, the adopter's sweep in
+ * The organization purge end to end over real D1: this capability's contribution, the adopter's sweep in
  * its batch, another capability's contribution that fails and retries alone, the record of every step that ran,
  * and the one `purged` row — with the step runner behaving as a Workflow's does.
  */
@@ -43,6 +50,7 @@ const BETA = "22222222-2222-4222-8222-222222222222";
 const NOW = new Date("2026-10-23T12:00:00.000Z");
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -119,6 +127,19 @@ beforeEach(async () => {
         Membership.encode({ id: crypto.randomUUID(), organizationId: id, userId: "u1", role: "owner", createdAt: NOW }),
       )
       .execute();
+    await db()
+      .insertInto(FOUNDINGS_TABLE)
+      .values(
+        OrganizationFounding.encode({
+          founderUserId: "u1",
+          idempotencyKey: `key-${slug}`,
+          organizationId: id,
+          name: slug,
+          slug: null,
+          createdAt: NOW,
+        }),
+      )
+      .execute();
     await env.DB.prepare("insert into adopter_projects (id, organization_id) values (?, ?)")
       .bind(`p-${slug}`, id)
       .run();
@@ -170,11 +191,13 @@ describe("the organization purge", () => {
       "complete",
     ]);
 
-    // Acme is gone, with its memberships and the adopter's rows. Beta is untouched.
+    // Acme is gone, with its memberships, its founding record and the adopter's rows. Beta is untouched.
     const organizations = await db().selectFrom(ORGANIZATIONS_TABLE).select("id").execute();
     expect(organizations).toEqual([{ id: BETA }]);
     const memberships = await db().selectFrom(MEMBERSHIPS_TABLE).select("organizationId").execute();
     expect(memberships).toEqual([{ organizationId: BETA }]);
+    const foundings = await db().selectFrom(FOUNDINGS_TABLE).select("organizationId").execute();
+    expect(foundings).toEqual([{ organizationId: BETA }]);
     const { results } = await env.DB.prepare("select id from adopter_projects").all();
     expect(results).toEqual([{ id: "p-beta" }]);
 
@@ -426,7 +449,7 @@ describe("the Workflow bodies", () => {
   });
 });
 
-describe("the erasure record (#823)", () => {
+describe("the erasure record", () => {
   const OPERATOR = { type: "control-plane", id: "operator-1" } as const;
   const DAY = 86_400_000;
 

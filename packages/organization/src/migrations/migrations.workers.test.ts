@@ -5,11 +5,13 @@ import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import { OrganizationFounding } from "../data/founding";
 import { OrganizationLifecycleEvent } from "../data/organizationLifecycle";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./0001_init";
 import { organization_0002_seat_limit } from "./0002_seat_limit";
 import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
 import { organization_0004_erasure_record } from "./0004_erasure_record";
+import { organization_0005_founding_record } from "./0005_founding_record";
 
 /**
  * The one migration, both ways, against real D1.
@@ -63,7 +65,7 @@ async function catalog(): Promise<string[]> {
 
 beforeEach(async () => {
   // The lifecycle table first: a later migration's table is in no catalog the `0001` tests list.
-  for (const name of ["pithy_organization_lifecycle", ...EXPECTED_CATALOG]) {
+  for (const name of ["pithy_organization_foundings", "pithy_organization_lifecycle", ...EXPECTED_CATALOG]) {
     await env.DB.prepare(`drop table if exists ${name}`).run();
   }
 });
@@ -353,6 +355,61 @@ describe("0004_erasure_record", () => {
     const left = await env.DB.prepare("select count(*) as n from pithy_organization_lifecycle").first<{ n: number }>();
     expect(left?.n).toBe(1);
     await organization_0004_erasure_record.up(db());
+    expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
+  });
+});
+
+describe("0005_founding_record", () => {
+  const ACME = "11111111-1111-4111-8111-111111111111";
+  const ADDED = ["pithy_organization_foundings", "pithy_organization_foundings_org_idx"];
+
+  const insert = (founderUserId: string, idempotencyKey: string) =>
+    env.DB.prepare(
+      "insert into pithy_organization_foundings (founder_user_id, idempotency_key, organization_id, name, slug, created_at) values (?, ?, ?, 'Acme', null, 1)",
+    )
+      .bind(founderUserId, idempotencyKey, ACME)
+      .run();
+
+  beforeEach(async () => {
+    await organization_0001_init.up(db());
+    await organization_0002_seat_limit.up(db());
+    await organization_0003_organization_lifecycle.up(db());
+    await organization_0004_erasure_record.up(db());
+  });
+
+  test("up adds the table and its index, under the prefix, and a row round-trips through its schema", async () => {
+    await organization_0005_founding_record.up(db());
+    expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
+    await insert("user-ada", "key-1");
+    const raw = await createDatabase(env.DB, { pithyOrganizationFoundings: OrganizationFounding })
+      .selectFrom("pithyOrganizationFoundings")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const row = OrganizationFounding.parse(raw);
+    expect(row).toEqual({
+      founderUserId: "user-ada",
+      idempotencyKey: "key-1",
+      organizationId: ACME,
+      name: "Acme",
+      slug: null,
+      createdAt: new Date(1),
+    });
+    expect(OrganizationFounding.encode(row)).toEqual(raw);
+  });
+
+  test("a key is unique per founder, and two founders may each use it", async () => {
+    await organization_0005_founding_record.up(db());
+    await insert("user-ada", "key-1");
+    await expect(insert("user-ada", "key-1")).rejects.toThrow();
+    await expect(insert("user-grace", "key-1")).resolves.toBeDefined();
+  });
+
+  test("down takes the table and its index back out, and up after down is clean", async () => {
+    await organization_0005_founding_record.up(db());
+    await insert("user-ada", "key-1");
+    await organization_0005_founding_record.down?.(db());
+    for (const name of ADDED) expect(await catalog()).not.toContain(name);
+    await organization_0005_founding_record.up(db());
     expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
   });
 });

@@ -2074,6 +2074,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "organization/idempotency_key_reused",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "organization/invalid_role_catalog",
       "status": 400,
       "exitClass": "usage",

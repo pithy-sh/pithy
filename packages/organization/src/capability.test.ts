@@ -154,10 +154,11 @@ describe("migrations", () => {
       "0002_seat_limit",
       "0003_organization_lifecycle",
       "0004_erasure_record",
+      "0005_founding_record",
     ]);
   });
 
-  test("contributes all six tables to the app database", () => {
+  test("contributes every table to the app database", () => {
     expect(Object.keys(organization(BASE).databases?.app?.tables ?? {})).toEqual(Object.keys(organizationTables()));
   });
 });

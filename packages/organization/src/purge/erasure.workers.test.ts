@@ -44,7 +44,7 @@ import { defineRoles } from "../roles/roles";
 import { runOrganizationPurge } from "./workflow";
 
 /**
- * An organization's erasure attested end to end (#823): a real `createBackend` composing auth, organization and the
+ * An organization's erasure attested end to end: a real `createBackend` composing auth, organization and the
  * control plane beside a recorder that cites each event by its place in the trail, an operator deleting an
  * organization through its own control-plane route, the purge Workflow's body erasing it, and the control plane's
  * two erasure reads answering for it. What `organization().erasureRecords` wires is proved here, through the route an
@@ -70,6 +70,7 @@ const SECRETS: SecretFixture<typeof REGISTRY> = {
 };
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
@@ -310,7 +311,7 @@ afterEach(() => {
   resetSharedSecrets();
 });
 
-describe("an organization's erasure, attested through the control plane (#823)", () => {
+describe("an organization's erasure, attested through the control plane", () => {
   const remove = (body: unknown) =>
     call(`/organizations/admin/organizations/${ACME}`, body, ORGANIZATION_ACCOUNTS_DELETE_SCOPE, "DELETE");
   const attest = () => call(`/control-plane/erasure/organization/${ACME}`, undefined, ERASURE_READ_SCOPE, "GET");

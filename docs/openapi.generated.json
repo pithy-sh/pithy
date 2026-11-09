@@ -43097,7 +43097,7 @@
         ],
         "operationId": "postOrganizations",
         "summary": "Found an organization.",
-        "description": "Refused for every caller while `allowSelfService` is off. Does not move the acting selection.",
+        "description": "Refused for every caller while `allowSelfService` is off. Does not move the acting selection. A repeat with the same `idempotencyKey` answers 200 with the organization the key founded.",
         "requestBody": {
           "required": true,
           "description": "What founding an organization takes. The founder's role is the catalog's and is not in the request.",
@@ -43118,6 +43118,12 @@
                     "minLength": 1,
                     "maxLength": 64,
                     "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  },
+                  "idempotencyKey": {
+                    "description": "A key the client chooses, once per organization it means to found, so a retry after a lost answer cannot found a second one. A repeat by the same person with the same key, name and slug answers 200 with the organization the key founded and writes nothing; the same key with a different name or slug refuses with 409 `organization/idempotency_key_reused`. Keys are per person. A repeat for a soft-deleted organization answers 404 `organization/not_found` and for a suspended one 403 `organization/organization_suspended`. The key is freed when the organization is erased: by an owner's `DELETE {base}/current`, an operator's hard deletion, or the purge after a soft deletion. Omit it and every request founds.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
                   }
                 },
                 "required": [
@@ -43129,6 +43135,67 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "One organization, as a write reports it back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organization": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                          "description": "The organization's id. What `POST {base}/acting` takes back."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "The display name."
+                        },
+                        "slug": {
+                          "type": "string",
+                          "description": "The URL-safe short name. For display and for logs; nothing is addressed by it."
+                        },
+                        "mark": {
+                          "description": "Where to draw the mark from: a versioned URL for a raster, the stored `data:` value for a vector, or null when there is none — and then a caller draws initials, which is a real answer rather than a placeholder.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "description": "What the reader may do here, as a name from this project's catalog. A name, never a power list — the matrix is the adopter's module and the client imports it."
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                          "description": "When the organization was created, ISO-8601."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "slug",
+                        "mark",
+                        "role",
+                        "createdAt"
+                      ],
+                      "description": "The organization, with the caller's own standing in it."
+                    }
+                  },
+                  "required": [
+                    "organization"
+                  ],
+                  "description": "One organization, as a write reports it back."
+                }
+              }
+            }
+          },
           "201": {
             "description": "One organization, as a write reports it back.",
             "content": {

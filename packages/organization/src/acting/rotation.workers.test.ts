@@ -46,6 +46,7 @@ const SECRETS: SecretFixture<typeof REGISTRY> = {
 };
 
 const TABLES = [
+  "pithy_organization_foundings",
   "pithy_organization_lifecycle",
   "pithy_organization_acting",
   "pithy_organization_ownership_nominations",
