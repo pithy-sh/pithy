@@ -388,7 +388,10 @@ export interface AcceptedInvitation {
   organizationId: string;
   /** The membership, new or the one already held. */
   membershipId: string;
-  /** What was granted: the role the offer carried, never one the request named. */
+  /**
+   * The role the membership holds once the acceptance is done: the offer's, one an onJoin statement set,
+   * or, for somebody already a member, the role they held. Never one the request named.
+   */
   role: string;
   /**
    * False when the reader was already a member. The offer is consumed either way, so accepting twice is

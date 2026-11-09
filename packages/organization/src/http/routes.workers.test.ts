@@ -17,6 +17,7 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
+import { sql } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { chooseActing } from "../acting/acting";
@@ -35,6 +36,7 @@ import type { EnqueueInvitation } from "../mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import type { OwnershipRoles } from "../ownership/ownership";
+import type { OrganizationCreateStatements } from "../provision/provision";
 import { defineRoles } from "../roles/roles";
 import {
   AdminInvitationsResponse,
@@ -262,6 +264,7 @@ interface AppOptions {
   readonly sameOrigin?: SameOriginGate | null;
   readonly verifier?: ControlPlaneVerifier | null;
   readonly mail?: boolean;
+  readonly onCreate?: OrganizationCreateStatements;
 }
 
 function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
@@ -272,6 +275,7 @@ function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
     ownership: options.ownership === null ? undefined : (options.ownership ?? OWNERSHIP),
     enqueue: options.mail === false ? undefined : () => enqueue,
     now: () => NOW,
+    onCreate: options.onCreate,
   })(app);
   return app;
 }
@@ -1423,6 +1427,28 @@ describe("founding an account", () => {
     expect(
       await db().selectFrom(ACTING_TABLE).select("sessionId").where("sessionId", "=", SESSION).executeTakeFirst(),
     ).toBeUndefined();
+  });
+
+  test("**an onCreate that makes the founder owner is answered and audited as owner**", async () => {
+    await seedUser("user_founder");
+    const ownership: OrganizationCreateStatements = (d1, { membershipId }) => [
+      {
+        compile: () =>
+          sql`update pithy_organization_memberships set role = 'owner' where id = ${membershipId}`.compile(
+            organizationDatabase(d1),
+          ),
+      },
+    ];
+    const response = await call("POST", BASE, {
+      as: "user_founder",
+      body: { name: "New Studio" },
+      app: buildApp({ onCreate: ownership }),
+    });
+    expect(response.status).toBe(201);
+    const body = await json<{ organization: { role: string } }>(response);
+    expect(body.organization.role).toBe("owner");
+    expect(actionsRecorded()).toEqual(["organization/created"]);
+    expect(factsRecorded()).toMatchObject({ role: "owner", derived: true });
   });
 
   test("a taken short name refuses rather than renaming", async () => {

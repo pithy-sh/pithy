@@ -319,7 +319,11 @@ export const AcceptInvitationResponse = z
   .object({
     organizationId: z.uuid().describe("The organization joined."),
     membershipId: z.uuid().describe("The membership, new or the one already held."),
-    role: z.string().describe("What was granted — the role the offer carried, never one the request named."),
+    role: z
+      .string()
+      .describe(
+        "The role the membership holds once the acceptance is done: the offer's, one an onJoin statement set, or, for somebody already a member, the role they held. Never one the request named.",
+      ),
     joined: z
       .boolean()
       .describe(

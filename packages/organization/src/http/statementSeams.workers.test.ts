@@ -234,6 +234,25 @@ const recording: Pick<OrganizationOptions<string, Role>, "onCreate" | "onJoin"> 
   },
 };
 
+/** Makes the joining member `admin` in the join's batch, past the role they were let in at. */
+const promote: Pick<OrganizationOptions<string, Role>, "onJoin"> = {
+  onJoin: (d1, { membershipId }) => [
+    {
+      compile: () =>
+        sql`update pithy_organization_memberships set role = 'admin' where id = ${membershipId}`.compile(
+          organizationDatabase(d1),
+        ),
+    },
+  ],
+};
+
+/** Each of this capability's own audit actions with the role it recorded. */
+function rolesRecorded(): [string, unknown][] {
+  return events
+    .filter((event) => event.action.startsWith("organization/"))
+    .map((event) => [event.action, (event.metadata as Record<string, unknown> | undefined)?.role]);
+}
+
 /** Acme, with Ada running it. */
 async function acme(): Promise<void> {
   await db()
@@ -342,6 +361,26 @@ describe("accepting an invitation", () => {
     expect(events.map((event) => event.action)).toEqual(["organization/member_joined"]);
   });
 
+  test("**an onJoin that promotes the member is answered and audited at the committed role**", async () => {
+    await acme();
+    const minted = await invite(env.DB, catalog, {
+      organizationId: ACME,
+      email: "bob@example.com",
+      role: "member",
+      invitedByUserId: ADA,
+      ttlDays: 7,
+      // The composed routes read the real clock.
+      now: new Date(),
+    });
+    const response = await call(buildApp(promote), "POST", `${BASE}/invitations/accept`, {
+      as: BOB,
+      body: { token: minted.token },
+    });
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { role: string }).role).toBe("admin");
+    expect(rolesRecorded()).toEqual([["organization/member_joined", "admin"]]);
+  });
+
   test("**a failing statement answers with an error, and the invitation still redeems afterwards**", async () => {
     await acme();
     const minted = await invite(env.DB, catalog, {
@@ -400,6 +439,16 @@ describe("an operator's add", () => {
     });
     expect(changed.status).toBe(200);
     expect(roleChanges.map((event) => [event.membershipId, event.role])).toEqual([[member.membershipId, "admin"]]);
+  });
+
+  test("**an onJoin that promotes the member is answered and audited at the committed role**", async () => {
+    await acme();
+    const response = await call(buildApp(promote), "POST", `${BASE}/admin/organizations/${ACME}/members`, {
+      body: { userId: CAI, role: "member", reason: REASON },
+    });
+    expect(response.status).toBe(201);
+    expect(((await response.json()) as { member: { role: string } }).member.role).toBe("admin");
+    expect(rolesRecorded()).toEqual([["organization/admin_member_added", "admin"]]);
   });
 
   test("**a failing statement answers with an error and leaves no membership**", async () => {

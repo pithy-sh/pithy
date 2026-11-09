@@ -44504,7 +44504,7 @@
                     },
                     "role": {
                       "type": "string",
-                      "description": "What was granted — the role the offer carried, never one the request named."
+                      "description": "The role the membership holds once the acceptance is done: the offer's, one an onJoin statement set, or, for somebody already a member, the role they held. Never one the request named."
                     },
                     "joined": {
                       "type": "boolean",
