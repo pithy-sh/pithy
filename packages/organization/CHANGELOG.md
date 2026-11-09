@@ -1,5 +1,19 @@
 # @pithy-sh/organization
 
+## 0.14.0
+
+### Minor Changes
+
+- [#962](https://github.com/pithy-sh/pithy/pull/962) [`2ea3405`](https://github.com/pithy-sh/pithy/commit/2ea340563c71541558639d804f9a08132c46e66c) Thanks [@kingmesal](https://github.com/kingmesal)! - POST /organizations takes an idempotencyKey, so a client that lost the answer can retry without founding a second organization.
+
+### Patch Changes
+
+- [#961](https://github.com/pithy-sh/pithy/pull/961) [`4e269fd`](https://github.com/pithy-sh/pithy/commit/4e269fd05da309dbc6f6521f0b630a6da00cf75a) Thanks [@kingmesal](https://github.com/kingmesal)! - Founding an organization, accepting an invitation and an operator adding a member each answer and audit the role the batch committed, so a member that onCreate or onJoin makes owner is reported as owner.
+- Updated dependencies [[`9890353`](https://github.com/pithy-sh/pithy/commit/98903531e255a9a5050d8a74983f9c6fd07c2791), [`8193d4f`](https://github.com/pithy-sh/pithy/commit/8193d4f7a5ef0d5294f7b639f0d289dcd35dc050), [`1e0bcfc`](https://github.com/pithy-sh/pithy/commit/1e0bcfcb76db5647bf9336d587974c1a957f5e6e)]:
+  - @pithy-sh/core@0.20.0
+  - @pithy-sh/email@0.10.2
+  - @pithy-sh/auth@0.15.0
+
 ## 0.13.0
 
 ### Minor Changes

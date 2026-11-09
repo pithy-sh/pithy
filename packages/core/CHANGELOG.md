@@ -1,5 +1,17 @@
 # @pithy-sh/core
 
+## 0.20.0
+
+### Minor Changes
+
+- [#969](https://github.com/pithy-sh/pithy/pull/969) [`8193d4f`](https://github.com/pithy-sh/pithy/commit/8193d4f7a5ef0d5294f7b639f0d289dcd35dc050) Thanks [@kingmesal](https://github.com/kingmesal)! - requireRecentSignIn gates an app route on a sign-in within the window it names, and refuses with one code every client can handle.
+
+### Patch Changes
+
+- [#971](https://github.com/pithy-sh/pithy/pull/971) [`9890353`](https://github.com/pithy-sh/pithy/commit/98903531e255a9a5050d8a74983f9c6fd07c2791) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker that owns its database gets its own capability hosts, so its email sends and its audit chain is checkpointed.
+  
+  Security: A Worker that owned its database never had its audit chain checkpointed, so a change to its audit rows went undetected.
+
 ## 0.19.0
 
 ### Minor Changes

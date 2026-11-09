@@ -1,5 +1,27 @@
 # @pithy-sh/cli
 
+## 0.24.1
+
+### Patch Changes
+
+- [#957](https://github.com/pithy-sh/pithy/pull/957) [`8e02131`](https://github.com/pithy-sh/pithy/commit/8e02131b96ce4df55480c909dbf4e26e59fbb046) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` and `pithy worker sync` read a binding's `scope` and `resource` from the same manifests `pithy provision` does, so a global binding such as email suppressions is no longer reported as drifted or made per-environment.
+
+- [#968](https://github.com/pithy-sh/pithy/pull/968) [`d8a6a18`](https://github.com/pithy-sh/pithy/commit/d8a6a180e4e4894e7a4bfb699547b7785e4b1704) Thanks [@kingmesal](https://github.com/kingmesal)! - An Expo app under pithy dev, web build and phone builds alike, calls the Worker in its own worktree, not the main checkout's.
+
+- [#971](https://github.com/pithy-sh/pithy/pull/971) [`9890353`](https://github.com/pithy-sh/pithy/commit/98903531e255a9a5050d8a74983f9c6fd07c2791) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker that owns its database gets its own capability hosts, so its email sends and its audit chain is checkpointed.
+  
+  Security: A Worker that owned its database never had its audit chain checkpointed, so a change to its audit rows went undetected.
+
+- [#956](https://github.com/pithy-sh/pithy/pull/956) [`ae1f805`](https://github.com/pithy-sh/pithy/commit/ae1f8050f0e7e2910e8c0732b2225a5b15cc4ee6) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy upgrade --packages` moves `@pithy-sh/*` ranges in every workspace member, not just the root and `apps/*`, so one install holds one version of each kit package.
+- Updated dependencies [[`d8a6a18`](https://github.com/pithy-sh/pithy/commit/d8a6a180e4e4894e7a4bfb699547b7785e4b1704), [`9890353`](https://github.com/pithy-sh/pithy/commit/98903531e255a9a5050d8a74983f9c6fd07c2791), [`8193d4f`](https://github.com/pithy-sh/pithy/commit/8193d4f7a5ef0d5294f7b639f0d289dcd35dc050), [`398a62d`](https://github.com/pithy-sh/pithy/commit/398a62dd087756074971bfe73348f5eba34af805), [`6a6dadf`](https://github.com/pithy-sh/pithy/commit/6a6dadf73a2f9332800f0653b7e90da84911dbb8)]:
+  - @pithy-sh/ui-react-native@0.2.2
+  - @pithy-sh/core@0.20.0
+  - @pithy-sh/email@0.10.2
+  - @pithy-sh/secrets@0.6.8
+  - @pithy-sh/ui-react@0.7.1
+  - @pithy-sh/cloudflare@0.10.3
+  - @pithy-sh/turnstile@0.8.4
+
 ## 0.24.0
 
 ### Minor Changes

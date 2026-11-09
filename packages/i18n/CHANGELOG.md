@@ -1,5 +1,15 @@
 # @pithy-sh/i18n
 
+## 0.20.0
+
+### Patch Changes
+
+- [#967](https://github.com/pithy-sh/pithy/pull/967) [`398a62d`](https://github.com/pithy-sh/pithy/commit/398a62dd087756074971bfe73348f5eba34af805) Thanks [@kingmesal](https://github.com/kingmesal)! - Signing out in a scaffolded app says so when the session did not end, and leaves the person where they are.
+
+- [#970](https://github.com/pithy-sh/pithy/pull/970) [`6a6dadf`](https://github.com/pithy-sh/pithy/commit/6a6dadf73a2f9332800f0653b7e90da84911dbb8) Thanks [@kingmesal](https://github.com/kingmesal)! - An Expo app's web build opens a deep link on its own screen under pithy dev, not on Home. The screens under `<PithyLocale>` no longer remount when the catalog lands, in the React and the Expo app.
+- Updated dependencies [[`9890353`](https://github.com/pithy-sh/pithy/commit/98903531e255a9a5050d8a74983f9c6fd07c2791), [`8193d4f`](https://github.com/pithy-sh/pithy/commit/8193d4f7a5ef0d5294f7b639f0d289dcd35dc050)]:
+  - @pithy-sh/core@0.20.0
+
 ## 0.19.0
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @pithy-sh/ui-react-native
 
+## 0.2.2
+
+### Patch Changes
+
+- [#968](https://github.com/pithy-sh/pithy/pull/968) [`d8a6a18`](https://github.com/pithy-sh/pithy/commit/d8a6a180e4e4894e7a4bfb699547b7785e4b1704) Thanks [@kingmesal](https://github.com/kingmesal)! - An Expo app under pithy dev, web build and phone builds alike, calls the Worker in its own worktree, not the main checkout's.
+
+- [#967](https://github.com/pithy-sh/pithy/pull/967) [`398a62d`](https://github.com/pithy-sh/pithy/commit/398a62dd087756074971bfe73348f5eba34af805) Thanks [@kingmesal](https://github.com/kingmesal)! - Signing out in a scaffolded app says so when the session did not end, and leaves the person where they are.
+
+- [#970](https://github.com/pithy-sh/pithy/pull/970) [`6a6dadf`](https://github.com/pithy-sh/pithy/commit/6a6dadf73a2f9332800f0653b7e90da84911dbb8) Thanks [@kingmesal](https://github.com/kingmesal)! - An Expo app's web build opens a deep link on its own screen under pithy dev, not on Home. The screens under `<PithyLocale>` no longer remount when the catalog lands, in the React and the Expo app.
+
 ## 0.2.1
 
 ### Patch Changes
