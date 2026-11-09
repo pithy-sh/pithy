@@ -305,6 +305,18 @@ describe("parseInbound, bounds", () => {
     expect(parsed.text.startsWith("aaaa")).toBe(true);
   });
 
+  test("a subject of a hundred thousand joinable encoded words decodes in linear time", async () => {
+    // Adjacent RFC 2047 base64 words in one charset are joined before they are decoded. A parser that
+    // re-tests the joined text on every word spends quadratic time on this 1.7 MB header — seconds of
+    // CPU from one message anyone can send. A linear decode finishes it in tens of milliseconds.
+    const words = Array.from({ length: 100_000 }, () => "=?UTF-8?B?QUJD?=").join(" ");
+
+    const started = performance.now();
+    const parsed = await parseInbound(message(["From: ada@example.com", `Subject: ${words}`], "Hello"));
+    expect(performance.now() - started).toBeLessThan(1_500);
+    expect(parsed.subject).toBe("ABC".repeat(100_000).slice(0, 500));
+  });
+
   test("a body under the bound is left whole", async () => {
     const parsed = await parseInbound(message(["From: ada@example.com", "Content-Type: text/plain"], "short enough"));
     expect(parsed.text.trim()).toBe("short enough");
@@ -416,16 +428,10 @@ describe("Authentication-Results, when a sender forges one of their own", () => 
   });
 
   test("a second From below the first does not become the sender", async () => {
-    // **The half of first-wins the header map never covered.** `fromAddress`, `subject` and the
-    // recipient lists do not come from that map — they come from `postal-mime`'s own single-value
-    // resolution, and through 2.7.x that resolution was *last*-wins. So a sender could append a
-    // second `From:` at the bottom of their own headers and the address this capability recorded as
-    // the sender was theirs to choose, while every verdict above it was stamped against the topmost
-    // one. What was authenticated and what was stored disagreed, by construction.
-    //
-    // `postal-mime` 3.0.0 resolves duplicated single-value headers first-wins, which is the same rule
-    // the map already applied, so the two halves finally agree. Planted here rather than asserted in
-    // prose: under 2.7.6 this test reads `mallory@attacker.test` and fails.
+    // `fromAddress`, `subject` and the recipient lists do not come from the header map — they come
+    // from `postal-mime`'s own single-value resolution. That resolution is first-wins too, so the
+    // sender recorded is the one every verdict above it was stamped against, not one a sender
+    // appended below their own headers.
     const parsed = await parseInbound(
       message(
         [
@@ -524,7 +530,7 @@ describe("which authentication headers actually arrived", () => {
   /**
    * A diagnostic, so the tests are about it being *accurate* rather than about anything branching on
    * it. The value it produces in production is the one fact this package cannot look up: whether
-   * Cloudflare Email Routing gives a Worker anything to verify a sender against. See issue #47.
+   * Cloudflare Email Routing gives a Worker anything to verify a sender against.
    */
   test("reports the headers that were present, and only those", async () => {
     const parsed = await parseInbound(

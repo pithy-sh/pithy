@@ -1027,9 +1027,9 @@ Held to the swap by comparison rather than by argument: `analyseDrivers` was run
 
 **Adopters were never affected.** A project scaffolded by `pithy init` keeps the two `types` arrays disjoint — `apps/api/tsconfig.json` lists `["@cloudflare/workers-types"]`, `tsconfig.tools.json` lists `["node"]` — so neither the break nor the `any` reaches them.
 
-### `postal-mime` is at `^3.0.0`, and that is a security bump
+### `postal-mime` is at `^4.0.8`, and that is a security floor
 
-It parses inbound mail from the open internet, so it is the highest-value dependency here to be current on. 3.0.0 resolves duplicated single-value headers **first**-wins; 2.7.x resolved them last-wins, which meant a sender could append a second `From:` below their own headers and choose the address `@pithy-sh/support` recorded as the sender. See `packages/support/src/mime/parse.test.ts`, *"a second From below the first does not become the sender"* — the test fails under 2.7.6 and passes under 3.0.0.
+It parses inbound mail from the open internet, so it is the highest-value dependency here to be current on. Two of its behaviors are load-bearing. It resolves duplicated single-value headers **first**-wins, so a sender cannot append a second `From:` below their own headers and choose the address `@pithy-sh/support` records as the sender (`packages/support/src/mime/parse.test.ts`, *"a second From below the first does not become the sender"*). And it decodes a header of joinable RFC 2047 encoded words in linear time, which every release before 4.0.8 did not, so one crafted `Subject` could hold a Worker for seconds. A test in each parser feeds it a hundred thousand such words under a time bound: `packages/support/src/mime/parse.test.ts` and `packages/email/src/bounce/handler.workers.test.ts`.
 
 ---
 

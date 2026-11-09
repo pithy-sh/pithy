@@ -47,7 +47,7 @@ function extractAddress(value: string | undefined): string | undefined {
 function originalMessageId(raw: string): string | undefined {
   const explicit = field(raw, "Original-Message-ID");
   if (explicit) return explicit.replace(/^<|>$/g, "");
-  const ids = [...raw.matchAll(/^Message-ID:\s*<([^>]+)>/gim)].map((m) => m[1]);
+  const ids = [...raw.matchAll(/^Message-ID:[ \t]*<([^>\r\n]+)>/gim)].map((m) => m[1]);
   return ids.length > 0 ? ids[ids.length - 1] : undefined;
 }
 

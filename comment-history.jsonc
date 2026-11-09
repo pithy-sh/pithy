@@ -1640,7 +1640,6 @@
     "packages/support/src/link/sender.ts": 3,
     "packages/support/src/link/sender.workers.test.ts": 1,
     "packages/support/src/migrations/0002_assignment.ts": 1,
-    "packages/support/src/mime/parse.test.ts": 1,
     "packages/support/src/mime/parse.ts": 2,
     "packages/support/src/presence/room.ts": 2,
     "packages/support/src/provision/provisionSupport.test.ts": 2,

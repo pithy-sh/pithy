@@ -56,3 +56,36 @@ describe("classifyInbound", () => {
     expect(c.type).toBe("ignore");
   });
 });
+
+describe("classifyInbound, hostile bodies", () => {
+  /** A bounce-shaped message: `Action: failed` reaches the DSN branch, then `filler` as the rest of the body. */
+  function bounceWith(filler: string): string {
+    return ["From: stranger@example.net", "To: bounces@pithy.sh", "Subject: x", "", "Action: failed", filler].join(
+      "\r\n",
+    );
+  }
+
+  test("thirty thousand unclosed Message-ID lines classify in linear time", () => {
+    // Each `Message-ID: <` with no `>` on its line is a candidate match. A pattern that lets the id run
+    // across line ends scans to the end of the message from every one of them.
+    const raw = bounceWith(Array.from({ length: 30_000 }, () => "Message-ID: <a").join("\r\n"));
+
+    const started = performance.now();
+    const c = classifyInbound({ raw });
+    expect(performance.now() - started).toBeLessThan(1_500);
+    expect(c.type).toBe("hard");
+    expect(c.originalMessageId).toBeUndefined();
+  });
+
+  test("a Message-ID never runs onto the next line", () => {
+    const c = classifyInbound({ raw: bounceWith("Message-ID: <half\r\nof-an-id@example.com>") });
+    expect(c.originalMessageId).toBeUndefined();
+  });
+
+  test("the last well-formed Message-ID is still the embedded original", () => {
+    const c = classifyInbound({
+      raw: bounceWith(["Message-ID: <outer@example.net>", "", "Message-ID: <send-inner@pithy.sh>"].join("\r\n")),
+    });
+    expect(c.originalMessageId).toBe("send-inner@pithy.sh");
+  });
+});

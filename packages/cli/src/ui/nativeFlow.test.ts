@@ -208,7 +208,7 @@ describe("pithy ui add react-native", () => {
     expect(pkg.devDependencies).toMatchObject({
       "@pithy-sh/ui-react-native": reactNativeStub.devDependencies["@pithy-sh/ui-react-native"],
       vitest: "^4.1.0",
-      "happy-dom": "^20.11.1",
+      "happy-dom": "^21.0.4",
       "@testing-library/react": "16.3.3",
     });
     expect(imported).toContain("@pithy-sh/payments");
