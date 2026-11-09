@@ -11,7 +11,7 @@ import {
 } from "@pithy-sh/core/src/capability/settings";
 
 /**
- * Whether each composed capability's **settings work**, as opposed to being merely present (#411).
+ * Whether each composed capability's **settings work**, as opposed to being merely present.
  *
  * Every other check in this directory asks a presence question — is the option key written, is the binding
  * declared, is the ledger level. All of them can pass while `fromAddress` names a domain nobody onboarded,
@@ -28,8 +28,7 @@ import {
  *
  * It is not a check of its own. Nothing here knows what an email setting is, and nothing here reads a
  * `pithy.manifest.json`: discovery keys on the capability instance, because a manifest is a file a
- * capability package can be shipped without — `@pithy-sh/matchmaking` and `@pithy-sh/rating` both were,
- * from the day they landed until #415 — and a manifest-keyed rule skips such a package in silence.
+ * capability package can be shipped without, and a manifest-keyed rule skips such a package in silence.
  *
  * ## The three rules it exists to keep
  *
@@ -51,10 +50,12 @@ import {
 export interface SettingsScope {
   /** The Worker by its `wrangler.jsonc` name, as the health block and every finding name it. */
   name: string;
-  /** Its directory under `apps/`, which is what `--worker` takes. A scaffold makes it differ from `name` (#711). */
+  /** Its directory under `apps/`, which is what `--worker` takes. A scaffold makes it differ from `name`. */
   directory: string;
   /** Its composed capability instances, app capability included. */
   capabilities: readonly Capability[];
+  /** Its `pithy.worker.jsonc` `ownBindings`, which name the resources it has to itself. */
+  ownBindings?: readonly string[];
 }
 
 /** Which half of a check something came from. The two cost different things and gate on different terms. */
@@ -124,7 +125,12 @@ export interface SettingsCheck {
  * second time could only produce a second answer to one question.
  */
 export type SettingsAccountConnection =
-  | { state: "reachable"; reader: SettingsAccountReader }
+  | {
+      state: "reachable";
+      reader: SettingsAccountReader;
+      /** The reader one Worker's checks ask, by its `apps/` directory: its own vault's manager where it has one. */
+      readerFor?: (workerDirectory: string) => SettingsAccountReader;
+    }
   | { state: "skipped"; reason: SettingsAccountSkip };
 
 /** Everything the runner needs, all of it injectable. */
@@ -149,11 +155,19 @@ export interface CapabilitySettingsOptions {
 }
 
 /** Every composed capability that declares a check, flattened with the Worker it came from. */
-function declared(workers: readonly SettingsScope[]): { worker: string; directory: string; capability: Capability }[] {
-  const found: { worker: string; directory: string; capability: Capability }[] = [];
+function declared(
+  workers: readonly SettingsScope[],
+): { worker: string; directory: string; ownBindings?: readonly string[]; capability: Capability }[] {
+  const found: { worker: string; directory: string; ownBindings?: readonly string[]; capability: Capability }[] = [];
   for (const worker of workers) {
     for (const capability of worker.capabilities) {
-      if (capability.settings) found.push({ worker: worker.name, directory: worker.directory, capability });
+      if (!capability.settings) continue;
+      found.push({
+        worker: worker.name,
+        directory: worker.directory,
+        ...(worker.ownBindings === undefined ? {} : { ownBindings: worker.ownBindings }),
+        capability,
+      });
     }
   }
   return found;
@@ -185,7 +199,7 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
     ? await connectQuietly(options.connect)
     : { state: "skipped", reason: "not-declared" };
 
-  for (const { worker, directory, capability } of entries) {
+  for (const { worker, directory, ownBindings, capability } of entries) {
     const settings = capability.settings;
     if (!settings) continue;
     let context: SettingsCheckContext;
@@ -194,6 +208,7 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
         project: options.project,
         worker,
         workerDirectory: directory,
+        ...(ownBindings === undefined ? {} : { ownBindings }),
         environments: await options.environments(worker),
       };
     } catch {
@@ -215,7 +230,10 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
 
     if (settings.account && connection.state === "reachable") {
       try {
-        for (const finding of await settings.account({ ...context, account: connection.reader })) {
+        for (const finding of await settings.account({
+          ...context,
+          account: connection.readerFor?.(directory) ?? connection.reader,
+        })) {
           findings.push({ ...finding, worker, capability: capability.name, tier: "account" });
         }
       } catch (error) {

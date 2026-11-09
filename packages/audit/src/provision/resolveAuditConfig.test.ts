@@ -11,7 +11,7 @@ const template = parse(
   readFileSync(new URL("../workflows/wrangler.jsonc", import.meta.url), "utf8"),
 ) as unknown as WorkflowHostTemplate;
 
-describe("resolveAuditConfig (#822)", () => {
+describe("resolveAuditConfig", () => {
   test("names the host, its Workflow and its cron for the project and environment", () => {
     const resolved = resolveAuditConfig(template, {
       project: "acme",
@@ -26,6 +26,19 @@ describe("resolveAuditConfig (#822)", () => {
     expect(resolved.triggers).toEqual({ crons: ["20 * * * *"] });
     expect(resolved.d1_databases?.[0]).toMatchObject({ binding: "DB", database_id: "db-123" });
     expect(resolved.r2_buckets).toEqual([{ binding: "AUDIT_CHECKPOINTS", bucket_name: "acme-prod-audit-checkpoints" }]);
+  });
+
+  test("a Worker's own host is named for its owner, and so is its Workflow", () => {
+    const resolved = resolveAuditConfig(template, {
+      project: "acme",
+      env: "staging",
+      owner: "two",
+      auditDatabaseId: "two-db",
+      bucketName: "acme-staging-audit-checkpoints",
+    });
+    expect(resolved.name).toBe("acme-staging-two---audit");
+    expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual(["acme-staging-two---audit-checkpoint"]);
+    expect(resolved.d1_databases?.[0]).toMatchObject({ binding: "DB", database_id: "two-db" });
   });
 
   test("the bucket is the one `pithy provision` creates for the app's binding", () => {

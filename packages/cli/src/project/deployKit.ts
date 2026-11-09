@@ -3,10 +3,12 @@
 
 import { basename, dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { remedy as commandRemedy } from "@pithy-sh/core/src/cli/command";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { managerWorkerName, type OwnedVault } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { parse } from "comment-json";
 import { z } from "zod";
 import { type AddPlan, addAction } from "../capabilities/addCommand";
@@ -23,9 +25,10 @@ import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from "../capabilities/hostRegistry";
 import { resolveAdd } from "../capabilities/notComposed";
 import { capabilityProvisionRemedy } from "../capabilities/provisionCommand";
+import { ownedVaultOf } from "../capabilities/secretsOwner";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
-import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
+import { discoverHostWorkers, type HostWorker, hostWorkerDir } from "../dev/hostWorkers";
 import {
   assertNoFeatureHostCollision,
   type FeatureOwnedIds,
@@ -48,11 +51,10 @@ import { readOptionalWranglerConfig } from "./wrangler";
  * **The kit's own Workers, deployed by the same command that deploys the adopter's.**
  *
  * A deploy is a deploy: `pithy deploy` ships everything the project deploys, and half of that is
- * Workers the adopter never wrote — one per composed capability that owns Workflows. Until #537 the
- * only way to ship one was `pithy <capability> provision`, which also creates buckets, namespaces,
- * databases, secrets and Email Routing rules. Nobody wants that on every merge, so those Workers went
- * stale instead, silently, holding a theme and a base URL and a locale catalog nobody had touched
- * since the day they were provisioned.
+ * Workers the adopter never wrote — one per composed capability that owns Workflows, and one more for each Worker
+ * that owns a binding such a host binds. `pithy <capability> provision` also creates buckets, namespaces,
+ * databases, secrets and Email Routing rules, which nobody wants on every merge; without this pass those Workers
+ * would go stale, silently, holding a theme and a base URL and a locale catalog from the day they were provisioned.
  *
  * **This creates nothing.** Every binding id it needs is read off the project's own tracked
  * `wrangler.jsonc` files — the same read `assertEnvironmentProvisioned` makes — and the two
@@ -70,10 +72,8 @@ import { readOptionalWranglerConfig } from "./wrangler";
  * **And the configuration is the adopter's, from that same discovery.** Reading `apps/` yields the
  * composed `Capability` objects, not just their names, so each host resolves against the project's own
  * `media({ basePath })` or `vector({ indexes })` — byte-identical to what
- * `pithy <capability> provision` would deploy. It did not, at first: five registry entries parsed
- * schema defaults, so this command and the provisioners deployed different configurations of the same
- * Worker and overwrote each other's (#537). `capabilities/hostRegistry.ts` is where that is now
- * impossible to reintroduce, and `hostConfigParity.test.ts` is what holds the two paths equal.
+ * `pithy <capability> provision` would deploy. `hostConfigParity.test.ts` holds the two paths equal, so neither
+ * overwrites the other's configuration of the same Worker.
  *
  * **`env` is always a deployed environment, never `dev`.** A kit Worker in `dev` is `pithy dev`'s: it
  * is materialized under `.wrangler/pithy/hosts/` and run locally, which is also why
@@ -86,6 +86,12 @@ import { readOptionalWranglerConfig } from "./wrangler";
 export const KitWorkerDeploy = z
   .object({
     capability: z.string().describe("The capability that owns the Worker — the row's label."),
+    owner: z
+      .string()
+      .optional()
+      .describe(
+        "The apps/<owner> Worker this is the own host of, because it owns a binding the host binds. Absent for the host the other Workers share.",
+      ),
     worker: z.string().nullable().describe("The deployed script name, or `null` when none was derived."),
     outcome: z
       .enum(["deployed", "unchanged", "skipped", "failed"])
@@ -103,10 +109,9 @@ export type KitWorkerDeploy = z.infer<typeof KitWorkerDeploy>;
  * **The second half is not decoration, and it is not a note in the `pithy dev` sense.** Discovery has
  * two ways to come back short — an app Worker whose `pithy.config.ts` will not load (its capabilities
  * are invisible, so its hosts never enter the set) and a composition that will not assemble (no hosts
- * at all) — and a `KitWorkerDeploy` row cannot carry either, because neither names a capability. With
- * nowhere to put them this returned `[]`, `kitDeployFailed` read `false`, and `pithy deploy --env prod
- * --kit` printed nothing about the kit and exited 0: indistinguishable from a project that composes no
- * kit Worker. That is the silent staleness #537 exists to close, so a problem **fails the command**.
+ * at all) — and a `KitWorkerDeploy` row cannot carry either, because neither names a capability. Dropped, the run
+ * would print nothing about the kit and exit 0, indistinguishable from a project that composes no kit Worker, so a
+ * problem **fails the command**.
  * A skip is a fact about the project and names the command that answers it; a problem means this run
  * cannot say what it should have shipped.
  */
@@ -116,7 +121,7 @@ export interface KitDeployReport {
   /** One sentence per thing that stopped this run knowing the set. Non-empty fails the command. */
   problems: string[];
   /**
-   * **Under `dryRun` only: each Worker the run would upload, and why (#697).** Not a row, because a row's
+   * **Under `dryRun` only: each Worker the run would upload, and why.** Not a row, because a row's
    * `deployed` says an upload happened. The rows that remain are the outcomes a run reaches without one.
    */
   planned?: PlannedKitUpload[];
@@ -126,6 +131,8 @@ export interface KitDeployReport {
 export interface PlannedKitUpload {
   /** The capability that owns the Worker. */
   capability: string;
+  /** The `apps/<owner>` Worker this is the own host of, when it is one. */
+  owner?: string;
   /** The script name the deploy would publish. */
   worker: string;
   /** The sentence the run would print beside `deployed`. */
@@ -142,20 +149,20 @@ export interface DeployKitOptions {
   env: string;
   /**
    * The project's declared environments, least production first. The secrets manager is stamped with the
-   * last as the one environment that rotates a `global` secret (#602); absent, none does.
+   * last as the one environment that rotates a `global` secret; absent, none does.
    */
   environments?: readonly string[];
   /**
    * The project's `seed.productionEnvironments`, beyond `prod`: a skip naming a provision for one of them names it
-   * as a person's decision, never a command to run (#711).
+   * as a person's decision, never a command to run.
    */
   productionEnvironments?: readonly string[];
-  /** The account the project belongs to. Stated by the caller, never defaulted (#206). */
+  /** The account the project belongs to. Stated by the caller, never defaulted. */
   account: CloudflareAccountSelection | null;
   /** Ship every kit Worker regardless of its stamp. */
   force?: boolean;
   /**
-   * `pithy deploy --dry-run` (#697): every gate is asked and every stamp read, and no Worker is uploaded. A
+   * `pithy deploy --dry-run`: every gate is asked and every stamp read, and no Worker is uploaded. A
    * Worker the run would upload lands in {@link KitDeployReport.planned} instead of `workers`.
    */
   dryRun?: boolean;
@@ -170,7 +177,7 @@ export interface DeployKitOptions {
   /** Test seam: run one deploy. Defaults to `wrangler deploy --config`. */
   runDeploy?: RunHostDeploy;
   /**
-   * **The feature being deployed, when `env` is `feature` (#643)** — `pithy deploy --env feature` reads it off
+   * **The feature being deployed, when `env` is `feature`** — `pithy deploy --env feature` reads it off
    * the branch, and `pithy provision --feature` has it in hand. **Every** composed kit Worker is deployed for a
    * feature, named for it; a host any of whose account-wide names is not the feature's fails rather than deploys
    * under a name every branch would share (`feature/hosts.ts`). Absent on a feature, the pass refuses: it cannot
@@ -183,16 +190,27 @@ export interface DeployKitOptions {
    */
   ids?: { storeId?: string; accountId?: string };
   /**
-   * **The D1 databases and KV namespaces the feature owns, id → name (#643)** — what the host gate follows a bound
+   * **The D1 databases and KV namespaces the feature owns, id → name** — what the host gate follows a bound
    * id to. Defaults to asking the account under the resolved credentials, by the feature's own names. With
    * neither, the feature owns nothing a config could bind by id, and a host binding one is refused.
    */
-  featureOwned?: (identity: FeatureIdentity, capabilities: readonly Capability[]) => Promise<FeatureOwnedIds>;
+  featureOwned?: (
+    identity: FeatureIdentity,
+    capabilities: readonly Capability[],
+    owners: readonly { worker: string; ownBindings: readonly string[] }[],
+  ) => Promise<FeatureOwnedIds>;
   /**
    * Test seam: whether the account's Secrets Store holds an entry. Defaults to asking the store under the resolved
    * credentials; with none, nothing is asked and wrangler's own refusal is the check, as before.
    */
   secretEntryExists?: SecretEntryExists;
+  /**
+   * Test seam: the shared secrets manager's own vault id, when every Worker composing `secrets` owns `SECRETS` and so
+   * no stanza names it. Defaults to asking the account for the D1 `pithy secrets provision` created under the
+   * manager's name; with no credentials, nothing is asked and the shared manager is a skipped row saying it was not
+   * checked.
+   */
+  sharedVaultId?: () => Promise<string | undefined>;
 }
 
 /** Whether the Secrets Store `storeId` holds an entry named `name`. A read: it never writes. */
@@ -221,19 +239,16 @@ function isId(value: string | undefined): boolean {
  * One Worker's stanza for this environment — the tracked `wrangler.jsonc` for a declared environment,
  * the generated config under `.wrangler/` for a feature.
  *
- * Provisioning writes a feature's ids into a generated config rather than into the tracked file
- * (#242). Reading the tracked file for a feature would find placeholders and report every kit Worker
- * as unprovisioned.
+ * Provisioning writes a feature's ids into a generated config rather than into the tracked file. Reading the
+ * tracked file for a feature would find placeholders and report every kit Worker as unprovisioned.
  *
- * **The same resolver decides which file, and that is now the only thing the two halves share (#579).**
- * `pithy deploy` used to hand wrangler `--config <generated>` for every feature deploy; it does so only
- * for a Worker with no front end now, because an explicit `--config` beats the build-output redirect and
- * the source config carries no `assets.directory`. A kit Worker is never built by Vite and has no
- * redirect, so nothing about this reader changes — it just no longer describes the deploy argv.
+ * **The same resolver decides which file, and that is the only thing this shares with the deploy argv.**
+ * `pithy deploy` hands wrangler `--config <generated>` only for a Worker with no front end, because an explicit
+ * `--config` beats the build-output redirect. A kit Worker is never built by Vite and has no redirect.
  */
 async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza | undefined> {
   if (!isSourceEnvironment(env)) {
-    // **`env.feature`, never the whole file (#643).** The generated config is the tracked one with a feature
+    // **`env.feature`, never the whole file.** The generated config is the tracked one with a feature
     // stanza added, so its top level is `dev`'s: its ids are the local binding names and its address is
     // nothing, and reading it had every kit Worker on a feature skipped for having no database. JSONC, as
     // every config the kit writes is — comments survive generation, and `JSON.parse` would refuse them.
@@ -257,15 +272,38 @@ async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza |
  * Every D1 binding this environment has an id for, across the project's app Workers.
  *
  * The id is read off the tracked stanza, nothing is created to learn it, and the first declaration wins
- * — exactly as two Workers declaring `DB` are backed by one D1. No kit Worker binds a KV namespace by
- * id since media's KV record store was removed (#727), so databases are the one kind there is to read.
+ * — exactly as two Workers declaring `DB` are backed by one D1. A binding a Worker owns is not shared, so its id
+ * never enters this set; that Worker's own host reads it ({@link ownedDatabaseIds}). No kit Worker binds a KV
+ * namespace by id, so databases are the one kind there is to read.
  */
-function collectDatabaseIds(stanzas: readonly KitStanza[]): Record<string, string> {
+function collectDatabaseIds(
+  declared: readonly { stanza: KitStanza; ownBindings?: readonly string[] }[],
+): Record<string, string> {
   const ids: Record<string, string> = {};
-  for (const stanza of stanzas) {
-    const entries = (stanza.d1_databases ?? []).map((entry) => ({ binding: entry.binding, id: entry.database_id }));
-    for (const entry of entries) {
-      if (entry.binding && isId(entry.id) && ids[entry.binding] === undefined) ids[entry.binding] = entry.id as string;
+  for (const { stanza, ownBindings } of declared) {
+    const owned = new Set(ownBindings ?? []);
+    for (const entry of stanza.d1_databases ?? []) {
+      if (!entry.binding || owned.has(entry.binding)) continue;
+      if (isId(entry.database_id) && ids[entry.binding] === undefined) ids[entry.binding] = entry.database_id as string;
+    }
+  }
+  return ids;
+}
+
+/**
+ * The ids a Worker's own host resolves against: the shared ones, with that Worker's own database in place of each
+ * binding it owns. An owned binding its stanza gives no id is left out, so the host skips as unprovisioned rather
+ * than binding the shared database.
+ */
+function ownedDatabaseIds(
+  shared: Record<string, string>,
+  stanza: KitStanza | undefined,
+  owned: readonly string[],
+): Record<string, string> {
+  const ids = Object.fromEntries(Object.entries(shared).filter(([binding]) => !owned.includes(binding)));
+  for (const entry of stanza?.d1_databases ?? []) {
+    if (entry.binding && owned.includes(entry.binding) && isId(entry.database_id)) {
+      ids[entry.binding] = entry.database_id as string;
     }
   }
   return ids;
@@ -280,7 +318,7 @@ function collectDatabaseIds(stanzas: readonly KitStanza[]): Record<string, strin
  * than a guess: a kit Worker resolved against an invented origin sends real links to nowhere.
  */
 async function baseUrlFor(worker: WorkerTarget, env: string, stanza: KitStanza | undefined): Promise<string | null> {
-  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  // The load may fail for a reason this reader forgives; a refused declaration is not one.
   let config: WorkerConfig | undefined;
   try {
     config = await loadWorkerConfig(worker.dir);
@@ -321,7 +359,7 @@ function storeEntryReader(credentials: { accountId: string; apiToken: string }):
  * **Every Secrets Store entry a kit Worker's config binds must exist, or the Worker is not deployed.** Cloudflare
  * refuses a deploy whose `secrets_store_secrets` entry names a secret that is not there — `secretsStoreBindings`
  * states the same rule for an app Worker. Without this, a project that upgraded and ran `pithy deploy` redeployed
- * the secrets manager against `PITHY_FIELD_KEYS`, an entry only `pithy secrets provision` mints (#390). The ids and
+ * the secrets manager against `PITHY_FIELD_KEYS`, an entry only `pithy secrets provision` mints. The ids and
  * vars above are checked the same way, so this is a skip that names the command, never a failed upload.
  */
 async function absentStoreEntries(
@@ -337,9 +375,12 @@ async function absentStoreEntries(
   return [...new Set(absent)].sort();
 }
 
+/** What a row is labeled with: the capability, and the Worker it is the own host of, when it is one. */
+type RowLabel = Pick<KitWorkerDeploy, "capability" | "owner">;
+
 /** The row a capability gets when this project cannot deploy its Worker yet. */
-function skipped(capability: string, reason: string): KitWorkerDeploy {
-  return { capability, worker: null, outcome: "skipped", reason };
+function skipped(label: RowLabel, reason: string): KitWorkerDeploy {
+  return { ...label, worker: null, outcome: "skipped", reason };
 }
 
 /**
@@ -351,8 +392,8 @@ function skipped(capability: string, reason: string): KitWorkerDeploy {
  *
  * **And it does not throw, either.** It runs after the adopter's Workers have already shipped, so a
  * throw from the pass itself — `apps/` unreadable, a Worker named after a capability's host, an
- * account client that will not build — took the `--json` line down with it and left a CI step with no
- * `workers[]` payload for Workers that were already live. Every such failure is a problem on the
+ * account client that will not build — would take the `--json` line down with it and leave a CI step with no
+ * `workers[]` payload for Workers that are already live. Every such failure is a problem on the
  * report instead, beside whatever rows the run had reached. `--json` prints, and the exit code still
  * says it failed.
  */
@@ -395,7 +436,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
     );
     return;
   }
-  // An app Worker named like a kit host would deploy over it, or it over the app (F3 of #643's review).
+  // An app Worker named like a kit host would deploy over it, or it over the app.
   if (options.feature) {
     assertNoFeatureHostCollision(
       options.feature,
@@ -414,13 +455,18 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
   const readVars = options.readVars ?? (credentials ? await workersVarsReader(credentials) : undefined);
   const secretEntryExists = options.secretEntryExists ?? (credentials ? storeEntryReader(credentials) : undefined);
 
-  // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else (#643).
+  // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else.
   let owned: FeatureOwnedIds | undefined;
   if (options.feature) {
-    const [first] = hosts;
-    const capabilities = first ? [first.composed, ...first.siblings] : [];
+    // Every host's composition, and each Worker that owns a binding: an owned host binds its owner's own database.
+    const capabilities = hosts.flatMap((host) => [host.composed, ...host.siblings]);
+    const owners = workers.flatMap((worker) =>
+      (worker.ownBindings ?? []).length > 0
+        ? [{ worker: basename(worker.dir), ownBindings: worker.ownBindings ?? [] }]
+        : [],
+    );
     owned = options.featureOwned
-      ? await options.featureOwned(options.feature, capabilities)
+      ? await options.featureOwned(options.feature, capabilities, owners)
       : credentials
         ? await featureOwnedIds(
             cloudflareProvisioners(await cloudflareClients(credentials), {
@@ -429,14 +475,55 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
             }),
             options.feature,
             capabilities,
+            owners,
           )
         : { d1: new Map(), kv: new Map() };
   }
 
   const stanzas = new Map<string, KitStanza | undefined>();
   for (const worker of workers) stanzas.set(worker.dir, await stanzaFor(worker, options.env));
-  const declared = [...stanzas.values()].filter((stanza) => stanza !== undefined);
+  const declared = workers.flatMap((worker) => {
+    const stanza = stanzas.get(worker.dir);
+    return stanza ? [{ stanza, ownBindings: worker.ownBindings ?? [] }] : [];
+  });
   const databaseIds = collectDatabaseIds(declared);
+  // **The shared secrets manager rotates every owned vault, so it ships whenever an owner's manager does.** With every
+  // Worker composing `secrets` owning `SECRETS`, discovery finds no Worker sharing it, and its vault is named by no
+  // stanza: it is the D1 `pithy secrets provision` created under the manager's own name.
+  const sharedManager = options.feature ? undefined : sharedManagerFor(hosts, options.projectDir);
+  let sharedManagerIds: Record<string, string> | undefined;
+  if (sharedManager) {
+    const name = managerWorkerName(options.project, options.env);
+    const lookup =
+      options.sharedVaultId ??
+      (credentials
+        ? async () =>
+            (await (await cloudflareClients(credentials)).d1Provisioner().findDatabaseByName(name))?.uuid ?? undefined
+        : undefined);
+    // Wrangler deploys the owners' Workers on its own login, but finding the shared vault needs the API pair.
+    const vaultId = lookup ? await lookup() : undefined;
+    if (lookup === undefined) {
+      const row = skipped(
+        { capability: "secrets" },
+        `${name} was not checked: finding its vault needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN. Export both and deploy again to redeploy it.`,
+      );
+      rows.push(row);
+      settleStep(summarizeKitDeploy(row), { kit: row });
+    } else if (vaultId === undefined) {
+      problems.push(
+        `${name} is not on the account, and it alone rotates the master key every owned vault is sealed under. ${provisionSecrets(options)}`,
+      );
+    } else {
+      hosts.push(sharedManager);
+      sharedManagerIds = { ...databaseIds, SECRETS: vaultId };
+    }
+  }
+  // Each Worker's own vault, under the environment's one master key: the shared manager re-seals them all.
+  const ownedVaults = hosts.flatMap((host) => {
+    if (host.capability !== "secrets" || !host.owner?.bindings.includes("SECRETS")) return [];
+    const vault = ownedVaultOf(host.owner.worker, stanzas.get(host.sourceDir));
+    return vault ? [vault] : [];
+  });
 
   for (const host of hosts) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
@@ -446,9 +533,14 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
       options,
       readTemplate,
       readVars,
-      databaseIds,
+      databaseIds: host.owner
+        ? ownedDatabaseIds(databaseIds, stanzas.get(host.sourceDir), host.owner.bindings)
+        : host === sharedManager && sharedManagerIds
+          ? sharedManagerIds
+          : databaseIds,
       ...(owned ? { owned } : {}),
       stanza: stanzas.get(host.sourceDir),
+      ownedVaults,
       storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
       accountId: options.ids?.accountId ?? vars.CLOUDFLARE_ACCOUNT_ID,
       ...(secretEntryExists ? { secretEntryExists } : {}),
@@ -459,7 +551,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
       continue;
     }
     rows.push(row);
-    // **The row, as it settles (#578).** The `▸` line for the ones that actually upload comes from
+    // **The row, as it settles.** The `▸` line for the ones that actually upload comes from
     // `deployHostWorker`, which is where the spawn is; this is the outcome, and it covers the three
     // that never reach a spawn at all — unchanged, skipped, failed — so every capability in the set
     // accounts for itself while the run is still going rather than in a block at the end.
@@ -468,13 +560,41 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
 }
 
 /**
+ * The shared secrets manager a run must also deploy, or `undefined` when discovery already found it or no Worker owns
+ * `SECRETS`. Its composition is the first owner's, with the sibling capabilities of every owner: the shared manager
+ * rotates every store-backed value and the master key for them all, and an owner's own manager rotates only its vault's
+ * values.
+ */
+function sharedManagerFor(hosts: readonly HostWorker[], projectDir: string): HostWorker | undefined {
+  const managers = hosts.filter((host) => host.capability === "secrets");
+  if (managers.some((host) => host.owner === undefined)) return undefined;
+  const [first] = managers;
+  if (first === undefined) return undefined;
+  const siblings = new Map<string, Capability>();
+  for (const host of managers)
+    for (const one of host.siblings) if (!siblings.has(one.name)) siblings.set(one.name, one);
+  const { owner: _owner, ...shared } = first;
+  return {
+    ...shared,
+    siblings: [...siblings.values()],
+    worker: { ...first.worker, name: "secrets", dir: hostWorkerDir(projectDir, "secrets") },
+  };
+}
+
+/** The provision that creates the shared secrets manager, as a command or, for production, a person's decision. */
+function provisionSecrets(options: DeployKitOptions): string {
+  return commandRemedy("secrets provision", {}, { productionEnvironments: options.productionEnvironments ?? [] }).say(
+    (command) => `Run ${command}, then deploy again.`,
+  );
+}
+
+/**
  * The two account-scoped ids a kit Worker's config can carry, and what a Worker deployed without one
  * would actually be.
  *
- * **These are the readiness holes a `database_id` check cannot see.** A missing D1 id was already a
- * skip; `SECRETS_STORE_ID` and `CLOUDFLARE_ACCOUNT_ID` went through as `""` and the row printed
- * `deployed` — a Worker bound to `store_id: ""`, unable to read the master key that decrypts every
- * secret it holds, reported as a success (#537). Both are account-scoped rather than per environment,
+ * **These are the readiness holes a `database_id` check cannot see.** Passed through as `""`, either would
+ * deploy a Worker bound to `store_id: ""`, unable to read the master key that decrypts every secret it holds,
+ * and report it as a success. Both are account-scoped rather than per environment,
  * which is why neither is in the repository: `pithy add secrets` writes the store id into
  * `~/.config/pithy`, and a CI runner has no such file unless the job exports it — which is precisely
  * the job `pithy deploy --kit` exists for.
@@ -485,7 +605,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
  */
 const REQUIRED_VARS: Record<string, (capability: string, recordWith: AddPlan) => string> = {
   // The Worker that composes the capability composes `secrets` too, as every host that asks for the store
-  // declares it, so `pithy add secrets` on that Worker is the one that records it (#711).
+  // declares it, so `pithy add secrets` on that Worker is the one that records it.
   SECRETS_STORE_ID: (capability, recordWith) =>
     `SECRETS_STORE_ID is not set, so ${capability}'s Worker would deploy unable to read its master key. ${addAction(recordWith, (add) => `Run ${add} on this machine, or export SECRETS_STORE_ID for this run.`)}`,
   CLOUDFLARE_ACCOUNT_ID: (capability, recordWith) =>
@@ -511,7 +631,7 @@ function readinessReason(input: {
   missingIds: readonly { kind: "database"; binding: string }[];
   missingVars: readonly string[];
   capability: string;
-  /** The `pithy add secrets` that records the account's values, on the Worker that composes it (#711). */
+  /** The `pithy add secrets` that records the account's values, on the Worker that composes it. */
   recordWith: AddPlan;
   env: string;
   provision: string;
@@ -535,9 +655,11 @@ async function deployOneKitWorker(input: {
   readTemplate: (projectDir: string, entry: string) => Promise<WorkflowHostTemplate>;
   readVars: ReadWorkerVars | undefined;
   databaseIds: Record<string, string>;
-  /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to (#643). */
+  /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to. */
   owned?: FeatureOwnedIds;
   stanza: KitStanza | undefined;
+  /** The vaults of the Workers that own `SECRETS`, which the shared secrets manager binds. */
+  ownedVaults: readonly OwnedVault[];
   storeId: string | undefined;
   accountId: string | undefined;
   /** Whether a Secrets Store entry exists. Absent: nothing is asked. */
@@ -545,11 +667,12 @@ async function deployOneKitWorker(input: {
 }): Promise<KitWorkerDeploy | { planned: PlannedKitUpload }> {
   const { host, options } = input;
   const capability = host.capability;
-  if (!input.source) return skipped(capability, `No Worker in apps/ composes ${capability} any more.`);
+  const label: RowLabel = { capability, ...(host.owner ? { owner: host.owner.worker } : {}) };
+  if (!input.source) return skipped(label, `No Worker in apps/ composes ${capability} any more.`);
   // The builder names `--env` only for a provision that declares it: most span every environment and would refuse
-  // the flag (#594), while `vector provision` acts on one and defaults to dev, so a staging skip that left it out
-  // named a provision of dev that never clears the skip (#711). And the Worker that composes it, by name: in a
-  // project with several, a bare provision is refused (#711).
+  // the flag, while `vector provision` acts on one and defaults to dev, so a staging skip that left it out
+  // would name a provision of dev that never clears the skip. And the Worker that composes it, by name: in a
+  // project with several, a bare provision is refused.
   const remedy =
     options.env === FEATURE_ENVIRONMENT
       ? provisionRemedy(FEATURE_ENVIRONMENT)
@@ -563,7 +686,7 @@ async function deployOneKitWorker(input: {
   const baseUrl = await baseUrlFor(input.source, options.env, input.stanza);
   if (baseUrl === null) {
     return skipped(
-      capability,
+      label,
       `${input.source.name} composes ${capability} and has no ${options.env} address, so the links it sends would go nowhere. Declare domains.${options.env} in its pithy.config.ts.`,
     );
   }
@@ -575,8 +698,7 @@ async function deployOneKitWorker(input: {
   //
   // The three accessors below are the whole readiness check, and it is deliberately *not* a list of
   // things this file knows each capability needs: a tenth host asking for an eleventh id is covered by
-  // the accessor it calls. Before #537 only `databaseId` recorded anything, so the store id and the
-  // account id passed through empty and the row printed `deployed`.
+  // the accessor it calls.
   const missingIds: { kind: "database"; binding: string }[] = [];
   const missingVars: string[] = [];
   const required = (kind: "database", ids: Record<string, string>, binding: string): string => {
@@ -597,6 +719,7 @@ async function deployOneKitWorker(input: {
 
   let config: WorkflowHostTemplate;
   try {
+    host.assemble?.();
     const template = await input.readTemplate(options.projectDir, host.spec.entry);
     config = await host.spec.resolve(template, {
       projectDir: options.projectDir,
@@ -606,24 +729,28 @@ async function deployOneKitWorker(input: {
       databaseId: (binding) => required("database", input.databaseIds, binding),
       storeId: () => requiredVar("SECRETS_STORE_ID", input.storeId),
       accountId: () => requiredVar("CLOUDFLARE_ACCOUNT_ID", input.accountId),
-      // The encrypted columns, for the secrets manager alone (#390): derived from every app Worker's schemas, with
+      // The encrypted columns, for the secrets manager alone: derived from every app Worker's schemas, with
       // the database ids this environment's stanzas declare. A feature's manager is stamped with none.
       ...(options.feature || options.env === FEATURE_ENVIRONMENT
         ? {}
-        : { encryptedColumns: () => projectEncryptedColumns({ projectDir: options.projectDir, env: options.env }) }),
+        : {
+            encryptedColumns: () => projectEncryptedColumns({ projectDir: options.projectDir, env: options.env }),
+            ownedVaults: async () => input.ownedVaults,
+          }),
       // **The adopter's own composed capability, which is the entire point of reading `apps/`.**
       // `discoverHostWorkers` already loaded each Worker's `pithy.config.ts` to decide the host set, so
       // the configured object is right here — and passing it is what makes `pithy deploy --kit` ship
-      // the same config `pithy <capability> provision` does rather than schema defaults (#537).
+      // the same config `pithy <capability> provision` does rather than schema defaults.
       capability: host.composed,
       siblings: host.siblings,
+      ...(host.owner ? { owner: host.owner } : {}),
       ...(options.environments === undefined ? {} : { environments: options.environments }),
       ...(options.feature ? { feature: options.feature } : {}),
     });
   } catch (error) {
-    return { capability, worker: null, outcome: "failed", reason: failureReason(error) };
+    return { ...label, worker: null, outcome: "failed", reason: failureReason(error) };
   }
-  // **A feature's host is named for the feature, or it is not deployed (#643).** A resolver that does not read
+  // **A feature's host is named for the feature, or it is not deployed.** A resolver that does not read
   // the feature composes `<project>-feature-<capability>`: one Worker, and one set of Workflows, buckets and keys,
   // that every open branch would deploy over every other's. Checked against every account-wide name the config
   // carries, not a list of resolvers that honor the feature, so a host added to the registry is held to it too.
@@ -631,7 +758,7 @@ async function deployOneKitWorker(input: {
     const leaks = featureHostNameLeaks(config, options.feature, input.owned);
     if (leaks.length > 0) {
       return {
-        capability,
+        ...label,
         worker: null,
         outcome: "failed",
         reason: `${capability}'s Worker would bind what is not this feature's: ${leaks.join("; ")}. A feature's kit Worker binds only the feature's own.`,
@@ -646,18 +773,18 @@ async function deployOneKitWorker(input: {
     env: options.env,
     provision,
   });
-  if (shortfall) return skipped(capability, shortfall);
+  if (shortfall) return skipped(label, shortfall);
 
   try {
     const absent = await absentStoreEntries(config, input.secretEntryExists);
     if (absent.length > 0) {
       return skipped(
-        capability,
+        label,
         `${capability}'s Worker binds ${absent.join(", ")}, and the Secrets Store has no such ${absent.length === 1 ? "entry" : "entries"} yet. ${provision}`,
       );
     }
     // The peers this composition hands a host that composes nothing — the ledger to payments' reconcile host,
-    // auth to testers' — written as the entry it deploys from. Undefined for every other host (#645).
+    // auth to testers' — written as the entry it deploys from. Undefined for every other host.
     const entry = hostEntrySource(options.projectDir, host.spec, host.composed, host.siblings);
     const hostOptions: HostDeployOptions = {
       capability,
@@ -670,8 +797,8 @@ async function deployOneKitWorker(input: {
       readVars: input.readVars,
       runDeploy: options.runDeploy,
       // The **selection**, not `input.credentials`. It re-resolves to the same pair and carries the
-      // `cloudflare.accountId` pin with it, so #206's refusal still fires — where a pair that resolved
-      // incomplete would have arrived here as `null` and read the default credentials file (#555).
+      // `cloudflare.accountId` pin with it, so a pinned account the credentials contradict is still refused —
+      // where a pair that resolved incomplete would arrive here as `null` and read the default credentials file.
       account: options.account,
       force: options.force,
     };
@@ -679,13 +806,13 @@ async function deployOneKitWorker(input: {
       // The gate, and nothing after it: the same verdict and the same refusals, no temporary config, no upload.
       const plan = await planHostDeploy(hostOptions);
       return plan.deploy
-        ? { planned: { capability, worker: plan.worker, reason: plan.reason } }
-        : { capability, worker: plan.worker, outcome: "unchanged", reason: plan.reason };
+        ? { planned: { ...label, worker: plan.worker, reason: plan.reason } }
+        : { ...label, worker: plan.worker, outcome: "unchanged", reason: plan.reason };
     }
     const outcome = await deployHostWorker(hostOptions);
-    return { capability, worker: outcome.worker, outcome: outcome.outcome, reason: outcome.reason };
+    return { ...label, worker: outcome.worker, outcome: outcome.outcome, reason: outcome.reason };
   } catch (error) {
-    return { capability, worker: config.name, outcome: "failed", reason: failureReason(error) };
+    return { ...label, worker: config.name, outcome: "failed", reason: failureReason(error) };
   }
 }
 

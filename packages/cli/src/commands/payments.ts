@@ -11,13 +11,14 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
-import { hostWorkerFor } from "../capabilities/hostRegistry";
+import { type HostOwner, hostWorkerFor, provisionHostOwner } from "../capabilities/hostRegistry";
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import {
   CloudflarePaymentsProvisioner,
   loadPayments,
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
@@ -107,16 +108,13 @@ type PaymentsSource = { kind: "worker"; worker?: string } | { kind: "project" };
  * does still throw, because by the time an environment is ready a missing secrets store is a genuine
  * failure rather than a not-yet.
  *
- * The app database id is a lookup rather than a file read because the decision it used to make is now made
- * once, before anything is deployed: an environment with no app database is skipped and reported instead
- * of failing the run part way through (#512).
+ * The app database id is a lookup rather than a file read because whether an environment has one is decided
+ * once, before anything is deployed: an environment with no app database is skipped and reported instead of
+ * failing the run part way through.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc` under `apps/<name>/` and
- * **there is no root Worker** (CLAUDE.md §CLI), so a project with several names one with `--worker` and one
- * Worker needs no ceremony — the shape `pithy email` and `pithy support` already had. This command read
- * `<root>/wrangler.jsonc` instead, a file no scaffolded project has, so every run died on a missing file
- * before it reached the partition, the skip, the report or the exit code: #512 claimed six commands and
- * delivered two.
+ * **there is no root Worker**, so a project with several names one with `--worker` and one Worker needs no
+ * ceremony — the shape `pithy email` and `pithy support` share.
  */
 function buildResolveEnv(
   /** The partition this run acts on, memoized — `reconcile` shares the builder and never resolves one. */
@@ -129,25 +127,27 @@ function buildResolveEnv(
    */
   project: string,
   /**
-   * The account the secrets database is looked for on, and what vouches for it (#378).
+   * The account the secrets database is looked for on, and what vouches for it.
    *
    * The refusal below reads a missing database as "provision it first". Against an account nothing
    * claims, that database is missing because this run asked the wrong account — and the sentence sends
    * an operator to run a provisioning command they have already run.
    */
   account: ConfirmedAccount,
+  /** The Worker that owns `SECRETS`, whose own vault the host reads; absent, the shared one. */
+  vaultOwner?: string,
 ): (env: ManagedEnvironment) => Promise<PaymentsEnvResources> {
   return async (env) => {
     const { appDatabaseId } = readyStanza((await appReadiness()).readiness, env);
     const secretsDb = await findOnConfirmedAccount({
       ...account,
-      what: `the ${managerWorkerName(project, env)} database`,
-      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
+      what: `the ${managerWorkerName(project, env, undefined, vaultOwner)} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env, undefined, vaultOwner)),
     });
     if (!secretsDb) {
       throw secretsDatabaseMissing(
         env,
-        managerWorkerName(project, env),
+        managerWorkerName(project, env, undefined, vaultOwner),
         "the reconcile worker reads the rails' credentials from it.",
       );
     }
@@ -173,10 +173,12 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
   });
   // A run that writes into a Worker reads the catalog off **that** Worker, in the same resolution that names
   // it — the reconcile worker is deployed with the catalog of the Worker whose stanza gets its binding, never
-  // a sibling's (#590 review). `reconcile` resolves no Worker: it dispatches into an already-deployed
+  // a sibling's. `reconcile` resolves no Worker: it dispatches into an already-deployed
   // Workflow, and resolving one would be a new way for a support query to fail.
   let appWorker: ResolvedWorker | undefined;
   let composed: Capability | undefined;
+  // A Worker that owns what the reconcile host binds gets a host of its own; one that owns SECRETS, its own vault.
+  let owner: HostOwner | undefined;
   let paymentsConfig: Awaited<ReturnType<typeof loadProjectPaymentsConfig>>;
   if (source.kind === "worker") {
     const { isPaymentsCapability } = await loadPayments(projectDir);
@@ -188,12 +190,13 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
     });
     appWorker = resolved.worker;
     composed = resolved.capability;
+    owner = provisionHostOwner(resolved.capability, resolved.worker.target);
     paymentsConfig = resolved.capability.paymentsConfig;
   } else {
     paymentsConfig = await loadProjectPaymentsConfig(projectDir);
   }
   // Which environments a run can act on, read once per run and memoized. An environment whose app database
-  // is not provisioned yet is skipped and reported, never fatal (#512). A thunk rather than an eager read,
+  // is not provisioned yet is skipped and reported, never fatal. A thunk rather than an eager read,
   // because only `provision` deploys and reads a stanza.
   let readiness: Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }> | undefined;
   const appReadiness = () => {
@@ -222,6 +225,7 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
     environments,
     appReadiness,
     paymentsConfig,
+    owner,
     provisioner: new CloudflarePaymentsProvisioner({
       cf,
       projectDir,
@@ -231,12 +235,19 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
       storeId,
       paymentsConfig,
       // The ledger, handed to the reconcile host when the catalog credits a balance — asked only when a deploy
-      // runs, which is only ever from a resolved Worker (#645).
+      // runs, which is only ever from a resolved Worker.
       hostEntry: () => {
         const spec = hostWorkerFor("payments");
         return spec && composed ? hostEntrySource(projectDir, spec, composed, []) : undefined;
       },
-      resolveEnv: buildResolveEnv(appReadiness, cf, project, account),
+      resolveEnv: buildResolveEnv(
+        appReadiness,
+        cf,
+        project,
+        account,
+        appWorker === undefined ? undefined : secretsOwnerOf(appWorker),
+      ),
+      ...(owner ? { owner } : {}),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
@@ -282,7 +293,7 @@ const PaymentsReconcilePayload = z
   .describe("What `pithy payments reconcile` found.");
 
 /**
- * **`pithy payments reconcile --dry-run`, as the one plan every dry run shares (#697).** The pass runs in
+ * **`pithy payments reconcile --dry-run`, as the one plan every dry run shares.** The pass runs in
  * the deployed Workflow and reports the drift it would repair; that count is the plan's one `repair`. The
  * run itself is a Workflow instance started on Cloudflare, which a dry run starts too — the one dry run
  * that calls Cloudflare to plan — so the plan says so rather than leaving it to be discovered.
@@ -314,7 +325,7 @@ const provision = withContract(
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
-        const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, {
+        const { provisioner, project, appReadiness, owner } = await buildProvisioner(projectDir, {
           kind: "worker",
           ...(args.worker !== undefined ? { worker: args.worker } : {}),
         });
@@ -337,18 +348,23 @@ const provision = withContract(
           // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
           // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
           await applyAppBindings(appWorker.dir, env, {
-            workflows: appWorkflowBindings(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env }),
+            workflows: appWorkflowBindings(paymentsWorkflowRegistry, {
+              project,
+              capability: PAYMENTS_CAPABILITY,
+              env,
+              ...(owner ? { owner: owner.worker } : {}),
+            }),
           });
         }
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
-        // resolved when none was named (#711).
+        // resolved when none was named.
         const again = rerunRemedy(callerOf("payments provision", args), {
           flags: { "--worker": workerDirName(appWorker) },
           productionEnvironments: readiness.productionEnvironments,
         });
         if (args.json) {
-          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          // One outcome: the error line alone when nothing was provisioned, or this report alone.
           writeProvisionReport(
             {
               command: "payments provision",
@@ -399,6 +415,11 @@ const reconcile = withContract(
       // identifier the config and the credential bundle key on. A help line that lists three of four rails
       // is why somebody types the fourth as a guess.
       rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, lemonSqueezy, or paddle" },
+      worker: {
+        type: "string",
+        description:
+          "Reconcile through this Worker's own reconcile host, when it owns what the host binds (default: the shared host)",
+      },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
@@ -415,7 +436,11 @@ const reconcile = withContract(
         // project's own config, so the whole check still happens before any Cloudflare client is built.
         requireProjectName(config);
         const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
-        const { provisioner } = await buildProvisioner(projectDir, { kind: "project" });
+        // A named Worker's own reconcile host, which reads that Worker's purchases, where it has one.
+        const { provisioner } = await buildProvisioner(
+          projectDir,
+          args.worker === undefined ? { kind: "project" } : { kind: "worker", worker: args.worker },
+        );
         const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments(projectDir);
 
         // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape
@@ -479,7 +504,7 @@ const reconcile = withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: PaymentsReconcilePayload,
     // Repairs drift, unless `--dry-run`.

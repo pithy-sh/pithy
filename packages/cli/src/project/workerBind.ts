@@ -47,7 +47,7 @@ import {
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 
 /**
- * **`pithy worker bind` and `unbind`: an app declares a service binding to another Worker of its project (#617).**
+ * **`pithy worker bind` and `unbind`: an app declares a service binding to another Worker of its project.**
  *
  * The declaration lives in the binding app's own `pithy.config.ts`, as an entry in its app capability's
  * `requiredBindings` — the shape a capability's service binding already has, so provisioning, `worker sync`,
@@ -129,7 +129,12 @@ export async function readServiceProject(options: ServiceProjectOptions): Promis
     const read = options.loadConfig ?? load;
     const found: ServiceWorker[] = [];
     for (const target of targets) {
-      const names = { app: basename(target.dir), dir: target.dir, deployedAs: target.name };
+      const names = {
+        app: basename(target.dir),
+        dir: target.dir,
+        deployedAs: target.name,
+        ...(target.ownBindings && target.ownBindings.length > 0 ? { ownBindings: target.ownBindings } : {}),
+      };
       try {
         // Fresh: `bind` writes this file and `unbind` may read it back in the same process.
         const config = await read(target.dir, { fresh: true });
@@ -142,6 +147,7 @@ export async function readServiceProject(options: ServiceProjectOptions): Promis
           ],
           services: appServices(config),
           capabilities: capabilities.map((capability) => capability.name),
+          composed: capabilities,
         });
       } catch (error) {
         // No `pithy.config.ts` at all is a Worker with nothing declared. Anything else is a config that broke.
@@ -157,7 +163,7 @@ export async function readServiceProject(options: ServiceProjectOptions): Promis
     }
     return found;
   });
-  // **A target named by its deploy name is the same Worker (#617).** `pithy provision` has always resolved a
+  // **A target named by its deploy name is the same Worker.** `pithy provision` has always resolved a
   // service binding by either name, so every reader here sees one: the directory name, which is what `bind`
   // writes, what the loop check and the deploy order key on, and what `worker remove` asks about.
   const directoryOf = (target: string): string =>
@@ -307,6 +313,7 @@ async function planStanzas(
   return planServiceStanzas({
     workerDir: worker.dir,
     services,
+    from: worker.app,
     scripts: await serviceScripts(name, project.workers),
     remove,
   });

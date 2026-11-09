@@ -4,6 +4,7 @@
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WORKER_NARROWS, WORKER_SCOPED } from "@pithy-sh/core/src/cli/commandFacts";
 import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { email } from "@pithy-sh/email/src/index";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -20,7 +21,7 @@ import { linkKitPackages } from "../test-utils/linkKit";
 import { runCaptured } from "../test-utils/payloadContract";
 
 /**
- * **A `fix` runs as written in a project with two Workers (#697).**
+ * **A `fix` runs as written in a project with two Workers.**
  *
  * `docs/CLI.md` §3.3: a `fix` is "one `pithy` command that rights it, runnable as written". A command that acts
  * on one Worker resolves it with `resolveSingleWorker`, and with two Workers and no `--worker` it refuses
@@ -145,9 +146,9 @@ describe("a fix runs as written in a project with two Workers", () => {
     expect(await resolvesTo(finding?.fix as string)).toBe(join(dir, "apps", "web"));
   });
 
-  test("a fix for a command that spans every Worker is left as it is, and takes no --worker", async () => {
-    // A missing secrets database has no fix any more: the provision that creates it runs against every
-    // environment, production included, a person's decision (#711). A store entry's supply is the same shape.
+  test("a fix for a command that spans every Worker is left as it is, and needs no --worker", async () => {
+    // A missing secrets database has no fix: the provision that creates it runs against every environment,
+    // production included, a person's decision. A store entry's supply is the same shape.
     expect(fixFrom(secretsDatabaseMissing("staging", "acme-staging-secrets", "why."))).toBeUndefined();
     const fix = supplyStoreEntryCommand({
       secret: "STRIPE_KEY",
@@ -157,8 +158,9 @@ describe("a fix runs as written in a project with two Workers", () => {
     });
     expect(fix).toBe("pithy secrets create STRIPE_KEY --env staging");
     const { path } = await parsed(fix as string);
-    const declared = (await buildDocsCatalog()).commands.find((command) => command.path === path)?.flags;
-    expect(declared).not.toContain("--worker");
+    // `--worker` only narrows it, to a Worker with a vault of its own; the line runs as written without one.
+    expect(WORKER_SCOPED).not.toContain(path);
+    expect(WORKER_NARROWS).toContain(path);
   });
 
   test("an unprovisioned environment's fix plans, with --dry-run, and exits 0", async () => {

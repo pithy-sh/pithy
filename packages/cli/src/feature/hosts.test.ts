@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
-import { featureHostNameLeaks, featureHostScripts } from "./hosts";
+import { featureHostNameLeaks, featureHostScripts, featureOwnedIds, hostedWorkflowEntries } from "./hosts";
 
 /**
- * **What a feature host may be called (#643).** Every account-wide name in a feature host's config is the
+ * **What a feature host may be called.** Every account-wide name in a feature host's config is the
  * feature's, or the host does not deploy — `project/deployKit.ts` fails its row on any leak this names.
  */
 describe("featureHostNameLeaks", () => {
@@ -136,6 +139,59 @@ describe("featureHostScripts", () => {
     expect(new Set(scripts.map((host) => host.script)).size).toBe(scripts.length);
     for (const host of scripts) expect(host.script.startsWith("replay-f643-feature-address--")).toBe(true);
   });
+
+  test("names each owning Worker's own script for every host beside the shared one", () => {
+    const scripts = featureHostScripts({ project: "replay", issue: "958", slug: "owners" }, ["two"]);
+    expect(scripts.filter((host) => host.capability === "email")).toEqual([
+      { capability: "email", script: "replay-f958-owners--email" },
+      { capability: "email", owner: "two", script: "replay-f958-owners--two---email" },
+    ]);
+  });
+});
+
+describe("featureHostScripts for a long owner", () => {
+  test("skips an owned script too long to compose, which no feature could have deployed", () => {
+    const owner = "a-very-long-owning-worker-directory-name";
+    const scripts = featureHostScripts({ project: "replay", issue: "958", slug: "owners" }, [owner, "two"]);
+    expect(scripts.some((host) => host.owner === owner)).toBe(false);
+    expect(scripts.filter((host) => host.owner === "two")).toHaveLength(HOST_WORKERS.length);
+  });
+});
+
+describe("hostedWorkflowEntries", () => {
+  const sender = defineCapability({
+    name: "email",
+    requiredBindings: [{ type: "workflow", name: "EMAIL_SENDER", job: "send", className: "EmailSendWorkflow" }],
+    workflows: {
+      send: { binding: "EMAIL_SENDER", params: z.object({}).describe("None."), className: "EmailSendWorkflow" },
+    },
+  });
+
+  test("binds a Worker sharing the database to the shared host", () => {
+    expect(hostedWorkflowEntries([sender], environmentScope("acme", "staging"), { dir: "/p/apps/one" })).toEqual([
+      {
+        capability: "email",
+        binding: "EMAIL_SENDER",
+        name: "acme-staging-email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "acme-staging-email",
+      },
+    ]);
+  });
+
+  test("binds a Worker that owns a binding the host binds to its own host", () => {
+    const scope = environmentScope("acme", "staging");
+    expect(hostedWorkflowEntries([sender], scope, { dir: "/p/apps/two", ownBindings: ["DB"] })).toEqual([
+      {
+        capability: "email",
+        owner: "two",
+        binding: "EMAIL_SENDER",
+        name: "acme-staging-two---email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "acme-staging-two---email",
+      },
+    ]);
+  });
 });
 
 describe("a feature's own support message index", () => {
@@ -151,5 +207,46 @@ describe("a feature's own support message index", () => {
     expect(index).toMatchObject({ binding: "SUPPORT_VECTORIZE", dimensions: 1024, metric: "cosine", metadata: [] });
     expect(index?.name).toContain("support-messages");
     expect(index?.name).toContain("94");
+  });
+});
+
+/**
+ * **What an owning Worker's feature host may bind.** Its database is the one the feature created for that Worker,
+ * `<project>-f<issue>-<slug>--<owner>---<binding>`, so the ids the gate follows hold it beside the shared ones.
+ */
+describe("featureOwnedIds for a Worker that owns a binding", () => {
+  const identity = { project: "acme", issue: "69", slug: "demo" };
+  const db = defineCapability({
+    name: "email",
+    version: null,
+    package: "@pithy-sh/email",
+    config: z.object({}).describe("None."),
+    requiredBindings: [{ type: "d1", name: "DB" }],
+  });
+  const ids = new Map([
+    [featureResourceName(identity, "DB", "d1"), "SHARED-DB"],
+    [featureResourceName(identity, "DB", "d1", "two"), "TWO-DB"],
+  ]);
+  const provisioners = {
+    d1: { find: async (name: string) => (ids.has(name) ? { id: ids.get(name) as string } : undefined) },
+    kv: { find: async () => undefined },
+  } as never;
+
+  test("holds the owner's own feature database beside the shared one", async () => {
+    const owned = await featureOwnedIds(provisioners, identity, [db], [{ worker: "two", ownBindings: ["DB"] }]);
+    expect([...owned.d1.keys()].sort()).toEqual(["SHARED-DB", "TWO-DB"]);
+  });
+
+  test("so the owner's feature host binding its own database passes the gate", async () => {
+    const owned = await featureOwnedIds(provisioners, identity, [db], [{ worker: "two", ownBindings: ["DB"] }]);
+    const config = {
+      name: "acme-f69-demo--two---email",
+      main: "./worker.ts",
+      compatibility_date: "2026-06-01",
+      d1_databases: [
+        { binding: "DB", database_name: featureResourceName(identity, "DB", "d1", "two"), database_id: "TWO-DB" },
+      ],
+    } as WorkflowHostTemplate;
+    expect(featureHostNameLeaks(config, identity, owned)).toEqual([]);
   });
 });

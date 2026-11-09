@@ -37,10 +37,10 @@ describe("pithy secrets verify", () => {
     expect(await values("pithy secrets verify --")).toEqual(expect.arrayContaining(["--env", "--sweep", "--json"]));
   });
 
-  test("takes env, sweep and json, and nothing else", () => {
+  test("takes env, sweep, worker and json, and nothing else", () => {
     // Exact rather than a containment check: an argument added here is a surface an agent has to learn,
     // and one that arrives without a doc row fails `ci/docsCommands.test.ts` rather than this.
-    expect(Object.keys(subcommand("verify").args as ArgsDef).sort()).toEqual(["env", "json", "sweep"]);
+    expect(Object.keys(subcommand("verify").args as ArgsDef).sort()).toEqual(["env", "json", "sweep", "worker"]);
   });
 
   test("has no positional and no required argument, so it runs unattended", () => {
@@ -53,7 +53,7 @@ describe("pithy secrets verify", () => {
   });
 
   test("sweeps by default, so --no-sweep is the opt-out rather than --sweep the opt-in", () => {
-    // The orphan half is the one that finds #647's fingerprint. Off by default it would be a flag
+    // The orphan half is the one that finds entries no composed name accounts for. Off by default it would be a flag
     // nobody passes on the day it mattered.
     const sweep = (subcommand("verify").args as ArgsDef).sweep;
 

@@ -146,6 +146,32 @@ describe("each gating check is one entry, with its fix", () => {
     ]);
   });
 
+  test("a Workflow binding into the kit host that reads another database names the provision for its environment", async () => {
+    const report = await healthyWith({
+      checkHostBindings: async () => ({
+        state: "stale",
+        stale: [
+          {
+            worker: "two",
+            env: "staging",
+            binding: "EMAIL_SENDER",
+            capability: "email",
+            boundTo: "acme-staging-email",
+            expected: "acme-staging-two---email",
+          },
+        ],
+      }),
+    });
+    expect(failuresOf(report)).toEqual([
+      {
+        check: "hostBindings",
+        detail:
+          "two binds EMAIL_SENDER in staging to acme-staging-email, which reads another database, so its email work runs against the wrong one. It belongs on acme-staging-two---email.",
+        fix: "pithy provision --env staging --yes",
+      },
+    ]);
+  });
+
   test("an environment the project declares production gets no provision fix either", async () => {
     const report = await healthyWith({
       loadProject: async () => ({ name: "pithy-app", seed: { productionEnvironments: ["live"] } }),
@@ -820,6 +846,7 @@ describe("every finding in every block carries fix", () => {
     "workerNames.convention[]": "a note on wrangler's suffix that never reaches `state`",
     "extensions.extensions[]": "an extension a Worker composes",
     "settings.checked[]": "a pair the settings check ran for",
+    "localDelivery.hosts[]": "one sending host's delivery verdict, which never gates and is a choice, not a fault",
     "settings.unchecked[]": "a pair whose check could not run, which established nothing",
     "secretTables.declared[]": "a declared secret table: its name, keys and secret names",
   };
@@ -952,6 +979,19 @@ describe("every finding in every block carries fix", () => {
         state: "unbound",
         declared: true,
         missing: [{ worker: "api", env: "staging", boundTo: null, deploysAs: "acme-staging-api" }],
+      }),
+      checkHostBindings: async () => ({
+        state: "stale",
+        stale: [
+          {
+            worker: "api",
+            env: "staging",
+            binding: "EMAIL_SENDER",
+            capability: "email",
+            boundTo: "acme-staging-email",
+            expected: "acme-staging-api---email",
+          },
+        ],
       }),
       checkDeclaredNames: async () => ({
         state: "drifted",
@@ -1219,6 +1259,7 @@ describe("every finding in every block carries fix", () => {
     for (const path of [
       "selfBinding.missing",
       "serviceBindings.faults",
+      "hostBindings.stale",
       "origins.drift",
       "workflows.drift",
       "supportSearchTriggers.environments",

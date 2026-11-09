@@ -54,8 +54,7 @@ export interface EmailWorkerWranglerTemplate extends WorkflowHostTemplate {
  * jobs are mirrored here, and `resolveEmailConfig.test.ts` asserts the bindings and class names match
  * the committed template byte for byte.
  *
- * **`params` is no longer a placeholder** (pithy-sh/pithy#410). The host mounts the shared dispatch
- * route, and that route validates an arriving loopback payload against the declaring spec's own
+ * **`params` is a request contract.** The host mounts the shared dispatch route, and that route validates an arriving loopback payload against the declaring spec's own
  * schema before it starts anything — so the registry's `params` is the request contract of a real
  * HTTP surface. Both sides therefore read the one schema out of `workflows/params.ts`; a `z.unknown()`
  * here would let a malformed dispatch through to fail inside a durable instance instead.
@@ -81,7 +80,7 @@ export const emailWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
 /**
  * The Workflows one environment's email worker is deployed with — `<project>-<env>-email-send` and
  * `<project>-<env>-email-schedule`. Derived by the call {@link resolveEmailConfig} deploys with, so teardown
- * deletes the names provision created and no others (#789). Deleting a Worker does not delete the Workflows
+ * deletes the names provision created and no others. Deleting a Worker does not delete the Workflows
  * registered against it.
  */
 export function emailWorkflowNames(project: string, env: ManagedEnvironment): string[] {
@@ -156,18 +155,23 @@ export interface EmailConfigParams {
    */
   env: ManagedEnvironment | "dev";
   /**
-   * **The feature this host serves, when it serves one (#643).** A feature gets its own email host, as a
+   * **The feature this host serves, when it serves one.** A feature gets its own email host, as a
    * declared environment does, and everything the host is called or reads takes the feature's names: the
    * Worker and its Workflows (`<project>-f<issue>-<slug>-email[-<job>]`), the feature's own master key and
    * link-signing key entries, and the feature's own suppression database. `env` is then `feature`, which is
    * what the host's `ENVIRONMENT` var says.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id for this environment — where jobs/events live. */
   appDatabaseId: string;
   /** The shared suppression database id (same in every environment). */
   suppressionDatabaseId: string;
-  /** This environment's secrets database id (`<project>-<env>-secrets`). The signing key is not in it (#596). */
+  /** This environment's secrets database id (`<project>-<env>-secrets`). The signing key is not in it. */
   secretsDatabaseId: string;
   /** The CF Secrets Store id holding the per-env master key and the per-env link-signing key. */
   storeId: string;
@@ -220,6 +224,7 @@ export function resolveEmailConfig(
 ): EmailWorkerWranglerTemplate {
   const { project, env, appDatabaseId, suppressionDatabaseId, secretsDatabaseId, storeId, baseUrl, theme } = params;
   const feature = params.feature;
+  const owner = params.owner;
   // One scope for every name below, so a feature's host can never bind a declared environment's key or list.
   const scope = feature ? featureScope(feature) : environmentScope(project, env);
   const resolved = resolveWorkflowHost(template, {
@@ -227,6 +232,7 @@ export function resolveEmailConfig(
     capability: EMAIL_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
     databaseIds: {
       DB: appDatabaseId,
       EMAIL_SUPPRESSIONS: suppressionDatabaseId,
@@ -247,7 +253,7 @@ export function resolveEmailConfig(
     // The link-signing key, at the entry `pithy secrets provision` created and bound the app Worker to —
     // composed by the same `environmentScope(...).secretEntry` call, from the declaration's own scope, so
     // the Worker that signs a link and the Worker that verifies it cannot be handed two different keys.
-    // Keyed by the binding the template declares; the entry keeps the registry key's name (#603).
+    // Keyed by the binding the template declares; the entry keeps the registry key's name.
     secretNames: {
       [EMAIL_LINK_SIGNING_KEY_BINDING]: scope.secretEntry(
         EMAIL_LINK_SIGNING_KEY,
@@ -268,6 +274,7 @@ export function resolveEmailConfig(
       capability: EMAIL_CAPABILITY,
       env,
       ...(feature ? { feature } : {}),
+      ...(owner !== undefined ? { owner } : {}),
     }).workflows,
   });
   // The resolver fills fields; it never drops one. So every field this template narrows to required

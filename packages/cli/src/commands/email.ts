@@ -19,7 +19,10 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
+import { provisionHostOwner } from "../capabilities/hostRegistry";
+import { projectHostOwners } from "../capabilities/hostWorkflows";
 import { capabilityNotComposed } from "../capabilities/notComposed";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
@@ -78,7 +81,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
  * The **capability**, not its `emailConfig`, because two of the three things a provision run stamps into
  * the host's vars now come from it: the theme off `emailConfig`, and the catalogs off `hostCatalogs()`,
  * which only answers correctly once `compose` has run. Returning the resolved config alone left the
- * catalogs unreachable, and the `EMAIL_MESSAGES` var unwritten (pithy-sh/pithy#441).
+ * catalogs unreachable, and the `EMAIL_MESSAGES` var unwritten.
  *
  * **The project's whole capability surface, assembled, and that is deliberate rather than a shortcut
  * past per-Worker composition.** The Worker this stamps is `<project>-<env>-email`: it composes
@@ -121,7 +124,7 @@ export async function loadEmailCapability(
  * The stanza arrives already read and already judged ready — {@link environmentReadiness} partitioned the
  * declared environments before anything was created, so this only ever runs for an environment whose app
  * database exists. That is what turned the old `no DB database_id` throw from a mid-fan-out failure into a
- * skip the report names (#512), and it is why this reads no file of its own.
+ * skip the report names, and it is why this reads no file of its own.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc`, so a project with several
  * names one with `--worker`; one Worker needs no ceremony. `BASE_URL` in particular is that Worker's public
@@ -139,21 +142,22 @@ function buildResolveEnv(
    */
   project: string,
   /**
-   * The account the secrets database is looked for on, and what vouches for it (#378).
+   * The account the secrets database is looked for on, and what vouches for it.
    *
    * The refusal below reads a missing database as "provision it first". Against an account nothing
    * claims, that database is missing because this run asked the wrong account — and the sentence sends
    * an operator to run a provisioning command they have already run.
    */
   account: ConfirmedAccount,
+  /** The Worker that owns `SECRETS`, whose own vault the host reads; absent, the shared one. */
+  vaultOwner?: string,
 ): (env: ManagedEnvironment) => Promise<EmailEnvResources> {
   return async (env) => {
     const { appDatabaseId, stanza } = readyStanza(readiness, env);
     // Through the one resolver, which prefers the `domains` declaration and falls back to the route and
     // then to this same var — so an adopter who set it by hand still works, and one who declared a domain
-    // is not told to set a var that would only duplicate it. This used to read `vars.BASE_URL` directly
-    // with no validation at all, passing whatever string was there through to the deployed email Worker.
-    // The load may fail for a reason this reader forgives; a refused declaration is not one (#665) — an
+    // is not told to set a var that would only duplicate it, and whatever string is there is validated.
+    // The load may fail for a reason this reader forgives; a refused declaration is not one — an
     // address the kit will not take is a config error, and provisioning against a fallback would ship a
     // widget or a mail Worker pointed somewhere the adopter did not declare.
     let workerConfig: WorkerConfig | undefined;
@@ -174,13 +178,13 @@ function buildResolveEnv(
     const baseUrl = address.url;
     const secretsDb = await findOnConfirmedAccount({
       ...account,
-      what: `the ${managerWorkerName(project, env)} database`,
-      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
+      what: `the ${managerWorkerName(project, env, undefined, vaultOwner)} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env, undefined, vaultOwner)),
     });
     if (!secretsDb) {
       throw secretsDatabaseMissing(
         env,
-        managerWorkerName(project, env),
+        managerWorkerName(project, env, undefined, vaultOwner),
         "the email worker binds it, and that run creates the link-signing key it signs with.",
       );
     }
@@ -197,8 +201,8 @@ const ROUTING_FLAGS = ["--routing-zone", "--inbound-address", "--app-worker"] as
  * Routing is opt-in: the inbound address, its zone, and the worker that answers are an operator choice
  * (and must avoid the apex MX), so none of them is derived and passing none is an ordinary run.
  *
- * A *partial* set is a different thing, and it used to be treated as the same thing — two flags of
- * three wired nothing, said nothing, and exited 0. The consequence is invisible until somebody replies
+ * A *partial* set is a different thing: two flags of three would wire nothing, say nothing, and exit 0. The
+ * consequence is invisible until somebody replies
  * to a message and the mail goes nowhere, by which time nobody is looking at this command. A
  * provisioning command that half-configures a mail path and reports success is worse than one that
  * refuses.
@@ -306,21 +310,24 @@ const provision = withContract(
         // adopts another project's opt-out list (docs/NAMING.md).
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // The project's own environment set (#241): what this command fans out across, rather than a
+        // The project's own environment set: what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
         const { account, accountId, apiToken, storeId } = commandCredentials(
           await projectCloudflareAccount(projectDir),
           { projectDir, why: "the email worker binds its link-signing key from it" },
         );
-        const emailCapability = await loadEmailCapability(projectDir);
+        const projectEmail = await loadEmailCapability(projectDir);
         const appWorker = await resolveSingleWorker({
           projectDir,
           ...(args.worker !== undefined ? { worker: args.worker } : {}),
         });
+        // A Worker that owns what the email host binds gets a host of its own, built from that Worker's composition.
+        const owner = provisionHostOwner(projectEmail, appWorker.target);
+        const emailCapability = owner ? await loadEmailCapability(projectDir, async () => [appWorker]) : projectEmail;
         // Which environments this run can act on, decided once and before anything is created. An
         // environment whose app database does not exist yet is skipped and reported, never fatal: standing
-        // staging up and proving it before production exists is the ordinary bring-up (#512).
+        // staging up and proving it before production exists is the ordinary bring-up.
         const readiness = await environmentReadiness({
           workerDir: appWorker.dir,
           label: `${appWorker.name}'s wrangler.jsonc`,
@@ -340,7 +347,8 @@ const provision = withContract(
           // overrides and the kit's translations, flattened for the standalone host. Read before that,
           // this is `{}` and the host is deployed English-only.
           messages: emailCapability.hostCatalogs(),
-          resolveEnv: buildResolveEnv(appWorker, readiness, cf, project, account),
+          resolveEnv: buildResolveEnv(appWorker, readiness, cf, project, account, secretsOwnerOf(appWorker)),
+          ...(owner ? { owner } : {}),
           routing,
           audit: await buildAudit(projectDir, accountId, apiToken),
         });
@@ -352,14 +360,14 @@ const provision = withContract(
         const { suppressionDatabaseCreated, ...result } = await provisionEmail(provisioner, readiness.ready);
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
-        // resolved when none was named (#711).
+        // resolved when none was named.
         const again = rerunRemedy(callerOf("email provision", args), {
           flags: { "--worker": workerDirName(appWorker) },
           productionEnvironments: readiness.productionEnvironments,
         });
         // What the run did before any environment could refuse it: the suppression database is project-global and
         // is created, or found, and migrated whatever else skipped. A refusal that left it out would say nothing
-        // happened; one that said it created a database an earlier run made would say what did not (#711).
+        // happened; one that said it created a database an earlier run made would say what did not.
         const did = [
           suppressionDatabaseCreated
             ? `It created and migrated the project's suppression database (${result.suppressionDatabaseId}), which every environment shares.`
@@ -367,7 +375,7 @@ const provision = withContract(
         ];
 
         if (args.json) {
-          // One outcome (#711): the error line alone when no environment was provisioned — naming what the run
+          // One outcome: the error line alone when no environment was provisioned — naming what the run
           // did all the same — or this report alone.
           writeProvisionReport(
             {
@@ -409,7 +417,7 @@ const deprovision = withContract(
         "Remove one environment's email worker and its Workflows (and, with the last, optionally the suppression DB)",
     },
     args: {
-      // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
+      // No default: a bare `deprovision` removed every declared environment's email worker, production's
       // included.
       env: TEARDOWN_ENV_ARG,
       suppression: {
@@ -429,7 +437,7 @@ const deprovision = withContract(
         // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // One named environment, settled before any credential is read: naming nothing, or something
         // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
@@ -440,17 +448,18 @@ const deprovision = withContract(
         });
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareEmailDeprovisioner({
+          owners: await projectHostOwners(projectDir),
           account,
           cf,
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
           project,
           audit: await buildAudit(projectDir, accountId, apiToken),
-          // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
+          // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands.
           budget: new RetainedBudget(destroyRetained),
         });
 
         // Held here as well as in `deprovisionEmail`, whichever copy of it runs: the list is refused before it is called
-        // while another environment runs, and it may delete only what was typed, for `env` alone (#591).
+        // while another environment runs, and it may delete only what was typed, for `env` alone.
         const confined = await confineTeardown({
           kit: "@pithy-sh/email",
           target: env,

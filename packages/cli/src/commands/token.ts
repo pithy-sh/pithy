@@ -66,7 +66,7 @@ export { resolveAuditDatabaseId as resolveAppDatabaseId } from "../audit/cliAudi
  *
  * **The account is a parameter, so this cannot run before the project is loaded.** `pithy token mint`
  * writes real credentials into a real account; resolving them from a file the project did not select
- * would mint another company's token under this project's name (#206).
+ * would mint another company's token under this project's name.
  */
 function loadCreds(account: CloudflareAccountSelection | null): {
   accountId: string;
@@ -160,7 +160,7 @@ export function publicToken(result: TokenResult): {
  * **A mint rolls an existing token's value and says nothing about the token.** So minting over a
  * `disabled` or `expired` one writes a perfectly real new secret to the sink, prints `Done.`, and hands
  * CI a credential that fails on its first call — the tool reporting success over something it can
- * already see will not work (#651). Rotate is the way out, because it creates a new token rather than
+ * already see will not work. Rotate is the way out, because it creates a new token rather than
  * reviving one.
  *
  * Silent when Cloudflare said `active`, and silent when it said nothing: absent is not a claim.
@@ -233,7 +233,7 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
   const config = await loadProject(projectDir);
   const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
   // A mint under a signed-in session asks for consent first when the project has composed something the
-  // session was not granted (#759) — rather than meeting Cloudflare's delegation refusal mid-mint. Only a
+  // session was not granted — rather than meeting Cloudflare's delegation refusal mid-mint. Only a
   // session's own token is checked, so an account-token run derives nothing.
   if (options.consent && isBoundSessionToken(apiToken, { cwd: projectDir })) {
     const { projectSessionScopes } = await import("../cloudflare/session/projectScopes");
@@ -243,7 +243,7 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
   const cf = await cloudflareClients({ accountId, apiToken });
   // Never best-effort. See {@link tokenProfiles}: an emptied capability set is a silently narrowed credential.
   // Composed for the environment the token is for: a capability that environment alone composes carries
-  // `ciPermissions` CI there needs, and one it does not compose grants nothing there (#595).
+  // `ciPermissions` CI there needs, and one it does not compose grants nothing there.
   const workerSet = await resolveWorkerSetFor(env, { projectDir });
   const workers = isUnknown(workerSet) ? [] : workerSet;
   const registry = mergedSecretRegistry(workers);
@@ -259,9 +259,8 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
       profile's permissions, the third to recover a profile name by reverse lookup — so an unknown
       capability set makes all three wrong, and they refuse here. `revoke` reads it never: it deletes
       every account token of `tokenName(project, env, profile)`, a name composed from the root config
-      alone. Refusing it too would take `#454`'s lesson and repeat it — the one command you need in a
-      credential leak, unavailable because an unrelated Worker's config is broken on this checkout, with
-      no `--local-only` to fall back to.
+      alone. Refusing it too would make the one command you need in a credential leak unavailable because
+      an unrelated Worker's config is broken on this checkout, with no `--local-only` to fall back to.
     */
     get profiles() {
       return tokenProfiles(workerSet);
@@ -272,7 +271,7 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
     audit: await buildAudit(capabilitySetOf(workerSet), cf, projectDir, env, apiToken),
     override: tokenOverrideResolver(config),
     /*
-      The zones the `ci-system` token may attach a route to (#651), from *this* environment's
+      The zones the `ci-system` token may attach a route to, from *this* environment's
       composition — `workers` is already composed for `env`, which is the reading that can answer which
       domain this environment declares. Lazy, so a project with no domain makes no zone call and mints
       exactly what it minted before.
@@ -281,20 +280,38 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
     // The zones holding this environment's inbound addresses, from the same composition. Lazy, and no call at all
     // when nothing composed routes an address.
     inboundZones: () => resolveInboundZoneIds(declaredInboundAddresses(workers), cf.zones()),
-    // The media token an operator supplied before `runtime` replaced it (#728), asked of this environment's
+    // The media token an operator supplied before `runtime` replaced it, asked of this environment's
     // manager only when this environment composes media. Lazy, so a mint never reaches a manager.
     storedSuperseded: async () => {
       const media = await suppliedMediaTokenField(projectDir, workers);
       if (media === null) return null;
       const { buildSecretDispatcher } = await import("../capabilities/secretsDispatcher");
-      const dispatcher = await buildSecretDispatcher(accountId, apiToken, requireProjectName(config));
-      return supersededStoredToken({ env, media, carries: (request) => dispatcher.carries(request) });
+      const { secretsOwnerOf } = await import("../capabilities/secretsOwner");
+      // Every vault a media-composing Worker reads: the shared one, and each such Worker's own where it owns SECRETS.
+      const owners = new Set(
+        workers
+          .filter((worker) => worker.capabilities.some((capability) => capability.name === "media"))
+          .map((worker) => secretsOwnerOf(worker)),
+      );
+      const dispatchers = await Promise.all(
+        [...owners].map((owner) =>
+          buildSecretDispatcher(accountId, apiToken, requireProjectName(config), undefined, owner),
+        ),
+      );
+      return supersededStoredToken({
+        env,
+        media,
+        carries: async (request) => {
+          for (const dispatcher of dispatchers) if (await dispatcher.carries(request)) return true;
+          return false;
+        },
+      });
     },
   };
 }
 
 /**
- * Where a composed media capability stored the Images and Stream token `runtime` superseded (#728), or `null`
+ * Where a composed media capability stored the Images and Stream token `runtime` superseded, or `null`
  * when nothing here composes media. Read off the project's own `@pithy-sh/media`, the copy that wrote it: a
  * media older than the field names none, and is asked nothing.
  */
@@ -315,7 +332,7 @@ async function suppliedMediaTokenField(
 }
 
 /**
- * Assemble what `pithy token forget` needs (#762) — the engine's local half, and its account half only
+ * Assemble what `pithy token forget` needs — the engine's local half, and its account half only
  * when there are credentials to read it with.
  *
  * **Missing credentials are not a refusal here**, and that is the one way this differs from
@@ -340,7 +357,7 @@ async function buildForgetEngine(projectDir: string, env: string): Promise<Forge
   try {
     creds = loadCreds(loadProjectCloudflare(config) ?? null);
   } catch (error) {
-    // No client to write a row with. Said out loud when the project composes audit, never silent (#762).
+    // No client to write a row with. Said out loud when the project composes audit, never silent.
     if (error instanceof PreconditionFailedError) {
       // Defined, not spread: a spread would read the lazy `profiles` getter and throw on an unknowable set.
       return Object.defineProperty(base, "audit", {
@@ -400,7 +417,7 @@ function confirmForget(profile: string, env: string): () => Promise<void> {
 }
 
 /**
- * What `pithy token list` adds for a CI token that cannot attach this project's route (#651), or nothing.
+ * What `pithy token list` adds for a CI token that cannot attach this project's route, or nothing.
  *
  * Its own sentence rather than a column, because it is not a fact about the listing — it is the next
  * deploy of a custom domain failing. Said once for the listing, since every row in a given state has the
@@ -452,7 +469,7 @@ export function routeScopeNotice(tokens: readonly TokenListItem[], env: string):
 }
 
 /**
- * What `pithy token list` adds for a token that lacks a grant its profile names (#728), or nothing.
+ * What `pithy token list` adds for a token that lacks a grant its profile names, or nothing.
  *
  * The same remedy as the route notice and for the same reason: a mint rolls the value and leaves the
  * policy set alone, so it cannot add a grant. Rotate replaces the token with the profile's current
@@ -587,8 +604,8 @@ const TokenListPayload = z
   .describe("This project's tokens, never their values.");
 
 /**
- * What became of the profile's value in `tokens.json` (#762). A word, not a boolean: #235 is why — `revoked`
- * was a yes/no in one command and a count in another, and the falsy value of each meant something different.
+ * What became of the profile's value in `tokens.json`. A word, not a boolean: a boolean's falsy value and a
+ * count's falsy value read alike and mean different things, which is why `revokedCount` is a count.
  */
 const LocalCopyWord = z
   .enum(["forgotten", "absent", "uncleared"])
@@ -684,7 +701,7 @@ const list = withContract(
         const env = requireEnvironment(args.env);
         const engine = await buildEngine(process.cwd(), env);
         const tokens = await listProfileTokens(engine, env);
-        // What `runtime` replaced and is still there (#728). Nothing revokes it for you, so the listing says.
+        // What `runtime` replaced and is still there. Nothing revokes it for you, so the listing says.
         const superseded = await listSupersededTokens(engine, env);
         if (args.json) {
           process.stdout.write(
@@ -769,15 +786,13 @@ const revoke = withContract(
         const engine = await buildEngine(process.cwd(), env);
         const result = await revokeProfileToken(engine, args.profile, env);
         if (args.json) {
-          // **A count is published as `revokedCount` (#235).** `pithy dashboard revoke-key` emits
-          // `revoked` as a `boolean` — did that key come out — and this one is "how many tokens of that
-          // name were deleted", where `0` is an ordinary answer. So `revoked` was a yes/no in one command
-          // and a number in another, and the number's falsy value is the one that means "nothing was
-          // revoked" in both readings while `revoked: 0` and `revoked: false` are not the same claim. The
+          // **A count is published as `revokedCount`.** `pithy dashboard revoke-key` emits `revoked` as a
+          // `boolean` — did that key come out — and this one is "how many tokens of that name were deleted",
+          // where `0` is an ordinary answer, and `revoked: 0` and `revoked: false` are not the same claim. The
           // count is the outlier — every other `<verb>ed` key in this CLI is a boolean — so it takes the
           // suffix. `RevokeResult` keeps `revoked`: the published name is decided here.
           const { revoked: revokedCount, ...rest } = result;
-          // The local cleanup (#762) is three words under one key, for the reason `revokedCount` is a count.
+          // The local cleanup is three words under one key, for the reason `revokedCount` is a count.
           process.stdout.write(`${formatJsonLine({ command: "token revoke", ...rest, revokedCount })}\n`);
           return;
         }

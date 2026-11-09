@@ -90,6 +90,33 @@ describe("checkAuditSinks (#824)", () => {
     );
   });
 
+  test("a Worker that owns SECRETS has its sink tokens asked of its own manager, and the remedy names it", async () => {
+    const two = { name: "acme-two", dir: "/p/apps/two", ownBindings: ["SECRETS"] };
+    const secretSet = vi.fn(async (_name: string, _env: string, owner?: string) => owner === undefined);
+    const check = await checkAuditSinks(
+      options({
+        workers: [worker, two],
+        environments: ["prod"],
+        composeWorker: async () => ({
+          capabilities: [
+            { name: "secrets", requiredBindings: [] } as unknown as Capability,
+            { name: "audit", requiredBindings: [], auditSinks: { siem: SINKS.siem } } as unknown as Capability,
+          ],
+        }),
+        secretSet,
+      }),
+    );
+    expect(secretSet.mock.calls.map(([name, , owner]) => [name, owner])).toEqual([
+      ["splunk-hec-token", undefined],
+      ["splunk-hec-token", "two"],
+    ]);
+    expect(check.secrets).toEqual([
+      { env: "prod", secret: "splunk-hec-token", state: "set" },
+      { env: "prod", secret: "splunk-hec-token", state: "unset", worker: "two" },
+    ]);
+    expect(describeAuditSinks(check).join("\n")).toContain("--worker two");
+  });
+
   test("a project that ships nothing is not applicable, and asks nothing", async () => {
     const secretSet = vi.fn(async () => true);
     expect(await checkAuditSinks(options({ composeWorker: composing(undefined), secretSet }))).toEqual({

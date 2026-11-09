@@ -43,22 +43,22 @@ export interface ManagerWranglerTemplate {
 }
 
 /**
- * The manager's Secrets Store binding for the application's runtime token (#728) — the one a feature's
- * manager never has (#643).
+ * The manager's Secrets Store binding for the application's runtime token — the one a feature's
+ * manager never has.
  */
 const MANAGER_TOKEN_BINDING = RUNTIME_TOKEN_SECRET;
 
-/** The manager's at-rest rotation Workflow binding — the Workflow a feature's manager never hosts (#643). */
+/** The manager's at-rest rotation Workflow binding — the Workflow a feature's manager never hosts. */
 const ROTATION_BINDING = "AT_REST_ROTATION";
 
-/** The manager's value-rotation Workflow binding (#602) — a feature's manager never hosts this one either. */
+/** The manager's value-rotation Workflow binding — a feature's manager never hosts this one either. */
 const VALUE_ROTATION_BINDING = "VALUE_ROTATION";
 
-/** The manager's field-key rotation Workflow binding (#390) — a feature's manager runs no cron, so hosts none. */
+/** The manager's field-key rotation Workflow binding — a feature's manager runs no cron, so hosts none. */
 const FIELD_KEY_ROTATION_BINDING = "FIELD_KEY_ROTATION";
 
 /**
- * The encrypted columns a manager is stamped with (#390), and the D1 each lives in: what the field-key rotation
+ * The encrypted columns a manager is stamped with, and the D1 each lives in: what the field-key rotation
  * re-seals. The manager never reads `pithy.config.ts`, so this is the only way it learns them.
  */
 export interface StampedEncryptedColumns {
@@ -82,7 +82,7 @@ export interface ManagerConfigParams {
    */
   project: string;
   /**
-   * **The feature this manager serves, when it serves one (#643).** A feature is provisioned its own manager, and
+   * **The feature this manager serves, when it serves one.** A feature is provisioned its own manager, and
    * everything it is called or binds takes the feature's names: the Worker and its write Workflow
    * (`<project>-f<issue>-<slug>--secrets[-write]`), the feature's own master key entry and its own `SECRETS`
    * database. `env` is then `feature`, which is what its `ENVIRONMENT` var says.
@@ -96,17 +96,15 @@ export interface ManagerConfigParams {
   /**
    * The at-rest rotation cadence in days, from the composed capability's `rotationIntervalDays`.
    *
-   * **Stamped because two readers grade against it and only one of them was getting it (#647 review).** The
-   * manager's cron asks `isRotationDue(lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? 30))`, and the
-   * capability's `lastAtRestRotation` health key calls a pass stale when it succeeded longer than two of
-   * these ago. The template shipped a literal `30` and nothing ever replaced it, so a project configuring a
-   * shorter cadence got a health key grading against its own number and a cron running on the template's:
-   * the key reported `stale` on a schedule that was working, which is precisely the noise that gets a health
-   * key ignored. Omitted, the template's own value stands and both readers agree on it as before.
+   * **Two readers grade against it, so both must read the same number.** The manager's cron asks
+   * `isRotationDue(lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? 30))`, and the capability's
+   * `lastAtRestRotation` health key calls a pass stale when it succeeded longer than two of these ago. A cron left
+   * on the template's `30` beside a shorter configured cadence would have the key report `stale` on a schedule that
+   * is working. Omitted, the template's own value stands and both readers agree on it.
    */
   rotationIntervalDays?: number;
   /**
-   * **The value-rotation schedule, from the project's registry (#602).** Every named secret declaring
+   * **The value-rotation schedule, from the project's registry.** Every named secret declaring
    * `rotateEveryDays`, aggregated across every capability the project composes and stamped by
    * `stampedRotations`. Written into `VALUE_ROTATIONS` — the manager is prebuilt and never reads
    * `pithy.config.ts`, so this var is the only way it learns which secrets rotate. Omitted, the manager
@@ -120,13 +118,36 @@ export interface ManagerConfigParams {
    */
   globalEnvironment?: ManagedEnvironment;
   /**
-   * **The encrypted columns, from the project's schemas (#390).** Written into `ENCRYPTED_COLUMNS`, with each D1
+   * **The encrypted columns, from the project's schemas.** Written into `ENCRYPTED_COLUMNS`, with each D1
    * they live in bound under its own binding name, so the field-key rotation can find and re-seal the rows still
    * under a version leaving the window. Omitted, the manager rotates the field key and re-seals nothing — which is
    * right for a project with no encrypted field, and which its retirement guard reads as incomplete coverage where
    * there is one, because a column it was never stamped with is a column it never counted.
    */
   encryptedColumns?: StampedEncryptedColumns;
+  /**
+   * The `apps/<owner>` Worker whose own manager this is, when it owns `SECRETS`. The Worker, its D1 and its
+   * Workflows then carry `<owner>---secrets`, so it never takes the shared manager's names.
+   *
+   * **It rotates only what is its own: the `d1` values in its vault.** The master key, the field key and every
+   * store-backed secret are one entry per environment, and the shared manager rotates each, re-sealing this
+   * vault too ({@link ownedVaults}). So it holds no token and hosts neither the at-rest nor the field-key Workflow.
+   */
+  owner?: string;
+  /**
+   * **The vaults of the Workers that own `SECRETS`, for the shared manager alone.** Each is sealed under this
+   * environment's master key, so each is bound beside `SECRETS` and named in `OWNED_VAULTS`, and the at-rest
+   * rotation re-seals and counts it before a version retires. Ignored on an owner's or a feature's manager.
+   */
+  ownedVaults?: readonly OwnedVault[];
+}
+
+/** A Worker's own vault, as the shared manager binds it. */
+export interface OwnedVault {
+  /** The D1 binding the shared manager reads it through, e.g. `VAULT_TWO`. */
+  binding: string;
+  databaseName: string;
+  databaseId: string;
 }
 
 /**
@@ -146,10 +167,22 @@ export interface ManagerConfigParams {
  * numbers used to share. The database takes the same string deliberately: the manager and its D1 are
  * one unit, and a D1 name is the looser of the two limits, so the tighter one governs both.
  */
-export function managerWorkerName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
-  // A feature's manager is named the way every feature host is, by the one host composer (#643).
-  if (feature) return workflowHostName({ project, capability: SECRETS_CAPABILITY, env, feature });
-  return resourceNames(project).env(env).worker(SECRETS_CAPABILITY);
+export function managerWorkerName(
+  project: string,
+  env: ManagedEnvironment,
+  feature?: FeatureIdentity,
+  owner?: string,
+): string {
+  // A feature's manager is named the way every feature host is, by the one host composer.
+  if (feature)
+    return workflowHostName({
+      project,
+      capability: SECRETS_CAPABILITY,
+      env,
+      feature,
+      ...(owner !== undefined ? { owner } : {}),
+    });
+  return resourceNames(project).env(env).worker(SECRETS_CAPABILITY, owner);
 }
 
 /**
@@ -166,16 +199,17 @@ function managerWorkflowName(
   project: string,
   env: ManagedEnvironment,
   feature: FeatureIdentity | undefined,
+  owner: string | undefined,
 ): string {
   switch (binding) {
     case "SECRETS_WRITE":
-      return secretsWriteWorkflowName(project, env, feature);
+      return secretsWriteWorkflowName(project, env, feature, owner);
     case ROTATION_BINDING:
-      return secretsRotateWorkflowName(project, env, feature);
+      return secretsRotateWorkflowName(project, env, feature, owner);
     case VALUE_ROTATION_BINDING:
-      return secretsValueRotateWorkflowName(project, env, feature);
+      return secretsValueRotateWorkflowName(project, env, feature, owner);
     case FIELD_KEY_ROTATION_BINDING:
-      return secretsFieldKeyRotateWorkflowName(project, env, feature);
+      return secretsFieldKeyRotateWorkflowName(project, env, feature, owner);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Workflow provisioning cannot name.",
@@ -201,15 +235,22 @@ export function resolveManagerConfig(
   template: ManagerWranglerTemplate,
   params: ManagerConfigParams,
 ): ManagerWranglerTemplate {
-  const { env, databaseId, storeId, accountId, project, feature, rotationIntervalDays } = params;
-  // A feature runs no cron, so it rotates nothing and needs no schedule (#643).
-  const valueRotations = feature ? undefined : params.valueRotations;
-  const name = managerWorkerName(project, env, feature);
+  const { env, databaseId, storeId, accountId, project, feature, owner, rotationIntervalDays } = params;
+  // A feature runs no cron, so it rotates nothing and needs no schedule. An owner's manager rotates its own vault's
+  // values and no store entry, which the shared manager rotates.
+  const valueRotations = feature
+    ? undefined
+    : owner === undefined
+      ? params.valueRotations
+      : params.valueRotations?.filter((rotation) => rotation.backend === "d1");
+  const encryptedColumns = feature || owner !== undefined ? undefined : params.encryptedColumns;
+  const ownedVaults = feature || owner !== undefined ? [] : (params.ownedVaults ?? []);
+  const name = managerWorkerName(project, env, feature, owner);
   const resolved: ManagerWranglerTemplate = structuredClone(template);
 
   resolved.name = name;
   if (feature) {
-    // No token, no rotation, no cron (#643): see `ManagerConfigParams.feature`.
+    // No token, no rotation, no cron: see `ManagerConfigParams.feature`.
     resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
       (entry) => entry.binding !== MANAGER_TOKEN_BINDING,
     );
@@ -220,18 +261,35 @@ export function resolveManagerConfig(
         wf.binding !== FIELD_KEY_ROTATION_BINDING,
     );
     resolved.triggers = { crons: [] };
+  } else if (owner !== undefined) {
+    // No token and no rotation of anything shared: see `ManagerConfigParams.owner`.
+    resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
+      (entry) => entry.binding !== MANAGER_TOKEN_BINDING,
+    );
+    resolved.workflows = resolved.workflows.filter(
+      (wf) => wf.binding !== ROTATION_BINDING && wf.binding !== FIELD_KEY_ROTATION_BINDING,
+    );
   }
-  // A declared environment's manager and its D1 share one name. A feature's D1 is the one the feature's own
-  // provisioning created for its `SECRETS` binding, named by the feature's scope (#643).
+  // A declared environment's manager and its D1 share one name. A feature's D1, and a Worker's own, is the one its
+  // provisioning created for the `SECRETS` binding, named by the same scope and owner.
   resolved.d1_databases = [
     ...resolved.d1_databases.map((db) => ({
       ...db,
-      database_name: feature ? featureScope(feature).resource(db.binding, "d1", {}) : name,
+      database_name: feature
+        ? featureScope(feature).resource(db.binding, "d1", {}, owner)
+        : owner === undefined
+          ? name
+          : resourceNames(project).env(env).d1(db.binding, owner),
       database_id: databaseId,
     })),
     // Each D1 a stamped encrypted column lives in, under the app's own binding name, so the stamp's `binding`
-    // resolves inside the manager exactly as it does inside the app Worker (#390).
-    ...encryptedDatabases(feature ? undefined : params.encryptedColumns, resolved.d1_databases),
+    // resolves inside the manager exactly as it does inside the app Worker.
+    ...encryptedDatabases(encryptedColumns, resolved.d1_databases),
+    ...ownedVaults.map((vault) => ({
+      binding: vault.binding,
+      database_name: vault.databaseName,
+      database_id: vault.databaseId,
+    })),
   ];
   // Both secrets live in the one account-wide store, so every entry gets `storeId` — and **every**
   // entry name is resolved here, never passed through. The template's literals are placeholders: an
@@ -249,7 +307,7 @@ export function resolveManagerConfig(
   // composed from the binding, so two projects' managers are addressable separately in one account.
   resolved.workflows = resolved.workflows.map((wf) => ({
     ...wf,
-    name: managerWorkflowName(wf.binding, project, env, feature),
+    name: managerWorkflowName(wf.binding, project, env, feature, owner),
   }));
   resolved.vars = {
     ...resolved.vars,
@@ -263,9 +321,9 @@ export function resolveManagerConfig(
     // JSON in a string var, parsed and re-checked by the manager: see `rotation/rotationSchedule.ts`.
     ...(valueRotations === undefined ? {} : { VALUE_ROTATIONS: JSON.stringify(valueRotations) }),
     // JSON in a string var, parsed against `EncryptedColumnStamp` by the manager before any SQL is built from it.
-    ...(feature || params.encryptedColumns === undefined
-      ? {}
-      : { ENCRYPTED_COLUMNS: JSON.stringify(params.encryptedColumns.stamp) }),
+    ...(encryptedColumns === undefined ? {} : { ENCRYPTED_COLUMNS: JSON.stringify(encryptedColumns.stamp) }),
+    ...(ownedVaults.length === 0 ? {} : { OWNED_VAULTS: JSON.stringify(ownedVaults.map((vault) => vault.binding)) }),
+    ...(owner === undefined || feature ? {} : { OWNER: owner }),
     ...(feature || params.globalEnvironment === undefined ? {} : { GLOBAL_ENVIRONMENT: params.globalEnvironment }),
   };
 
@@ -273,7 +331,7 @@ export function resolveManagerConfig(
 }
 
 /**
- * The D1 bindings a manager takes for its stamped encrypted columns (#390): one per database a column lives in,
+ * The D1 bindings a manager takes for its stamped encrypted columns: one per database a column lives in,
  * never one the template already binds. A stamped binding with no database to name is refused, because a column the
  * manager cannot reach is a version it can never prove re-sealed — and deploying past that would hide it.
  */
@@ -305,7 +363,7 @@ function encryptedDatabases(
 }
 
 /**
- * **The Secrets Store bindings a manager needs for the secrets it rotates (#602)** — one per
+ * **The Secrets Store bindings a manager needs for the secrets it rotates** — one per
  * `cf-secrets-store` secret the cron rotates *here*: every environment-scoped one, and a global one only on
  * the manager that owns global secrets. The rotation reads the envelope it appends to through the binding,
  * because Cloudflare never serves a value over REST; a binding it does not need is one it is not given.
@@ -333,7 +391,7 @@ function rotatedStoreBindings(
 
 /**
  * The Secrets Store entry name behind one of the manager's store bindings. Both are per environment —
- * the master key, and the application's runtime token (#728). Both are project-scoped, because the
+ * the master key, and the application's runtime token. Both are project-scoped, because the
  * account has one flat Secrets Store and the name is the only partition in it.
  */
 function managerStoreEntryName(
@@ -346,7 +404,7 @@ function managerStoreEntryName(
     case "SECRETS_ENCRYPTION_KEYS":
       return masterKeySecretName(project, env, feature);
     case MANAGER_TOKEN_BINDING:
-      // Never reached for a feature: its manager's config has no token binding to resolve (#643).
+      // Never reached for a feature: its manager's config has no token binding to resolve.
       return runtimeTokenSecretName(project, env);
     case FIELD_KEYS_BINDING:
       return fieldKeysSecretName(project, env, feature);

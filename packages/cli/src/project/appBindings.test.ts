@@ -82,6 +82,19 @@ describe("appWorkflowBindings", () => {
     ]);
   });
 
+  test("an owning Worker's bindings reach its own host, by script and by Workflow", () => {
+    expect(
+      appWorkflowBindings(registry, { project: PROJECT, capability: "storage", env: "staging", owner: "two" }),
+    ).toEqual([
+      {
+        binding: "STORAGE_SWEEP",
+        name: "acme-staging-two---storage-sweep",
+        class_name: "StorageSweepWorkflow",
+        script_name: "acme-staging-two---storage",
+      },
+    ]);
+  });
+
   test("the names carry the project, so an app never binds another project's host", () => {
     const [ours] = appWorkflowBindings(registry, { project: "acme", capability: "storage", env: "staging" });
     const [theirs] = appWorkflowBindings(registry, { project: "globex", capability: "storage", env: "staging" });

@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { pithyCommand, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { type CloudflareAccountSelection, cloudflareCredentials } from "../cloudflare/config";
 import type { RemoteSkip } from "./environmentMigrations";
 
 /**
- * **Where the audit trail is shipped, and whether each sink can be (#824).**
+ * **Where the audit trail is shipped, and whether each sink can be.**
  *
  * `@pithy-sh/audit` ships the trail to sinks declared in `pithy.config.ts`, and a sink is only as good as the token
  * it reads. So doctor lists every sink each Worker declares — its profile, where it posts, what it filters on, and
@@ -43,9 +44,13 @@ export interface SinkLine {
 }
 
 /** Whether one deployed environment holds one sink's token. */
-export type SinkSecretAnswer =
+export type SinkSecretAnswer = (
   | { env: string; secret: string; state: "set" | "unset" | "unreadable" }
-  | { env: string; secret: string; state: "skipped"; reason: RemoteSkip };
+  | { env: string; secret: string; state: "skipped"; reason: RemoteSkip }
+) & {
+  /** The Worker whose own vault was asked, when it owns `SECRETS`. Absent for the shared vault. */
+  worker?: string;
+};
 
 /** What doctor learned about this project's sinks. */
 export interface AuditSinksCheck {
@@ -61,6 +66,8 @@ export interface AuditSinksCheck {
 export interface AuditSinksWorker {
   name: string;
   dir: string;
+  /** The bindings it lists in `ownBindings`. One that owns `SECRETS` reads its sink tokens from its own vault. */
+  ownBindings?: readonly string[];
 }
 
 /** Options for {@link checkAuditSinks}. */
@@ -78,7 +85,7 @@ export interface AuditSinksOptions {
   /** The composition seam — the compositions the report already took. */
   composeWorker: (worker: AuditSinksWorker, env: string) => Promise<{ capabilities: readonly Capability[] }>;
   /** Whether one environment's secrets manager holds a value under this name. Defaults to asking it. */
-  secretSet?: (name: string, env: string) => Promise<boolean>;
+  secretSet?: (name: string, env: string, owner?: string) => Promise<boolean>;
 }
 
 /** The slice of the audit capability this reads. Structural, so the CLI imports nothing of the package. */
@@ -107,11 +114,13 @@ function hostOf(url: string): string {
 
 /** The default question: the environment's secrets manager, asked through one dispatcher for the whole run. */
 function askManager(account: CloudflareAccountSelection | null, project: string) {
-  let dispatcher: ReturnType<typeof buildSecretDispatcher> | undefined;
-  return async (name: string, env: string) => {
+  const dispatchers = new Map<string, ReturnType<typeof buildSecretDispatcher>>();
+  return async (name: string, env: string, owner?: string) => {
+    let dispatcher = dispatchers.get(owner ?? "");
     if (dispatcher === undefined) {
       const credentials = cloudflareCredentials({ account });
-      dispatcher = buildSecretDispatcher(credentials.accountId, credentials.apiToken, project);
+      dispatcher = buildSecretDispatcher(credentials.accountId, credentials.apiToken, project, undefined, owner);
+      dispatchers.set(owner ?? "", dispatcher);
     }
     return (await dispatcher).probe({ env: env as "staging" | "prod", name });
   };
@@ -123,6 +132,8 @@ function askManager(account: CloudflareAccountSelection | null, project: string)
  */
 export async function checkAuditSinks(options: AuditSinksOptions): Promise<AuditSinksCheck> {
   const sinks: SinkLine[] = [];
+  // Each sink's token, by the vault it is read from: the shared one, or a Worker's own where it owns SECRETS.
+  const tokens = new Map<string, { secret: string; owner: string | undefined }>();
   const seen = new Set<string>();
   let composedEverywhere = true;
   for (const worker of options.workers) {
@@ -136,7 +147,9 @@ export async function checkAuditSinks(options: AuditSinksOptions): Promise<Audit
         composedEverywhere = false;
         continue;
       }
+      const owner = secretsOwnerOf({ capabilities: [...capabilities], target: worker });
       for (const [name, sink] of Object.entries(sinksOf(capabilities))) {
+        tokens.set(`${sink.secret}\u0000${owner ?? ""}`, { secret: sink.secret, owner });
         const key = `${worker.name}\u0000${name}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -158,18 +171,18 @@ export async function checkAuditSinks(options: AuditSinksOptions): Promise<Audit
 
   const ask = options.secretSet ?? askManager(options.account, options.project);
   const secrets: SinkSecretAnswer[] = [];
-  const names = [...new Set(sinks.map((line) => line.secret))];
   for (const env of options.environments) {
     if (env === LOCAL_ENVIRONMENT) continue;
-    for (const secret of names) {
+    for (const { secret, owner } of tokens.values()) {
+      const whose = owner === undefined ? {} : { worker: owner };
       if (options.remoteSkip !== null) {
-        secrets.push({ env, secret, state: "skipped", reason: options.remoteSkip });
+        secrets.push({ env, secret, state: "skipped", reason: options.remoteSkip, ...whose });
         continue;
       }
       try {
-        secrets.push({ env, secret, state: (await ask(secret, env)) ? "set" : "unset" });
+        secrets.push({ env, secret, state: (await ask(secret, env, owner)) ? "set" : "unset", ...whose });
       } catch {
-        secrets.push({ env, secret, state: "unreadable" });
+        secrets.push({ env, secret, state: "unreadable", ...whose });
       }
     }
   }
@@ -195,7 +208,7 @@ export function describeAuditSinks(check: AuditSinksCheck): string[] {
         break;
       case "unset":
         lines.push(
-          `${answer.env}: ${answer.secret} is not set, so its sinks retry every event until it is dead-lettered. Run ${pithyCommand("secrets create", { args: [answer.secret], flags: { "--env": answer.env } })}.`,
+          `${answer.env}: ${answer.secret} is not set, so its sinks retry every event until it is dead-lettered. Run ${pithyCommand("secrets create", { args: [answer.secret], flags: { "--env": answer.env, ...(answer.worker ? { "--worker": workerDirOf({ dir: answer.worker }) } : {}) } })}.`,
         );
         break;
       case "skipped":

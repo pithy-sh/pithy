@@ -122,7 +122,9 @@ An environment is **ready** when its stanza carries a `DB` binding with a `datab
 
 The sending identity is read off the composed `email` capability rather than asked for. When no email capability is composed, the host is still deployed and the pass records the day but sends nothing — said at provision time rather than discovered on the first silent morning. The pass runs daily at 05:00 UTC.
 
-**`deprovision`** deletes the host's daily Workflow (`<project>-<env>-testers-daily`), then the host, and nothing else. The Workflow goes first: deleting a Worker leaves the Workflows registered against it. The cohorts, the roster, and the whole snapshot series are rows in your own D1 and are not this command's to remove.
+**A Worker that owns what the host binds gets its own.** When `--worker` names a Worker that lists a binding the testers host binds in its `ownBindings`, `provision` deploys that Worker's own host, `<project>-<env>-<worker>---testers`, bound to the Worker's own resources, and writes its Workflow bindings to reach it, `<project>-<env>-<worker>---testers-<job>`. The shared `<project>-<env>-testers` is left alone. The `TESTERS_DAILY` binding it writes names `<project>-<env>-<worker>---testers-daily`. See [A Worker's own kit hosts](../NAMING.md#a-workers-own-kit-hosts).
+
+**`deprovision`** deletes the host's daily Workflow (`<project>-<env>-testers-daily`), then the host, and every Worker's own daily-pass host and its Workflow, found by recomputing their names, and nothing else. The Workflow goes first: deleting a Worker leaves the Workflows registered against it. The cohorts, the roster, and the whole snapshot series are rows in your own D1 and are not this command's to remove.
 
 **`create`** creates a cohort, freezing the target, window, roster cap, platform, and reset policy onto the row. They are stored rather than read from config at query time: raising `targetSize` from twelve to fifteen later would otherwise retroactively rewrite whether last Tuesday counted.
 
@@ -148,7 +150,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `results` | array | One entry per environment provisioned |
 | `results[].env` | `"staging" \| "prod"` | The environment this entry describes |
-| `results[].worker` | string | The deployed daily-pass worker name, `<project>-<env>-testers` |
+| `results[].worker` | string | The deployed daily-pass worker name, `<project>-<env>-testers`, or `<project>-<env>-<worker>---testers` when `--worker` names a Worker with a host of its own |
 | `skippedEnvironments` | `object[]` | One entry per selected environment nothing was provisioned for |
 | `skippedEnvironments[].env` | `string` | The environment that was skipped |
 | `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
@@ -180,9 +182,9 @@ The second line is on stderr, and stdout is empty. Run without `--env`, the comm
 |---|---|---|
 | `command` | `"testers deprovision"` | The subcommand that produced this line |
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
-| `results` | array | One entry per environment torn down |
+| `results` | array | One entry per daily-pass worker deleted, in each environment torn down. An environment with none deployed has one entry, naming the shared worker |
 | `results[].env` | `"staging" \| "prod"` | The environment this entry describes |
-| `results[].worker` | string | The daily-pass worker name that was deleted. Absent is success — teardown is idempotent |
+| `results[].worker` | string | The daily-pass worker name that was deleted: `<project>-<env>-testers`, or a Worker's own `<project>-<env>-<worker>---testers`. Absent is success — teardown is idempotent |
 
 ### `pithy testers create` and `pithy testers close`
 

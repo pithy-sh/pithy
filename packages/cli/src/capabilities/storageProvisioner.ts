@@ -9,6 +9,7 @@ import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflo
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -18,7 +19,8 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import type { HostOwner } from "./hostRegistry";
+import { deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -92,7 +94,7 @@ const SECRET_FACTS = {
   backend: "d1",
   scope: "environment",
   // Not a `bootstrap` secret: its value is an envelope every reader decodes, not something read straight
-  // off a binding before the store is open. Stated because a request states it (#517).
+  // off a binding before the store is open. Stated because a request states it.
   bootstrap: false,
   rotatable: false,
   valueType: "json",
@@ -111,6 +113,11 @@ export type ResolveStorageEnv = (env: ManagedEnvironment) => Promise<StorageEnvR
 
 export interface CloudflareStorageProvisionerOptions {
   /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
+  /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
    * `@pithy-sh/storage` module is resolved against. Not derivable from `project`, which is a *name*;
    * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
@@ -118,7 +125,7 @@ export interface CloudflareStorageProvisionerOptions {
   readonly projectDir: string;
   cf: CloudflareClients;
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -165,14 +172,17 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #storageConfig: StorageConfig;
   readonly #dispatcher: SecretDispatcher;
   /**
-   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * The project's declared environments — what a `global` secret write fans out across. Carried
    * rather than assumed, so a shared secret reaches every environment the project deploys to.
    */
   readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #resolveEnv: ResolveStorageEnv;
   readonly #audit: CliAuditEmit;
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflareStorageProvisionerOptions) {
+    this.#owner = options.owner;
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
@@ -208,7 +218,10 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
    */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
     const { storageBucketName } = await loadStorage(this.#projectDir);
-    const name = storageBucketName(this.#project, env);
+    // A Worker that owns STORAGE_BUCKET binds the bucket provision created for it, and its own host binds that one.
+    const name = this.#owner?.bindings.includes("STORAGE_BUCKET")
+      ? environmentScope(this.#project, env).resource("STORAGE_BUCKET", "r2", {}, this.#owner.worker)
+      : storageBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
@@ -272,13 +285,14 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: StorageResources): Promise<void> {
-    const { storageWorkerName, resolveStorageConfig } = await loadStorage(this.#projectDir);
+    const { resolveStorageConfig } = await loadStorage(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
     const dir = await storageWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveStorageConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       secretsDatabaseId,
       storeId: this.#storeId,
@@ -286,7 +300,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
       storageConfig: this.#storageConfig,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -311,7 +325,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: storageWorkerName(this.#project, env),
+          resourceId: config.name,
         });
       }
     } catch (error) {
@@ -321,7 +335,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: storageWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
@@ -345,7 +359,7 @@ export interface CloudflareStorageDeprovisionerOptions {
    */
   readonly projectDir: string;
   cf: CloudflareClients;
-  /** The account's Workflows client — the sweep Workflow is deleted through it, by name (#789). */
+  /** The account's Workflows client — the sweep Workflow is deleted through it, by name. */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -356,7 +370,7 @@ export interface CloudflareStorageDeprovisionerOptions {
    */
   r2Credentials?: R2Credentials;
   /**
-   * The account this teardown deletes from, and what vouches for it (#378).
+   * The account this teardown deletes from, and what vouches for it.
    *
    * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
    * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
@@ -365,6 +379,11 @@ export interface CloudflareStorageDeprovisionerOptions {
   account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /**
@@ -379,6 +398,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #account: ConfirmedAccount;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareStorageDeprovisionerOptions) {
@@ -388,10 +408,11 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
     this.#account = options.account;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
   }
 
-  /** Delete the env's sweep Workflows, by the names the project's own `@pithy-sh/storage` composes (#789). */
+  /** Delete the env's sweep Workflows, by the names the project's own `@pithy-sh/storage` composes. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     const { storageWorkflowNames } = await loadStorage(this.#projectDir);
     await deleteHostWorkflows({
@@ -399,7 +420,13 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
       account: this.#account,
       capability: "storage",
       env,
-      names: storageWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "storage",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: storageWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
@@ -407,23 +434,27 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   /** Delete the env's sweep worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { storageWorkerName } = await loadStorage(this.#projectDir);
-    const name = storageWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
-      await this.#audit({
-        environment: env,
-        action: "storage/worker_deleted",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_worker",
-        resourceId: name,
-      });
+    for (const name of hostScriptsOf(
+      { capability: "storage", project: this.#project, env, owners: this.#owners },
+      storageWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+        await this.#audit({
+          environment: env,
+          action: "storage/worker_deleted",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_worker",
+          resourceId: name,
+        });
+      }
     }
   }
 

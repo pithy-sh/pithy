@@ -30,7 +30,7 @@ describe("resourceNames", () => {
   });
 });
 
-describe("a queue's name (#662)", () => {
+describe("a queue's name", () => {
   it("is held to Cloudflare's 63 and truncated, like a bucket, because it is recomputed on every run", () => {
     const long = resourceNames("a".repeat(MAX_PROJECT_NAME)).env("staging").queue("q".repeat(80));
     expect(long.length).toBe(NAMESPACE_LIMITS.queue.maxLength);
@@ -45,7 +45,7 @@ describe("a queue's name (#662)", () => {
   });
 });
 
-describe("an Artifacts namespace (#673)", () => {
+describe("an Artifacts namespace", () => {
   it("is the project and the environment, and nothing else", () => {
     expect(names.env("prod").artifactsNamespace()).toBe("acme-prod");
     expect(names.env("dev").artifactsNamespace()).toBe("acme-dev");
@@ -79,6 +79,7 @@ describe("an environment's names", () => {
     expect(prod.r2("STORAGE_BUCKET")).toBe("acme-prod-storage-bucket");
     expect(prod.queue("JOBS")).toBe("acme-prod-jobs");
     expect(prod.vectorizeIndex("docs")).toBe("acme-prod-docs");
+    expect(prod.vectorizeIndex("support-messages", "two")).toBe("acme-prod-two---support-messages");
     expect(prod.secretEntry("secrets-encryption-keys")).toBe("acme-prod-secrets-encryption-keys");
     expect(prod.apiToken("ci-system")).toBe("acme-prod-ci-system");
   });
@@ -151,6 +152,12 @@ describe("an owned binding's names", () => {
     expect(staging.queue("JOBS", "other")).toBe("acme-staging-other---jobs");
   });
 
+  it("names an owning Worker's capability host and its Workflows", () => {
+    expect(staging.worker("email", "two")).toBe("acme-staging-two---email");
+    expect(staging.workflow("email", "send", "two")).toBe("acme-staging-two---email-send");
+    expect(staging.worker("email")).toBe("acme-staging-email");
+  });
+
   it("is the shared name when no owner is given", () => {
     expect(staging.d1("DB")).toBe("acme-staging-db");
     expect(staging.d1("DB", undefined)).toBe("acme-staging-db");
@@ -177,7 +184,7 @@ describe("the global scope", () => {
   });
 
   it("is the same interface as an environment, so no call site special-cases it", () => {
-    // Every name but the Artifacts namespace, which exists per environment and never at `global` (#673).
+    // Every name but the Artifacts namespace, which exists per environment and never at `global`.
     const prod = names.env("prod");
     for (const key of Object.keys(prod).filter((key) => key !== "artifactsNamespace")) {
       expect(names.global).toHaveProperty(key);
@@ -193,7 +200,7 @@ describe("a feature's names", () => {
     expect(feature.worker("api")).toBe("acme-f95-media-cli--api");
   });
 
-  it("refuses a feature name past the Worker or R2 cap rather than truncating it (#643)", () => {
+  it("refuses a feature name past the Worker or R2 cap rather than truncating it", () => {
     const big = resourceNames("a".repeat(MAX_PROJECT_NAME)).feature({
       issue: "9".repeat(MAX_ISSUE_DIGITS),
       slug: "s".repeat(60),

@@ -14,7 +14,8 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import type { HostOwner } from "./hostRegistry";
+import { deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -89,16 +90,22 @@ export type ResolveTestersEnv = (env: ManagedEnvironment) => Promise<TestersEnvR
 
 export interface CloudflareTestersProvisionerOptions {
   /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it. Asked only when a
+   * deploy runs, because only a deploy resolves the Worker.
+   */
+  owner?: () => Promise<HostOwner | undefined>;
+  /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
    * `@pithy-sh/testers` module is resolved against. Not derivable from `project`, which is a *name*;
    * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
    */
   readonly projectDir: string;
   readonly cf: CloudflareClients;
-  /** The account's Workflows client — teardown deletes the daily Workflow through it, by name (#789). */
+  /** The account's Workflows client — teardown deletes the daily Workflow through it, by name. */
   readonly workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -122,11 +129,16 @@ export interface CloudflareTestersProvisionerOptions {
   readonly resolveEnv: ResolveTestersEnv;
   /**
    * The entry the host deploys from when the project composes auth — `hostEntrySource`'s answer, asked only
-   * when a deploy runs (#645). Absent, or answering undefined, the host deploys from its own `worker.ts`.
+   * when a deploy runs. Absent, or answering undefined, the host deploys from its own `worker.ts`.
    */
   readonly hostEntry?: () => string | undefined;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   readonly audit?: CliAuditEmit;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /** The live provisioner. Every step is idempotent, so provisioning is safe to re-run. */
@@ -141,9 +153,13 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
   readonly #email: TestersEmailIdentity | undefined;
   readonly #resolveEnv: ResolveTestersEnv;
   readonly #hostEntry: (() => string | undefined) | undefined;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
 
+  readonly #owner: () => Promise<HostOwner | undefined>;
+
   constructor(options: CloudflareTestersProvisionerOptions) {
+    this.#owner = options.owner ?? (async () => undefined);
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#workflows = options.workflows;
@@ -154,6 +170,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     this.#email = options.email;
     this.#resolveEnv = options.resolveEnv;
     this.#hostEntry = options.hostEntry;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -167,23 +184,25 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     }
   }
 
-  /** Resolve the env's wrangler config from the committed template + ids, then `wrangler deploy`. */
-  async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { resolveTestersConfig, testersWorkerName } = await loadTestersProvisioning(this.#projectDir);
+  /** Resolve the env's wrangler config from the committed template + ids, then `wrangler deploy`. Resolves its name. */
+  async deployWorker(env: ManagedEnvironment): Promise<string> {
+    const { resolveTestersConfig } = await loadTestersProvisioning(this.#projectDir);
     const { appDatabaseId, suppressionDatabaseId } = await this.#resolveEnv(env);
     const dir = await testersWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
 
+    const owner = await this.#owner();
     const config = resolveTestersConfig(template, {
       project: this.#project,
       env,
+      ...(owner ? { owner: owner.worker } : {}),
       appDatabaseId,
       suppressionDatabaseId,
       testersConfig: this.#testersConfig,
       email: this.#email,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -210,10 +229,11 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: testersWorkerName(this.#project, env),
+          resourceId: config.name,
           metadata: { sends: this.#email !== undefined },
         });
       }
+      return config.name;
     } catch (error) {
       await this.#audit({
         environment: env,
@@ -221,13 +241,13 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
         outcome: "failure",
         severity: "warning",
         resourceType: "cf_worker",
-        resourceId: testersWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
   }
 
-  /** Delete the env's daily Workflows, by the names the project's own `@pithy-sh/testers` composes (#789). */
+  /** Delete the env's daily Workflows, by the names the project's own `@pithy-sh/testers` composes. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     const { testersWorkflowNames } = await loadTestersProvisioning(this.#projectDir);
     await deleteHostWorkflows({
@@ -235,7 +255,13 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
       account: this.#account,
       capability: "testers",
       env,
-      names: testersWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "testers",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: testersWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
@@ -252,30 +278,37 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
    * The audit sits inside the guard too. A `worker_deleted` event for a worker that never existed is a
    * false entry in the one log that is supposed to be the record of what actually happened.
    *
-   * **And the guard now refuses what it cannot settle (#378).** "This account has no such worker" and "I
+   * **And the guard now refuses what it cannot settle.** "This account has no such worker" and "I
    * asked an account nothing claims" arrived here as the same `null`, so a teardown pointed at the wrong
    * account deleted nothing, audited nothing, and exited 0 — a success message over an untouched
    * production Worker. The lookup does not even happen unless something vouches for the account.
    */
-  async deleteWorker(env: ManagedEnvironment): Promise<void> {
+  async deleteWorker(env: ManagedEnvironment): Promise<string[]> {
     const { testersWorkerName } = await loadTestersProvisioning(this.#projectDir);
-    const name = testersWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
-      await this.#audit({
-        environment: env,
-        action: "testers/worker_deleted",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_worker",
-        resourceId: name,
-      });
+    const deleted: string[] = [];
+    for (const name of hostScriptsOf(
+      { capability: "testers", project: this.#project, env, owners: this.#owners },
+      testersWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+        await this.#audit({
+          environment: env,
+          action: "testers/worker_deleted",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_worker",
+          resourceId: name,
+        });
+        deleted.push(name);
+      }
     }
+    return deleted;
   }
 }

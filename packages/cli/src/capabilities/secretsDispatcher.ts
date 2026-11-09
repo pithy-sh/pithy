@@ -24,7 +24,7 @@ import { cloudflareWorkflows } from "../cloudflare/clients";
  *
  * It is also the {@link SecretProbe} — the read seam provisioning asks before it mints anything — and the
  * {@link SecretRotationRecorder}, the rotation ledger `pithy secrets rotate` opens a row in before it rolls
- * (`#379`). All three contracts land on the same Workflow, so the same one object answers them, and a
+ * All three contracts land on the same Workflow, so the same one object answers them, and a
  * caller cannot end up probing or recording against one project's manager while writing to another's.
  *
  * It is the {@link SecretStoreVerifier} too — `pithy secrets verify` asks the same Workflow, because the
@@ -32,14 +32,16 @@ import { cloudflareWorkflows } from "../cloudflare/clients";
  *
  * And it is a {@link PreflightSecretDispatcher}: the refusals a `d1` write owns — no manager to reach, an
  * `update` of a secret that is not there — are askable before a rotator is called, over the same Workflow
- * and the same store (#517).
+ * and the same store.
  */
 export async function buildSecretDispatcher(
   accountId: string,
   apiToken: string,
   project: string,
-  /** A feature's own manager, when the writes are a feature's (#643) — see `WorkflowSecretDispatcher`. */
+  /** A feature's own manager, when the writes are a feature's — see `WorkflowSecretDispatcher`. */
   feature?: FeatureIdentity,
+  /** The `apps/<owner>` Worker that owns `SECRETS`, when the writes belong in its own vault. */
+  owner?: string,
 ): Promise<PreflightSecretDispatcher & SecretProbe & SecretFieldProbe & SecretRotationRecorder & SecretStoreVerifier> {
-  return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project, feature);
+  return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project, feature, owner);
 }

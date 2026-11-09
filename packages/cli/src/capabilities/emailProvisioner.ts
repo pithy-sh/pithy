@@ -33,7 +33,8 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import type { HostOwner } from "./hostRegistry";
+import { deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
 /** The suppression migration set, as provisioning runs it against the shared suppression D1 and teardown counts it. */
@@ -49,7 +50,7 @@ export function suppressionMigrationProvider(): MigrationProvider {
       order: EMAIL_SUPPRESSIONS_MIGRATION_ORDER,
       migrations: { "0001_suppressions": email_0001_suppressions },
       // The capability's own declaration, never a copy. This process never constructs `email()`, so without
-      // it the list is undeclared here and a teardown's count finds nothing to refuse over (#591).
+      // it the list is undeclared here and a teardown's count finds nothing to refuse over.
       retained: emailSuppressionsRetainedTables,
     },
   ]);
@@ -72,6 +73,11 @@ export interface EmailEnvResources {
 export type ResolveEmailEnv = (env: ManagedEnvironment) => Promise<EmailEnvResources>;
 
 export interface CloudflareEmailProvisionerOptions {
+  /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
   cf: CloudflareClients;
   /**
    * The project root — the directory `pithy.config.ts` was read from, and the base `@pithy-sh/email`
@@ -79,7 +85,7 @@ export interface CloudflareEmailProvisionerOptions {
    */
   projectDir: string;
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -141,7 +147,10 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #routing?: { zoneId: string; address: string; appWorkerName: string };
   readonly #audit: CliAuditEmit;
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflareEmailProvisionerOptions) {
+    this.#owner = options.owner;
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
@@ -174,7 +183,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
    * another's transactional mail. D1 exposes no tags through the API, so the name is the whole
    * ownership record, and the audit event writes the project down beside it.
    *
-   * Which is also why the miss refuses on an unconfirmed account (#378): "no database of that name" and
+   * Which is also why the miss refuses on an unconfirmed account: "no database of that name" and
    * "I asked an account nobody claims" arrive as the same empty listing, and creating on the second one
    * puts this project's opt-out list in somebody else's account.
    */
@@ -214,6 +223,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     const config = resolveEmailConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       suppressionDatabaseId,
       secretsDatabaseId,
@@ -223,7 +233,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       messages: this.#messages,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -248,7 +258,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: emailWorkerName(this.#project, env),
+          resourceId: config.name,
         });
       }
     } catch (error) {
@@ -258,7 +268,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: emailWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
@@ -302,7 +312,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
  * wrangler.jsonc). Exported so the template test resolves the same file the deploy reads — a copy of
  * this resolution in the test would be a copy free to drift from the path it is meant to guard.
  *
- * **From the project (#533).** What gets deployed here runs under the adopter's name and against the
+ * **From the project.** What gets deployed here runs under the adopter's name and against the
  * adopter's database, so it is the adopter's copy of the Worker — not whichever one happens to sit beside
  * a global `pithy`. `resolveEmailConfig` above is still imported statically and so is still the CLI's;
  * `project/kitResolve.ts` says why that pairing is where this stops.
@@ -313,12 +323,12 @@ export function emailWorkerDir(projectDir: string): string {
 
 export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
-  /** The account's Workflows client — the send and schedule Workflows are deleted through it, by name (#789). */
+  /** The account's Workflows client — the send and schedule Workflows are deleted through it, by name. */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
   /**
-   * The account this teardown deletes from, and what vouches for it (#378).
+   * The account this teardown deletes from, and what vouches for it.
    *
    * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
    * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
@@ -328,10 +338,15 @@ export interface CloudflareEmailDeprovisionerOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * How many suppressed addresses this run may destroy — the operator's `--destroy-retained` number (#591).
+   * How many suppressed addresses this run may destroy — the operator's `--destroy-retained` number.
    * Defaults to agreeing to nothing: an empty list deletes, a populated one refuses.
    */
   budget?: RetainedBudget;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /**
@@ -344,6 +359,7 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   readonly #project: string;
   readonly #account: ConfirmedAccount;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
   readonly #budget: RetainedBudget;
 
@@ -352,6 +368,7 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     this.#workflows = options.workflows;
     this.#project = options.project;
     this.#account = options.account;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
     this.#budget = options.budget ?? new RetainedBudget(undefined);
   }
@@ -375,53 +392,69 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
 
   /** Whether the env's email worker is deployed — settled on a confirmed account, like every lookup here. */
   async hasWorker(env: ManagedEnvironment): Promise<boolean> {
-    const name = emailWorkerName(this.#project, env);
-    return Boolean(
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      }),
-    );
+    for (const name of hostScriptsOf(
+      { capability: "email", project: this.#project, env, owners: this.#owners },
+      emailWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      )
+        return true;
+    }
+    return false;
   }
 
-  /** Delete the env's send and schedule Workflows, by `emailWorkflowNames` (#789). */
+  /** Delete the env's send and schedule Workflows, by `emailWorkflowNames`. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     await deleteHostWorkflows({
       workflows: this.#workflows,
       account: this.#account,
       capability: "email",
       env,
-      names: emailWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "email",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: emailWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
 
-  /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled (#378). */
+  /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const name = emailWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
-      await this.#audit({
-        environment: env,
-        action: "email/worker_removed",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_worker",
-        resourceId: name,
-      });
+    for (const name of hostScriptsOf(
+      { capability: "email", project: this.#project, env, owners: this.#owners },
+      emailWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+        await this.#audit({
+          environment: env,
+          action: "email/worker_removed",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_worker",
+          resourceId: name,
+        });
+      }
     }
   }
 
   /**
    * Delete this project's suppression D1 if it exists — destructive, called only on a full destroy, and
-   * refused while the list holds more rows than this run's budget agreed to destroy (#591).
+   * refused while the list holds more rows than this run's budget agreed to destroy.
    */
   async deleteSuppressionDatabase(): Promise<void> {
     const database = await this.#suppressionDatabase();

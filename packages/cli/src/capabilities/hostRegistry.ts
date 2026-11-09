@@ -2,44 +2,38 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import type { StampedEncryptedColumns } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import type { OwnedVault, StampedEncryptedColumns } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import type { HostPeerSeam } from "./hostEntry";
+import { composable } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
  * **Which capability owns which host Worker — the one production statement of it.**
  *
  * A capability that owns Workflows ships a committed `wrangler.jsonc` beside its worker entry, and
- * `pithy <capability> provision` resolves that template into one deployable config per environment.
- * Nine capabilities do; not one of them lives in `apps/`, so until now no host Worker had ever run
- * under `pithy dev` and every locally enqueued email sat `pending` forever (pithy-sh/pithy#410).
- *
- * The mapping from a capability to its template, its entry module and its resolver existed only
- * inside `hostTemplates.test.ts` — a test file, which nothing may import at runtime. This is that
- * mapping as production code. `pithy dev` reads it and knows nothing about email, media or vector;
- * a tenth capability adds one entry here and joins the dev set with no change to the dev command.
+ * `pithy <capability> provision` resolves that template into one deployable config per environment. None of
+ * these Workers lives in `apps/`. `pithy dev`, `pithy deploy` and `pithy provision --feature` read this table and
+ * know nothing about email, media or vector; a tenth capability adds one entry here and joins all three.
  *
  * ## Why every import is dynamic
  *
- * Six of the eight packages below are `devDependencies` of the CLI, because a capability is optional
- * and the CLI must never hard-depend on one. So each entry resolves its resolver through a guarded
- * `import()` at the moment the project turns out to compose it, and a package that is not installed
- * becomes {@link capabilityLoadError}'s actionable refusal rather than an unresolved-module crash.
+ * Most of the packages below are `devDependencies` of the CLI, because a capability is optional and the CLI must
+ * never hard-depend on one. So each entry resolves its resolver through a guarded `import()` at the moment the
+ * project turns out to compose it, and a package that is not installed becomes {@link capabilityLoadError}'s
+ * actionable refusal rather than an unresolved-module crash.
  *
- * **And every one of them is resolved from the project, never from the CLI (#533).** This file is the
- * issue's own example: a globally installed `pithy` read the project's `pithy.config.ts`, learned it
- * composes `payments`, and then asked *its own* `node_modules` for `@pithy-sh/payments` — which a global
- * install does not have, so a composed, installed, working capability was refused as "not installed"
- * with `pithy add` for a remedy. See `project/kitResolve.ts`.
+ * **And every one of them is resolved from the project, never from the CLI.** A globally installed `pithy` has no
+ * `@pithy-sh/payments` of its own, so asking its own `node_modules` would refuse a composed, installed, working
+ * capability as "not installed". See `project/kitResolve.ts`.
  *
  * ## What a resolution is, and where its configuration comes from
  *
@@ -48,29 +42,20 @@ import { capabilityLoadError } from "./loadFailure";
  * its own resolver's bespoke parameters, which is the shape the provisioners already have and the
  * shape `hostTemplates.test.ts` already drives.
  *
- * **A capability's own configuration is read from the composed capability, always.** There is no
- * branch left that parses `Config.parse({})`, and {@link HostResolveContext.capability} is required
- * rather than optional so a new entry cannot grow one. Five branches did exactly that — media,
- * storage, support, testers and vector — written while this registry served `pithy dev` alone, where
- * a host on schema defaults was a local convenience nobody deployed. #537 pointed
- * `pithy deploy --kit` at the same entries and inherited the wrong half: media's deployed host lost
- * a binding its config asked for while `pithy media provision` put it back, and testers' deployed host
- * lost `EMAIL_FROM_ADDRESS` entirely, because the entry passed `email: undefined` under a comment
- * about local sending.
- *
- * So the registry serves one master. A composed object that is not the shape its own package defines
- * is {@link ownCapability}'s refusal, never a default — the whole failure was a silent fallback, and
- * a second one would be the same bug spelled differently. **The dev path supplies its defaults out
- * loud instead**: `pithy dev` answers `storeId()` with the empty string at its own call site, where
- * the sentence explaining that a developer's machine has no Secrets Store can be read, rather than
- * through a `?? ""` in here that a deploy silently inherited.
+ * **A capability's own configuration is read from the composed capability, always.** No entry parses
+ * `Config.parse({})`, and {@link HostResolveContext.capability} is required rather than optional so a new entry
+ * cannot: a host resolved on schema defaults deploys an adopter's Worker on somebody else's settings, and
+ * `hostConfigParity.test.ts` holds this table and the provisioners to one configuration. A composed object that is
+ * not the shape its own package defines is {@link ownCapability}'s refusal, never a default. **The dev path supplies
+ * its defaults out loud instead**: `pithy dev` answers `storeId()` with the empty string at its own call site, where
+ * the sentence explaining that a developer's machine has no Secrets Store can be read.
  */
 
 /** What one host resolution needs, stated without reference to any particular capability. */
 export interface HostResolveContext {
   /**
    * The project root — where `pithy.config.ts` was read from, and the base every `@pithy-sh/*` module
-   * below is resolved against (#533).
+   * below is resolved against.
    *
    * Distinct from {@link project}, which is a *name* and resolves nothing. And never `process.cwd()`:
    * these resolvers run under `pithy dev`, where the cwd may be a worktree.
@@ -81,18 +66,24 @@ export interface HostResolveContext {
   /** The environment being resolved. `dev` for a local host; a managed name for a deploy; `feature` for a branch. */
   env: string;
   /**
-   * **The feature being resolved for, when `env` is `feature` (#643).** A host deployed for a branch takes the
+   * **The feature being resolved for, when `env` is `feature`.** A host deployed for a branch takes the
    * feature's names — its script, its Workflows, its store entries — because every one of those namespaces is
    * account-wide and `<project>-feature-<capability>` would be one host every open branch shared. A resolver
    * that does not read this composes the environment's names, and `pithy deploy` refuses its row for it.
    */
   feature?: FeatureIdentity;
+  /**
+   * **The Worker whose own host this is, when it is one.** A Worker that owns a binding its capability's host binds
+   * gets a host of its own ({@link hostOwnerFor}), named for it and bound to what it owns. Absent for the host every
+   * other Worker shares. The ids {@link databaseId} answers are already that Worker's; this decides the names.
+   */
+  owner?: HostOwner;
   /** The app Worker's origin for this environment — what callback links are built against. */
   baseUrl: string;
   /**
    * The project's declared environments, least production first (`docs/NAMING.md`), when the caller has them.
-   * The secrets manager reads the last one as the environment whose manager alone rotates a `global` secret
-   * (#602). Absent, no manager is told it owns one, so none rotates one.
+   * The secrets manager reads the last one as the environment whose manager alone rotates a `global` secret.
+   * Absent, no manager is told it owns one, so none rotates one.
    */
   environments?: readonly string[];
   /**
@@ -108,17 +99,21 @@ export interface HostResolveContext {
    * A function and not a string because the two callers answer it differently and both answers are
    * deliberate: `pithy dev` answers `""`, since a developer's machine has no store and the block is
    * stripped before the config reaches disk; `pithy deploy --kit` answers the account's id, or
-   * records the miss and skips. It was `storeId ?? ""` here, which meant the deploy path shipped
-   * `store_id: ""` and reported the row as deployed (#537).
+   * records the miss and skips. A default here would ship `store_id: ""` from the deploy path.
    */
   storeId: () => string;
   /** The Cloudflare account id, on the same terms. Only the secrets manager stamps it into its vars. */
   accountId: () => string;
   /**
-   * The project's encrypted columns and the D1 each lives in (#390), which only the secrets manager is stamped
+   * The project's encrypted columns and the D1 each lives in, which only the secrets manager is stamped
    * with. Supplied by `pithy deploy` for a declared environment; absent, nothing is stamped.
    */
   encryptedColumns?: () => Promise<StampedEncryptedColumns>;
+  /**
+   * The vaults of the Workers that own `SECRETS`, which only the shared secrets manager binds: each is sealed under
+   * this environment's master key, so its at-rest rotation re-seals them. Supplied by `pithy deploy`.
+   */
+  ownedVaults?: () => Promise<readonly OwnedVault[]>;
   /**
    * **The composed capability this host belongs to. Required.**
    *
@@ -163,7 +158,7 @@ export interface HostDeliveryIdentity {
 }
 
 /**
- * **One index a host binds that a feature must create for itself (#643)** — a Vectorize index, which the generic
+ * **One index a host binds that a feature must create for itself** — a Vectorize index, which the generic
  * feature provisioning (D1, KV, R2) has no kind for, because an index is created with a shape. Named for the
  * feature, bound by the host and the app Worker under the same binding, and deleted with the feature.
  */
@@ -188,21 +183,104 @@ export interface HostWorkerSpec {
   readonly entry: string;
   /** The npm package the entry ships in, named when the guarded import fails. */
   readonly package: string;
+  /**
+   * The D1 and R2 bindings the host reads, by the app Worker's binding names. A Worker owning any of them gets a
+   * host of its own ({@link hostOwnerFor}). Read off the composed capability, because one host reads the database
+   * its capability's config names.
+   */
+  binds(capability: Capability): readonly string[];
+  /**
+   * The buckets this host keys or sweeps against one of its databases. A Worker that owns the database and shares
+   * the bucket is refused ({@link hostOwnerFor}): its own host would read its database against objects another
+   * database's host also writes or deletes. With `bothWays`, owning the bucket and sharing the database is refused
+   * too, for a bucket whose keys never name the database, so two hosts over one database would each hold half of
+   * its record. Absent for a host whose bucket holds nothing keyed to a database row.
+   */
+  pairedBuckets?(capability: Capability): readonly PairedBucket[];
   /** Fill the template for one environment. Throws {@link capabilityLoadError} when the package is absent. */
   resolve(template: WorkflowHostTemplate, context: HostResolveContext): Promise<WorkflowHostTemplate>;
   /** What this host would send from a developer's machine, or `undefined` when it sends nothing. */
   delivery?(capability: Capability, projectDir: string): Promise<HostDeliveryIdentity | undefined>;
   /**
-   * The indexes this host binds that a feature creates for itself (#643), named for the feature. Absent for a
-   * host that binds none — every resource it binds is then one the generic feature provisioning names.
+   * The indexes this host binds that a feature creates for itself, named for the feature, and for `owner` when they
+   * are a Worker's own host's. Absent for a host that binds none — every resource it binds is then one the generic
+   * feature provisioning names. With `skipUncomposable`, an index whose name the namer refuses is left out rather than
+   * thrown: no provision could have created it, so a teardown has nothing to delete under it.
    */
-  featureIndexes?(capability: Capability, projectDir: string, feature: FeatureIdentity): Promise<FeatureIndex[]>;
+  featureIndexes?(
+    capability: Capability,
+    projectDir: string,
+    feature: FeatureIdentity,
+    owner?: string,
+    options?: FeatureIndexOptions,
+  ): Promise<FeatureIndex[]>;
   /**
-   * The optional peers this host can be handed, and which of them a composition hands it (#645). Absent for a
+   * The optional peers this host can be handed, and which of them a composition hands it. Absent for a
    * host that reaches no optional peer. See `hostEntry.ts` for why a host is handed a peer rather than
    * importing it, and how.
    */
   readonly peers?: HostPeerSeam;
+}
+
+/** How {@link HostWorkerSpec.featureIndexes} treats a name the namer refuses. */
+export interface FeatureIndexOptions {
+  /** Leave such an index out instead of throwing. Teardown sets it; provisioning never does. */
+  skipUncomposable?: boolean;
+}
+
+/** One composed index name, or none when `options` skips a name the namer refuses. */
+function indexNames(compose: () => string, options: FeatureIndexOptions = {}): string[] {
+  return options.skipUncomposable ? composable(compose) : [compose()];
+}
+
+/** The Worker a host is the own host of, and the bindings it owns that the host binds. */
+export interface HostOwner {
+  /** The `apps/<worker>` directory name — the owner segment of every name the host takes. */
+  worker: string;
+  /** The bindings the host binds that this Worker owns. Never empty. */
+  bindings: readonly string[];
+}
+
+/** A bucket a host keys to the rows of one database ({@link HostWorkerSpec.pairedBuckets}). */
+export interface PairedBucket {
+  readonly database: string;
+  readonly bucket: string;
+  /** Whether owning the bucket while sharing the database is refused as well. */
+  readonly bothWays?: boolean;
+}
+
+/**
+ * **Whether a Worker gets a host of its own for a capability, and for which bindings.** One rule for every host: the
+ * Worker owns a binding the host binds. Its jobs and rows are then in its own resources, so a host shared with the
+ * other Workers would read the wrong ones. `undefined` when the Worker owns none of them and shares the host.
+ */
+export function hostOwnerFor(
+  spec: HostWorkerSpec,
+  capability: Capability,
+  worker: { dir: string; ownBindings?: readonly string[] },
+  options: { refuseSplit?: boolean } = {},
+): HostOwner | undefined {
+  const owned = new Set(worker.ownBindings ?? []);
+  if (owned.size === 0) return undefined;
+  const name = basename(worker.dir);
+  if (options.refuseSplit !== false) {
+    for (const { database, bucket, bothWays } of spec.pairedBuckets?.(capability) ?? []) {
+      if (owned.has(database) && !owned.has(bucket)) {
+        throw new ValidationError({
+          message: `${name} owns ${database} but shares ${bucket}. The ${spec.capability} host keys ${bucket} to the rows in ${database}, so one Worker owns both or neither.`,
+          action: `Add ${bucket} to apps/${name}/pithy.worker.jsonc ownBindings, or take ${database} out.`,
+        });
+      }
+      if (bothWays && owned.has(bucket) && !owned.has(database)) {
+        throw new ValidationError({
+          message: `${name} owns ${bucket} but shares ${database}. The ${spec.capability} host keys ${bucket} to the rows in ${database}, so one Worker owns both or neither.`,
+          action: `Add ${database} to apps/${name}/pithy.worker.jsonc ownBindings, or take ${bucket} out.`,
+        });
+      }
+    }
+  }
+  const bindings = spec.binds(capability).filter((binding) => owned.has(binding));
+  return bindings.length > 0 ? { worker: name, bindings } : undefined;
 }
 
 /** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry, in the project's copy. */
@@ -223,7 +301,7 @@ export async function readHostTemplate(projectDir: string, entry: string): Promi
  * Run a guarded dynamic import, turning an absent optional package into an actionable refusal.
  *
  * `projectDir` is what lets the refusal be honest: {@link capabilityLoadError} checks the project's own
- * `node_modules` before it is allowed to say "not installed" and print `pithy add` (#533).
+ * `node_modules` before it is allowed to say "not installed" and print `pithy add`.
  */
 async function load<T>(capability: string, pkg: string, projectDir: string, importer: () => Promise<T>): Promise<T> {
   try {
@@ -234,13 +312,16 @@ async function load<T>(capability: string, pkg: string, projectDir: string, impo
 }
 
 /**
- * **The feature a resolution is for, spread into every resolver's params the same way (#643).** Every kit host a
- * feature composes is deployed for it, so every entry below hands this on — and `pithy deploy` refuses a feature
- * host any of whose names is not the feature's, so an entry that forgot would fail rather than deploy a Worker
- * every branch shares. See `feature/hosts.ts`.
+ * **The feature and the owner a resolution is for, spread into every resolver's params the same way.** Every kit
+ * host a feature composes is deployed for it, and a Worker's own host is named for that Worker, so every entry below
+ * hands this on — `pithy deploy` refuses a feature host any of whose names is not the feature's, so an entry that
+ * forgot would fail rather than deploy a Worker every branch shares. See `feature/hosts.ts`.
  */
-function featureOf(context: HostResolveContext): { feature?: FeatureIdentity } {
-  return context.feature ? { feature: context.feature } : {};
+function hostScopeOf(context: HostResolveContext): { feature?: FeatureIdentity; owner?: string } {
+  return {
+    ...(context.feature ? { feature: context.feature } : {}),
+    ...(context.owner ? { owner: context.owner.worker } : {}),
+  };
 }
 
 /**
@@ -248,7 +329,20 @@ function featureOf(context: HostResolveContext): { feature?: FeatureIdentity } {
  * the feature's own bucket — the one `pithy provision --feature` created for the same binding — for a feature.
  */
 function bucketName(context: HostResolveContext, binding: string, own: () => string): string {
-  return context.feature ? featureScope(context.feature).resource(binding, "r2", {}) : own();
+  const owner = context.owner?.bindings.includes(binding) ? context.owner.worker : undefined;
+  if (context.feature) return featureScope(context.feature).resource(binding, "r2", {}, owner);
+  if (owner === undefined) return own();
+  return ownedBucketName(context.project, context.env, context.capability, binding, owner);
+}
+
+/**
+ * The bucket `pithy provision` created for a Worker's own R2 binding, `<project>-<env>-<owner>---<binding>`, named
+ * with the binding's declared naming. What a Worker's own host binds, from the kit pass and from
+ * `pithy <capability> provision --worker <owner>` alike.
+ */
+function ownedBucketName(project: string, env: string, capability: Capability, binding: string, owner: string): string {
+  const naming = capability.requiredBindings.find((spec) => spec.name === binding) ?? {};
+  return environmentScope(project, env).resource(binding, "r2", naming, owner);
 }
 
 /** The three ids every host that reads a secret needs, mapped off the context in one place. */
@@ -256,7 +350,7 @@ function shared(context: HostResolveContext) {
   return {
     project: context.project,
     env: context.env,
-    ...featureOf(context),
+    ...hostScopeOf(context),
     appDatabaseId: context.databaseId("DB"),
     secretsDatabaseId: context.databaseId("SECRETS"),
     // Asked for, so the four hosts that bind the store are the four that ask. Whether an unanswerable
@@ -269,9 +363,8 @@ function shared(context: HostResolveContext) {
 /**
  * **The host's own composed capability, narrowed by its package's own type guard — or a refusal.**
  *
- * The one place a capability's configuration enters a resolution, and deliberately the only one. Each
- * entry used to narrow inline and fall back to `Config.parse({})` when the guard said no, which reads
- * as defensive and is the #537 defect in miniature: the fallback fires on exactly the input nobody
+ * The one place a capability's configuration enters a resolution, and deliberately the only one. A fallback to
+ * `Config.parse({})` when the guard says no would read as defensive and fire on exactly the input nobody
  * anticipated, and what it produces is an adopter's Worker deployed on somebody else's settings.
  *
  * A guard says no when the object composed under this name is not the one the package defines — an
@@ -308,8 +401,7 @@ function ownCapability<T extends Capability>(
  * writes its snapshot, and sends nothing. `resolveTestersConfig` then deletes the three `EMAIL_*`
  * placeholders the template carries, so nothing deploys looking configured to send. A default address
  * would be worse than none — mail from a domain the adopter's DKIM does not cover trains recipients'
- * providers to distrust the real one — which is why the entry passed `email: undefined` before #537,
- * and why that was right locally and wrong for every deployed testers host.
+ * providers to distrust the real one.
  */
 async function testersSendingIdentity(context: HostResolveContext) {
   // The name first, so a project composing no email capability never asks its package for anything.
@@ -380,6 +472,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "email",
     entry: "@pithy-sh/email/src/workflows/worker",
     package: "@pithy-sh/email",
+    binds: () => ["DB", "EMAIL_SUPPRESSIONS", "SECRETS"],
     async resolve(template, context) {
       const [{ resolveEmailConfig }, { isEmailCapability }] = await load(
         "email",
@@ -416,8 +509,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // when nothing composed an i18n capability, and then no var is written at all.
         //
         // True only because `discoverHostWorkers` assembles the set before handing a capability here —
-        // `hostCatalogs()` answers `{}` on one whose `compose` hook has not run, and this sentence was
-        // false for exactly as long as it did not (pithy-sh/pithy#441).
+        // `hostCatalogs()` answers `{}` on one whose `compose` hook has not run.
         messages: composed.hostCatalogs(),
         devDelivery: context.simulateDelivery ? "simulator" : composed.emailConfig.devDelivery,
       });
@@ -434,6 +526,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "media",
     entry: "@pithy-sh/media/src/workflows/worker",
     package: "@pithy-sh/media",
+    binds: () => ["DB", "SECRETS", "MEDIA_BUCKET"],
     async resolve(template, context) {
       const [{ resolveMediaConfig }, { mediaBucketName }, { isMediaCapability }] = await load(
         "media",
@@ -475,6 +568,9 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "storage",
     entry: "@pithy-sh/storage/src/workflows/worker",
     package: "@pithy-sh/storage",
+    binds: () => ["DB", "SECRETS", "STORAGE_BUCKET"],
+    // The sweep deletes every derived object older than the TTL with no row in the database it reads.
+    pairedBuckets: () => [{ database: "DB", bucket: "STORAGE_BUCKET" }],
     async resolve(template, context) {
       const [{ resolveStorageConfig }, { storageBucketName }, { isStorageCapability }] = await load(
         "storage",
@@ -510,6 +606,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "payments",
     entry: "@pithy-sh/payments/src/workflows/worker",
     package: "@pithy-sh/payments",
+    binds: () => ["DB", "SECRETS"],
     // A reconcile pass that repairs a purchase whose product credits a balance owes the credit, and this host
     // composes nothing to find a ledger in — so it is handed one, exactly when the catalog asks for it.
     peers: PAYMENTS_HOST_PEERS,
@@ -534,9 +631,8 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       // reconcile host runs the adopter's own catalog and their own `billingSubject`, and a dev pass
       // narrows to the holder kind the project actually bills.
       //
-      // There is nothing left to fall back to, and `billingSubject` is why the fallback was always
-      // wrong: the key is required precisely because nothing may pick it silently (#412), so the
-      // `PaymentsConfig.parse({ billingSubject: "user" })` that stood here picked it silently.
+      // There is nothing to fall back to: `billingSubject` is required precisely because nothing may pick it
+      // silently.
       return resolvePaymentsConfig(template, {
         ...shared(context),
         paymentsConfig: ownCapability(context, "payments", "@pithy-sh/payments", isPaymentsCapability).paymentsConfig,
@@ -547,6 +643,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "support",
     entry: "@pithy-sh/support/src/workflows/worker",
     package: "@pithy-sh/support",
+    binds: () => ["DB"],
     async resolve(template, context) {
       const [{ resolveSupportConfig }, { isSupportCapability }] = await load(
         "support",
@@ -567,14 +664,14 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveSupportConfig(template, {
         project: context.project,
         env: context.env,
-        ...featureOf(context),
+        ...hostScopeOf(context),
         appDatabaseId: context.databaseId("DB"),
         supportConfig: ownCapability(context, "support", "@pithy-sh/support", isSupportCapability).supportConfig,
       });
     },
     // The semantic message index, when `search.semantic` is on: a feature gets its own, named the way the
     // resolver above binds the host to it, at the shape `pithy support provision` creates.
-    async featureIndexes(capability, projectDir, feature) {
+    async featureIndexes(capability, projectDir, feature, owner, options) {
       const [{ supportMessageIndex, supportMessageIndexName }, { isSupportCapability }] = await load(
         "support",
         "@pithy-sh/support",
@@ -594,15 +691,15 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       if (!isSupportCapability(capability)) return [];
       const index = supportMessageIndex(capability.supportConfig.search);
       if (!index) return [];
-      return [
-        {
+      return indexNames(() => supportMessageIndexName(feature.project, "feature", feature, owner), options).map(
+        (name) => ({
           binding: index.binding,
-          name: supportMessageIndexName(feature.project, "feature", feature),
+          name,
           dimensions: index.dimensions,
           metric: index.metric,
           metadata: [],
-        },
-      ];
+        }),
+      );
     },
   },
   {
@@ -611,6 +708,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     peers: TESTERS_HOST_PEERS,
     entry: "@pithy-sh/testers/src/workflows/worker",
     package: "@pithy-sh/testers",
+    binds: () => ["DB", "EMAIL_SUPPRESSIONS"],
     async resolve(template, context) {
       const [{ resolveTestersConfig }, { isTestersCapability }] = await load(
         "testers",
@@ -631,7 +729,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveTestersConfig(template, {
         project: context.project,
         env: context.env,
-        ...featureOf(context),
+        ...hostScopeOf(context),
         appDatabaseId: context.databaseId("DB"),
         suppressionDatabaseId: context.databaseId("EMAIL_SUPPRESSIONS"),
         testersConfig: ownCapability(context, "testers", "@pithy-sh/testers", isTestersCapability).testersConfig,
@@ -643,6 +741,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "vector",
     entry: "@pithy-sh/vector/src/workflows/worker",
     package: "@pithy-sh/vector",
+    binds: () => ["DB"],
     async resolve(template, context) {
       const [{ resolveVectorConfig }, { vectorIndexName }, { isVectorCapability }] = await load(
         "vector",
@@ -671,7 +770,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveVectorConfig(template, {
         project: context.project,
         env: context.env,
-        ...featureOf(context),
+        ...hostScopeOf(context),
         appDatabaseId: context.databaseId("DB"),
         // `vectorIndexName`, which is what `pithy vector provision` creates the index by. The local
         // `resourceNames(project).env(env).vectorizeIndex(index)` that stood here omitted the
@@ -680,13 +779,13 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         indexNames: Object.fromEntries(
           Object.keys(config.indexes).map((index) => [
             index,
-            vectorIndexName(context.project, index, context.env, context.feature),
+            vectorIndexName(context.project, index, context.env, context.feature, context.owner?.worker),
           ]),
         ),
         config,
       });
     },
-    async featureIndexes(capability, projectDir, feature) {
+    async featureIndexes(capability, projectDir, feature, owner, options) {
       const [{ vectorIndexName }, { isVectorCapability }, { metadataIndexes }] = await load(
         "vector",
         "@pithy-sh/vector",
@@ -706,19 +805,22 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       );
       if (!isVectorCapability(capability)) return [];
       // The same names the resolver above binds the host to, and the shape `pithy vector provision` creates with.
-      return Object.entries(capability.vectorConfig.indexes).map(([index, config]) => ({
-        binding: config.binding,
-        name: vectorIndexName(feature.project, index, "feature", feature),
-        dimensions: config.dimensions,
-        metric: config.metric,
-        metadata: config.metadata ? metadataIndexes(config.metadata) : [],
-      }));
+      return Object.entries(capability.vectorConfig.indexes).flatMap(([index, config]) =>
+        indexNames(() => vectorIndexName(feature.project, index, "feature", feature, owner), options).map((name) => ({
+          binding: config.binding,
+          name,
+          dimensions: config.dimensions,
+          metric: config.metric,
+          metadata: config.metadata ? metadataIndexes(config.metadata) : [],
+        })),
+      );
     },
   },
   {
     capability: "secrets",
     entry: "@pithy-sh/secrets/src/manager/worker",
     package: "@pithy-sh/secrets",
+    binds: () => ["SECRETS"],
     async resolve(template, context) {
       const { resolveManagerConfig } = await load("secrets", "@pithy-sh/secrets", context.projectDir, () =>
         kitImport<typeof import("@pithy-sh/secrets/src/provision/resolveManagerConfig")>(
@@ -738,32 +840,40 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         databaseId: context.databaseId("SECRETS"),
         storeId: context.storeId(),
         accountId: context.accountId(),
-        // **The value-rotation schedule, read off every capability the project composes (#602).** The manager
+        // **The value-rotation schedule, read off every capability the project composes.** The manager
         // is prebuilt and never reads `pithy.config.ts`, so this stamp is the only way it learns which
         // secrets rotate on their own — the same one `pithy secrets provision` writes. A feature's manager
         // runs no cron and gets none, and local dev has no manager to rotate anything.
         ...(context.feature || context.env === "dev" ? {} : await secretsSchedule(context)),
-        // **The cadence the project configured, not the template's literal (#647 review).** The manager's
-        // cron and the capability's `lastAtRestRotation` health key both grade against this number, and only
-        // the health key was reading the configured one — so a project on a shorter cadence got `stale` on a
-        // schedule that was working. Read off the composed capability, which is where every other host
-        // resolution reads its own configuration.
+        // **The cadence the project configured, not the template's literal.** The manager's cron and the
+        // capability's `lastAtRestRotation` health key both grade against this number, so both must read the
+        // configured one. Read off the composed capability, which is where every other host resolution reads its
+        // own configuration.
         rotationIntervalDays: ownCapability(context, "secrets", "@pithy-sh/secrets", isSecretsCapability)
           .rotationIntervalDays,
-        // **The encrypted columns, the same stamp `pithy secrets provision` writes (#390).** A feature's manager
+        // **The encrypted columns, the same stamp `pithy secrets provision` writes.** A feature's manager
         // rotates nothing and local dev has no manager, so neither is stamped.
         ...(context.feature || context.env === "dev" || context.encryptedColumns === undefined
           ? {}
           : { encryptedColumns: await context.encryptedColumns() }),
-        ...featureOf(context),
+        ...(context.feature || context.owner || context.ownedVaults === undefined
+          ? {}
+          : { ownedVaults: await context.ownedVaults() }),
+        ...hostScopeOf(context),
       });
     },
   },
   {
-    // The checkpoint host (#822): each tenant chain's head and count, written hourly to the checkpoint bucket.
+    // The checkpoint host: each tenant chain's head and count, written hourly to the checkpoint bucket.
     capability: "audit",
     entry: "@pithy-sh/audit/src/workflows/worker",
     package: "@pithy-sh/audit",
+    binds: (capability) => [auditDatabaseOf(capability), "AUDIT_CHECKPOINTS"],
+    // A checkpoint key names a tenant and a count, never the database its chain is in, and the first write wins. A
+    // prune's tombstone goes to the pruning host's bucket alone, so two hosts over one chain would each see gaps.
+    pairedBuckets: (capability) => [
+      { database: auditDatabaseOf(capability), bucket: "AUDIT_CHECKPOINTS", bothWays: true },
+    ],
     async resolve(template, context) {
       const [{ resolveAuditConfig, auditCheckpointBucketName }, { isAuditCapability }] = await load(
         "audit",
@@ -787,7 +897,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveAuditConfig(template, {
         project: context.project,
         env: context.env,
-        ...featureOf(context),
+        ...hostScopeOf(context),
         auditDatabaseId: context.databaseId(auditDatabase),
         // The bucket `pithy provision` creates for the app's `AUDIT_CHECKPOINTS` binding, through the same namer.
         bucketName: bucketName(context, "AUDIT_CHECKPOINTS", () =>
@@ -798,10 +908,15 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
   },
 ];
 
+/** The database the adopter's `audit({ database })` names, read off the composed object by its shape. */
+function auditDatabaseOf(capability: Capability): string {
+  return (capability as { auditDatabase?: string }).auditDatabase ?? "DB";
+}
+
 /**
  * The value-rotation schedule the secrets manager is stamped with, from the composed capabilities: every
  * capability's registry slice aggregated the way a Worker aggregates them, and the last declared
- * environment as the one whose manager rotates a global secret (#602).
+ * environment as the one whose manager rotates a global secret.
  */
 async function secretsSchedule(context: HostResolveContext) {
   const [{ aggregateSecretRegistries }, { stampedRotations }, { canonicalGlobalEnvironment }] = await load(
@@ -827,6 +942,18 @@ async function secretsSchedule(context: HostResolveContext) {
     valueRotations: stampedRotations(registry),
     ...(globalEnvironment === undefined ? {} : { globalEnvironment }),
   };
+}
+
+/**
+ * The own host `pithy <capability> provision --worker <name>` deploys, when that Worker owns a binding the
+ * capability's host binds; `undefined` when it shares the host, or the capability has none.
+ */
+export function provisionHostOwner(
+  capability: Capability,
+  worker: { dir: string; ownBindings?: readonly string[] } | undefined,
+): HostOwner | undefined {
+  const spec = hostWorkerFor(capability.name);
+  return spec && worker ? hostOwnerFor(spec, capability, worker) : undefined;
 }
 
 /** The host Worker a capability owns, or `undefined` when it owns none (`auth`, `turnstile`, …). */

@@ -7,6 +7,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { parse, stringify } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Plan } from "./plan/plan";
 import { EXIT } from "./terminal/exitClass";
@@ -40,8 +41,8 @@ const REPO = resolve(import.meta.dirname, "..", "..", "..");
  * ## `--name replay --worker board`, deliberately unequal
  *
  * A Worker deploys as `<project>-<worker>`, and the Workflow this dispatches to is
- * `<project>-<env>-secrets-write`. A fixture where both names are `api` hides a whole class of bug — that
- * is how #136 survived for months — so the two differ here and the assertions read the difference.
+ * `<project>-<env>-secrets-write`. A fixture where both names are `api` hides a whole class of bug, so the two
+ * differ here and the assertions read the difference.
  */
 
 /** Which credential the rotator issued, per call. The test's oracle; nothing in the CLI can see it. */
@@ -50,7 +51,7 @@ const ISSUED_LOG = "issued.log";
 const ROLL_LOG = "rolls.log";
 
 /**
- * The adopter's registry: one of each rotation kind, written the way #322 says an adopter writes one.
+ * The adopter's registry: one of each rotation kind, written the way an adopter writes one.
  *
  * The rotator logs the value it issued to a file outside the CLI's sight, so the leak assertions below
  * search for a string this test knows and the command must never emit.
@@ -111,14 +112,13 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
  * matters: after the rotator has already rolled.
  *
  * **A `probe` is answered rather than refused, and that is the shape of the scenario rather than a
- * convenience** (#517). A rotation now asks the manager whether the secret is there before it calls the
- * issuer, so a fake that failed every mode would refuse in front of the rotator and this file could no
- * longer reach the state it exists for. The manager being reachable, holding the secret, and unable to
- * *write* is one real failure — a D1 the Worker cannot commit to — and it is the only one that still
- * produces `unrecorded`. Every refusal the pre-flight can answer for is now answered before a roll, which
- * is the whole of the fix.
+ * convenience.** A rotation asks the manager whether the secret is there before it calls the issuer, so a
+ * fake that failed every mode would refuse in front of the rotator and this file could not reach the state
+ * it exists for. The manager being reachable, holding the secret, and unable to *write* is one real failure
+ * — a D1 the Worker cannot commit to — and it is the only one that produces `unrecorded`: every refusal the
+ * pre-flight can answer for is answered before a roll.
  *
- * It also answers the **rotation ledger** modes (`#379`), because a rotation opens a row in the manager
+ * It also answers the **rotation ledger** modes, because a rotation opens a row in the manager
  * before it rolls and closes it after — and `dispatched` records every payload it was sent, in order,
  * which is what lets a test read the CLI's behavior off the wire rather than off the CLI's own report.
  */
@@ -276,8 +276,8 @@ beforeAll(async () => {
   for (const pkg of LINKED) await symlink(join(REPO, "packages", pkg), join(scope, pkg));
   await cli(["add", "secrets", "--worker", "board", "--json"]);
 
-  // The adopter's own registry, replacing the empty one `pithy add secrets` scaffolds. This is the shape
-  // #322 describes: the capability declares the tag, and whoever holds the credentials supplies the code.
+  // The adopter's own registry, replacing the empty one `pithy add secrets` scaffolds: the capability declares
+  // the tag, and whoever holds the credentials supplies the code.
   await writeFile(join(app, "apps", "board", "src", "secretRegistry.ts"), REGISTRY_SOURCE);
   const path = join(app, "apps", "board", "pithy.config.ts");
   const source = (await readFile(path, "utf8"))
@@ -314,12 +314,11 @@ describe("pithy secrets rotate, with the real binary", () => {
   }, 60_000);
 
   /**
-   * **`#379`, read off the wire rather than off the report.**
+   * **The rotation ledger, read off the wire rather than off the report.**
    *
-   * A successful rotation used to dispatch one thing — an ordinary `update`, indistinguishable from a typo
-   * fix — so nothing recorded a rotation and the secret reported overdue forever. The fix is the two calls
-   * either side of it, and the order is the whole property: the row is opened *before* the value is written,
-   * so a rotator that never returns still leaves a trace.
+   * A bare `update` is indistinguishable from a typo fix, so a rotation is the two ledger calls either side of
+   * it, and the order is the whole property: the row is opened *before* the value is written, so a rotator
+   * that never returns still leaves a trace.
    *
    * This asserts what the CLI sent to the Workflows API, which is a fact about the command that the
    * command's own stdout could not establish.
@@ -331,13 +330,46 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(result.code).toBe(0);
 
     const sent = staging.dispatched.slice(before);
-    // The probe leads, and it is the ordering #517 is about: whatever the destination can refuse is asked
+    // The probe leads: whatever the destination can refuse is asked
     // before the row is opened and before anything is rolled.
     expect(sent.map((instance) => instance.mode)).toEqual(["probe", "rotation-open", "update", "rotation-close"]);
     // All three to the same environment's manager. A row opened in staging and closed in prod would record
     // a rotation that did not happen in either.
     expect(new Set(sent.map((instance) => instance.workflow))).toEqual(new Set(["replay-staging-secrets-write"]));
   }, 60_000);
+
+  /**
+   * **A Worker that owns `SECRETS` keeps its vault in its own database, so `--worker` writes through its own
+   * manager.** The shared manager reads the other database, and a value written there is one this Worker never
+   * reads. Without `--worker` the shared manager is the target, as it is for every Worker that shares the vault.
+   */
+  test("--worker naming a Worker that owns SECRETS rotates through that Worker's own manager", async () => {
+    const manifest = join(app, "apps", "board", "pithy.worker.jsonc");
+    const original = await readFile(manifest, "utf8");
+    const owned = parse(original) as Record<string, unknown>;
+    await writeFile(manifest, stringify({ ...owned, ownBindings: ["SECRETS"] }, null, 2));
+    try {
+      const before = staging.dispatched.length;
+      const own = await cli(
+        ["secrets", "rotate", "REPLAY_SESSION_KEY", "--env", "staging", "--worker", "board"],
+        staging,
+      );
+      expect(own.code).toBe(0);
+      const sentOwn = staging.dispatched.slice(before);
+      expect(new Set(sentOwn.map((instance) => instance.workflow))).toEqual(
+        new Set(["replay-staging-board---secrets-write"]),
+      );
+
+      const after = staging.dispatched.length;
+      const shared = await cli(["secrets", "rotate", "REPLAY_SESSION_KEY", "--env", "staging"], staging);
+      expect(shared.code).toBe(0);
+      expect(new Set(staging.dispatched.slice(after).map((instance) => instance.workflow))).toEqual(
+        new Set(["replay-staging-secrets-write"]),
+      );
+    } finally {
+      await writeFile(manifest, original);
+    }
+  }, 120_000);
 
   test("a manual secret gets an instruction, calls nothing, and never says Done", async () => {
     const before = await rolls();
@@ -369,7 +401,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(refusing.dispatched.length).toBe(dispatches);
   }, 60_000);
 
-  test("a dry run under --json carries the shared plan, and still reaches nothing (#697)", async () => {
+  test("a dry run under --json carries the shared plan, and still reaches nothing", async () => {
     const before = await rolls();
     const dispatches = refusing.dispatched.length;
     const result = await cli(
@@ -424,7 +456,7 @@ describe("pithy secrets rotate, with the real binary", () => {
         "",
       ].join("\n"),
     );
-    // Not "rotated", anywhere. An aggregate word over this state is the shape #367 refuses.
+    // Not "rotated", anywhere: an aggregate word over this state would hide the credential it lost.
     expect(result.stdout).not.toContain("rotated");
     expect(result.stderr).toContain("REPLAY_PROVIDER_TOKEN was rolled at cloudflare and its new value was not stored.");
     expect(result.stderr).toContain("The new value is gone.");
@@ -432,7 +464,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     // The declaration's own documentation URL, composed rather than guessed.
     expect(result.stderr).toContain("https://developers.cloudflare.com/api/resources/user/");
     // 5, not 1. `1` means the previous credential is still live; this state is the one thing that is not,
-    // and no automated retry fixes it — a person has to (#697).
+    // and no automated retry fixes it — a person has to.
     expect(result.code).toBe(EXIT.person);
     // **One roll against three store attempts.** A second here is the defect the retry was meant to
     // prevent, arriving by way of the retry: a third credential issued and the second one lost.
@@ -464,7 +496,7 @@ describe("pithy secrets rotate, with the real binary", () => {
       "secrets/rotation_unrecorded",
     );
     expect(result.code).toBe(EXIT.person);
-    // Held to the schema `pithy schema secrets rotate` publishes (#697) — the failure's line as much as a success's.
+    // Held to the schema `pithy schema secrets rotate` publishes — the failure's line as much as a success's.
     await expectConforms("secrets rotate", result.stdout);
   }, 120_000);
 
@@ -518,7 +550,7 @@ describe("pithy secrets rotate, with the real binary", () => {
 
 /**
  * **Every `pithy secrets` write and the listing, from the real binary, held to the schemas `pithy schema
- * secrets` publishes (#697).** The same fake Workflows API answers each write; nothing reaches an account.
+ * secrets` publishes.** The same fake Workflows API answers each write; nothing reaches an account.
  */
 describe("pithy secrets --json conforms to its published payloads, with the real binary", () => {
   test("ls, create, update, rotate and rm", async () => {

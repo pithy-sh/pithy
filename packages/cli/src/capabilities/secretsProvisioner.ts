@@ -16,6 +16,7 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { readMigrationLedger, runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRetainedTables, secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import { managerWorkflowNames } from "@pithy-sh/secrets/src/manager/dispatcher";
@@ -34,6 +35,7 @@ import {
   type ManagerConfigParams,
   type ManagerWranglerTemplate,
   managerWorkerName,
+  type OwnedVault,
   resolveManagerConfig,
   type StampedEncryptedColumns,
 } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
@@ -46,14 +48,14 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import { composable, deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
 /**
  * The secrets migration set, as provisioning runs it against each environment's D1 — and as teardown counts
  * it. It carries the capability's own `retained` declaration, because this process never constructs the
  * capability: without it the vault's tables are undeclared here, a count finds nothing, and a deletion
- * goes through (#591).
+ * goes through.
  */
 export function secretsMigrationProvider(): MigrationProvider {
   const registry = createMigrationRegistry([
@@ -71,7 +73,7 @@ export function secretsMigrationProvider(): MigrationProvider {
 }
 
 /**
- * The SQL names of every declared secret table the vault registers (#524) — retained like the system table,
+ * The SQL names of every declared secret table the vault registers — retained like the system table,
  * and invisible to the provider above, because the migrations that create them are the adopter's and this
  * process never loads them. Read from `pithy_secrets_tables`, the same registry the rotation sweeps.
  */
@@ -82,7 +84,7 @@ export async function registeredVaultTables(d1: D1Database): Promise<string[]> {
 
 /**
  * The provisioner's migration set, able to run against a vault whose ledger also holds an adopter's
- * migrations (#524).
+ * migrations.
  *
  * A declared secret table's migrations are composed by the adopter's app capability into this same database,
  * and the provisioner never loads them. Kysely refuses a whole chain over one applied migration its provider
@@ -112,14 +114,15 @@ export async function vaultMigrationProvider(d1: D1Database): Promise<MigrationP
 /** The injected deploy step — resolve the manager's wrangler config and shell out to wrangler. */
 export type DeployManager = (
   env: ManagedEnvironment,
-  resolved: { databaseId: string; storeId: string },
+  /** `owner` names the Worker whose own manager this is, over its own vault; absent, the shared manager. */
+  resolved: { databaseId: string; storeId: string; owner?: string },
 ) => Promise<void>;
 
 export interface CloudflareSecretsProvisionerOptions {
   cf: CloudflareClients;
   /** The CF account id, used to scope the minted manager token to this account's resources. */
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -142,7 +145,7 @@ export interface CloudflareSecretsProvisionerOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * **The feature this provisions for, when it provisions for one (#643).** It creates the feature's own
+   * **The feature this provisions for, when it provisions for one.** It creates the feature's own
    * master-key entry, and nothing else: a feature's manager holds no Cloudflare API token, so
    * {@link CloudflareSecretsProvisioner.ensureRuntimeToken} refuses a feature outright. Absent, the project's
    * declared environments are what it provisions, as it always was.
@@ -150,13 +153,13 @@ export interface CloudflareSecretsProvisionerOptions {
   feature?: FeatureIdentity;
   /**
    * **Does Cloudflare honor this token value now?** — `GET /accounts/{id}/tokens/verify` made *with* the value,
-   * in a real run. The seam `ensureRuntimeToken` settles a race with (#643): a run is finished only once the value
+   * in a real run. The seam `ensureRuntimeToken` settles a race with: a run is finished only once the value
    * it stored is still the live one. Resolves `false` for a revoked value, and throws for anything else, since an
    * outage is not an answer.
    */
   honors?: (value: string) => Promise<boolean>;
   /**
-   * **What this environment's runtime token carries (#728)** — the `runtime` profile's permissions as the
+   * **What this environment's runtime token carries** — the `runtime` profile's permissions as the
    * project composes them there: every composed capability's `runtimePermissions`, unioned, with a standing
    * `tokens.overrides.runtime` applied. The command reads it from the project, which this class cannot.
    * Absent, the manager's own need, which is the least any composition holding a secrets manager has.
@@ -196,7 +199,7 @@ const MAX_TOKEN_ROLLS = 5;
 
 /**
  * The policy the runtime token is minted with: the given permission keys, scoped to this account. The
- * keys are the `runtime` profile's (#728) — every composed capability's `runtimePermissions` — so a mint
+ * keys are the `runtime` profile's — every composed capability's `runtimePermissions` — so a mint
  * here and a `pithy token mint runtime` grant exactly the same thing.
  */
 export async function runtimeTokenPermissions(
@@ -205,7 +208,7 @@ export async function runtimeTokenPermissions(
 ): Promise<TokenPermission[]> {
   // Loaded here rather than at module scope. `tokens/profiles` is a pure policy module, but it reaches
   // the Cloudflare SDK through one value import of `accountResource`, which puts ~355 ms on the static
-  // graph of `pithy add`, `pithy provision` and `pithy secrets` — to print their flag lists (#482).
+  // graph of `pithy add`, `pithy provision` and `pithy secrets` — to print their flag lists.
   const { permissionsForKeys } = await import("@pithy-sh/cloudflare/src/tokens/profiles");
   return permissionsForKeys([...keys], accountId);
 }
@@ -250,7 +253,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   }
 
   /**
-   * Ensure this environment's runtime token — the application's one Cloudflare API token (#728), which the
+   * Ensure this environment's runtime token — the application's one Cloudflare API token, which the
    * manager's at-rest rotation writes back with and every other Worker of the environment reads. Reuse the
    * value already in the Secrets Store if present (Cloudflare never returns a token's secret twice, so a
    * stored token is trusted as-is); otherwise get a fresh secret via `rollToken` — roll the existing
@@ -261,17 +264,17 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * **The same token `pithy token mint runtime` makes**, under the same name and into the same entry, so
    * the two paths cannot leave an environment holding two.
    *
-   * **A roll here changes the value and not the scope**, which is `rollToken`'s contract (#651). A token
+   * **A roll here changes the value and not the scope**, which is `rollToken`'s contract. A token
    * minted before a capability widened the profile keeps its old policies; `pithy token list` says so,
    * and `pithy token rotate runtime` re-scopes it.
    *
-   * **Never check-then-overwrite (#643).** Two runs that both find the entry absent both roll, and each roll
-   * revokes the value before it. Whichever write landed last used to win, so the store could keep a value
-   * Cloudflare had already revoked, and nothing repaired it. Now a run is finished only when the value it stored
+   * **Never check-then-overwrite.** Two runs that both find the entry absent both roll, and each roll
+   * revokes the value before it, so whichever write landed last would win and the store could keep a value
+   * Cloudflare had already revoked. A run is finished only when the value it stored
    * is still honored *after* its write: if another run rolled since, this one rolls and writes again. The last
    * write is then always by a run that rolled last, so every run that returns leaves the live value stored.
    *
-   * **Never for a feature.** A feature's manager holds no token (#643), so this refuses one rather than mint it.
+   * **Never for a feature.** A feature's manager holds no token, so this refuses one rather than mint it.
    */
   async ensureRuntimeToken(env: ManagedEnvironment): Promise<void> {
     if (this.#feature) {
@@ -316,7 +319,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * second project in an account would find the first's database by name and adopt it — two projects
    * sharing one secrets store, each able to read and overwrite the other's rows.
    *
-   * And "exists" also means *an account this project claims* (#378). An empty listing from an account
+   * And "exists" also means *an account this project claims*. An empty listing from an account
    * nothing vouches for is not the absence this reads it as, and creating on it stands a live secrets
    * database up in somebody else's account.
    */
@@ -343,7 +346,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     const name = masterKeySecretName(this.#project, env, this.#feature);
     const store = this.#cf.secrets(this.#storeId);
     // Asked before any key material is generated, so a re-run makes none; created only if still absent, so two
-    // runs racing never write one key over the other (#643). Which run created it is never what anything below
+    // runs racing never write one key over the other. Which run created it is never what anything below
     // depends on: the manager seals every row, under whatever key the store holds.
     if (
       !(await store.exists(name)) &&
@@ -363,7 +366,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   }
 
   /**
-   * Mint the env's field key only if absent (#390) — `PITHY_FIELD_KEYS`, what app Workers seal encrypted fields with.
+   * Mint the env's field key only if absent — `PITHY_FIELD_KEYS`, what app Workers seal encrypted fields with.
    * The master key's format and the master key's rule: asked before any key material is generated, created only if
    * still absent, because a fresh key over an existing one would orphan every sealed field. A feature's is its own.
    */
@@ -392,8 +395,11 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     await runMigrations(d1, await vaultMigrationProvider(d1));
   }
 
-  /** Deploy the prebuilt manager worker for the environment. */
-  async deployManager(env: ManagedEnvironment, resolved: { databaseId: string; storeId: string }): Promise<void> {
+  /** Deploy the prebuilt manager worker for the environment: the shared one, or an owner's over its own vault. */
+  async deployManager(
+    env: ManagedEnvironment,
+    resolved: { databaseId: string; storeId: string; owner?: string },
+  ): Promise<void> {
     await this.#deploy(env, resolved);
   }
 }
@@ -438,28 +444,36 @@ export function buildManagerDeploy(options: {
   accountId: string;
   apiToken: string;
   project: string;
-  /** The project root the manager worker is resolved from — the adopter's copy, not the CLI's (#533). */
+  /** The project root the manager worker is resolved from — the adopter's copy, not the CLI's. */
   projectDir: string;
-  /** How the deploy gate reads the manager Worker's stamp back off the account (#537). */
+  /** How the deploy gate reads the manager Worker's stamp back off the account. */
   cf: CloudflareClients;
   /**
-   * The value-rotation schedule and the environment that owns global secrets, from the project's registry
-   * (#602). Asked once per deploy, so a provision that touches no manager reads no Worker config for it.
+   * The value-rotation schedule and the environment that owns global secrets, from the project's registry.
+   * Asked once per deploy, so a provision that touches no manager reads no Worker config for it.
    * Omitted, the manager is deployed with no schedule and rotates no values.
    */
   schedule?: () => Promise<Pick<ManagerConfigParams, "valueRotations" | "globalEnvironment">>;
   /**
-   * The encrypted columns the manager is stamped with, per environment (#390): every Worker's `encrypted()` fields,
+   * The encrypted columns the manager is stamped with, per environment: every Worker's `encrypted()` fields,
    * derived from their schemas, with each database's id. Omitted, nothing is stamped.
    */
   encryptedColumns?: (env: ManagedEnvironment) => Promise<StampedEncryptedColumns>;
+  /**
+   * The vaults of the Workers that own `SECRETS` in `env`, which the shared manager re-seals under its master key.
+   * Asked only for the shared manager. Omitted, it re-seals its own vault alone.
+   */
+  ownedVaults?: (env: ManagedEnvironment) => Promise<OwnedVault[]>;
 }): DeployManager {
   const { accountId, apiToken, cf, project, projectDir } = options;
   return async (env, resolved) => {
     const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
     const schedule = options.schedule === undefined ? {} : await options.schedule();
-    const encryptedColumns = options.encryptedColumns === undefined ? undefined : await options.encryptedColumns(env);
+    const shared = resolved.owner === undefined;
+    const encryptedColumns =
+      options.encryptedColumns === undefined || !shared ? undefined : await options.encryptedColumns(env);
+    const ownedVaults = options.ownedVaults === undefined || !shared ? undefined : await options.ownedVaults(env);
     const config = resolveManagerConfig(template, {
       env,
       accountId,
@@ -467,9 +481,10 @@ export function buildManagerDeploy(options: {
       ...resolved,
       ...schedule,
       ...(encryptedColumns === undefined ? {} : { encryptedColumns }),
+      ...(ownedVaults === undefined ? {} : { ownedVaults }),
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -489,7 +504,7 @@ export function buildManagerDeploy(options: {
 
 export interface CloudflareSecretsDeprovisionerOptions {
   cf: CloudflareClients;
-  /** The account's Workflows client — the manager's Workflows are deleted through it, by name (#789). */
+  /** The account's Workflows client — the manager's Workflows are deleted through it, by name. */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /**
    * The project name (root `pithy.config.ts` `name`, via `requireProjectName`). Teardown recomputes
@@ -500,7 +515,7 @@ export interface CloudflareSecretsDeprovisionerOptions {
   /** The CF Secrets Store id holding the per-env master keys. */
   storeId: string;
   /**
-   * The account this teardown deletes from, and what vouches for it (#378).
+   * The account this teardown deletes from, and what vouches for it.
    *
    * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
    * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
@@ -511,10 +526,15 @@ export interface CloudflareSecretsDeprovisionerOptions {
   audit?: CliAuditEmit;
   /**
    * How many vault rows this run may destroy — the operator's `--destroy-retained` number, spent as each
-   * database is deleted (#591). Defaults to agreeing to nothing, so a caller that never asked destroys no
+   * database is deleted. Defaults to agreeing to nothing, so a caller that never asked destroys no
    * stored secret: an empty vault deletes, a full one refuses.
    */
   budget?: RetainedBudget;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /**
@@ -529,6 +549,7 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #project: string;
   readonly #storeId: string;
   readonly #account: ConfirmedAccount;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
   readonly #budget: RetainedBudget;
 
@@ -538,43 +559,62 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     this.#project = options.project;
     this.#storeId = options.storeId;
     this.#account = options.account;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
     this.#budget = options.budget ?? new RetainedBudget(undefined);
   }
 
-  /** The env's secrets D1, when it exists, with the migration set that declares its retained tables. */
-  async #database(env: ManagedEnvironment) {
-    const name = managerWorkerName(this.#project, env);
-    const db = await findOnConfirmedAccount({
-      ...this.#account,
-      what: `the ${name} database`,
-      find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
-    });
-    return db
-      ? {
+  /**
+   * The env's vaults that exist, each with the migration set that declares its retained tables: the shared manager's
+   * D1, and the `SECRETS` D1 of every Worker that owns one. Each is sealed under this environment's master key, so a
+   * teardown counts and deletes them together.
+   */
+  async #databases(env: ManagedEnvironment) {
+    const names = [
+      managerWorkerName(this.#project, env),
+      ...this.#owners.flatMap((owner) => composable(() => resourceNames(this.#project).env(env).d1("SECRETS", owner))),
+    ];
+    const found = [];
+    for (const name of names) {
+      const db = await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} database`,
+        find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
+      });
+      if (db) {
+        found.push({
           cf: this.#cf,
           databaseId: db.uuid,
           name,
           provider: secretsMigrationProvider(),
           alsoRetained: registeredVaultTables,
-        }
-      : null;
+        });
+      }
+    }
+    return found;
   }
 
-  /** The vault's retained rows, named by the database — empty when the database is absent. Read-only. */
+  /** Every vault's retained rows, named by its database — empty when none exists. Read-only. */
   async countRetained(env: ManagedEnvironment): Promise<RetainedRows[]> {
-    const database = await this.#database(env);
-    return database ? countDatabaseRetained(database) : [];
+    const counted: RetainedRows[] = [];
+    for (const database of await this.#databases(env)) counted.push(...(await countDatabaseRetained(database)));
+    return counted;
   }
 
-  /** Delete the env's write, rotate and rotate-value Workflows, by `managerWorkflowNames` (#789). */
+  /** Delete the env's write, rotate and rotate-value Workflows, by `managerWorkflowNames`. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     await deleteHostWorkflows({
       workflows: this.#workflows,
       account: this.#account,
       capability: "secrets",
       env,
-      names: managerWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "secrets",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: managerWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
@@ -585,19 +625,21 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
    * and exits 0 while the real manager keeps running.
    *
    * A wrong *account* has the same three consequences and had no guard at all, so the lookup goes
-   * through `findOnConfirmedAccount` (#378): an empty listing is only an absence once something says
+   * through `findOnConfirmedAccount`: an empty listing is only an absence once something says
    * whose account answered.
    */
   async deleteManager(env: ManagedEnvironment): Promise<void> {
-    const name = managerWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
+    const owners = { capability: "secrets", project: this.#project, env, owners: this.#owners };
+    for (const name of hostScriptsOf(owners, managerWorkerName(this.#project, env))) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+      }
     }
   }
 
@@ -625,12 +667,11 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   }
 
   /**
-   * Delete the env's secrets D1 if it exists. Project-scoped by name, like the manager above — and refused
-   * while the vault holds more rows than this run's budget agreed to destroy (#591), counted at the delete.
+   * Delete the env's vaults that exist, the shared one and every owner's. Project-scoped by name, like the managers
+   * above — and each refused while it holds more rows than what is left of this run's budget, counted at the delete.
    */
   async deleteDatabase(env: ManagedEnvironment): Promise<void> {
-    const database = await this.#database(env);
-    if (database) await deleteRetainedDatabase(database, this.#budget);
+    for (const database of await this.#databases(env)) await deleteRetainedDatabase(database, this.#budget);
   }
 
   /**

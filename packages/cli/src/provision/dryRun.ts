@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity, FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
@@ -200,6 +201,11 @@ export async function planProvision(options: PlanProvisionOptions): Promise<Prov
   }
   if (report.repoints.length > 0 && options.repoint !== true) {
     notes.push("The run refuses to repoint without --repoint, and creates nothing.");
+  }
+  for (const host of report.kitHosts ?? []) {
+    notes.push(
+      `Binds ${host.workers.join(", ")} to ${host.script}, ${host.owner === undefined ? "the" : `${host.owner}'s own`} ${host.capability} kit Worker. ${commandName("deploy")} uploads it.`,
+    );
   }
   if (options.seed) notes.push(`Then loads the seed fixtures into ${env}.`);
 

@@ -53,6 +53,19 @@ describe("resolveVectorConfig", () => {
     });
   });
 
+  it("names a Worker's own host and its Workflow for the owner", () => {
+    const owned = resolveVectorConfig(template, {
+      project: "acme",
+      env: "staging",
+      owner: "two",
+      appDatabaseId: "db-2",
+      indexNames,
+      config,
+    });
+    expect(owned.name).toBe("acme-staging-two---vector");
+    expect(owned.workflows?.[0]?.name).toBe("acme-staging-two---vector-reprocess");
+  });
+
   it("a second project resolves to entirely different worker and Workflow names", () => {
     const other = resolveVectorConfig(template, {
       project: "globex",

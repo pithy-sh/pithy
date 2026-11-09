@@ -13,18 +13,19 @@ import {
 } from "@pithy-sh/core/src/naming/feature";
 import { NAMESPACE_LIMITS, type Namespace } from "@pithy-sh/core/src/naming/limits";
 import { featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
-import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { workflowHostName, workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { hostOwnerFor, hostWorkerFor } from "../capabilities/hostRegistry";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities } from "../project/workerScope";
 import { provisionWorkerNames } from "../provision/environment";
 import { boundSecretNames, scopeHoldsSecret, workerSecretRegistry } from "../provision/secretBindings";
 import { provisionableBindings } from "./bindings";
-import { featureHostCapabilities, featureHostScripts, featureIndexesFor } from "./hosts";
-import { type OwnedBinding, ownedBindingsOf } from "./ownedBindings";
+import { everyFeatureIndex, featureHostCapabilities, featureHostScripts } from "./hosts";
+import { type OwnedBinding, type OwningWorker, ownedBindingsOf } from "./ownedBindings";
 
 /**
  * **How long a branch slug a project's features can carry.**
@@ -54,6 +55,11 @@ export interface FeatureNameSources {
    * declares `ownBindings` pays for the longer shape.
    */
   owned?: readonly OwnedBinding[];
+  /**
+   * The Workers that list `ownBindings`, with what each composes. One that owns a binding a capability's host binds
+   * gets a host of its own, `<owner>---<capability>`, and Workflows named the same way.
+   */
+  hostOwners?: readonly OwningWorker[];
   /** The project root, where a vector host's indexes are read from. */
   projectDir: string;
 }
@@ -82,6 +88,22 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   for (const worker of sources.workers) add("worker", scope.worker(worker));
   // Every registry host, composed or not: teardown names them all.
   for (const host of featureHostScripts(probe)) add("worker", host.script);
+  // Each owner's own kit hosts and their Workflows, for the capabilities whose host binds something it owns.
+  for (const worker of sources.hostOwners ?? []) {
+    for (const capability of worker.capabilities) {
+      const spec = hostWorkerFor(capability.name);
+      const owner = spec && hostOwnerFor(spec, capability, worker, { refuseSplit: false })?.worker;
+      if (!owner) continue;
+      const host = { ...scope.workflowHost, capability: capability.name, owner };
+      add("worker", workflowHostName(host));
+      for (const entry of Object.values(composeWorkflows([capability]))) {
+        add("workflow", workflowScriptName({ ...host, job: entry.job }));
+      }
+      if (capability.name === "secrets") {
+        add("workflow", secretsWriteWorkflowName(probe.project, FEATURE_ENVIRONMENT, probe, owner));
+      }
+    }
+  }
   // **Every Workflow the branch composes, whoever owns it.** A Workflow name is account-wide whichever script hosts
   // it, so the app's own jobs count as much as a kit host's.
   for (const capability of sources.capabilities) {
@@ -100,7 +122,12 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
     add("secretEntry", masterKeySecretName(probe.project, FEATURE_ENVIRONMENT, probe));
     add("workflow", secretsWriteWorkflowName(probe.project, FEATURE_ENVIRONMENT, probe));
   }
-  for (const index of await featureIndexesFor(sources.capabilities, sources.projectDir, probe)) {
+  for (const index of await everyFeatureIndex(
+    sources.capabilities,
+    sources.projectDir,
+    probe,
+    sources.hostOwners ?? [],
+  )) {
     add("vectorizeIndex", index.name);
   }
   // The feature's Artifacts namespace, where anything binds one. Never the tightest today, since `artifacts`
@@ -132,18 +159,18 @@ export async function assertFeatureSlugFitsProject(
 ): Promise<void> {
   const project = requireProjectName(await loadProject(projectDir));
   const workers = await resolveWorkersFor(FEATURE_ENVIRONMENT, { projectDir });
+  const owners = workers.map((worker) => ({
+    dir: worker.dir,
+    ownBindings: worker.target.ownBindings ?? [],
+    capabilities: worker.capabilities,
+  }));
   await assertFeatureSlugFitsSources(
     { project, ...branch },
     {
       capabilities: projectCapabilities(workers),
       workers: workers.map(provisionWorkerNames),
-      owned: ownedBindingsOf(
-        workers.map((worker) => ({
-          dir: worker.dir,
-          ownBindings: worker.target.ownBindings ?? [],
-          capabilities: worker.capabilities,
-        })),
-      ),
+      owned: ownedBindingsOf(owners),
+      hostOwners: owners,
       projectDir,
     },
   );

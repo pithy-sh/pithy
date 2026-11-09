@@ -281,7 +281,7 @@ describe("workflowKey", () => {
 });
 
 /**
- * **A feature's host and its Workflows take the feature's head (#643).** Worker and Workflow names are
+ * **A feature's host and its Workflows take the feature's head.** Worker and Workflow names are
  * account-wide, so `<project>-feature-email-send` would be one Workflow every open branch deployed over every
  * other's. Handed the feature, both names are the feature's own, and match the feature's other Worker names.
  */
@@ -309,7 +309,7 @@ describe("host names for a feature", () => {
     expect(workflowScriptName({ ...parts, feature })).not.toBe(workflowScriptName({ ...parts, feature: other }));
   });
 
-  it("refuses a slug that does not fit under the Workflow limit rather than truncating it (#643)", () => {
+  it("refuses a slug that does not fit under the Workflow limit rather than truncating it", () => {
     const long = { ...feature, slug: "a-very-long-feature-slug-that-would-not-otherwise-fit-anywhere" };
     const parts = { project: "replay", capability: "email", job: "schedule", env: "feature", feature: long };
     expect(() => workflowScriptName(parts)).toThrow("leaves room for at most 36");
@@ -327,5 +327,71 @@ describe("host names for a feature", () => {
         feature: { ...feature, project: "acme" },
       }),
     ).toThrow(PithyError);
+  });
+});
+
+/**
+ * **A Worker that owns a binding its capability's host binds gets a host of its own.** Its name carries the owner
+ * the way an owned resource does, `<owner>---<capability>`, so it never meets the shared host's name or another
+ * owner's, and its Workflows carry the same thing so the two hosts never register one Workflow.
+ */
+describe("host names for an owning Worker", () => {
+  it("names the host Worker and each Workflow for the owner", () => {
+    expect(workflowHostName({ project: "acme", capability: "email", env: "staging", owner: "two" })).toBe(
+      "acme-staging-two---email",
+    );
+    expect(
+      workflowScriptName({ project: "acme", capability: "email", job: "send", env: "staging", owner: "two" }),
+    ).toBe("acme-staging-two---email-send");
+  });
+
+  it("gives two owners two names, and neither is the shared host's", () => {
+    const parts = { project: "acme", capability: "audit", env: "prod" };
+    const names = new Set([
+      workflowHostName(parts),
+      workflowHostName({ ...parts, owner: "one" }),
+      workflowHostName({ ...parts, owner: "two" }),
+    ]);
+    expect(names.size).toBe(3);
+  });
+
+  it("kebabs the owner, which is a directory name", () => {
+    expect(workflowHostName({ project: "acme", capability: "email", env: "dev", owner: "Admin_App" })).toBe(
+      "acme-dev-admin-app---email",
+    );
+  });
+
+  it("refuses an owned name past the limit rather than truncating it, naming the owner", () => {
+    const parts = {
+      project: "a".repeat(MAX_PROJECT_NAME),
+      capability: "media",
+      job: "video-transcribe",
+      env: "staging",
+    };
+    expect(() => workflowScriptName({ ...parts, owner: "dashboard" })).toThrow(/dashboard/);
+    expect(() => workflowHostName({ ...parts, owner: "x".repeat(40) })).toThrow(String(MAX_WORKER_NAME_BYTES));
+  });
+
+  it("refuses an owner that kebabs to nothing", () => {
+    expect(() => workflowHostName({ project: "acme", capability: "email", env: "dev", owner: "__" })).toThrow(
+      PithyError,
+    );
+  });
+
+  it("names a feature's owned host for the feature and the owner", () => {
+    const feature = { project: "replay", issue: "958", slug: "owners" };
+    expect(workflowHostName({ project: "replay", capability: "email", env: "feature", feature, owner: "two" })).toBe(
+      "replay-f958-owners--two---email",
+    );
+    expect(
+      workflowScriptName({
+        project: "replay",
+        capability: "email",
+        job: "send",
+        env: "feature",
+        feature,
+        owner: "two",
+      }),
+    ).toBe("replay-f958-owners--two---email-send");
   });
 });

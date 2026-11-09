@@ -8,6 +8,8 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { provisionHostOwner } from "../capabilities/hostRegistry";
+import { projectHostOwners } from "../capabilities/hostWorkflows";
 import {
   CloudflareMediaDeprovisioner,
   CloudflareMediaProvisioner,
@@ -16,6 +18,7 @@ import {
 } from "../capabilities/mediaProvisioner";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
@@ -49,7 +52,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * Two secrets because two owners: the account is media's, and the R2 bundle belongs to `@pithy-sh/storage`'s
  * `ObjectStore`, which media presigns through and whose key pair media never sees.
  *
- * **No Cloudflare API token is asked for (#728).** Media mints Images and Stream uploads with the
+ * **No Cloudflare API token is asked for.** Media mints Images and Stream uploads with the
  * application's one `runtime` token, which `pithy secrets provision` mints. The R2 key pair is still supplied,
  * from flags or `.dev.vars`: Cloudflare exposes no API for creating one.
  */
@@ -71,16 +74,15 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
  * still throw, because by the time an environment is ready a missing secrets store is a genuine failure
  * rather than a not-yet.
  *
- * The app database id is a lookup rather than a file read because the decision it used to make is now made
- * once, before anything is created: an environment with no app database is skipped and reported instead of
- * failing the run part way through, after other environments' buckets already exist (#512).
+ * The app database id is a lookup rather than a file read because the decision is made once, before anything is
+ * created: an environment with no app database is skipped and reported instead of
+ * failing the run part way through, after other environments' buckets already exist.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc` under `apps/<name>/` and
  * **there is no root Worker** (CLAUDE.md §CLI), so a project with several names one with `--worker` and one
- * Worker needs no ceremony — the shape `pithy email` and `pithy support` already had. This command read
- * `<root>/wrangler.jsonc` instead, a file no scaffolded project has, so every run died on a missing file
- * before it reached the partition, the skip, the report or the exit code: #512 claimed six commands and
- * delivered two.
+ * Worker needs no ceremony — the shape `pithy email` and `pithy support` have. No scaffolded project has a
+ * `<root>/wrangler.jsonc`, so reading one would die on a missing file before the partition, the skip, the report
+ * or the exit code.
  */
 function buildResolveEnv(
   /** The partition this run acts on; the app database id per ready environment comes out of it. */
@@ -93,25 +95,27 @@ function buildResolveEnv(
    */
   project: string,
   /**
-   * The account the secrets database is looked for on, and what vouches for it (#378).
+   * The account the secrets database is looked for on, and what vouches for it.
    *
    * The refusal below reads a missing database as "provision it first". Against an account nothing
    * claims, that database is missing because this run asked the wrong account — and the sentence sends
    * an operator to run a provisioning command they have already run.
    */
   account: ConfirmedAccount,
+  /** The Worker that owns `SECRETS`, whose own vault the host reads; absent, the shared one. */
+  vaultOwner?: string,
 ): (env: ManagedEnvironment) => Promise<MediaEnvResources> {
   return async (env) => {
     const { appDatabaseId } = readyStanza(readiness, env);
     const secretsDb = await findOnConfirmedAccount({
       ...account,
-      what: `the ${managerWorkerName(project, env)} database`,
-      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
+      what: `the ${managerWorkerName(project, env, undefined, vaultOwner)} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env, undefined, vaultOwner)),
     });
     if (!secretsDb) {
       throw secretsDatabaseMissing(
         env,
-        managerWorkerName(project, env),
+        managerWorkerName(project, env, undefined, vaultOwner),
         "the media worker reads its credentials from it.",
       );
     }
@@ -183,7 +187,7 @@ const provision = withContract(
         // find what to delete (docs/NAMING.md).
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // The project's own environment set (#241): what this command fans out across, rather than a
+        // The project's own environment set: what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
         const { provisionMedia } = await loadMedia(projectDir);
@@ -193,7 +197,7 @@ const provision = withContract(
         );
         const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
         // One resolution for the config and the app database the media host is deployed against: that
-        // Worker's own media capability, never a sibling's (#590 review).
+        // Worker's own media capability, never a sibling's.
         const { isMediaCapability } = await loadMedia(projectDir);
         const { worker: appWorker, capability } = await resolveCapabilityWorker({
           projectDir,
@@ -202,9 +206,12 @@ const provision = withContract(
           is: isMediaCapability,
         });
         const mediaConfig = capability.mediaConfig;
+        // A Worker that owns what the media host binds gets a host of its own; one that owns SECRETS, its own vault.
+        const owner = provisionHostOwner(capability, appWorker.target);
+        const vaultOwner = secretsOwnerOf(appWorker);
         // Which environments this run can act on, decided once and before a single bucket exists. An
         // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
-        // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
+        // old refusal fired from inside the fan-out, after every environment's bucket and secret.
         const readiness = await environmentReadiness({
           workerDir: appWorker.dir,
           label: `${appWorker.name}'s wrangler.jsonc`,
@@ -212,14 +219,14 @@ const provision = withContract(
           productionEnvironments: config.seed?.productionEnvironments,
         });
         const cf = await cloudflareClients({ accountId, apiToken });
-        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
+        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project, undefined, vaultOwner);
         const provisioner = new CloudflareMediaProvisioner({
           cf,
           projectDir,
           project,
           // The **declaration**, not the ready set. This is what a `global` secret write fans out across and
           // what `canonicalGlobalEnvironment` picks from — narrowing it would move which manager a global
-          // credential is canonically written through, which is a way to misplace one quietly (#512).
+          // credential is canonically written through, which is a way to misplace one quietly.
           environments,
           account,
           apiToken,
@@ -229,7 +236,8 @@ const provision = withContract(
           dispatcher,
           // The same manager answers whether a Stream signing key is already stored, so a re-run keeps it.
           probe: dispatcher,
-          resolveEnv: buildResolveEnv(readiness, cf, project, account),
+          resolveEnv: buildResolveEnv(readiness, cf, project, account, vaultOwner),
+          ...(owner ? { owner } : {}),
           audit: await buildAudit(projectDir, accountId, apiToken),
         });
 
@@ -239,13 +247,13 @@ const provision = withContract(
         const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
-        // resolved when none was named (#711).
+        // resolved when none was named.
         const again = rerunRemedy(callerOf("media provision", args), {
           flags: { "--worker": workerDirName(appWorker) },
           productionEnvironments: readiness.productionEnvironments,
         });
         if (args.json) {
-          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          // One outcome: the error line alone when nothing was provisioned, or this report alone.
           writeProvisionReport(
             {
               command: "media provision",
@@ -271,7 +279,7 @@ const provision = withContract(
   }),
   {
     output: "document",
-    // 2: `kvNamespaceId` left each environment's entry with the KV record store (#727).
+    // 2: `kvNamespaceId` left each environment's entry with the KV record store.
     schemaVersion: 2,
     payload: MediaProvisionPayload,
     mutates: true,
@@ -287,7 +295,7 @@ const deprovision = withContract(
       description: "Remove one environment's media worker (and optionally its bucket)",
     },
     args: {
-      // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
+      // No default: a bare `--storage` teardown emptied every declared environment's storage, production's
       // included.
       env: TEARDOWN_ENV_ARG,
       storage: {
@@ -314,7 +322,7 @@ const deprovision = withContract(
         // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // One named environment, settled before any credential is read: naming nothing, or something
         // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
@@ -333,6 +341,7 @@ const deprovision = withContract(
           : undefined;
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareMediaDeprovisioner({
+          owners: await projectHostOwners(projectDir),
           account,
           cf,
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
@@ -342,7 +351,7 @@ const deprovision = withContract(
           audit: await buildAudit(projectDir, accountId, apiToken),
         });
 
-        // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
+        // The orchestrator is the project's installed copy, and an older one may walk every declared environment.
         // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
         const confined = await confineTeardown({
           kit: "@pithy-sh/media",

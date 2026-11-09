@@ -8,6 +8,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createRemoteCliAudit } from "../audit/cliAudit";
+import { provisionHostOwner } from "../capabilities/hostRegistry";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
@@ -51,22 +52,16 @@ interface WranglerAppConfig {
  * audit target resolver uses.
  *
  * Which file, and why it is the Worker's: every deployable Worker lives in `apps/<name>/` with its own
- * config and **there is no root Worker** (CLAUDE.md §CLI). This read was `join(projectDir, "wrangler.jsonc")`
- * — one of three root-file reads in a command that had no root file to read — so `pithy vector` was
- * unusable in every scaffolded project, and it died on a raw `ENOENT` stack rather than on a `PithyError`
- * naming the remedy. `readWranglerConfig` is what supplies the refusal (#512).
+ * config and **there is no root Worker**, so the stanza is read from the Worker's own `wrangler.jsonc`.
+ * `readWranglerConfig` is what turns a missing file into a `PithyError` naming the remedy.
  *
  * `vector` stays outside {@link environmentReadiness}'s skip-and-report set deliberately: every subcommand
  * here takes a required `--env`, so nothing about it fans out and a refusal has exactly one environment to
  * be about. The routing correction applies; the skip does not.
  *
- * **A plain function, called once from {@link buildProvisioner}, and no longer a closure the provisioner
- * calls when it gets around to it.** As a closure this was invoked from `deployWorker` — the *last* step of
- * provisioning — so the refusal `docs/commands/vector.md` describes as happening "rather than standing up an
- * index with nothing to fill it" fired after the index and every one of its metadata indexes had been
- * created, and on `reset --env prod` after the production index had already been deleted and rebuilt. An
- * operator who confirms a reset has confirmed a reset, not a reset that dies halfway and leaves the index
- * rebuilt and unfillable. Reading it up front makes the documented order the implemented one (#512).
+ * **Called once from {@link buildProvisioner}, before anything is created.** `docs/commands/vector.md` says the
+ * refusal comes "rather than standing up an index with nothing to fill it", so it has to land before the index,
+ * its metadata indexes, or a `reset --env prod`'s delete and rebuild — never from `deployWorker`, the last step.
  */
 async function requireAppDatabaseId(
   appWorker: ResolvedWorker,
@@ -108,6 +103,12 @@ async function requireAppDatabaseId(
  * run required the id. So the gate refuses exactly the environments where the dispatch would have failed
  * anyway, and it refuses them by naming the Worker and the remedy instead of by way of a Cloudflare 404.
  */
+/** The Worker whose own `capability` host serves `worker`, or `undefined` when it shares the host. */
+function hostOwnerOf(worker: ResolvedWorker, capability: string): string | undefined {
+  const composed = worker.capabilities.find((one) => one.name === capability);
+  return composed ? provisionHostOwner(composed, worker.target)?.worker : undefined;
+}
+
 async function buildProvisioner(projectDir: string, env: string, worker: string | undefined) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
@@ -116,7 +117,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   const productionEnvironments = projectConfig.seed?.productionEnvironments;
   const { accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
   // One resolution for the config and every write: the indexes provisioned are the ones the Worker they are
-  // recorded in declares (#590 review). They used to come from the first Worker composing vector.
+  // recorded in declares, never a sibling's.
   const { isVectorCapability } = await loadVector(projectDir);
   const { worker: appWorker, capability } = await resolveCapabilityWorker({
     projectDir,
@@ -129,11 +130,14 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   // keeps the wrangler parsing out of the provisioner — but it now serves an answer this command already
   // has, so the refusal cannot arrive after the work.
   const readiness = await requireAppDatabaseId(appWorker, env, productionEnvironments);
+  // A Worker that owns what the vector host binds gets a host of its own.
+  const owner = provisionHostOwner(capability, appWorker.target);
   return {
     project,
     config,
     env,
     appWorker,
+    owner,
     provisioner: new CloudflareVectorProvisioner({
       cf: await cloudflareClients({ accountId, apiToken }),
       projectDir,
@@ -145,6 +149,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
         requested === env ? readiness : requireAppDatabaseId(appWorker, requested, productionEnvironments),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
       target: { worker: workerDirName(appWorker), env, productionEnvironments: productionEnvironments ?? [] },
+      ...(owner ? { owner } : {}),
     }),
     accountId,
     apiToken,
@@ -168,8 +173,7 @@ interface WranglerVarsConfig {
  * provision with nothing changed rewrites the identical string.
  *
  * Into the app Worker's own `wrangler.jsonc` — the file the Worker deploys from, and the same one readiness
- * was read from. Written at the project root it landed in a file nothing loads, so the drift guard this
- * record exists to feed never saw a value at all (#512).
+ * was read from. A project root holds no file anything loads, so the drift guard this record feeds reads it here.
  */
 async function recordProvisioned(
   projectDir: string,
@@ -181,7 +185,7 @@ async function recordProvisioned(
   const value = JSON.stringify(toProvisionRecord(result));
 
   const config = (await readWranglerConfig(workerDir)) as WranglerVarsConfig;
-  // The one reader (#581). `dev` comes back as the top level, and an `env.<name>` it creates carries what
+  // The one reader. `dev` comes back as the top level, and an `env.<name>` it creates carries what
   // an environment does not inherit — so the drift record never lands in a stanza that holds it alone.
   const stanza = stanzaFor(config, env) as { vars?: Record<string, string> };
   stanza.vars ??= {};
@@ -207,6 +211,8 @@ async function recordBindings(
   env: string,
   config: Awaited<ReturnType<typeof buildProvisioner>>["config"],
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
+  /** The Worker whose own vector host this is, when it owns what the host binds. */
+  owner?: string,
 ): Promise<void> {
   const { vectorWorkflowRegistry, VECTOR_CAPABILITY } = await loadVector(projectDir);
   const vectorize: AppVectorizeBinding[] = result.indexes.flatMap((entry) => {
@@ -217,7 +223,12 @@ async function recordBindings(
 
   await applyAppBindings(workerDir, env, {
     vectorize,
-    workflows: appWorkflowBindings(vectorWorkflowRegistry, { project, capability: VECTOR_CAPABILITY, env }),
+    workflows: appWorkflowBindings(vectorWorkflowRegistry, {
+      project,
+      capability: VECTOR_CAPABILITY,
+      env,
+      ...(owner ? { owner } : {}),
+    }),
   });
 }
 
@@ -326,13 +337,18 @@ const provision = withContract(
         const env = requireEnvironment(args.env);
         const projectDir = process.cwd();
         const { provisionVector } = await loadVector(projectDir);
-        const { provisioner, project, config, appWorker } = await buildProvisioner(projectDir, env, args.worker);
+        const { provisioner, project, config, appWorker, owner } = await buildProvisioner(projectDir, env, args.worker);
 
-        const result = await provisionVector(provisioner, { project, config, env });
+        const result = await provisionVector(provisioner, {
+          project,
+          config,
+          env,
+          ...(owner ? { owner: owner.worker } : {}),
+        });
         // Last, and only on success: the record is the Worker's evidence that these metadata indexes exist,
         // so it must never claim more than provisioning actually got done.
         await recordProvisioned(projectDir, appWorker.dir, env, result);
-        await recordBindings(projectDir, appWorker.dir, project, env, config, result);
+        await recordBindings(projectDir, appWorker.dir, project, env, config, result, owner?.worker);
 
         if (args.json) {
           process.stdout.write(`${formatJsonLine({ command: "vector provision", ...result })}\n`);
@@ -392,7 +408,7 @@ const reset = withContract(
         });
 
         const { resetVector } = await loadVector(projectDir);
-        const { provisioner, project, config, appWorker, accountId, apiToken } = await buildProvisioner(
+        const { provisioner, project, config, appWorker, accountId, apiToken, owner } = await buildProvisioner(
           projectDir,
           env,
           args.worker,
@@ -417,7 +433,12 @@ const reset = withContract(
 
         let result: Awaited<ReturnType<typeof resetVector>>;
         try {
-          result = await resetVector(provisioner, { project, config, env });
+          result = await resetVector(provisioner, {
+            project,
+            config,
+            env,
+            ...(owner ? { owner: owner.worker } : {}),
+          });
         } catch (error) {
           // Truthful: recorded as it happened, never as it was intended.
           await audit({ ...event, outcome: "failure" });
@@ -531,8 +552,10 @@ const reprocess = withContract(
           const theirs = contributed.find((entry) => entry.name === index);
           if (theirs && workflows) {
             // The capability's own reprocess Workflow, under the name every Workflow is deployed by, with the
-            // parameters every reprocess takes.
-            const name = resourceNames(project).env(env).workflow(theirs.capability, theirs.reprocessJob);
+            // parameters every reprocess takes: the Worker's own host's, when it has one for that capability.
+            const name = resourceNames(project)
+              .env(env)
+              .workflow(theirs.capability, theirs.reprocessJob, hostOwnerOf(appWorker, theirs.capability));
             runs.push({ index, report: await workflows.dispatchAndPoll(name, { index, all: args.all }) });
             continue;
           }

@@ -7,14 +7,14 @@ Declare, write, rotate, list, and edit a project's secrets — and stand up the 
 ## Synopsis
 
 ```bash
-pithy secrets create <name> [--env <env>] [--json]
-pithy secrets update <name> [--env <env>] [--json]
-pithy secrets rotate <name> [--env <env>] [--dry-run] [--json]
-pithy secrets rm <name> [--env <env>] [--json]
+pithy secrets create <name> [--env <env>] [--worker <name>] [--json]
+pithy secrets update <name> [--env <env>] [--worker <name>] [--json]
+pithy secrets rotate <name> [--env <env>] [--worker <name>] [--dry-run] [--json]
+pithy secrets rm <name> [--env <env>] [--worker <name>] [--json]
 pithy secrets ls [--all] [--json]
 pithy secrets tables [--env <env>] [--worker <name>] [--json]
 pithy secrets edit [--json]
-pithy secrets verify [--env <env>] [--no-sweep] [--json]
+pithy secrets verify [--env <env>] [--worker <name>] [--no-sweep] [--json]
 pithy secrets provision [--json]
 pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 pithy secrets retire-version <v> --env <env> --past-guard
@@ -28,6 +28,7 @@ pithy secrets retire-version <v> --env <env> --past-guard
 |---|---|---|
 | `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
 | `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
+| `create`, `update`, `rotate`, `rm`, `verify` | `--worker <name>` | Write or verify through this Worker's manager. A Worker that lists `SECRETS` in `ownBindings` has a vault and a manager of its own, `<project>-<env>-<worker>---secrets`; any other Worker reads the shared vault, and naming it changes nothing. Without the flag, the shared manager. See [A Worker's own vault](#a-workers-own-vault). |
 | `rm` | `--backend <d1\|cf-secrets-store>` | Remove the value from this store instead of the one the registry names — for a value a secret left behind when its declaration moved. Needs `--env`. See [Moving a secret off D1](#moving-a-secret-off-d1). |
 | `rotate` | `--dry-run` | Show the plan and write nothing. Resolves the declaration and says what would happen; calls no issuer, needs no credentials. Default `false`. |
 | `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
@@ -55,7 +56,15 @@ The re-run is the confirmation, so there is no prompt and no `--yes`. It could h
 
 `--env` on `tables` is the ordinary set, `dev` included, because a declared table's local rows are as real as a deployed environment's.
 
-There is no `--worker` on any other subcommand. Every one reads the **project's** registry: each Worker's, merged by secret name.
+Every subcommand reads the **project's** registry: each Worker's, merged by secret name. `--worker` on `create`, `update`, `rotate`, `rm` and `verify` decides which vault the value goes to, not which declarations are read.
+
+### A Worker's own vault
+
+A Worker that lists `SECRETS` in its `pithy.worker.jsonc` `ownBindings` keeps its secrets in a database of its own, and reads nothing from the shared vault. It gets a manager of its own, `<project>-<env>-<worker>---secrets`, and every write it reads goes through that manager's Workflow, `<project>-<env>-<worker>---secrets-write`. So `pithy secrets create STRIPE_KEY --env staging --worker two` is how `two` gets a value; without `--worker`, the value goes to the shared vault, which `two` never reads.
+
+`--worker` naming a Worker that does not exist is refused with `No worker named "<worker>".` and the project's Worker names; naming one that does not compose `secrets` is refused with `<worker> does not compose secrets.` Naming a Worker that shares the vault writes through the shared manager, exactly as leaving the flag off does.
+
+Both vaults are sealed under the environment's one master key. The shared manager rotates that key, the field key and every `cf-secrets-store` secret, and its at-rest rotation re-seals every owned vault beside its own before it retires a version. A Worker's own manager rotates only the `d1` values in its own vault, and holds no Cloudflare API token. So `pithy deploy` redeploys the shared manager whenever it deploys an owner's, even when every Worker composing `secrets` owns its vault, which keeps the vaults it binds current; with no shared manager on the account it fails, naming `pithy secrets provision`.
 
 ## What it does
 
@@ -314,7 +323,7 @@ Retained 3 rows would be dropped: pithy_secrets_system_secrets on acme-prod-secr
 They exist nowhere else. Back them up, or pass --destroy-retained 3 to drop them.
 ```
 
-A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager's four Workflows (`<project>-<env>-secrets-write`, `-secrets-rotate`, `-secrets-rotate-value` and `-secrets-rotate-fields`), the manager Worker, the master key when `--keys` is passed, the database, and the environment's runtime token go, in that order. The Workflows go first because deleting a Worker leaves the Workflows registered against it. The runtime token is per environment, so prod's manager keeps rotating whatever staging's teardown removes. The manager token `runtime` superseded is never touched: nothing revokes it for you, and `pithy doctor` names it.
+Every Worker's own vault, `<project>-<env>-<worker>---secrets`, is counted the same way and deleted with the shared one: it is sealed under the same master key, so a `--keys` run that left it would leave rows nothing can decrypt. Each owner's manager and its Workflows go with the shared manager's. A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager's four Workflows (`<project>-<env>-secrets-write`, `-secrets-rotate`, `-secrets-rotate-value` and `-secrets-rotate-fields`), the manager Worker, the master key when `--keys` is passed, the database, and the environment's runtime token go, in that order. The Workflows go first because deleting a Worker leaves the Workflows registered against it. The runtime token is per environment, so prod's manager keeps rotating whatever staging's teardown removes. The manager token `runtime` superseded is never touched: nothing revokes it for you, and `pithy doctor` names it.
 
 **`provision` says where it got to.** Each environment's manager Worker is named as it is about to be uploaded — `▸ acme-staging-secrets...` — the same plain line `pithy deploy`, `pithy provision` and `pithy email provision` print, from the one seam they all share. A manager the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not. `deprovision` deletes over the API and spawns nothing, so it has nothing to narrate.
 
@@ -413,7 +422,7 @@ The newest version is what the rows say: the CLI cannot read the master key, so 
 
 Fields marked `encrypted()` seal under their own key, `PITHY_FIELD_KEYS`, never the master key ([Encrypted fields](../PRIVACY.md#encrypted-fields) is the adopter's page). `provision` mints it per environment beside the master key, in the same format, under `<project>-<env>-pithy-field-keys`, and only if absent: a fresh key over an existing one would orphan every sealed field. It binds it to every Worker that holds an encrypted field, whether or not that Worker composes `secrets`, and only those. A feature gets a field key of its own, deleted with it. **The project must compose `secrets` on some Worker**, because the manager is what rotates the key: `pithy provision` refuses a declared environment where a Worker holds an encrypted field and nothing composes it, before anything is created. `pithy deploy` skips any kit Worker whose config binds a Secrets Store entry the store does not hold, naming the entry and the command, so a manager upgraded before `provision` minted its field key is not deployed against nothing.
 
-**The manager is stamped with what it re-seals.** `provision` and `pithy deploy` derive the encrypted columns from every Worker's schemas — the declared name, the field path, the primary key, the D1 binding, the index column and its normalizer — and write them into the manager's `ENCRYPTED_COLUMNS` var, binding the manager to every D1 they live in. An encrypted table with no `encryptedTable()` declaration is refused, naming it. A Worker whose `pithy.config.ts` will not load is stamped as a source the guard could not read.
+**The manager is stamped with what it re-seals.** `provision` and `pithy deploy` derive the encrypted columns from every Worker's schemas — the declared name, the field path, the primary key, the D1 binding, the index column and its normalizer — and write them into the manager's `ENCRYPTED_COLUMNS` var, binding the manager to every D1 they live in. A Worker that owns the binding an encrypted table lives in is stamped with its own database, bound as `<BINDING>_OF_<WORKER>` (`DB_OF_TWO`), so the rotation re-seals and counts its rows too. An encrypted table with no `encryptedTable()` declaration is refused, naming it. A Worker whose `pithy.config.ts` will not load is stamped as a source the guard could not read.
 
 **The manager's nightly cron rotates it every 30 days**, on its own Workflow, `<project>-<env>-secrets-rotate-fields`, independent of the master key's cadence. A pass adds a version and makes it current, re-seals and re-indexes only the rows still under the version leaving the window, by compare-and-swap, and retires that version once the guard reads clean: no stamped envelope or index column under it, every source read, and no encrypted field outside D1. A dirty guard retires nothing; the nightly backfill carries on clearing what it can. A version still live when the next rotation is due closes the pass `field-key-overdue` and raises the `secrets/field_key_retirement_blocked` audit event naming what held it, and `pithy doctor` fails on it. While four versions are live no version is added, rather than drift toward the Secrets Store's 64 KiB ceiling. The pass still re-seals and retires on a clean guard, so the ceiling clears itself once its cause is fixed; on a dirty guard it closes `field-key-ceiling`. The window is anchored on the current version: a version a failed confirm left staged above it is promoted by the next rotation, never minted past. No step of the Workflow returns a key, so its journal holds version numbers and a digest, never key material. A retirement, past the guard or on a clean one, holds the same single-flight lock as a rotation and writes only over the key set it read, so it never runs beside one.
 
@@ -587,6 +596,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | `generated` | object[] | One entry per `d1` secret the registry declares mintable. Empty when the project declares none. |
 | `generated[].name` | string | The secret's registry name. Never its value — nothing here, or in the audit trail, carries one. |
 | `generated[].environments` | string[] | Where the secret belongs: one environment for an `environment`-scoped secret, every declared one for a `global` secret. |
+| `generated[].worker` | string | Present only on an entry minted into a Worker's own vault: the `apps/` Worker that owns `SECRETS`. Absent for the shared vault, so one secret name can appear twice — once for the shared vault and once for that Worker's. |
 | `generated[].created` | string[] | The environments this run **created** it in. A subset of `environments`, and empty on every run after the first. Separate from `environments`, because "sent" is not "made" — this is the field that answers *did this run generate a production signing key*. |
 | `interrupted` | boolean | Present and `true` only on a run that failed part-way through creating the `d1` secrets. `generated` then names what landed before the failure, the `{ "error": … }` line is on stderr, and the exit is non-zero by the failure's kind (`docs/CLI.md` §3.8). Absent on a run that finished. |
 
@@ -595,6 +605,8 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 **A `global` secret has one value in every environment, or the command stops.** `global` is the promise that every environment reads one value, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
 
 **A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with a non-zero exit by its kind. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
+
+**A Worker that owns `SECRETS` gets its manager here, and its declared secrets.** For each such Worker, `provision` migrates its own vault in every environment, deploys its manager over it, and then mints what that Worker declares into it. The vault is the `SECRETS` database `pithy provision` created for that Worker, so a Worker whose stanza names none for an environment is refused before anything is minted into it: `<env> has no SECRETS database for <worker>, which owns its vault.`, naming `pithy provision --env <env>`. The shared manager deployed by the same run binds each owned vault, so its at-rest rotation re-seals them.
 
 **`provision` also writes the adopter's `secrets_store_secrets` stanza.** `pithy add secrets` cannot: a `secret` binding needs a `store_id` and a `secret_name` that do not exist until an account has been reached, and `ensureSecretsStoreId` records nothing in five further cases. That deferral was right and nothing came back for it, so a project deployed to staging and its Worker booted without `SECRETS_ENCRYPTION_KEYS`, failing at the first request with no message anywhere. Provisioning is when the store certainly exists and every entry has certainly been written, so it is where the stanza is written or corrected — upserting by binding, never duplicating, and leaving a binding the registry does not declare exactly where the adopter put it.
 
@@ -610,7 +622,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 
 ## Errors
 
-- **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read. `core/not_found`, exit 3. With one Worker, `api`, its `fix` is `pithy add secrets --worker api`, and the action names the same command. With several there is no `fix`, because nothing says which Worker should compose it, and the action names one command per Worker, each runnable as written: ``(run `pithy add secrets --worker api` or `pithy add secrets --worker web`)``. No `pithy secrets` subcommand takes `--worker`; only the `pithy add` it names does.
+- **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read. `core/not_found`, exit 3. With one Worker, `api`, its `fix` is `pithy add secrets --worker api`, and the action names the same command. With several there is no `fix`, because nothing says which Worker should compose it, and the action names one command per Worker, each runnable as written: ``(run `pithy add secrets --worker api` or `pithy add secrets --worker web`)``. `--worker` on a `pithy secrets` subcommand chooses a vault and cannot add the capability; only the `pithy add` it names does.
 - **`Secret '<name>' is not declared in the registry.`** Add it to the registry first. Nothing writes a name the registry has never heard of.
 - **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them, and it writes them with `putKeyed`.
 - **`Secret '<name>' does not declare how it rotates.`** `rotate` only. Add a `rotation` to its registry entry, or replace the value with `pithy secrets update`.

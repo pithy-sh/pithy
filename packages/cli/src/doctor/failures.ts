@@ -17,6 +17,7 @@ import { describeDevPreferences } from "./devPreferences";
 import { describeEnvironmentDrift } from "./environments";
 import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
+import { describeHostBinding } from "./hostBindings";
 import { describeProjectName } from "./projectName";
 import { fieldKeyRotationErrors } from "./secretRotations";
 import { describeSelfBinding } from "./selfBinding";
@@ -67,6 +68,7 @@ export const DoctorCheck = z
     "workerNames",
     "selfBinding",
     "serviceBindings",
+    "hostBindings",
     "featureRatelimitIds",
     "environments",
     "environmentConfigs",
@@ -329,6 +331,18 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   if (report.serviceBindings?.state === "faulty") {
     for (const fault of report.serviceBindings.faults) {
       add("serviceBindings", serviceBindingDetail(fault), serviceBindingFix(fault));
+    }
+  }
+
+  // A Workflow or service binding into the kit host that reads another database. The provision
+  // that points it at the right host is the fix; the block's sentence names the redeploy that ships it.
+  if (report.hostBindings?.state === "stale") {
+    for (const entry of report.hostBindings.stale) {
+      add(
+        "hostBindings",
+        `${entry.worker} ${describeHostBinding(entry)}`,
+        provisionFixCommand(entry.env, report.productionEnvironments),
+      );
     }
   }
 

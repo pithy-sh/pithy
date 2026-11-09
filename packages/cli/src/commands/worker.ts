@@ -627,6 +627,7 @@ async function serviceWorkerNames(projectDir: string): Promise<ServiceWorkerName
     app: basename(worker.dir),
     dir: worker.dir,
     deployedAs: worker.name,
+    ...(worker.ownBindings ? { ownBindings: worker.ownBindings } : {}),
   }));
 }
 
@@ -764,7 +765,13 @@ const sync = withContract(
             ? await reconcileServiceStanzas({
                 workerDir: target.dir,
                 services: declared,
-                scripts: await serviceScripts(project, await serviceWorkerNames(projectDir)),
+                from: basename(target.dir),
+                scripts: await serviceScripts(
+                  project,
+                  (await serviceWorkerNames(projectDir)).map((names) =>
+                    names.dir === target.dir ? { ...names, composed: target.config.capabilities } : names,
+                  ),
+                ),
                 ...(env === undefined ? {} : { env }),
               })
             : [];

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
+import { secretsWriteWorkflowName, WorkflowSecretDispatcher } from "../manager/dispatcher";
 import { defineSecretRegistry } from "../registry";
 import { stampedRotations } from "../rotation/rotationSchedule";
 import type { ManagedEnvironment } from "../scope";
@@ -87,7 +88,7 @@ describe("resolveManagerConfig", () => {
       store_id: "store-abc",
       secret_name: masterKeySecretName("acme", "staging"),
     });
-    // The application's one runtime token, this environment's (#728) — the entry `pithy token mint runtime
+    // The application's one runtime token, this environment's — the entry `pithy token mint runtime
     // --env staging` writes. It is resolved here, not passed through: the template literal is a
     // placeholder, and binding a name provisioning never wrote would deploy a manager that dies on its
     // first token read.
@@ -221,10 +222,133 @@ describe("resolveManagerConfig", () => {
 });
 
 /**
- * **A feature's own manager (#643).** Every kit Worker a project composes is provisioned for a feature, the
+ * **A feature's own manager.** Every kit Worker a project composes is provisioned for a feature, the
  * secrets manager included — and nothing it is called or binds is shared with another environment: its Worker,
  * both Workflows, its master key, its CF API token and its database are all the feature's.
  */
+describe("resolveManagerConfig for a Worker that owns SECRETS", () => {
+  test("names the manager, its D1 and every Workflow for the owner", () => {
+    const resolved = resolveManagerConfig(template(), {
+      env: "staging",
+      databaseId: "two-secrets",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      owner: "two",
+    });
+    expect(resolved.name).toBe("acme-staging-two---secrets");
+    expect(resolved.d1_databases[0]).toEqual({
+      binding: "SECRETS",
+      database_name: "acme-staging-two---secrets",
+      database_id: "two-secrets",
+    });
+    expect(resolved.workflows.map((workflow) => workflow.name)).toEqual([
+      "acme-staging-two---secrets-write",
+      "acme-staging-two---secrets-rotate-value",
+    ]);
+  });
+
+  /**
+   * The master key, the field key and every store-backed secret are one entry per environment, and the shared
+   * manager rotates each. A second manager rotating them would run a second pass with its own instance ids and its
+   * own ledger, and the slower write would drop the key the other vault was just re-sealed under.
+   */
+  test("rotates nothing it shares: no token, no at-rest or field-key Workflow, and only its own vault's values", () => {
+    const minted = {
+      rotatable: true,
+      valueType: "text",
+      devValue: "random",
+      origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
+      rotation: { kind: "local" },
+      rotateEveryDays: 90,
+      overlap: { days: 7, minimumDays: 7 },
+    } as const;
+    const valueRotations = stampedRotations(
+      defineSecretRegistry({
+        "auth-session-secret": { ...minted, backend: "d1", scope: "environment" },
+        "email-link-signing-key": { ...minted, backend: "cf-secrets-store", scope: "environment" },
+      }),
+    );
+    const resolved = resolveManagerConfig(template(), {
+      env: "staging",
+      databaseId: "two-secrets",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      owner: "two",
+      valueRotations,
+      encryptedColumns: { stamp: { columns: [], unread: [], unrotatable: [] }, databases: [] },
+    });
+    expect(resolved.secrets_store_secrets.map((entry) => entry.binding)).toEqual([
+      "SECRETS_ENCRYPTION_KEYS",
+      "PITHY_FIELD_KEYS",
+    ]);
+    expect(JSON.parse(resolved.vars.VALUE_ROTATIONS as string).map((one: { name: string }) => one.name)).toEqual([
+      "auth-session-secret",
+    ]);
+    expect(resolved.vars.ENCRYPTED_COLUMNS).toBeUndefined();
+    expect(resolved.vars.OWNER).toBe("two");
+    expect(resolved.triggers.crons).toEqual(["0 3 * * *"]);
+  });
+});
+
+describe("resolveManagerConfig for the shared manager beside owned vaults", () => {
+  test("binds each owned vault and stamps it, so the at-rest rotation re-seals every vault under its key", () => {
+    const resolved = resolveManagerConfig(template(), {
+      env: "staging",
+      databaseId: "shared-secrets",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      ownedVaults: [{ binding: "VAULT_TWO", databaseName: "acme-staging-two---secrets", databaseId: "two-secrets" }],
+    });
+    expect(resolved.d1_databases).toContainEqual({
+      binding: "VAULT_TWO",
+      database_name: "acme-staging-two---secrets",
+      database_id: "two-secrets",
+    });
+    expect(JSON.parse(resolved.vars.OWNED_VAULTS as string)).toEqual(["VAULT_TWO"]);
+  });
+
+  test("an owner's manager and a feature's re-seal no vault but their own", () => {
+    const vaults = [{ binding: "VAULT_TWO", databaseName: "n", databaseId: "i" }];
+    const base = { env: "staging" as const, databaseId: "d", storeId: "s", accountId: "a", project: "acme" };
+    expect(resolveManagerConfig(template(), { ...base, owner: "two", ownedVaults: vaults }).vars.OWNED_VAULTS).toBe(
+      undefined,
+    );
+  });
+
+  test("the owned manager's write Workflow is the one a dispatcher bound to the owner writes to", async () => {
+    const resolved = resolveManagerConfig(template(), {
+      env: "staging",
+      databaseId: "two-secrets",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      owner: "two",
+    });
+    const write = resolved.workflows.find((workflow) => workflow.binding === "SECRETS_WRITE");
+    const dispatched: string[] = [];
+    await new WorkflowSecretDispatcher(
+      {
+        dispatchAndPoll: async (name: string) => {
+          dispatched.push(name);
+          return { outcome: "absent" };
+        },
+      } as never,
+      "acme",
+      undefined,
+      "two",
+    ).probe({ env: "staging", name: "auth-session-secret" });
+    expect(dispatched).toEqual([write?.name]);
+    expect(secretsWriteWorkflowName("acme", "staging", undefined, "two")).toBe("acme-staging-two---secrets-write");
+  });
+
+  test("names the manager for its owner", () => {
+    expect(managerWorkerName("acme", "prod", undefined, "two")).toBe("acme-prod-two---secrets");
+  });
+});
+
 describe("resolveManagerConfig for a feature", () => {
   const feature = { project: "acme", issue: "643", slug: "feature-address" };
 
@@ -242,10 +366,10 @@ describe("resolveManagerConfig for a feature", () => {
     expect(resolved.d1_databases).toEqual([
       { binding: "SECRETS", database_name: "acme-f643-feature-address--secrets-d1", database_id: "feature-secrets-db" },
     ]);
-    // Its own master key, and no Cloudflare API token: branch code never holds account-wide store write (#643).
+    // Its own master key, and no Cloudflare API token: branch code never holds account-wide store write.
     expect(resolved.secrets_store_secrets.map((entry) => [entry.binding, entry.secret_name])).toEqual([
       ["SECRETS_ENCRYPTION_KEYS", "acme-f643-feature-address--secrets-encryption-keys"],
-      // Its own field key too (#390): a feature's app Workers seal their encrypted fields under a key of its own.
+      // Its own field key too: a feature's app Workers seal their encrypted fields under a key of its own.
       ["PITHY_FIELD_KEYS", "acme-f643-feature-address--pithy-field-keys"],
     ]);
     // Its write Workflow, and no rotation Workflow or cron: a feature's key is created once and deleted with it.
@@ -288,7 +412,7 @@ describe("resolveAllManagerConfigs", () => {
   });
 });
 
-/** The schedule a project's registry stamps into each manager (#602). */
+/** The schedule a project's registry stamps into each manager. */
 describe("resolveManagerConfig — the value-rotation schedule", () => {
   const minted = {
     rotatable: true,
@@ -358,7 +482,7 @@ describe("resolveManagerConfig — the value-rotation schedule", () => {
   });
 });
 
-describe("resolveManagerConfig, the field key and the encrypted columns (#390)", () => {
+describe("resolveManagerConfig, the field key and the encrypted columns", () => {
   const params = {
     env: "staging",
     databaseId: "db-1",

@@ -40,10 +40,15 @@ export interface VectorConfigParams {
   /** The target environment. */
   env: string;
   /**
-   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * **The feature this host serves, when it serves one.** Its Worker, its Workflows and every store
    * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id for this environment — where the document corpus lives. */
   appDatabaseId: string;
   /** Config index name → provisioned Vectorize index name, from `provisionVector`. */
@@ -55,6 +60,7 @@ export interface VectorConfigParams {
 /** Fill the template for one environment. */
 export function resolveVectorConfig(template: WorkflowHostTemplate, params: VectorConfigParams): WorkflowHostTemplate {
   const feature = params.feature;
+  const owner = params.owner;
   const { project, env, appDatabaseId, indexNames, config } = params;
 
   // One Vectorize binding per configured index, in config order. `index_name` is a placeholder here; the
@@ -78,6 +84,7 @@ export function resolveVectorConfig(template: WorkflowHostTemplate, params: Vect
       capability: VECTOR_CAPABILITY,
       env,
       ...(feature ? { feature } : {}),
+      ...(owner !== undefined ? { owner } : {}),
       databaseIds: { DB: appDatabaseId },
       vectorizeIndexNames,
       // The reprocess Workflow, derived from vector's own specs. A Workflow name is account-scoped, so
@@ -87,6 +94,7 @@ export function resolveVectorConfig(template: WorkflowHostTemplate, params: Vect
         capability: VECTOR_CAPABILITY,
         env,
         ...(feature ? { feature } : {}),
+        ...(owner !== undefined ? { owner } : {}),
       }).workflows,
       // Neither Vectorize nor Workers AI has a local emulation, and a Workflow host always runs locally in
       // `wrangler dev` — without `remote` the bindings resolve to nothing and every re-embed fails locally

@@ -22,7 +22,8 @@ import { describeUnconfirmedCloudflareAccount, UNCONFIRMED_CLOUDFLARE_ACCOUNT_AC
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import type { HostOwner } from "./hostRegistry";
+import { deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -165,7 +166,7 @@ const SUPPORT_BUCKET_NAMING: ProjectGlobalNaming = { scope: GLOBAL_SCOPE, resour
  * customer correspondence in one place, and either teardown deleting both.
  *
  * **Through {@link bindingResourceName}, the one expression `pithy add` and `pithy provision` also compose
- * with (#513).** They composed `<project>-<env>-support-bucket` from the binding alone, created it, and
+ * with.** They composed `<project>-<env>-support-bucket` from the binding alone, created it, and
  * wrote it into the stanza — so on a split project the **per-environment** bucket is the one holding the
  * correspondence and this one is empty, and `pithy support deprovision --storage` has been deleting the
  * empty one while the customer mail it was meant to remove stayed on the account. That is also why the
@@ -176,7 +177,7 @@ const SUPPORT_BUCKET_NAMING: ProjectGlobalNaming = { scope: GLOBAL_SCOPE, resour
  * writers of it.
  *
  * The binding keeps `_BUCKET` and the resource drops `-bucket`: `env.SUPPORT_BUCKET` is read in a Worker
- * and should say what kind of thing it is, while `r2` is already the composed name's own kind (#519).
+ * and should say what kind of thing it is, while `r2` is already the composed name's own kind.
  */
 export function supportBucketName(project: string): string {
   return bindingResourceName(project, SUPPORT_BUCKET_BINDING, "r2", SUPPORT_BUCKET_NAMING);
@@ -286,6 +287,11 @@ function enableRoutingAction(domain: string, zone: string): string {
 
 export interface CloudflareSupportProvisionerOptions {
   /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
+  /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
    * `@pithy-sh/support` module is resolved against. Not derivable from `project`, which is a *name*;
    * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
@@ -293,7 +299,7 @@ export interface CloudflareSupportProvisionerOptions {
   readonly projectDir: string;
   cf: CloudflareClients;
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -374,7 +380,10 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #workflows: Pick<CloudflareWorkflowsClient, "createInstance"> | undefined;
   readonly #routes: SupportRoute[] = [];
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflareSupportProvisionerOptions) {
+    this.#owner = options.owner;
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
@@ -400,7 +409,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    */
   async ensureSemanticIndex(env: ManagedEnvironment): Promise<{ indexName: string; created: boolean }> {
     const { supportMessageIndexName, supportMessageIndexShape } = await loadSupportSemantic(this.#projectDir);
-    const indexName = supportMessageIndexName(this.#project, env);
+    const indexName = supportMessageIndexName(this.#project, env, undefined, this.#owner?.worker);
     const shape = supportMessageIndexShape(this.#supportConfig.search);
     if (!shape) return { indexName, created: false };
     const vectorize = this.#cf.vectorizeProvisioner();
@@ -464,14 +473,19 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     const { supportMessageIndexName, supportMessageIndex, SUPPORT_MESSAGES_INDEX } = await loadSupportSemantic(
       this.#projectDir,
     );
-    const indexName = supportMessageIndexName(this.#project, env);
+    const owner = this.#owner?.worker;
+    const indexName = supportMessageIndexName(this.#project, env, undefined, owner);
     if (supportMessageIndex(this.#supportConfig.search)) {
       if (!this.#workflows) return { dropped: false, backfilled: false };
       if (!created && !(await this.#unstamped(env))) return { dropped: false, backfilled: false };
-      await this.#workflows.createInstance(resourceNames(this.#project).env(env).workflow("support", "reprocess"), {
-        index: SUPPORT_MESSAGES_INDEX,
-        all: true,
-      });
+      // This host's own reprocess: an owner's embeds its own messages into its own index.
+      await this.#workflows.createInstance(
+        resourceNames(this.#project).env(env).workflow("support", "reprocess", owner),
+        {
+          index: SUPPORT_MESSAGES_INDEX,
+          all: true,
+        },
+      );
       return { dropped: false, backfilled: true };
     }
     const vectorize = this.#cf.vectorizeProvisioner();
@@ -510,11 +524,10 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    *
    * **Gated on `supportNeedsBucket`, which is the same predicate the capability declares the binding
    * with.** Three settings put bytes here and each has its own writer: mail attachments, the raw MIME
-   * copy, and an in-app submission's files. This gate asked about the first two and never about the
-   * third, so a project that wanted uploads but no mail attachments got a `SUPPORT_BUCKET` binding
-   * pointing at a bucket nothing had created, and every submitted file was dropped with a warning
-   * (#440). Asking the capability's own predicate is what keeps provisioning and declaration from
-   * drifting again — a fourth writer teaches both at once.
+   * copy, and an in-app submission's files. A gate asking about the first two alone would give a project that
+   * wants uploads but no mail attachments a `SUPPORT_BUCKET` binding pointing at a bucket nothing created.
+   * Asking the capability's own predicate keeps provisioning and declaration from drifting — a fourth writer
+   * teaches both at once.
    *
    * Why the raw copy earns a flag of its own: keying on `attachments.enabled` alone meant an adopter
    * who turned off attachment storage also, silently, lost the immutable raw MIME that makes
@@ -551,18 +564,19 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + the app DB id, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { supportWorkerName, resolveSupportConfig } = await loadSupport(this.#projectDir);
+    const { resolveSupportConfig } = await loadSupport(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
     const dir = await supportWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveSupportConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       supportConfig: this.#supportConfig,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -587,7 +601,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: supportWorkerName(this.#project, env),
+          resourceId: config.name,
         });
       }
     } catch (error) {
@@ -597,7 +611,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: supportWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
@@ -628,7 +642,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean; repaired: boolean }> {
     const { provisionSearchIndex, SEARCH_TABLE } = await loadSupportSearch(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
-    // The capability's own step, which `pithy restore` runs too (#848): one read of the table and its three
+    // The capability's own step, which `pithy restore` runs too: one read of the table and its three
     // triggers, the decision, and the change — a create or a repair backfills straight away, because an index
     // that exists and is empty answers "no matches" while the `LIKE` fallback no longer fires.
     const action = await provisionSearchIndex(this.#cf.d1(appDatabaseId), this.#supportConfig.search.fts);
@@ -958,7 +972,7 @@ export interface CloudflareSupportDeprovisionerOptions {
    */
   readonly projectDir: string;
   cf: CloudflareClients;
-  /** The account's Workflows client — the classification Workflow is deleted through it, by name (#789). */
+  /** The account's Workflows client — the classification Workflow is deleted through it, by name. */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -974,7 +988,7 @@ export interface CloudflareSupportDeprovisionerOptions {
    */
   r2Credentials?: R2Credentials;
   /**
-   * The account this teardown deletes from, and what vouches for it (#378).
+   * The account this teardown deletes from, and what vouches for it.
    *
    * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
    * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
@@ -983,6 +997,11 @@ export interface CloudflareSupportDeprovisionerOptions {
   account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /**
@@ -998,6 +1017,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   readonly #routingZoneId: string | undefined;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #account: ConfirmedAccount;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSupportDeprovisionerOptions) {
@@ -1008,23 +1028,30 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     this.#routingZoneId = options.routingZoneId;
     this.#r2Credentials = options.r2Credentials;
     this.#account = options.account;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
   }
 
   /** Whether the env's classification worker is deployed — settled on a confirmed account, like every lookup here. */
   async hasWorker(env: ManagedEnvironment): Promise<boolean> {
     const { supportWorkerName } = await loadSupport(this.#projectDir);
-    const name = supportWorkerName(this.#project, env);
-    return Boolean(
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      }),
-    );
+    for (const name of hostScriptsOf(
+      { capability: "support", project: this.#project, env, owners: this.#owners },
+      supportWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      )
+        return true;
+    }
+    return false;
   }
 
-  /** Delete the env's classification Workflows, by the names the project's own `@pithy-sh/support` composes (#789). */
+  /** Delete the env's classification Workflows, by the names the project's own `@pithy-sh/support` composes. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     const { supportWorkflowNames } = await loadSupport(this.#projectDir);
     await deleteHostWorkflows({
@@ -1032,7 +1059,13 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
       account: this.#account,
       capability: "support",
       env,
-      names: supportWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "support",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: supportWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
@@ -1040,23 +1073,27 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   /** Delete the env's classification worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { supportWorkerName } = await loadSupport(this.#projectDir);
-    const name = supportWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
-      await this.#audit({
-        environment: env,
-        action: "support/worker_removed",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_worker",
-        resourceId: name,
-      });
+    for (const name of hostScriptsOf(
+      { capability: "support", project: this.#project, env, owners: this.#owners },
+      supportWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+        await this.#audit({
+          environment: env,
+          action: "support/worker_removed",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_worker",
+          resourceId: name,
+        });
+      }
     }
   }
 

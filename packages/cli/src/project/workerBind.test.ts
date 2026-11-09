@@ -169,6 +169,14 @@ describe("bindWorker", () => {
     expect(wrangler.env.prod?.services).toEqual([{ binding: "EMAIL", service: "acme-prod-email" }]);
   });
 
+  test("a Worker that owns DB binds a composed kit Worker at its own host", async () => {
+    await writeFile(join(projectDir, "apps", "app-a", "pithy.worker.jsonc"), '{ "ownBindings": ["DB"] }\n');
+    await bindWorker({ projectDir, from: "app-a", to: "email" });
+    const wrangler = await wranglerOf("app-a");
+    expect(wrangler.env.prod?.services).toEqual([{ binding: "EMAIL", service: "acme-prod-app-a---email" }]);
+    expect(wrangler.env.staging?.services).toEqual([{ binding: "EMAIL", service: "acme-staging-app-a---email" }]);
+  });
+
   test("a binding back along an existing one is refused, printing the loop", async () => {
     await bindWorker({ projectDir, from: "app-a", to: "app-b" });
     const { message } = await refusal(bindWorker({ projectDir, from: "app-b", to: "app-a" }));
@@ -184,7 +192,7 @@ describe("bindWorker", () => {
   });
 
   /**
-   * **A refusal found while resolving the stanzas leaves both files as they were (#617).** Every other target
+   * **A refusal found while resolving the stanzas leaves both files as they were.** Every other target
    * the app declares is resolved before `pithy.config.ts` is touched, so a stale one stops the run before it
    * edits anything, and a re-run after the fix is not short-circuited by a half-written binding.
    */
@@ -206,7 +214,7 @@ describe("bindWorker", () => {
   });
 
   /**
-   * **A `services` entry written by hand is the adopter's (#617).** Its name is taken in that Worker, so a bind
+   * **A `services` entry written by hand is the adopter's.** Its name is taken in that Worker, so a bind
    * under the same name is refused, naming the script it calls, and the entry is left exactly as it was.
    */
   test("a name a hand-written services entry already uses is refused, and the entry is left alone", async () => {

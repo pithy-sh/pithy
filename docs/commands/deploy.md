@@ -92,6 +92,8 @@ A capability that owns Workflows ships a Worker of its own — `<project>-<env>-
 
 **It deploys the configuration your project composes.** A kit Worker's config is resolved from the composed capability in `apps/<name>/pithy.config.ts` — your `media({ visibility })`, your `vector({ indexes })`, your email theme — so `pithy deploy --env <env> --kit` and `pithy <capability> provision` resolve the same Worker to the same bytes. That is what makes `pithy deploy --env <env> --kit --force` a safe way to re-upload one without re-running a full provisioning pass.
 
+**A Worker that owns its database gets its own kit Workers.** A Worker that lists a binding in `ownBindings` that a host binds — `DB` for email and audit — gets that host to itself, `<project>-<env>-<worker>---<capability>`, built from that Worker's own composition: its database, its origin, its email theme and catalogs. Every other Worker shares `<project>-<env>-<capability>`, whose databases and catalogs come only from the Workers that share it, so an owned database never becomes the shared host's. Each is its own `kit` row, and `kit[].owner` names the Worker an owned row belongs to. Which host each Worker's Workflow bindings reach is `pithy provision`'s to write ([`NAMING.md`](../NAMING.md#a-workers-own-kit-hosts)). A Worker that owns `SECRETS` gets its own secrets manager the same way, and the shared manager binds each owned vault so its at-rest rotation re-seals them. The shared manager is deployed whenever an owner's is, even when every Worker composing `secrets` owns its vault and none shares it: it is then bound over its own vault, the D1 `pithy secrets provision` created under its name, and a run that finds no such database fails, naming `pithy secrets provision`. Finding that vault needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, so a run without them asks nothing and reports the shared manager as a skipped `kit` row, saying it was not checked and naming both variables.
+
 **It stamps the secrets manager's rotation schedule.** The manager is prebuilt and never reads `pithy.config.ts`, so the deploy is how it learns which secrets rotate on their own. Every `rotateEveryDays` the composed capabilities declare goes into its config, with the last declared environment as the one whose manager rotates a `global` secret — the same stamp `pithy secrets provision` writes. The schedule is part of the hashed config, so a period you add or change redeploys the manager on the next run. A feature's manager runs no cron and gets no schedule. See [`pithy secrets`](./secrets.md#unattended-rotation).
 
 **The adopter's Workers are never gated.** Your code is the thing that changed, and no stamp can see a bundle. `--force` is refused beside `--apps` for that reason rather than accepted and ignored.
@@ -146,6 +148,7 @@ One line on stdout, after every Worker has been attempted — or, under `--event
 | `workers[].verificationDetail` | string, optional | The one-line explanation behind `verification`. |
 | `kit` | object[] \| null | One entry per composed capability's Worker, in registry order. **`null`** when the kit half did not run — `--apps`, no `--env`, or `--env dev` — which is a different fact from it finding nothing. Under `--dry-run`, a Worker the deploy would upload is in `plan.resources` instead, so no row says `deployed`. |
 | `kit[].capability` | string | The capability that owns the Worker, e.g. `"email"`. |
+| `kit[].owner` | string, optional | The `apps/` Worker whose own host this row is, because it owns a binding the host binds. **Absent** for the shared host. Two rows can share a `capability`: the shared host and a Worker's own, told apart by this key and by `worker`. |
 | `kit[].worker` | string \| null | The deployed script name, e.g. `"acme-prod-email"`. `null` when the run never got far enough to derive one. |
 | `kit[].outcome` | string | `"deployed"`, `"unchanged"`, `"skipped"`, or `"failed"`. |
 | `kit[].reason` | string | One sentence saying why. Never empty, for every outcome. |
@@ -173,7 +176,7 @@ One line on stdout, after every Worker has been attempted — or, under `--event
 | `what` | string | `start` only: what is being worked on — a Worker's name, or the build step. |
 | `line` | string | `settled` only: the line a person would have read for it, without color. |
 | `worker` | object, optional | `settled` only: the row a Worker under `apps/` settled as, exactly as `workers[]` lists it. |
-| `kit` | object, optional | `settled` only: the row a kit Worker settled as, exactly as `kit[]` lists it. |
+| `kit` | object, optional | `settled` only: the row a kit Worker settled as, exactly as `kit[]` lists it, `kit.owner` included. |
 
 A failure inside the command ends the stream with no document, and the `{"error": …}` line goes to stderr as it always does. `pithy schema deploy --json` publishes the record's JSON Schema as `events`.
 

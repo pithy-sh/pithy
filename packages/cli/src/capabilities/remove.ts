@@ -20,6 +20,7 @@ import { CAPABILITY_SCOPE, capabilityPackageName, isSharedCapabilityPackage } fr
 import { exportsName, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
 import { EJECT_DIR, ejectImportPath, ejectSpecifierFromDir, isEjected } from "./eject";
 import { durableObjectExports, withoutDurableObjectExports } from "./entryExports";
+import { type DeletedOwnHost, deleteOwnHosts, type OwnHostDeletion, ownHostNames } from "./ownHostRemoval";
 import { locateRegistration } from "./reconcile";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
@@ -367,7 +368,16 @@ export interface RemoveSteps {
    * not mean wiring this capability.
    */
   workersRegistering: (capability: string) => Promise<string[]>;
+  /**
+   * Delete the target Worker's own host for the capability, and that host's Workflows, in every deployed
+   * environment (default: {@link deleteOwnHosts}). Resolves empty, reaching no account, when the Worker owns
+   * nothing the capability's host binds.
+   */
+  deleteOwnHosts: (capability: Capability) => Promise<DeletedOwnHost[]>;
 }
+
+/** The account half of {@link OwnHostDeletion}: resolved only when the Worker has a host of its own to delete. */
+export type OwnHostAccess = Pick<OwnHostDeletion, "account" | "workers" | "workflows" | "audit">;
 
 /** What {@link defaultRemoveSteps} needs: the two directories a removal spans, and the wired set. */
 export interface DefaultRemoveStepsOptions {
@@ -397,6 +407,18 @@ export interface DefaultRemoveStepsOptions {
    * typed `drop <cap> from <env>` phrase agrees to the drop; it does not agree to losing the vault.
    */
   destroyRetained?: number;
+  /**
+   * Where the target Worker's own hosts are deleted from. Absent, {@link RemoveSteps.deleteOwnHosts} deletes nothing:
+   * a caller with no account to reach, such as a test of the unwiring alone.
+   */
+  ownHosts?: {
+    /** The bindings the target Worker lists in `ownBindings`. They decide whether it has a host of its own. */
+    ownBindings: readonly string[];
+    /** Every deployed environment the project declares — where the Worker's own host may be deployed. */
+    environments: OwnHostDeletion["environments"];
+    /** The account the hosts are deleted from. Called only when there is one to delete. */
+    access: () => Promise<OwnHostAccess>;
+  };
 }
 
 /**
@@ -433,6 +455,20 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     packageInstalled: (pkg) => exists(join(projectDir, "node_modules", pkg)),
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
     workersRegistering: (capability) => workersRegistering(projectDir, workerDir, capability),
+    deleteOwnHosts: async (capability) => {
+      const hosts = options.ownHosts;
+      if (hosts === undefined) return [];
+      const worker = { dir: workerDir, ownBindings: hosts.ownBindings };
+      const owned = hosts.environments.some((env) => ownHostNames(options.project, env, capability, worker));
+      if (!owned) return [];
+      return deleteOwnHosts({
+        project: options.project,
+        capability,
+        worker,
+        environments: hosts.environments,
+        ...(await hosts.access()),
+      });
+    },
   };
 }
 
@@ -482,6 +518,8 @@ export interface RemoveResult {
   tablesRemain: boolean;
   /** True when a `--drop` confirmation was declined — nothing was changed. */
   aborted?: boolean;
+  /** The Worker's own hosts for the capability this run deleted, one per environment it was deployed in. */
+  deletedHosts?: DeletedOwnHost[];
 }
 
 /**
@@ -608,6 +646,10 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     });
   }
 
+  // Before the unwiring, so a run that fails here leaves the capability wired and a re-run finds the host by the
+  // same composition. Nothing but this Worker reaches its own host.
+  const deletedHosts = target ? await steps.deleteOwnHosts(target) : [];
+
   await removeFromConfig(workerDir, capability, pkg);
   const others = capabilities.filter((c) => c.name !== capability);
   const removedBindings = target ? await removeFromWrangler(workerDir, target, others) : [];
@@ -642,7 +684,15 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     severity: "info",
     resourceType: "capability",
     resourceId: capability,
-    metadata: { ejected, packageManager: packageManager ?? null, removedBindings, keptFor, keptLinked, keptHere },
+    metadata: {
+      ejected,
+      packageManager: packageManager ?? null,
+      removedBindings,
+      keptFor,
+      keptLinked,
+      keptHere,
+      deletedHosts: deletedHosts.map((host) => host.script),
+    },
   });
 
   return {
@@ -657,5 +707,6 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     keptLinked,
     keptHere,
     tablesRemain: tablesRemain(target, dropped),
+    deletedHosts,
   };
 }

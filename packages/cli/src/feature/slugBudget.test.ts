@@ -18,11 +18,11 @@ import { provisionFeature } from "./provision";
 import { featureNameShapes } from "./slugBudget";
 
 /**
- * **A branch whose slug cannot fit is refused, with the project's maximum (#643, the review of 4828e1fc).**
+ * **A branch whose slug cannot fit is refused, with the project's maximum.**
  *
- * Feature names were fitted with a hash when they ran long, and a hash is a slug a sibling can have: a long
- * project with long same-issue slugs composed one D1 name for two branches. Nothing is fitted now, so the slug
- * has to fit every name the feature composes, and the refusal comes before anything is created.
+ * A name fitted with a hash is a slug a sibling can have: a long project with long same-issue slugs would compose
+ * one D1 name for two branches. Nothing is fitted, so the slug has to fit every name the feature composes, and the
+ * refusal comes before anything is created.
  */
 
 const CAPABILITIES = [
@@ -74,13 +74,30 @@ describe("featureNameShapes", () => {
     expect(maxFeatureSlug(head, without)).toBeGreaterThan(20);
   });
 
+  test("reads an owner's own kit host and its Workflows, which carry the owner and are longer", async () => {
+    const head = { project: "replay", issue: "958" };
+    const mail = email({ fromAddress: "hello@replay.example", fromName: "Replay", baseUrl: "https://replay.example" });
+    const owner = { dir: join(dir, "apps", "marketing-frontend"), ownBindings: ["DB"], capabilities: [mail] };
+    const shapes = await featureNameShapes({
+      head,
+      capabilities: [mail],
+      workers: WORKERS,
+      hostOwners: [owner],
+      projectDir: dir,
+    });
+    const things = shapes.map((shape) => shape.thing);
+    expect(things).toContain("marketing-frontend---email");
+    expect(things).toContain("marketing-frontend---email-schedule");
+    // `replay-f958-` is 12; `--marketing-frontend---email-schedule` is 37; a Workflow stops at 64: 15.
+    expect(maxFeatureSlug(head, shapes)).toBe(15);
+  });
+
   /**
-   * **The app's own Workflows are names this feature composes too (#650).**
+   * **The app's own Workflows are names this feature composes too.**
    *
-   * They were left out because only a capability owning a kit host contributed a Workflow shape, and the app
-   * owns no host — its classes are in its own Worker. So a branch whose slug fitted every kit name and not the
-   * app's was accepted, and the refusal arrived from `composeFeatureName` at provision time, after the resources
-   * it had already created.
+   * The app owns no kit host — its classes are in its own Worker — and its Workflow names are account-wide all the
+   * same. A slug that fitted every kit name and not the app's would be refused by `composeFeatureName` at provision
+   * time, after the resources it had already created.
    */
   test("counts a Workflow the app's own capability declares", async () => {
     const head = { project: "replay", issue: "650" };
@@ -98,7 +115,7 @@ describe("featureNameShapes", () => {
     expect(maxFeatureSlug(head, shapes)).toBe(28);
   });
 
-  test("reads the feature's Artifacts namespace where a capability binds one, and moves no budget (#673)", async () => {
+  test("reads the feature's Artifacts namespace where a capability binds one, and moves no budget", async () => {
     const head = { project: "replay", issue: "673" };
     const binds = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
     const shapes = await featureNameShapes({ head, capabilities: [binds], workers: WORKERS, projectDir: dir });

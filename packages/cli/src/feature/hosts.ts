@@ -8,12 +8,19 @@ import { featureScope, type ProvisionScope, type ProvisionWorkerNames } from "@p
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { workflowHostName, workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
-import { type FeatureIndex, HOST_WORKERS, hostWorkerFor } from "../capabilities/hostRegistry";
+import {
+  type FeatureIndex,
+  type FeatureIndexOptions,
+  HOST_WORKERS,
+  hostOwnerFor,
+  hostWorkerFor,
+} from "../capabilities/hostRegistry";
+import { composable } from "../capabilities/hostWorkflows";
 import type { ResourceProvisioners } from "../provision/resources";
 import { provisionableBindings } from "./bindings";
 
 /**
- * **Every kit Worker a feature composes, stood up for the feature (#643).**
+ * **Every kit Worker a feature composes, stood up for the feature.**
  *
  * A feature is an environment, and an environment runs the kit Workers its capabilities own: email's sender,
  * media's enrichment, storage's sweep, payments' reconcile, the secrets manager, and whatever the registry
@@ -41,15 +48,24 @@ export function featureHostCapabilities(capabilities: readonly Capability[]): st
  * The script name each registry host deploys under for this feature — **every** registry host, composed or not.
  *
  * Teardown reads it this way because a branch that composed payments last week and not today still has a
- * payments host deployed, and an exact name reaches nothing but this feature's. The collision refusal reads it
+ * payments host deployed, and an exact name reaches nothing but this feature's. `owners` are the `apps/` Workers
+ * that own any binding: each may have a host of its own for every capability, named for it, and one whose name is too
+ * long to compose is skipped, since no feature could have deployed it. The collision refusal reads it
  * this way because an app Worker that takes a host's name today takes it from whichever capability is added next.
  */
-export function featureHostScripts(identity: FeatureIdentity): { capability: string; script: string }[] {
+export function featureHostScripts(
+  identity: FeatureIdentity,
+  owners: readonly string[] = [],
+): { capability: string; owner?: string; script: string }[] {
   const scope = featureScope(identity);
-  return HOST_WORKERS.map((spec) => ({
-    capability: spec.capability,
-    script: workflowHostName({ ...scope.workflowHost, capability: spec.capability }),
-  }));
+  return HOST_WORKERS.flatMap((spec) => [
+    { capability: spec.capability, script: workflowHostName({ ...scope.workflowHost, capability: spec.capability }) },
+    ...owners.flatMap((owner) =>
+      composable(() => workflowHostName({ ...scope.workflowHost, capability: spec.capability, owner })).map(
+        (script) => ({ capability: spec.capability, owner, script }),
+      ),
+    ),
+  ]);
 }
 
 /**
@@ -92,11 +108,14 @@ export interface HostedWorkflowEntry {
 export interface OwnedHostedWorkflowEntry extends HostedWorkflowEntry {
   /** The capability that owns the host this entry binds into. */
   capability: string;
+  /** The `apps/<owner>` Worker whose own host this entry binds into, when it is one. */
+  owner?: string;
 }
 
 /**
  * The `workflows` entries one Worker needs into the kit hosts of this scope: every `workflow` binding its
- * composed capabilities **declare**, for each capability that owns a host, named for the scope.
+ * composed capabilities **declare**, for each capability that owns a host, named for the scope — and into the
+ * Worker's own host for a capability whose host binds something it owns ({@link hostOwnerFor}).
  *
  * Declared, not every job a capability owns: email's scheduler is self-fired by its host's cron, and an app
  * Worker that bound it would bind a Workflow it must never start. The names come from the scope's
@@ -106,10 +125,14 @@ export interface OwnedHostedWorkflowEntry extends HostedWorkflowEntry {
 export function hostedWorkflowEntries(
   capabilities: readonly Capability[],
   scope: ProvisionScope,
+  worker: { dir: string; ownBindings?: readonly string[] },
 ): OwnedHostedWorkflowEntry[] {
   const entries: OwnedHostedWorkflowEntry[] = [];
   for (const capability of capabilities) {
-    if (hostWorkerFor(capability.name) === undefined) continue;
+    const spec = hostWorkerFor(capability.name);
+    if (spec === undefined) continue;
+    const owner = hostOwnerFor(spec, capability, worker)?.worker;
+    const host = { ...scope.workflowHost, capability: capability.name, ...(owner ? { owner } : {}) };
     const declared = new Set(
       capability.requiredBindings.filter((binding) => binding.type === "workflow").map((binding) => binding.name),
     );
@@ -118,10 +141,11 @@ export function hostedWorkflowEntries(
       if (!declared.has(entry.spec.binding) || className === undefined) continue;
       entries.push({
         capability: capability.name,
+        ...(owner ? { owner } : {}),
         binding: entry.spec.binding,
-        name: workflowScriptName({ ...scope.workflowHost, capability: capability.name, job: entry.job }),
+        name: workflowScriptName({ ...host, job: entry.job }),
         class_name: className,
-        script_name: workflowHostName({ ...scope.workflowHost, capability: capability.name }),
+        script_name: workflowHostName(host),
       });
     }
   }
@@ -141,22 +165,31 @@ export interface FeatureOwnedIds {
 }
 
 /**
- * **The feature's own D1 databases and KV namespaces, asked of the account (#643)** — each binding the composed
- * capabilities declare, named for the feature and looked up by that name. The account, never a file: a manifest
- * is repository content, and an id read out of one is an id anyone could have written there.
+ * **The feature's own D1 databases and KV namespaces, asked of the account** — each binding the composed
+ * capabilities declare, named for the feature and looked up by that name, and for each Worker that owns the binding
+ * by the name the feature created for that Worker. The account, never a file: a manifest is repository content, and
+ * an id read out of one is an id anyone could have written there.
  */
 export async function featureOwnedIds(
   provisioners: Pick<ResourceProvisioners, "d1" | "kv">,
   identity: FeatureIdentity,
   capabilities: readonly Capability[],
+  owners: readonly { worker: string; ownBindings: readonly string[] }[] = [],
 ): Promise<FeatureOwnedIds> {
   const d1 = new Map<string, string>();
   const kv = new Map<string, string>();
   for (const { binding, kind } of provisionableBindings(capabilities)) {
     if (kind !== "d1" && kind !== "kv") continue;
-    const name = featureResourceName(identity, binding, kind);
-    const found = await provisioners[kind].find(name);
-    if (found) (kind === "d1" ? d1 : kv).set(found.id, name);
+    const names = [
+      featureResourceName(identity, binding, kind),
+      ...owners
+        .filter((owner) => owner.ownBindings.includes(binding))
+        .map((owner) => featureResourceName(identity, binding, kind, owner.worker)),
+    ];
+    for (const name of names) {
+      const found = await provisioners[kind].find(name);
+      if (found) (kind === "d1" ? d1 : kv).set(found.id, name);
+    }
   }
   return { d1, kv };
 }
@@ -190,7 +223,7 @@ const NOT_A_RESOURCE = new Set([
 
 /**
  * **Every binding in a resolved host config that is not this feature's** — empty when the resolver named
- * everything for the feature (#643).
+ * everything for the feature.
  *
  * Every key the config carries is walked, and a key this cannot classify is itself a leak, so a binding kind
  * added tomorrow is refused until it is classified. Each binding is followed to the thing it reaches and that
@@ -280,18 +313,44 @@ export function featureHostNameLeaks(
 
 /**
  * **Every index the composed hosts bind that the feature creates for itself** — each host's own
- * `featureIndexes`, named for the feature (#643). Asked of the registry rather than of any one capability, so a
- * host that binds a new kind of index joins with its own entry.
+ * `featureIndexes`, named for the feature. Asked of the registry rather than of any one capability, so a
+ * host that binds a new kind of index joins with its own entry. For `worker`, the indexes its hosts bind: its own
+ * host's, named for it, for a capability whose host binds something it owns.
  */
 export async function featureIndexesFor(
   capabilities: readonly Capability[],
   projectDir: string,
   identity: FeatureIdentity,
+  worker?: { dir: string; ownBindings?: readonly string[] },
+  options?: FeatureIndexOptions,
 ): Promise<FeatureIndex[]> {
   const indexes: FeatureIndex[] = [];
   for (const capability of capabilities) {
     const spec = hostWorkerFor(capability.name);
-    if (spec?.featureIndexes) indexes.push(...(await spec.featureIndexes(capability, projectDir, identity)));
+    if (!spec?.featureIndexes) continue;
+    const owner = worker ? hostOwnerFor(spec, capability, worker, { refuseSplit: false })?.worker : undefined;
+    indexes.push(...(await spec.featureIndexes(capability, projectDir, identity, owner, options)));
+  }
+  return indexes;
+}
+
+/**
+ * The shared hosts' indexes and every owning Worker's own, once each: what a feature creates before its hosts deploy,
+ * and what its teardown deletes. Each owner's are asked of its own capabilities.
+ */
+export async function everyFeatureIndex(
+  capabilities: readonly Capability[],
+  projectDir: string,
+  identity: FeatureIdentity,
+  workers: readonly { dir: string; ownBindings?: readonly string[]; capabilities: readonly Capability[] }[],
+  options?: FeatureIndexOptions,
+): Promise<FeatureIndex[]> {
+  const indexes = await featureIndexesFor(capabilities, projectDir, identity, undefined, options);
+  for (const worker of workers) {
+    if ((worker.ownBindings ?? []).length === 0) continue;
+    for (const index of await featureIndexesFor(worker.capabilities, projectDir, identity, worker, options)) {
+      if (!indexes.some((one) => one.name === index.name)) indexes.push(index);
+    }
   }
   return indexes;
 }

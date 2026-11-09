@@ -55,6 +55,7 @@ import {
   devCloudflareEnv as defaultDevCloudflareEnv,
   deliveryFailureNote,
   deliveryPreflight,
+  deliveryVerdictLines,
 } from "./delivery";
 import {
   type DevIdentity,
@@ -81,7 +82,9 @@ import {
   type HostMaterialization,
   type HostWorker,
   type HostWorkerDiscovery,
-  hostDeliveryIdentity,
+  hostDeliveryIdentities,
+  hostOriginEnv,
+  hostsReachedBy,
   type MaterializeHostConfigsOptions,
   materializeHostConfigs as materializeHostConfigsDefault,
 } from "./hostWorkers";
@@ -122,7 +125,7 @@ export type SpawnDev = (
  */
 const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> => {
   try {
-    // Composed for `dev`, the environment this session serves (#595).
+    // Composed for `dev`, the environment this session serves.
     const capabilities = await composeFor(LOCAL_ENVIRONMENT, async (load) => allCapabilities(await load(workerDir)));
     return await findEntitlementGap(workerDir, capabilities);
   } catch {
@@ -137,11 +140,9 @@ export interface StartDevOptions {
    * `null` for a project that names none.
    *
    * **Required, and stated by the caller rather than defaulted**, for the reason `DeployProjectOptions`
-   * gives: there is no safe default. `pithy dev` copied `process.env` into every worker and added only
-   * the port table, so a `wrangler dev` with a remote send binding authenticated as whatever token the
-   * operator's shell last exported — and a magic link left through a tenant that does not own the
-   * sending domain, five times, silently (#555). This is the value that stops it, and it is the only
-   * field on this interface that is not a seam.
+   * gives: there is no safe default. Without it a `wrangler dev` with a remote send binding would authenticate
+   * as whatever token the operator's shell last exported, and send through a tenant that does not own the
+   * sending domain, silently. It is the only field on this interface that is not a seam.
    */
   account: CloudflareAccountSelection | null;
   json?: boolean;
@@ -172,8 +173,8 @@ export interface StartDevOptions {
   /**
    * Seam: the credentialed child environment, and the identity the preflight reads off it.
    *
-   * One seam, because they must be one value — the banner and the spawn consulting two resolutions is
-   * exactly how a confident `sending for real` came to precede five silent failures (#555).
+   * One seam, because they must be one value — a banner and a spawn consulting two resolutions could print a
+   * confident `sending for real` over sends that fail.
    */
   devCloudflareEnv?: (account: CloudflareAccountSelection | null, base: NodeJS.ProcessEnv) => DevCloudflareEnv;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
@@ -217,7 +218,7 @@ export interface StartDevOptions {
    *
    * `origin` is the worker whose output this is, and it is absent for the session's own prose. The plain
    * renderer ignores it; the live roster filters on it, so a focused worker is decided on a value rather
-   * than on a parse of the `[name]` prefix the line already carries in color (#670).
+   * than on a parse of the `[name]` prefix the line already carries in color.
    */
   stdout?: (text: string, origin?: string) => void;
   /** Seam: where the prose goes when stdout is reserved for JSON (`--json`). */
@@ -228,7 +229,7 @@ export interface StartDevOptions {
    * **Additive, never a replacement.** Every line this supervisor writes is written whether a sink is
    * installed or not — the stream is the contract `--json` and a pipe read, and
    * `orchestrator.test.ts` holds a run with a sink to writing byte-identical output to a run without one.
-   * The sink exists so a live roster can render the state those lines describe (#670); under `--json`
+   * The sink exists so a live roster can render the state those lines describe; under `--json`
    * there is none.
    */
   events?: DevEvents;
@@ -367,10 +368,9 @@ const SHUTDOWN_GRACE_MS = 5000;
 /**
  * How long a teardown waits after SIGKILL, and for the streams to end, before it stops waiting.
  *
- * **A teardown must end.** Both of these were awaited without a bound, and either one hanging meant the
- * session could not be stopped at all: `resolveClosed()` never ran, so the command never reached its
- * exit, and with the live roster holding raw mode a second Ctrl-C went to a handler that had already
- * begun shutting down. What an operator saw was `sending SIGKILL.` and then a dead prompt.
+ * **A teardown must end.** Awaited without a bound, either one hanging would leave the session unstoppable:
+ * `resolveClosed()` would never run, so the command would never reach its exit, and with the live roster holding
+ * raw mode a second Ctrl-C would go to a handler that had already begun shutting down.
  *
  * Short, because by this point every child has had a full grace window *and* a SIGKILL: anything still
  * here is not going to leave, and the honest thing is to name it and go rather than wait on it forever.
@@ -410,7 +410,7 @@ export interface EnsureDevConfigOptions extends EnsureDevConfigDeps {
   existing?: DevConfig | null;
 }
 
-/** The registry is machine-wide and always resolvable — no repository is involved in finding it (#435). */
+/** The registry is machine-wide and always resolvable — no repository is involved in finding it. */
 async function defaultRegistryPath(_projectDir: string): Promise<string> {
   return portsRegistryPath();
 }
@@ -418,9 +418,8 @@ async function defaultRegistryPath(_projectDir: string): Promise<string> {
 /**
  * The current branch, or `null` when there is no repo or HEAD is detached.
  *
- * One `rev-parse`, in `feature/worktree.ts` beside every other git lookup this package makes. This was
- * the second of three copies; `project/workerCommand.ts` held the third, and #548 would have added a
- * fourth. Identical semantics — `defaultGit` trims, and an empty or detached answer is `null`.
+ * One `rev-parse`, in `feature/worktree.ts` beside every other git lookup this package makes, so there is one
+ * copy of it. `defaultGit` trims, and an empty or detached answer is `null`.
  */
 async function defaultBranch(projectDir: string): Promise<string | null> {
   return currentBranch(defaultGit, projectDir);
@@ -437,8 +436,8 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
  * repository in detached HEAD are two keys, which is the answer a developer would expect and the one
  * the ports already give.
  *
- * `null` is a checkout with no repository, no registry, or no readable config directory. That is the
- * state every project was in before any of this existed, and it is never a reason to refuse a dev run.
+ * `null` is a checkout with no repository, no registry, or no readable config directory. That is never a reason
+ * to refuse a dev run.
  */
 async function resolveRegistryKeys(options: {
   projectDir: string;
@@ -460,7 +459,7 @@ export interface AutostartResolution {
   /** Worker name → whether a plain `pithy dev` starts it. Empty when this branch has said nothing. */
   overrides: Record<string, boolean>;
   /**
-   * Checkout roots that are gone from disk and still hold autostart answers (#685).
+   * Checkout roots that are gone from disk and still hold autostart answers.
    *
    * Reported, never acted on. The dead root's branch key may itself be a path — `local:/old/app`, which
    * `ensureDevConfig` writes off a branch — so nothing here can match it to the current branch and
@@ -532,20 +531,18 @@ async function reregisterPinnedBlock(options: EnsureDevConfigOptions, branch: st
  * takes a free port without moving a sibling's address. An existing config keeps its own block and branch —
  * the registry is never re-keyed underneath a live feature.
  *
- * **A pinned config still re-registers its claim, and that is not a contradiction of the line above**
- * (#435). The registry is machine-wide now, so it can lose this project's entry to something this project
+ * **A pinned config still re-registers its claim, and that is not a contradiction of the line above.**
+ * The registry is machine-wide, so it can lose this project's entry to something this project
  * never did: a wiped config directory, a new machine, a moved checkout pruned as gone by another project's
- * allocation. Every one of those ends with a live feature's ports on offer to whoever allocates next.
- * Before, the whole reclaim lived on the path that runs when there is *no* config — which is the path a
- * settled project never takes, so `pithy dev`, the command anybody actually runs, repaired nothing. The
+ * allocation. Every one of those ends with a live feature's ports on offer to whoever allocates next, and a
+ * settled project never takes the no-config path, so `pithy dev` is where the claim is repaired. The
  * repair is {@link reclaimPortBlocks}, which fills gaps and never overwrites, so re-registering a block
  * this config already pins cannot move anyone: the promise above is about *re-keying*, and nothing here
  * re-keys.
  *
  * Best-effort, deliberately. This session's ports are already pinned and are verified on both stacks
  * before anything binds, so a registry that cannot be written is not a reason to refuse to start — an
- * unwritable `$PITHY_CONFIG_DIR` used to leave `pithy dev` working off the pinned config alone, and it
- * still does.
+ * unwritable `$PITHY_CONFIG_DIR` leaves `pithy dev` working off the pinned config alone.
  */
 export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<DevConfig> {
   const existing = options.existing ?? null;
@@ -566,8 +563,8 @@ export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<
     // Rebuild any registry entry lost since the worktrees were created, so a fresh registry can never hand
     // out a block a live feature still holds. Scanned from the repository root, never from the registry's
     // own directory: the file sits in the config directory now, which has no `.worktrees` and never will,
-    // so `dirname(registryPath)` would make this a silent no-op in every direction (#435). Filtered by
-    // prune's own predicate (#637), so this never puts back a block prune frees, nor leaves out one it keeps.
+    // so `dirname(registryPath)` would make this a silent no-op in every direction. Filtered by
+    // prune's own predicate, so this never puts back a block prune frees, nor leaves out one it keeps.
     const reservations = await heldReservations(options.projectDir, await scanPinnedBlocks(root));
     await reclaimPortBlocks({ registryPath, root, reservations });
     block = await allocatePortBlock({ registryPath, root, branch });
@@ -586,6 +583,30 @@ function readyRegexFor(worker: WorkerTarget): RegExp {
   } catch {
     return new RegExp(defaultWorkerDev().readySignal);
   }
+}
+
+/**
+ * A materializer that writes each host by its own delivery verdict: the hosts that simulate in one call and the hosts
+ * that send for real in another, since one call carries one `simulateDelivery`. An explicit `simulateDelivery`, which
+ * the runtime fallback passes, holds for every host it is handed.
+ */
+function byDeliveryVerdict(
+  materialize: (options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>,
+  live: (host: HostWorker) => boolean,
+): (options: MaterializeHostConfigsOptions) => Promise<HostMaterialization> {
+  return async (options) => {
+    if (options.simulateDelivery !== undefined) return materialize(options);
+    const notes: string[] = [];
+    const failed: string[] = [];
+    for (const simulate of [true, false]) {
+      const hosts = options.hosts.filter((host) => live(host) !== simulate);
+      if (hosts.length === 0) continue;
+      const written = await materialize({ ...options, hosts, simulateDelivery: simulate });
+      notes.push(...written.notes);
+      failed.push(...written.failed);
+    }
+    return { notes, failed };
+  };
 }
 
 /**
@@ -632,9 +653,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * **Under `--json`, stdout is reserved for JSON and the prose goes to stderr.** Everything a person is
    * told here — the `Starting …` line, the delivery verdict, a `.dev.vars` refusal, and above all the
    * workers' own teed output, which is the bulk of the stream and every line wrangler and Vite print —
-   * used to land on the same descriptor as the machine-readable line. So `pithy dev --json | jq` choked
-   * on the first thing wrangler said, and the only rule a consumer could apply was to try each line and
-   * skip what did not parse — which quietly skips a JSON line we get wrong, too. CLAUDE.md asks every
+   * would otherwise land on the same descriptor as the machine-readable line, and `pithy dev --json | jq`
+   * would choke on the first thing wrangler said. CLAUDE.md asks every
    * command to be agent-drivable; a stream is only that if a script knows which lines are for it.
    * Splitting by descriptor is the shell's own answer, costs a person nothing (both still reach the
    * terminal, and each worker's session log has its own output in either mode), and gives the rule a consumer can
@@ -668,10 +688,10 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     }
   };
 
-  // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose
-  //    (pithy-sh/pithy#410). Through `resolveDevSet`, which is the one place membership is decided, so
+  // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose, and a
+  //    Worker's own host where it owns what that host binds. Through `resolveDevSet`, which is the one place membership is decided, so
   //    `pithy dev --list` describes the run this function makes rather than a second guess at it.
-  //    This branch's own answer about what starts (#549) is resolved here, from the same three values the
+  //    This branch's own answer about what starts is resolved here, from the same three values the
   //    port block is keyed on. Best effort by construction: `readWorkerAutostart` never throws, so a
   //    registry that will not parse leaves every Worker starting — which is what it meant before.
   const { overrides, stale } = await resolveAutostart(options);
@@ -683,7 +703,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     ...(options.discoverHostWorkers ? { discoverHostWorkers: options.discoverHostWorkers } : {}),
   });
   for (const line of set.notes) emitLine(line);
-  //    And the answers this run could *not* reach (#685). Said here, above every write, because the
+  //    And the answers this run could *not* reach. Said here, above every write, because the
   //    question it answers is the one a developer asks the moment the session starts — *why is the
   //    worker I parked running*. Through `emitLine`, so the prose lands on stderr under `--json` and the
   //    machine gets its own object instead: one event, not one per root, since a consumer reading a
@@ -711,15 +731,12 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     });
   }
 
-  // 2. Generate every worker's `.dev.vars`, before anything reads one (#154).
+  // 2. Generate every worker's `.dev.vars`, before anything reads one.
   //
-  //    wrangler loads the file beside the worker it runs, so each one needs its own. That was a symlink at
-  //    a shared root file, and the symlink is the thing that never survived a clone: `pithy init` made it
-  //    once for whoever created the project, and every developer after them cloned, wrote the `.dev.vars`
-  //    the example told them to, and got nothing — every secret reported absent while the file sat at the
-  //    root, unread. A `postinstall` could not fix it either, because the usual order is clone, install,
-  //    *then* write `.dev.vars`. Generation removes the question: `pithy dev` is the command that runs
-  //    every time, and it builds each file from the machine-local sources whether or not one is there.
+  //    wrangler loads the file beside the worker it runs, so each one needs its own. A symlink at a shared
+  //    root file does not survive a clone, and a `postinstall` runs before anyone writes `.dev.vars`.
+  //    `pithy dev` is the command that runs every time, so it builds each file from the machine-local
+  //    sources whether or not one is there.
   //
   //    Idempotent by content, so a second `pithy dev` writes no bytes and wrangler's watcher sees nothing.
   //    A `.dev.vars` pithy did not generate is never overwritten and never merged — it is named, with the
@@ -743,12 +760,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       discovered.map((worker) => worker.dir),
     );
     for (const line of renderDevVarsNotes(devVars)) emitLine(line);
-    // A Worker whose `pithy.config.ts` would not import (#199). Emitted here rather than folded into
+    // A Worker whose `pithy.config.ts` would not import. Emitted here rather than folded into
     // `renderDevVarsNotes`, because this is not a delivery outcome: the file was written, and written
-    // empty on purpose. It is the one thing a `pithy dev` in this state has to say, and until now it
-    // said nothing — the session started, the Worker came up with no bindings, and the only line about
-    // it was `Starting <worker>.` Every run, not once: the state persists until the config is fixed,
-    // and the run after the one they missed is the one that has to reach them.
+    // empty on purpose. It is the one thing a `pithy dev` in this state has to say, or the Worker comes up
+    // with no bindings and nothing says why. Every run, not once: the state persists until the config is
+    // fixed, and the run after the one they missed is the one that has to reach them.
     for (const line of devVars.unresolvable) emitLine(line);
   } catch (error) {
     emitLine(`.dev.vars not generated. ${messageOf(error)}`);
@@ -816,24 +832,24 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //     inbox. The preflight is not the guarantee: `deliveryFailureNote` watches the host's own
   //     output for the failures it cannot see from here.
   //
-  //     **`hostPorts` covers every host, not the selected ones.** `--app board` gives you board with
+  //     **`hostPorts` covers every host, not the selected ones** — each worker is handed the ones it reaches
+  //     (`hostsReachedBy`): the shared hosts, or a Worker's own in their place. `--app board` gives you board with
   //     `EMAIL_ORIGIN` pointing at something that is not running, and that is the answer that was asked
   //     for: a developer narrowing the dev set knows what they are narrowing, and an address nothing
   //     answers on is a clearer failure than a binding that is silently absent.
   //
   //     **Not the same case as the dropped host below**, which deletes its entry for the opposite
   //     reason. A host whose config would not resolve will not run in this project until somebody
-  //     fixes it, so falling back to the Workflow binding is the recovery — that is #410's failure,
-  //     where an enqueued message sat `pending` and nothing said so. A host that `--app` left out is
+  //     fixes it, so falling back to the Workflow binding is the recovery; an address nothing answers on would
+  //     leave an enqueued message `pending` with nothing saying so. A host that `--app` left out is
   //     one the developer excluded on purpose, this run, and a connection error naming the port is
-  //     the honest answer to that; dispatching to the binding instead would put the run back in the
-  //     state where mail disappears.
+  //     the honest answer to that; dispatching to the binding instead would let mail disappear.
   const hostPorts: Record<string, number> = {};
   for (const host of hosts) {
     const pinned = config.workers[host.worker.name];
     if (pinned) hostPorts[host.worker.name] = pinned.port;
   }
-  // **Each app Worker's service bindings, at their targets' pinned addresses (#617).** Every target's, started
+  // **Each app Worker's service bindings, at their targets' pinned addresses.** Every target's, started
   // or not, for the reason `hostPorts` covers every host: `--app app-a` with `app-b` running in another session
   // reaches it on the port its feature pinned, and one nobody is running fails at once naming the binding.
   // Resolved against `hostPorts` at each spawn, so a host dropped below takes its address with it.
@@ -852,7 +868,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   }
   // The delivery verdict, said **once** — in the ready banner, which is where a developer looks, and
   // pre-spawn only under `--json`, where there is no banner and the reader is a script. Saying it in
-  // both places was two copies of one sentence in every interactive session.
+  // both places would be two copies of one sentence in every interactive session.
   let deliveryLines: readonly string[] = [];
   // The hosts that actually have a config on disk, the seam that wrote it, and the address it wrote
   // them against — all three needed after the block below: only these are started, and a delivery
@@ -860,18 +876,24 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   let liveHosts: HostWorker[] = selectedHosts;
   let materializeHosts: ((options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>) | undefined;
   let hostBaseUrl = "http://localhost";
-  /** Whether delivery was resolved to the simulator, so a host materialized later is written the same way. */
-  let hostsSimulateDelivery = false;
+  // A Worker's own host builds its links against that Worker's pinned address, whether or not this run starts it.
+  const appOriginByDir = new Map(
+    set.members
+      .filter((member) => member.kind === "app")
+      .map((member) => [member.worker.dir, config.workers[member.worker.name]?.origin] as const),
+  );
+  const hostBaseUrlFor = (host: HostWorker): string | undefined =>
+    host.owner ? appOriginByDir.get(host.sourceDir) : undefined;
+  /** The hosts whose preflight sends for real, by dev-set name, so a host materialized later is written the same way. */
+  let liveDelivery: ReadonlySet<string> = new Set();
   /** Every composed host, so `restart` can write the config of one this run never started. */
   let allHosts: readonly HostWorker[] = [];
-  let deliveryIsLive = false;
   // **Resolved here, before the preflight and before anything spawns, and exactly once.**
   // Two properties depend on the position. The preflight below decides whether this session sends real
-  // mail, and it must decide from the credentials the children will *receive* — deciding from a second
-  // resolution is how `Email: sending for real from noreply@pithy.sh.` came to be printed over workers
-  // authenticating as a different tenant (#555). And a pinned `cloudflare.accountId` the credentials
-  // contradict throws out of this call, which is #206's refusal finally reaching `pithy dev`: before, it
-  // resolved no account at all, so there was nothing to compare and nothing to refuse.
+  // mail, and it must decide from the credentials the children will *receive* — a second resolution could
+  // print `Email: sending for real` over workers authenticating as a different tenant. And a pinned
+  // `cloudflare.accountId` the credentials contradict throws out of this call, so `pithy dev` refuses an
+  // account mismatch like every other command.
   const cloudflare = (options.devCloudflareEnv ?? defaultDevCloudflareEnv)(
     options.account,
     options.baseEnv ?? process.env,
@@ -879,29 +901,26 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   /*
     **Nothing is printed about which account this is. Using the project's is the expectation.**
 
-    A line used to say so whenever the shell had exported `CLOUDFLARE_*` — on the grounds that `wrangler
-    whoami` answers for the shell and nothing said the Workers use the project's. True, and the wrong
-    place to say it: a developer whose shell holds a token for other work sees that line on every single
-    run, forever, reporting that the normal thing happened. A banner that states the expectation is a
-    banner people stop reading, which costs more than it buys on the lines that matter.
+    A developer whose shell holds a token for other work would see such a line on every single run, reporting
+    that the normal thing happened. A banner that states the expectation is a banner people stop reading,
+    which costs more than it buys on the lines that matter.
 
-    **The refusal above is the part that had to stay**, and it is a throw rather than a line: a pinned
+    **The refusal above is what speaks instead**, and it is a throw rather than a line: a pinned
     `cloudflare.accountId` the credentials contradict stops the run before a Worker spawns. That is the
     case where the account is genuinely in question. `pithy doctor` reports the resolved account for
     anyone who wants to look, which is the place to answer a question rather than to volunteer one.
   */
 
   // **`hosts`, not `selectedHosts`.** The materializer and the host list below are what `restart` needs
-  // to write a parked host's config when `r` starts it, and gating them on what *this* run selected left
-  // both unset for a project whose only host is parked, so `r` spawned `wrangler dev` in a directory that
-  // was never created. The eager materialize inside still covers only the hosts this run starts.
+  // to write a parked host's config when `r` starts it, so gating them on what *this* run selected would
+  // leave `r` spawning `wrangler dev` in a directory never created. The eager materialize inside still covers
+  // only the hosts this run starts.
   if (project !== null && hosts.length > 0) {
     // The app's address: the first started Worker that is not a host. Callback links point at the
     // app, never at the host — the host holds no public route of its own.
     //
-    // Under `--app <host>` no app Worker is running at all, and the fallback used to be `started[0]`,
-    // which in that run *is* the host — so every link in a locally sent message pointed at a Worker
-    // holding no public route. An app Worker's pinned address is the right answer whether or not this
+    // Under `--app <host>` no app Worker is running at all, and every started member is a host, which holds
+    // no public route. An app Worker's pinned address is the right answer whether or not this
     // run starts it: the port is pinned for the life of the feature, so it is where the app answers
     // the moment anyone starts it.
     //
@@ -912,32 +931,39 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // all opted out: there is no autostart app to agree with, and an opted-out Worker's pinned address is
     // still where the app answers when somebody starts it.
     //
-    // And nothing after them. The old last resort was `started[0]`, which cannot help here: this branch
-    // reaches its fallbacks only when `app` found no started non-host, so every started member is a host
-    // and `started[0]` *is* one — a Worker holding no public route, which is the failure being fixed.
+    // And nothing after them: this branch reaches its fallbacks only when `app` found no started non-host, so
+    // every started member is a host.
+    //
+    // A Worker's own host links to its owner's pinned address instead (`hostBaseUrlFor`).
     const app = started.find((s) => !hostNames.has(s.worker.name));
     const pinnedOrigin = (member: DevSetMember | undefined): string | undefined =>
       member && config.workers[member.worker.name]?.origin;
     const isPinnedApp = (member: DevSetMember): boolean =>
       member.kind === "app" && config.workers[member.worker.name] !== undefined;
-    const identity = await hostDeliveryIdentity(options.projectDir, selectedHosts);
-    const preflight = deliveryPreflight({
-      composed: identity !== undefined,
-      requested: identity?.requested ?? "remote",
-      fromAddress: identity?.fromAddress,
-      cloudflare: cloudflare.identity,
-    });
-    deliveryLines = preflight.lines;
-    deliveryIsLive = preflight.live;
-    if (options.json) for (const line of preflight.lines) emitLine(line);
+    // Every host's verdict from its own composition, said for the hosts this run starts: a parked host started
+    // later with `r` is written by the verdict it got here.
+    const verdicts = (await hostDeliveryIdentities(options.projectDir, hosts)).map(({ host, identity }) => ({
+      name: host.worker.name,
+      preflight: deliveryPreflight({
+        composed: true,
+        requested: identity.requested,
+        fromAddress: identity.fromAddress,
+        cloudflare: cloudflare.identity,
+      }),
+    }));
+    const selectedNames = new Set(selectedHosts.map((host) => host.worker.name));
+    deliveryLines = deliveryVerdictLines(verdicts.filter((verdict) => selectedNames.has(verdict.name)));
+    liveDelivery = new Set(verdicts.filter((verdict) => verdict.preflight.live).map((verdict) => verdict.name));
+    if (options.json) for (const line of deliveryLines) emitLine(line);
     hostBaseUrl =
       app?.origin ??
       pinnedOrigin(set.members.find((member) => isPinnedApp(member) && member.autostart)) ??
       pinnedOrigin(set.members.find(isPinnedApp)) ??
       "http://localhost";
-    const materialize = options.materializeHostConfigs ?? materializeHostConfigsDefault;
+    const materialize = byDeliveryVerdict(options.materializeHostConfigs ?? materializeHostConfigsDefault, (host) =>
+      liveDelivery.has(host.worker.name),
+    );
     materializeHosts = materialize;
-    hostsSimulateDelivery = !preflight.live;
     allHosts = hosts;
     // **Only the hosts this run starts are written now.** Materializing one the run will not touch is a
     // disk write for nothing, and `naming what starts` holds that line: `--app <an app worker>` writes
@@ -948,8 +974,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
         projectDir,
         project,
         baseUrl: hostBaseUrl,
+        baseUrlFor: hostBaseUrlFor,
         hosts: selectedHosts,
-        simulateDelivery: !preflight.live,
       });
       for (const line of materialized.notes) emitLine(line);
       // A host with no config on disk leaves the set here, and that is the whole point of the second
@@ -1010,9 +1036,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   // 7. Open the session logs, wire the shared env, and spawn.
   //
-  //    **One JSONL file per worker, under `<config>/<project>/logs/`, not in the checkout** (#671).
-  //    `pithy feature destroy` used to delete the worktree and take the session log with it — precisely
-  //    the session you then want to read back — and there is nothing to gitignore out there either.
+  //    **One JSONL file per worker, under `<config>/<project>/logs/`, not in the checkout.**
+  //    `pithy feature destroy` deletes the worktree, and the session log has to outlive it — it is the
+  //    session you then want to read back — and there is nothing to gitignore out there either.
   //    `devLogPath.ts` holds the whole argument, and `pithy dev logs` is what reads these back.
   //
   //    **The branch comes from the same seam the port block is keyed on**, never from
@@ -1048,7 +1074,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     logs.writer(worker).record({ ts: now().toISOString(), ...payload } as DevLogRecord);
   };
   // The credentialed environment from above, not `process.env` again: this is what every child inherits,
-  // so the account the session reported is the account the children actually use (#555).
+  // so the account the session reported is the account the children actually use.
   const baseEnv = cloudflare.env;
   // The keypress follows the route. Under CI the auth capability registers none, so `l` would open a
   // 404 — the read is the same one the capability makes, from the same module, and it is the only
@@ -1064,12 +1090,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * Which running workers carry `GET /__pithy/dev-login`, resolved **when something needs them** and
    * remembered after.
    *
-   * The optimization is the same one it always was — a project with no dev login never loads a Worker
-   * config to answer a question nobody asked — but it used to be spent at startup against the record as
-   * it stood *then*, and that quietly made the whole feature unavailable for the life of a session that
-   * started unseeded. `pithy seed` in another terminal updated the record, `l` re-read it, found an
-   * identity, and still had nowhere to open it: the targets had been resolved once, to `[]`, because at
-   * that moment there was nothing to open. So the laziness moved to where it belongs.
+   * A project with no dev login never loads a Worker config to answer a question nobody asked. Resolving at
+   * startup instead would fix the targets at `[]` for a session that started unseeded, so a `pithy seed` in
+   * another terminal would give `l` an identity and nowhere to open it.
    *
    * Memoized rather than re-resolved per keypress: `started` is fixed for the session and a restart keeps
    * a worker's pinned port, so no worker's origin can change under it.
@@ -1079,9 +1102,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // Under CI the route is not registered in any composition, so there is nothing to resolve and
     // nothing to remember.
     if (ci) return [];
-    // **Over the whole dev set, not the startup subset.** `started` is what this run spawned, so a
-    // worker that `r` started from a parked row was refused by name by the very key the roster had just
-    // lit up. The same class of bug `originOf` was changed to fix; this one was missed.
+    // **Over the whole dev set, not the startup subset.** `started` is what this run spawned, so a worker
+    // that `r` started from a parked row would be refused by name by the very key the roster had just lit up.
     resolvedLoginTargets ??= await resolveDevLoginTargets(
       roster
         .filter((entry) => !hostNames.has(entry.worker.name))
@@ -1089,12 +1111,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     );
     return resolvedLoginTargets;
   };
-  // **Primed when the record already holds an identity**, which is exactly what the eager version did —
-  // so the banner stays synchronous and a seeded session behaves as it always has. The lazy path above is
-  // for the case this used to get wrong: a seed that arrives after the session is up.
+  // **Primed when the record already holds an identity**, so the banner stays synchronous. The lazy path above
+  // is for a seed that arrives after the session is up.
   if (hasDevIdentity) await loginTargets();
   const childEnv = buildWorkerEnv(config, baseEnv);
-  // **A session outlives nothing here unless it is kept fresh** (#759). Dispatch renewed it before this
+  // **A session outlives nothing here unless it is kept fresh.** Dispatch renewed it before this
   // command began, and this session runs all afternoon, so a keeper renews it ahead of each hour — the
   // locked renewal every command shares. Every spawn, a restart included, then takes the token as it is
   // *now*: a worker started at four o'clock does not inherit the token from one o'clock. A worker that
@@ -1102,8 +1123,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // fails falls back to the simulator below, as any refused send does.
   const spawnsUnderSession = spawnsUnderBoundSession(childEnv, { cwd: projectDir });
   const sessionKeeper = spawnsUnderSession ? keepBoundSessionFresh({ cwd: projectDir }) : null;
-  // One local store for the whole project, named in one place — `localDevStateRoot`. This used to compose
-  // the path itself, which made three independent statements of one directory (#404).
+  // One local store for the whole project, named in one place — `localDevStateRoot`.
   const persistTo = localDevStateRoot(projectDir);
 
   const children: { name: string; child: ChildLike }[] = [];
@@ -1129,14 +1149,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   let watching = false;
 
   /**
-   * **Start the ready deadline for whoever has not arrived, unless one is already running**
-   * (pithy-sh/pithy#429, #684).
+   * **Start the ready deadline for whoever has not arrived, unless one is already running.**
    *
    * `wrangler dev` does not exit when a build fails — it prints the error and keeps running. So a worker
    * that cannot build is a live child that never matches its ready signal: the banner waits on the whole
    * set and never fires, and the session proceeds looking healthy with the real error forty lines up the
    * scrollback, interleaved with every sibling's startup. Three capability workers reached an adopter
-   * that way (#426). The deadline names whoever has not arrived, and keeps naming them.
+   * that way. The deadline names whoever has not arrived, and keeps naming them.
    *
    * **A child that fails to build is deliberately not treated as dead — it is reported, and left.** The
    * tempting alternative loses on three counts. A death here is not local: the exit handler tears the
@@ -1153,8 +1172,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * rather than implying the session will heal itself.
    *
    * **`--json` gets a record, not the prose.** CLAUDE.md makes every command agent-drivable, and the
-   * agent driving `pithy dev --json` is in exactly the position #426's adopter was: a session that never
-   * emits its ready line, and nothing on the wire saying which worker is missing. A sentence it would
+   * agent driving `pithy dev --json` can face a session that never emits its ready line, with nothing on the
+   * wire saying which worker is missing. A sentence it would
    * have to regex is not an answer, so the deadline emits one JSON line per report — the same
    * line-per-object shape as the handshake, `event` naming which kind of line it is. That is the one
    * place `pithy dev`'s streaming surface owes a machine something the handshake cannot carry: the
@@ -1163,12 +1182,12 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * `DevEvent`s, and the event sink is wired from the roster, which `--json` never renders. The prose
    * still goes to `logs/dev.log` in both modes; the log is read by a person either way.
    *
-   * **Called per spawn, and idempotent — never a stop and re-arm (#684).** Every spawn runs through
+   * **Called per spawn, and idempotent — never a stop and re-arm.** Every spawn runs through
    * {@link startWorker}, startup and `restart` alike, which is the one path the two cannot diverge on.
    * The guard is what makes that safe: `r` is reachable before the banner — `commands/dev.ts` mounts the
    * roster first and `startDev` returns before every worker is ready — so re-arming would hand a worker
    * eighty-nine seconds into its budget another ninety, and pressing `r` repeatedly would starve the
-   * report #426 exists for indefinitely. The price, stated: a worker restarted into a live watch inherits
+   * report indefinitely. The price, stated: a worker restarted into a live watch inherits
    * that clock and can be named with little budget of its own. A line that arrives early beats a report
    * that never arrives.
    *
@@ -1202,10 +1221,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
          * **Said to a person in both modes** — to stdout, or to stderr under `--json`, which is where
          * everything a person is told goes there.
          *
-         * Under `--json` it used to reach them through `logs/dev.log` alone, and that is no longer a
-         * place a session-scoped sentence can go: a session log is one worker's own records, and a
-         * `waiting` report is about the workers that are, between them, its subject (#671).
-         * `docs/commands/dev.md` already promised stderr; this is the line that makes it true.
+         * A session log is one worker's own records, so it is no place for a session-scoped sentence: a
+         * `waiting` report is about the workers that are, between them, its subject. `docs/commands/dev.md`
+         * promises stderr.
          */
         for (const line of lines) emitLine(line);
         // **Not written into any worker's file.** `waiting` is about the session, and a copy in each of
@@ -1218,9 +1236,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   /**
    * Stop the reporter, and say that none is running.
    *
-   * Deliberately not the same act as showing the banner. They were one call for as long as a session
-   * reached *every worker ready* once, and `r` made that false: a restarted worker is not ready, so the
-   * deadline has work again while `bannerShown` must stay true (#684).
+   * Deliberately not the same act as showing the banner: a worker restarted with `r` is not ready, so the
+   * deadline has work again while `bannerShown` must stay true.
    */
   const stopReadyWatch = () => {
     watching = false;
@@ -1325,9 +1342,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   /**
    * `l` — choose who to be, then open a signed-in browser.
    *
-   * **The user axis composes in front of the worker logic, never into it — `#667`.** All this decides is
-   * which `DevLogin` {@link openIdentity} is handed; what happens next is the same four shapes it always
-   * was. One identity is handed straight over, because a project seeding one user has nothing to choose.
+   * **The user axis composes in front of the worker logic, never into it.** All this decides is
+   * which `DevLogin` {@link openIdentity} is handed; what happens next is the same four shapes either way. One identity is handed straight over, because a project seeding one user has nothing to choose.
    */
   const openDevLogin = async (worker?: string): Promise<void> => {
     /**
@@ -1499,8 +1515,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
         projectDir,
         project,
         baseUrl: hostBaseUrl,
+        baseUrlFor: hostBaseUrlFor,
         hosts: [host],
-        simulateDelivery: hostsSimulateDelivery,
       });
       for (const line of written.notes) emitLine(line);
     } catch (error) {
@@ -1573,7 +1589,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   }
 
   // Secrets are seeded before anything spawns, for the same reason the `.dev.vars` link is wired before
-  // anything spawns (#139): a Worker reads its secrets on the first request, and a store seeded after
+  // anything spawns: a Worker reads its secrets on the first request, and a store seeded after
   // startup is a store the first sign-in of the session missed. Idempotent, so this is silent on every
   // run but the one that changed something.
   //
@@ -1589,7 +1605,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   }
 
   /**
-   * The runtime half of the delivery fallback (pithy-sh/pithy#410).
+   * The runtime half of the delivery fallback.
    *
    * The preflight decides what it can see from outside the process; a remote `send_email` binding that
    * will not stand up, and a send Cloudflare refuses, appear only in the host's own output. Reporting
@@ -1608,7 +1624,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const fallBackToSimulator = async (capability: string): Promise<void> => {
     // Nothing to fall back to when this session was never sending for real: the host already holds the
     // simulator, and rewriting an identical config would reload a Worker for no change.
-    if (!deliveryIsLive || simulated.has(capability) || !materializeHosts || project === null) return;
+    if (!liveDelivery.has(capability) || simulated.has(capability) || !materializeHosts || project === null) return;
     const host = liveHosts.find((candidate) => candidate.worker.name === capability);
     if (!host) return;
     simulated.add(capability);
@@ -1617,6 +1633,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
         projectDir,
         project,
         baseUrl: hostBaseUrl,
+        baseUrlFor: hostBaseUrlFor,
         hosts: [host],
         simulateDelivery: true,
       });
@@ -1641,7 +1658,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       // 80ms repaint going for the life of the session.
       starts: started.some((s) => s.worker.name === entry.worker.name),
       // This branch's own answer, from `dev-ports.json`. Absent means it starts — there is no state
-      // where the file's silence has to be interpreted (#549).
+      // where the file's silence has to be interpreted.
       autostart: overrides[entry.worker.name] !== false,
     })),
     at: now(),
@@ -1671,7 +1688,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // A host is handed no origin of its own: `materializeHostConfigs` already wrote the app's into its
     // generated config, which is the address its callback links must carry. See `ownOriginFor`.
     const ownOrigin = ownOriginFor(worker.name, origin, hostNames);
-    const services = serviceOrigins(declaredServicesOf.get(worker.name) ?? [], { appOrigins, hostPorts });
+    const reach = hostsReachedBy(hosts, hostPorts, worker);
+    const services = serviceOrigins(declaredServicesOf.get(worker.name) ?? [], { appOrigins, hostPorts: reach });
     const { command, args } = startCommand(
       worker,
       port,
@@ -1679,14 +1697,15 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       launchWrangler,
       persistTo,
       baseEnv,
-      hostPorts,
+      reach,
       services,
     );
     // Both carriers, from the one value above. The argv `--var` reaches a `wrangler dev`; the
     // environment reaches a custom `dev.command`, where there is no argv to append to and
     // `@pithy-sh/vite` turns it into the same binding.
+    const shared = { ...childEnv, ...hostOriginEnv(reach) };
     const env = childEnvFor(
-      spawnsUnderSession ? withCurrentSessionToken(childEnv, { cwd: projectDir }) : childEnv,
+      spawnsUnderSession ? withCurrentSessionToken(shared, { cwd: projectDir }) : shared,
       ownOrigin,
       services,
     );
@@ -1726,11 +1745,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       /**
        * **Readiness is per worker and tracked always; the *banner* is what fires once.**
        *
-       * This opened with `if (bannerShown || …) return`, and the first clause was free until `r` existed:
-       * once every worker had arrived, no later ready signal could matter. With a restart it is a bug —
-       * a respawned worker printed `Ready on http://localhost:8791`, the line was dropped, and its row
-       * stayed on `building` for the rest of the session. `showBannerIfReady` carries the once-only
-       * guard itself, which is where it belongs.
+       * A respawned worker's ready line must still move its row off `building` after the banner has shown,
+       * so `showBannerIfReady` carries the once-only guard itself and this check is per worker.
        */
       if (readyState.get(worker.name)) return;
       if (readyRegex.get(worker.name)?.test(line)) {
@@ -1744,7 +1760,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     };
     const paint = workerColor(index);
     // The worker's name, so a focused roster can filter on a value rather than on a parse of the
-    // `[name]` prefix this has already colorized (#670).
+    // `[name]` prefix this has already colorized.
     const terminal = (line: string) => emitLine(line, worker.name);
     if (child.stdout) {
       pipes.push(
@@ -1818,7 +1834,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // **Last, after the child exists**, so the deadline is measured from a worker that is actually
     // running. Here rather than after the startup loop because `restart` spawns through this same
     // function, and a watch armed in one place and not the other is the divergence this function's
-    // docblock exists to prevent — the bug #684 fixed was exactly that, one field over.
+    // docblock exists to prevent.
     armReadyWatch();
   };
 
@@ -1869,7 +1885,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   /**
    * **Restart one worker, in place.** `docs/commands/dev.md` names the failure this answers: a
    * `wrangler dev` whose first build fails never rebuilds, so fixing the file and waiting is the one
-   * thing that cannot work — and until now the only remedy was Ctrl-C and restarting the estate.
+   * thing that cannot work, and this saves restarting the estate.
    *
    * The old child's **process group** is signaled, because `wrangler` spawns `workerd` beneath it and
    * only the group reaches both; then the same grace window `shutdown` uses, then SIGKILL. The
@@ -1955,7 +1971,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   // The identity the footer names, and only ever the email — the same omission the banner makes, for the
   // same reason: a session claim rendered as text is a session claim at rest in a scrollback, a log and a
-  // screenshot (#667). With several seeded identities the footer names the one `l` would reach first;
+  // screenshot. With several seeded identities the footer names the one `l` would reach first;
   // which identities exist is what `--json` reports.
   const identities = devLoginIdentities(devLogins, now());
   // A name only when there is one to name: with several, `l` opens a picker and the roster says how many

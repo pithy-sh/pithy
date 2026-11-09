@@ -14,6 +14,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import type { HostOwner } from "./hostRegistry";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -60,7 +61,7 @@ export async function loadPayments(projectDir: string): Promise<PaymentsModule> 
       kitImport<PaymentsCapabilityModule>(projectDir, "@pithy-sh/payments/src/capability"),
       kitImport<PaymentsSpecsModule>(projectDir, "@pithy-sh/payments/src/workflows/specs"),
       // `decodeSubjectReference`, so `pithy payments reconcile --subject` reads a holder through the same
-      // strict decoder the rails do rather than a split of its own (#412).
+      // strict decoder the rails do rather than a split of its own.
       kitImport<PaymentsSubjectModule>(projectDir, "@pithy-sh/payments/src/data/subject"),
     ]);
     return { ...resolve, ...capability, ...specs, ...subject };
@@ -90,6 +91,11 @@ export interface PaymentsEnvResources {
 export type ResolvePaymentsEnv = (env: ManagedEnvironment) => Promise<PaymentsEnvResources>;
 
 export interface CloudflarePaymentsProvisionerOptions {
+  /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
   cf: CloudflareClients;
   /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
@@ -116,7 +122,7 @@ export interface CloudflarePaymentsProvisionerOptions {
   workflows: CloudflareWorkflowsClient;
   /**
    * The entry the host deploys from when the catalog credits a balance — `hostEntrySource`'s answer, asked only
-   * when a deploy runs (#645). Absent, or answering undefined, the host deploys from its own `worker.ts`.
+   * when a deploy runs. Absent, or answering undefined, the host deploys from its own `worker.ts`.
    */
   hostEntry?: () => string | undefined;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -137,7 +143,10 @@ export class CloudflarePaymentsProvisioner {
   readonly #hostEntry: (() => string | undefined) | undefined;
   readonly #audit: CliAuditEmit;
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflarePaymentsProvisionerOptions) {
+    this.#owner = options.owner;
     this.#cf = options.cf;
     this.#projectDir = options.projectDir;
     this.#accountId = options.accountId;
@@ -163,20 +172,21 @@ export class CloudflarePaymentsProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { paymentsWorkerName, resolvePaymentsConfig } = await loadPayments(this.#projectDir);
+    const { resolvePaymentsConfig } = await loadPayments(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
     const dir = await paymentsWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolvePaymentsConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       secretsDatabaseId,
       storeId: this.#storeId,
       paymentsConfig: this.#paymentsConfig,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -203,7 +213,7 @@ export class CloudflarePaymentsProvisioner {
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: paymentsWorkerName(this.#project, env),
+          resourceId: config.name,
         });
       }
     } catch (error) {
@@ -214,7 +224,7 @@ export class CloudflarePaymentsProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: paymentsWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
@@ -226,11 +236,11 @@ export class CloudflarePaymentsProvisioner {
    * Dispatched by the Workflow's own deployed name rather than through a Worker binding, because this call
    * comes from a terminal rather than from inside the Worker — the CLI has no bindings, only the REST API. The
    * parameters are the same schema the in-Worker dispatcher validates, so a run started here and one started
-   * by the cron are the same run.
+   * by the cron are the same run. A Worker's own reconcile host is dispatched to when this provisioner serves one.
    */
   async reconcile(env: ManagedEnvironment, params: Record<string, unknown>): Promise<unknown> {
     const { PAYMENTS_CAPABILITY } = await loadPayments(this.#projectDir);
-    const name = resourceNames(this.#project).env(env).workflow(PAYMENTS_CAPABILITY, "reconcile");
+    const name = resourceNames(this.#project).env(env).workflow(PAYMENTS_CAPABILITY, "reconcile", this.#owner?.worker);
     return this.#workflows.dispatchAndPoll(name, params);
   }
 }

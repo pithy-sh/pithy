@@ -13,6 +13,7 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { z } from "zod";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { featureHostCapabilities, featureHostScripts } from "../feature/hosts";
 import { type ProvisionFeatureOptions, provisionFeature } from "../feature/provision";
@@ -27,8 +28,7 @@ import { secretsStoreBindings, workerSecretRegistry } from "./secretBindings";
 import type { SecretsStore } from "./store";
 
 /**
- * **`pithy provision --dry-run` runs the real provisioning against a copy and an account it only reads
- * (#697).** What exists is adopted by id, what does not is planned as a creation, nothing in the account
+ * **`pithy provision --dry-run` runs the real provisioning against a copy and an account it only reads.** What exists is adopted by id, what does not is planned as a creation, nothing in the account
  * is created, nothing in the project is written, and the migrations are the ones the run's migrate would
  * apply — every one for a database it would create, only the pending ones for a database it adopts.
  */
@@ -305,6 +305,72 @@ describe("planProvision", () => {
   });
 });
 
+/**
+ * **The kit hosts each Worker's bindings would reach.** A Worker owning `DB` reaches a host of its own; the report names
+ * both hosts, each with its Workers, and the plan says what each binding would point at.
+ */
+describe("planProvision and the capability hosts", () => {
+  test("names the shared host for one Worker and the owning Worker's own host for the other", async () => {
+    const mailer = defineCapability({
+      name: "email",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "workflow", name: "EMAIL_SENDER", job: "send", className: "EmailSendWorkflow" },
+      ] satisfies BindingSpecInput[],
+      workflows: {
+        send: { binding: "EMAIL_SENDER", params: z.object({}).describe("None."), className: "EmailSendWorkflow" },
+      },
+    });
+    const twoDir = join(dir, "apps", "two");
+    await mkdir(twoDir, { recursive: true });
+    await writeFile(
+      join(twoDir, "wrangler.jsonc"),
+      '{\n  "name": "replay-two",\n  "env": { "staging": { "name": "replay-staging-two" } }\n}\n',
+    );
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      '{\n  "name": "replay-board",\n  "env": { "staging": { "name": "replay-staging-board" } }\n}\n',
+    );
+    const pair: ProvisionWorker[] = [
+      { name: "replay-board", dir: workerDir, capabilities: [mailer] },
+      { name: "replay-two", dir: twoDir, capabilities: [mailer], ownBindings: ["DB"] },
+    ];
+    const { provisioners } = account({});
+    const { plan: planned, report } = await planProvision({
+      projectDir: dir,
+      project: "replay",
+      env: "staging",
+      account: null,
+      provisioners,
+      store: null,
+      seed: false,
+      run: (seams) =>
+        provisionEnvironment({
+          projectDir: seams.projectDir,
+          scope,
+          capabilities: [mailer],
+          provisioners: seams.provisioners,
+          resolveWorkers: async () => seams.workers(pair),
+          seedData: false,
+          administersItself: false,
+          migrate: seams.migrate,
+          seed: seams.seed,
+          audit: seams.audit,
+        }),
+    });
+    expect(report.kitHosts).toEqual([
+      { capability: "email", script: "replay-staging-email", workers: ["replay-staging-board"] },
+      { capability: "email", owner: "two", script: "replay-staging-two---email", workers: ["replay-staging-two"] },
+    ]);
+    expect(Plan.parse(planned).notes).toEqual(
+      expect.arrayContaining([
+        "Binds replay-staging-board to replay-staging-email, the email kit Worker. pithy deploy uploads it.",
+        "Binds replay-staging-two to replay-staging-two---email, two's own email kit Worker. pithy deploy uploads it.",
+      ]),
+    );
+  });
+});
+
 describe("the seams a plan hands the run", () => {
   test("the account answers find and creates nothing; a delete is refused outright", async () => {
     const { writes, provisioners } = account({ "replay-staging-db": "d1-real" });
@@ -374,7 +440,7 @@ describe("a feature's kit Workers, which a plan names and does not upload", () =
   });
 
   /**
-   * **The plan's half and the run's half cannot drift apart unseen (#697).** A dry run stops `provisionFeature` at
+   * **The plan's half and the run's half cannot drift apart unseen.** A dry run stops `provisionFeature` at
    * its resources, because everything after them uploads or writes to the account, and `plannedFeatureHosts` names
    * what it stopped short of. That is a second description of the run's host phase, so this holds the two
    * together: the real run, every host seam a recorder, is handed exactly the uploads the plan names and must

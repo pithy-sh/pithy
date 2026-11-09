@@ -47,18 +47,27 @@ import { VECTOR_CAPABILITY } from "../workflows/specs";
  * Dimensions and metric are fixed at creation, so the adoption would also silently pin the second
  * project to the first's embedding model.
  *
- * **Composed through the naming facade**, which carries Vectorize's own rule: 64 bytes — not the 63
- * every namespace was once held to — refused rather than truncated, because a shortened index name is
+ * **Composed through the naming facade**, which carries Vectorize's own rule: 64 bytes, refused rather than
+ * truncated, because a shortened index name is
  * a *different, empty* index and re-embedding a corpus is neither free nor quick. The facade also
  * validates the project once and the environment once, so `production` is refused here rather than
  * standing up a fourth environment nothing else knows about.
+ *
+ * `owner` names the index a Worker's own vector host fills, `<project>-<env>-<owner>---vector-<index>`: its vectors
+ * are keyed to the rows of that Worker's own database, so they never share an index with the shared host's.
  */
-export function vectorIndexName(project: string, index: string, env: string, feature?: FeatureIdentity): string {
-  // A feature's own index (#643): `<project>-feature-vector-<index>` would be one index every branch shared.
-  if (feature) return featureVectorizeIndexName(feature, `${VECTOR_CAPABILITY}-${index}`);
+export function vectorIndexName(
+  project: string,
+  index: string,
+  env: string,
+  feature?: FeatureIdentity,
+  owner?: string,
+): string {
+  // A feature's own index: `<project>-feature-vector-<index>` would be one index every branch shared.
+  if (feature) return featureVectorizeIndexName(feature, `${VECTOR_CAPABILITY}-${index}`, owner);
   const scope = resourceNames(project).env(env);
   try {
-    return scope.vectorizeIndex(`${VECTOR_CAPABILITY}-${index}`);
+    return scope.vectorizeIndex(`${VECTOR_CAPABILITY}-${index}`, owner);
   } catch (error) {
     // The facade refuses an over-long Vectorize name as an `InternalError`, on the reasoning that the
     // project and the environment are already validated so only author code can overflow it. That
@@ -145,6 +154,8 @@ export interface VectorProvisionOptions {
   config: VectorConfig;
   /** The environment to provision. Vectorize has no local emulation, so `dev` is a real remote index too. */
   env: string;
+  /** The `apps/<owner>` Worker whose own vector host fills these indexes, when it has one ({@link vectorIndexName}). */
+  owner?: string;
 }
 
 /** The declared metadata indexes for one configured index, or none when it declares no metadata schema. */
@@ -166,7 +177,7 @@ function plannedIndexNames(options: VectorProvisionOptions) {
   return Object.entries(options.config.indexes).map(([index, indexConfig]) => ({
     index,
     indexConfig,
-    indexName: vectorIndexName(options.project, index, options.env),
+    indexName: vectorIndexName(options.project, index, options.env, undefined, options.owner),
   }));
 }
 

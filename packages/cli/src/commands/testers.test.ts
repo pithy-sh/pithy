@@ -6,9 +6,11 @@ import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
+import { testers as testersCapability } from "@pithy-sh/testers/src/capability";
+import { testersWorkflowRegistry } from "@pithy-sh/testers/src/workflows/specs";
 import type { CommandDef } from "citty";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import testers, { loadOptionalEmail } from "./testers";
+import testers, { loadOptionalEmail, testersAppWorkflows } from "./testers";
 
 /**
  * The project name is resolved at this command edge, and the provisioning subcommands lead every name
@@ -135,14 +137,14 @@ describe("pithy testers", () => {
 
   test("provision refuses a project with no name, before it reaches Cloudflare", async () => {
     const error = await failure("provision", { json: true });
-    // The call is right and the project is missing its name: a precondition, exit 3 (#697).
+    // The call is right and the project is missing its name: a precondition, exit 3.
     expect(error.code).toBe("core/precondition_failed");
     expect(error.message).toBe("pithy.config.ts has no `name`.");
   });
 
   /**
-   * **A project composing no testers is missing what the call depends on (#697).** `pithy testers list --env dev`
-   * was right as typed; `pithy add testers` is the step. Exit 3 with that as its `fix`, never 2.
+   * **A project composing no testers is missing what the call depends on.** `pithy testers list --env dev` is right
+   * as typed; `pithy add testers` is the step. Exit 3 with that as its `fix`, never 2.
    */
   test("a project composing no testers is a precondition, with pithy add testers as its fix", async () => {
     project.composesTesters = false;
@@ -152,7 +154,7 @@ describe("pithy testers", () => {
         code: "core/precondition_failed",
         message: "The testers capability is not configured.",
         exit: 3,
-        // testers declares `email`, so the add composes it too, with nobody to ask (#697).
+        // testers declares `email`, so the add composes it too, with nobody to ask.
         fix: "pithy add testers --worker api --with-prerequisites",
       });
     } finally {
@@ -197,17 +199,15 @@ describe("the read commands hand readCohort a logger", () => {
 });
 
 /**
- * **An installed-but-broken `@pithy-sh/email` is not an absent one (#230).**
+ * **An installed-but-broken `@pithy-sh/email` is not an absent one.**
  *
- * Two sites here loaded the email capability inside a bare `catch { … undefined }` — the enqueue seam
- * and the provisioner's sending identity. Both then reported `sends: false` and printed *"no email
- * capability is configured in this project."* That sentence is true for exactly one of the four
- * failures the catch admits, and wrong for the three that mean the package is right there: a
- * dependency that does not resolve, an export map that does not, and source that will not parse.
+ * Two sites here load the email capability optionally: the enqueue seam and the provisioner's sending identity.
+ * *"No email capability is configured in this project"* is true for exactly one of the four failures a load can
+ * meet, and wrong for the three that mean the package is right there: a dependency that does not resolve, an
+ * export map that does not, and source that will not parse.
  *
- * That is the class #217 closed one level down, and `classifyCapabilityLoadFailure` is the function it
- * left behind (`docs/CONVENTIONS.md` §Refusals). Tested here as a pure function against real cause
- * shapes, per the same convention: the runtime the suite reaches is not the runtime that ships, so a
+ * `classifyCapabilityLoadFailure` tells them apart (`docs/CONVENTIONS.md` §Refusals). Tested here as a pure function
+ * against real cause shapes, per the same convention: the runtime the suite reaches is not the runtime that ships, so a
  * classifier reachable only through an integration path is tested for neither.
  */
 describe("the optional email import classifies rather than asserts", () => {
@@ -229,8 +229,8 @@ describe("the optional email import classifies rather than asserts", () => {
     expect(await loadOptionalEmail(async () => ({ ok: true }))).toEqual({ ok: true });
   });
 
-  // The #207 bug, one level up: the package is installed, something it imports is not, and `pithy add
-  // email` reinstalls what is already there.
+  // The package is installed and something it imports is not, so `pithy add email` would reinstall what is already
+  // there.
   test("installed with an unresolved dependency refuses, and does not claim absence", async () => {
     const thrown = await loadOptionalEmail(() => {
       throw missingPackage("some-transitive-dep");
@@ -278,13 +278,12 @@ describe("the optional email import classifies rather than asserts", () => {
 });
 
 /**
- * **A remote seed driver writes rows into a real D1 and objects into a real R2 (#226, #230).**
+ * **A remote seed driver writes rows into a real D1 and objects into a real R2.**
  *
- * `openSeedDriver`'s own doc comment calls its `account` the #206 guard against writing this project's
- * fixtures into another company's tenant. It was optional, and the roster commands never passed it — so
- * `pithy testers roster --env production` resolved `<config>/cloudflare.json` and reached whatever
- * account that file happened to hold. `buildProvisioner` in this same file had named its account since
- * #206; the door beside it had not.
+ * `openSeedDriver`'s `account` is the guard against writing this project's fixtures into another company's tenant.
+ * Without it, `pithy testers roster --env production` would resolve `<config>/cloudflare.json` and reach whatever
+ * account that file happened to hold, so every roster command passes the account the project names, as
+ * `buildProvisioner` does.
  */
 describe("the roster commands open the driver for the account the project names", () => {
   beforeEach(() => {
@@ -304,11 +303,11 @@ describe("the roster commands open the driver for the account the project names"
 });
 
 /**
- * **The terminal reads through the project's auth, as the Worker and the host do** (#645 review).
+ * **The terminal reads through the project's auth, as the Worker and the host do.**
  *
- * All three read commands and `run` built their calls without auth, so a project composing it read every tester
- * `unobservable` and `pithy testers run` wrote a permanent snapshot of nobody observed. `readCohort` and the
- * pass's deps now require it, which typecheck holds; this holds the value.
+ * Built without auth, a read command in a project composing it would read every tester `unobservable`, and
+ * `pithy testers run` would write a permanent snapshot of nobody observed. `readCohort` and the pass's deps require
+ * it, which typecheck holds; this holds the value.
  */
 describe("the read commands and the pass see through the project's auth", () => {
   const AUTH_PEER = { authDatabase: () => ({}), User: {}, Device: {} };
@@ -364,9 +363,9 @@ describe("the read commands and the pass see through the project's auth", () => 
 });
 
 /**
- * **The page quotes the lines the command prints (#711).** `docs/commands/testers.md` kept three in the form they had
- * before their commands were rebuilt — a roster read with no `--env`, which reads `dev`'s whatever the reader was on,
- * and a pass named with no cohort and no environment. Each case runs the command and finds its words on the page.
+ * **The page quotes the lines the command prints.** A page that quotes a line in a form the command does not print
+ * — a roster read with no `--env`, which reads `dev`'s whatever the reader is on, or a pass named with no cohort and
+ * no environment — misleads its reader. Each case runs the command and finds its words on the page.
  */
 describe("docs/commands/testers.md quotes what the commands print", () => {
   const page = readFileSync(
@@ -404,5 +403,31 @@ describe("docs/commands/testers.md quotes what the commands print", () => {
     const next = printed.split("\n").find((line) => line.startsWith("Run "));
     expect(next).toBeDefined();
     expect(page).toContain(`${next}`);
+  });
+});
+
+/**
+ * **`testers provision --worker two`, with `two` owning `DB`, binds `TESTERS_DAILY` into two's own host.** The host
+ * it deploys is two's; a binding into the shared host would start the daily pass against the other database.
+ */
+describe("testersAppWorkflows", () => {
+  const parts = { project: "acme", capability: "testers", env: "staging", testers: testersCapability({}) };
+
+  test("an owner of DB is bound into its own daily-pass host", () => {
+    const [entry] = testersAppWorkflows(testersWorkflowRegistry, {
+      ...parts,
+      worker: { target: { name: "two", dir: "/p/apps/two", ownBindings: ["DB"] } },
+    });
+    expect(entry?.name).toBe("acme-staging-two---testers-daily");
+    expect(entry?.script_name).toBe("acme-staging-two---testers");
+  });
+
+  test("a Worker sharing the database is bound into the shared host", () => {
+    const [entry] = testersAppWorkflows(testersWorkflowRegistry, {
+      ...parts,
+      worker: { target: { name: "one", dir: "/p/apps/one" } },
+    });
+    expect(entry?.name).toBe("acme-staging-testers-daily");
+    expect(entry?.script_name).toBe("acme-staging-testers");
   });
 });

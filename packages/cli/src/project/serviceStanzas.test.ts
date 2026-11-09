@@ -67,6 +67,14 @@ describe("serviceScripts", () => {
     expect(scripts("secrets", "dev")).toBe("acme-dev-secrets");
   });
 
+  test("a kit Worker resolves to the calling Worker's own host where it owns what that host binds", async () => {
+    const owning = { ...appA, ownBindings: ["DB"] };
+    const scripts = await serviceScripts("acme", [owning, appB]);
+    expect(scripts("email", "staging", "app-a")).toBe("acme-staging-app-a---email");
+    expect(scripts("email", "staging", "app-b")).toBe("acme-staging-email");
+    expect(scripts("email", "staging")).toBe("acme-staging-email");
+  });
+
   test("anything else is refused, naming the project's Workers", async () => {
     const scripts = await serviceScripts("acme", [appA, appB]);
     const error = (() => {
@@ -101,6 +109,19 @@ describe("reconcileServiceStanzas", () => {
     expect(config.env.staging?.services).toEqual([{ binding: "APP_B", service: "acme-app-b-staging" }]);
     expect(config.env.prod?.services).toEqual([{ binding: "APP_B", service: "acme-prod-app-b" }]);
     expect(await readFile(join(appA.dir, "wrangler.jsonc"), "utf8")).toContain("// app-a's own note.");
+  });
+
+  test("an owning Worker's binding to a kit Worker is written at its own host in every stanza", async () => {
+    const owning = { ...appA, ownBindings: ["DB"] };
+    await reconcileServiceStanzas({
+      workerDir: appA.dir,
+      from: "app-a",
+      services: [{ binding: "EMAIL", target: "email" }],
+      scripts: await serviceScripts("acme", [owning, appB]),
+    });
+    const config = (await stanzas()) as { env: Record<string, { services: unknown[] }> };
+    expect(config.env.staging?.services).toEqual([{ binding: "EMAIL", service: "acme-staging-app-a---email" }]);
+    expect(config.env.prod?.services).toEqual([{ binding: "EMAIL", service: "acme-prod-app-a---email" }]);
   });
 
   test("a second run changes nothing and writes nothing", async () => {

@@ -21,7 +21,7 @@ const PROJECT = "acme";
 
 /**
  * A D1 with no tables — what a never-migrated database answers. The teardown counts retained rows before it
- * deletes (#591); these fakes are about names and audits, so there is nothing to count.
+ * deletes; these fakes are about names and audits, so there is nothing to count.
  */
 const EMPTY_D1 = { prepare: () => ({ bind: () => ({ first: async () => null }) }) };
 
@@ -33,7 +33,7 @@ function fakeCf() {
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
   const ensureWorkerRoute = vi.fn();
-  /** The Secrets Store entries the account holds — which email teardown must never read or delete (#596). */
+  /** The Secrets Store entries the account holds — which email teardown must never read or delete. */
   const entries = new Set<string>();
   const exists = vi.fn(async (name: string) => entries.has(name));
   const deleteSecret = vi.fn(async (name: string) => void entries.delete(name));
@@ -65,7 +65,7 @@ const fakeTheme = {} as EmailTheme;
  * No catalogs. Same reason as the theme: `deployWorker` is the only method that reads them, and it is
  * not what these tests drive. Stated rather than defaulted, because the option is required — a
  * provisioner that forgot the catalogs is what left `EMAIL_MESSAGES` written by nobody
- * (pithy-sh/pithy#441), and a field with a default cannot be forgotten out loud.
+ *, and a field with a default cannot be forgotten out loud.
  */
 const noCatalogs: LocaleCatalogs = {};
 
@@ -175,7 +175,7 @@ describe("CloudflareEmailProvisioner", () => {
 });
 
 describe("CloudflareEmailDeprovisioner", () => {
-  // What a `--suppression` teardown asks of every other environment (#591): the list goes only with the last worker.
+  // What a `--suppression` teardown asks of every other environment: the list goes only with the last worker.
   test("hasWorker asks for this project's worker in that environment, and deletes nothing", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const deprovisioner = new CloudflareEmailDeprovisioner({
@@ -224,6 +224,32 @@ describe("CloudflareEmailDeprovisioner", () => {
     expect(events).toEqual([]);
   });
 
+  test("deletes each owning Worker's own host and its Workflows beside the shared one", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    const { workflows, held } = workflowsHolding([
+      `${PROJECT}-prod-email-send`,
+      `${PROJECT}-prod-two---email-send`,
+      `${PROJECT}-prod-two---email-schedule`,
+    ]);
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      workflows,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      owners: ["two"],
+    });
+
+    getWorker.mockImplementation(async (name: string) => ({ id: name }));
+    expect(await deprovisioner.hasWorker("prod")).toBe(true);
+    await deprovisioner.deleteWorkflows("prod");
+    await deprovisioner.deleteWorker("prod");
+    expect(held).toEqual(new Set());
+    expect(deleteWorker.mock.calls.map(([name]) => name)).toEqual([
+      emailWorkerName(PROJECT, "prod"),
+      `${PROJECT}-prod-two---email`,
+    ]);
+  });
+
   test("deleteSuppressionDatabase audits a warning-severity removal only when the database existed", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
@@ -256,10 +282,10 @@ describe("CloudflareEmailDeprovisioner", () => {
 });
 
 /**
- * The account a teardown deletes from must be one something claims (#378).
+ * The account a teardown deletes from must be one something claims.
  *
  * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
- * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * with the same `null`, so an unguarded teardown pointed at a stranger's account would delete nothing, audit
  * nothing, and exit 0 — a success message printed over a production Worker that is still running.
  *
  * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
@@ -306,7 +332,7 @@ describe("teardown refuses an unconfirmed account", () => {
 });
 
 /**
- * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
+ * **Every Workflow the committed template declares goes with the worker.** Deleting a Worker leaves the
  * Workflows registered against it, and `pithy email deprovision` once did exactly that. The names are read from the template's
  * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
  */
@@ -360,7 +386,7 @@ describe("pithy email deprovision deletes its Workflows", () => {
 });
 
 /**
- * **Email teardown never reaches the link-signing key (#596).** `pithy secrets provision` creates that entry and
+ * **Email teardown never reaches the link-signing key.** `pithy secrets provision` creates that entry and
  * binds it into the app Worker, which is still deployed after email goes. Deleting it would break every link
  * already sent and the app Worker's next deploy, so the key outlives this teardown as it outlives the vault.
  */

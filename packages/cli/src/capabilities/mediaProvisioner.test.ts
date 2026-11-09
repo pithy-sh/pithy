@@ -396,10 +396,10 @@ describe("the committed media worker template", () => {
 });
 
 /**
- * The account a teardown deletes from must be one something claims (#378).
+ * The account a teardown deletes from must be one something claims.
  *
  * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
- * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * with the same `null`, so an unguarded teardown pointed at a stranger's account would delete nothing, audit
  * nothing, and exit 0 — a success message printed over a production Worker that is still running.
  *
  * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
@@ -441,8 +441,8 @@ describe("teardown refuses an unconfirmed account", () => {
 });
 
 /**
- * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
- * Workflows registered against it, and `pithy media deprovision` once did exactly that. The names are read from the template's
+ * **Every Workflow the committed template declares goes with the worker.** Deleting a Worker leaves the
+ * Workflows registered against it. The names are read from the template's
  * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
  */
 describe("pithy media deprovision deletes its Workflows", () => {
@@ -493,5 +493,33 @@ describe("pithy media deprovision deletes its Workflows", () => {
       deprovisionMedia(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS }),
     ).resolves.toBeDefined();
     expect(events).toEqual([]);
+  });
+});
+
+describe("a media teardown with Workers that own a binding", () => {
+  test("deletes each owning Worker's own host and its Workflows beside the shared one, and no other owner's", async () => {
+    const shared = await declaredWorkflowNames("@pithy-sh/media/src/workflows/worker", PROJECT, "staging");
+    expect(shared.length).toBeGreaterThan(0);
+    const ownedBy = (owner: string) =>
+      shared.map((name) => name.replace(`${PROJECT}-staging-media-`, `${PROJECT}-staging-${owner}---media-`));
+    const { workflows, held } = workflowsHolding([...shared, ...ownedBy("two"), ...ownedBy("three")]);
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockImplementation(async (name: string) => ({ id: name }));
+    const deprovisioner = new CloudflareMediaDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf,
+      workflows,
+      owners: ["two"],
+    });
+
+    await deprovisioner.deleteWorkflows("staging");
+    await deprovisioner.deleteWorker("staging");
+    expect([...held]).toEqual(ownedBy("three"));
+    expect(deleteWorker.mock.calls.map(([name]) => name)).toEqual([
+      mediaWorkerName(PROJECT, "staging"),
+      `${PROJECT}-staging-two---media`,
+    ]);
   });
 });

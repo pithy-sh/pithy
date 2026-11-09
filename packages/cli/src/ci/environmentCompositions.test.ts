@@ -7,14 +7,13 @@ import { describe, expect, test } from "vitest";
 import { sourceFiles } from "./sourceFiles";
 
 /**
- * **A composition for an environment is composed for that environment, and by one primitive (#595).**
+ * **A composition for an environment is composed for that environment, and by one primitive.**
  *
- * A Worker's `pithy.config.ts` is code that may ask which environment it is composed for. Three producers
- * had asked it on the adopter's behalf by stamping `ENVIRONMENT` themselves (`ui/routeAllowlist.ts`,
- * `capabilities/secretApplicability.ts`), and every other command that composed for an environment asked
- * nothing — so `pithy migrate --env staging` applied the migrations of a composition for none. The rule
- * now lives in `project/composeFor.ts`, and this file holds the tree to it in four halves, each stated as
- * what must be true:
+ * A Worker's `pithy.config.ts` is code that may ask which environment it is composed for. A producer that
+ * stamped `ENVIRONMENT` itself would be a second statement of the rule, and a command that composed for an
+ * environment without the primitive would, like a `pithy migrate --env staging` composed for none, apply the
+ * wrong composition. The rule lives in `project/composeFor.ts`, and this file holds the tree to it in four
+ * halves, each stated as what must be true:
  *
  * 1. **`ENVIRONMENT` is written into this process by the primitive alone.** A module that writes
  *    `process.env` and names the variable is the primitive, or it is a second statement of the rule.
@@ -22,21 +21,19 @@ import { sourceFiles } from "./sourceFiles";
  *    exports, without the primitive, is named here, with why its composition is not for one environment**
  *    ({@link RAW_COMPOSERS}). A module naming a raw loader lands in the table
  *    or fails; a table entry whose module stopped naming one fails too, so the table cannot drift into a
- *    list of reasons nobody re-reads (#211).
+ *    list of reasons nobody re-reads.
  *
- *    **A composition carried out of a third module is followed (#595).** Every exported function anywhere
+ *    **A composition carried out of a third module is followed.** Every exported function anywhere
  *    in the tree that reaches a raw loader — directly, through a helper in its own module, or through another
  *    such function — is a carrier ({@link carriers}), and each is named in {@link SEALED} or
  *    {@link CARRYING}. A sealed one hands back an answer, never a composition, so its callers inherit
  *    nothing. Every other one is a raw loader in its own right, and every module naming it is held to this
- *    half. `commands/add.ts`'s `targetWorker` handed `pithy remove --drop` a composition for no environment
- *    through exactly that gap.
+ *    half, so a helper cannot hand another command a composition for no environment.
  *
- *    **A carrier is whatever a module hands out, however it is spelled (#595).** The walk read only
- *    `export function` and `export const`, so a helper exported through a list
+ *    **A carrier is whatever a module hands out, however it is spelled.** A helper exported through a list
  *    (`export { composedConfig as workerComposition }`, the form `commands/token.ts` and `commands/doctor.ts`
- *    already use) or as a default escaped it, and so did its importers. Every way a name leaves a module is
- *    now read ({@link moduleShape}): its own `export`, an export list with or without renames, `export default`
+ *    use) or as a default is a carrier too, and so are its importers. Every way a name leaves a module is
+ *    read ({@link moduleShape}): its own `export`, an export list with or without renames, `export default`
  *    of a declaration, a name or an expression, `export { a as b } from`, `export * from` and
  *    `export * as ns from`, a `class`, a `let` assigned later by a plain `=`, and a flat destructuring. A
  *    default export has no name its importers must use, so its importers are held by the specifier they import
@@ -44,7 +41,7 @@ import { sourceFiles } from "./sourceFiles";
  *    renamed at its import, a default or namespace import of a module that carries, and an `import()` of one.
  * 3. **Every module that assembles a backend does it inside the primitive.** `createBackend` is where a
  *    capability reads the environment at registration — the dev-login route is mounted there or not — so
- *    assembling one with no environment stamped is the #255 defect.
+ *    assembling one with no environment stamped mounts or omits routes for the wrong environment.
  * 4. **Every module that imports a computed specifier is named here** ({@link COMPUTED_IMPORTS}). A config
  *    is evaluated by importing it, and an adopter's path is never a string literal in this tree, so a
  *    module that reaches a config without any loader at all still has to import something computed.
@@ -617,9 +614,11 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "commands/payments.ts":
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/privacy.ts":
-    "Reads each Worker's storage schemas once, unstamped: a privacy marker is part of a schema's declaration, not a value per environment, and scan and the audit offer only read which fields are marked and whether audit is composed (#132).",
+    "Reads each Worker's storage schemas once, unstamped: a privacy marker is part of a schema's declaration, not a value per environment, and scan and the audit offer only read which fields are marked and whether audit is composed.",
+  "capabilities/secretsOwner.ts":
+    "Resolves one Worker only to learn whether it composes secrets and owns SECRETS, the second a pithy.worker.jsonc fact that is the same in every environment; it hands back a Worker name, never a composition, and a config that composes secrets in only some environments is read from the composition for none, which is a limit of this entry.",
   "commands/secrets.ts":
-    "Merges the secret registry, which is per project with one value per name; which names each environment reaches is secretApplicability's.",
+    "Merges the secret registry, which is per project with one value per name, and finds the Workers that own SECRETS; which names each environment reaches is secretApplicability's.",
   "commands/storage.ts":
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/support.ts":
@@ -665,6 +664,8 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns a dry run's plan, built from three strings and a count the deployed Workflow reported; it composes nothing and reads nothing.",
   "commands/secrets.ts#default":
     "Returns the pithy secrets command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "capabilities/secretsOwner.ts#secretsManagerOwner":
+    "Returns the name of the Worker whose own manager a write goes through, or undefined for the shared one; no composition leaves it.",
   "commands/secrets.ts#mergedProjectSecrets":
     "Returns the merged secret registry, its branch declarations and whether every Worker contributed, which are per project with one value per name; no composition leaves it.",
   "commands/storage.ts#default":

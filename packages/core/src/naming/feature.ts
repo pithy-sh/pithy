@@ -370,12 +370,15 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
  * project twice, spent out of the budget above. This function takes a string and cannot tell the
  * two apart, so the provisioning path reaches it only through `featureScope`, which is handed both names
  * and picks.
+ *
+ * `owner` names a capability host one `apps/<owner>` Worker has to itself: `app` is then the capability, and the
+ * thing is `<owner>---<capability>`.
  */
-export function featureWorkerName(identity: FeatureIdentity, app: string): string {
+export function featureWorkerName(identity: FeatureIdentity, app: string, owner?: string): string {
   return composeFeatureName(
     identity,
     kebab(identity.slug),
-    kebab(app),
+    owner === undefined ? kebab(app) : ownedThing(owner, app),
     "",
     NAMESPACE_LIMITS.worker.maxLength,
     NAMESPACE_LIMITS.worker.label,
@@ -414,13 +417,19 @@ export function featureArtifactsNamespace(identity: FeatureIdentity): string {
  * Workflows it hosts are recognizably one feature's and teardown recomputes both from the identity.
  *
  * Held to the **Workflow** limit ({@link NAMESPACE_LIMITS.workflow}), and fitted the way every feature name is:
- * the slug gives way first, then the `<capability>-<job>` tail, deterministically.
+ * the slug gives way first, then the `<capability>-<job>` tail, deterministically. `owner` names the Workflows of a
+ * host one `apps/<owner>` Worker has to itself, as {@link featureWorkerName} names the host.
  */
-export function featureWorkflowName(identity: FeatureIdentity, capability: string, job: string): string {
+export function featureWorkflowName(
+  identity: FeatureIdentity,
+  capability: string,
+  job: string,
+  owner?: string,
+): string {
   return composeFeatureName(
     identity,
     kebab(identity.slug),
-    `${kebab(capability)}-${kebab(job)}`,
+    `${owner === undefined ? kebab(capability) : ownedThing(owner, capability)}-${kebab(job)}`,
     "",
     NAMESPACE_LIMITS.workflow.maxLength,
     NAMESPACE_LIMITS.workflow.label,
@@ -432,13 +441,14 @@ export function featureWorkflowName(identity: FeatureIdentity, capability: strin
  *
  * An index name is account-wide, so a feature's vector host cannot bind `<project>-feature-vector-<index>`: every
  * open branch would read and write one index. Held to the Vectorize limit and fitted the way every feature name
- * is, so teardown recomputes it from the identity.
+ * is, so teardown recomputes it from the identity. `owner` names the index a Worker's own capability host fills with
+ * that Worker's rows: the thing is then `<owner>---<thing>`.
  */
-export function featureVectorizeIndexName(identity: FeatureIdentity, thing: string): string {
+export function featureVectorizeIndexName(identity: FeatureIdentity, thing: string, owner?: string): string {
   return composeFeatureName(
     identity,
     kebab(identity.slug),
-    kebab(thing),
+    owner === undefined ? kebab(thing) : ownedThing(owner, thing),
     "",
     NAMESPACE_LIMITS.vectorizeIndex.maxLength,
     NAMESPACE_LIMITS.vectorizeIndex.label,

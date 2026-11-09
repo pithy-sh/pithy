@@ -18,8 +18,9 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
-        // `APP_DB` is an adopter's own database, holding the encrypted columns the field-key rotation re-seals (#390).
-        d1Databases: ["SECRETS", "APP_DB"],
+        // `APP_DB` is an adopter's own database, holding the encrypted columns the field-key rotation re-seals.
+        // `VAULT_TWO` is a Worker's own vault under the same master key, which the at-rest rotation re-seals too.
+        d1Databases: ["SECRETS", "APP_DB", "VAULT_TWO"],
         bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
     }),

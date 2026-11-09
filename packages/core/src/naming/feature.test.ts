@@ -16,6 +16,7 @@ import {
   featureResourceName,
   featureSecretEntryName,
   featureSlugRoom,
+  featureVectorizeIndexName,
   featureWorkerName,
   isFeatureOwnedName,
   maxFeatureSlug,
@@ -46,7 +47,7 @@ describe("featureResourceName", () => {
     expect(featureResourceName(base, "MY_DB", "d1")).toBe("acme-f69-media-cli--my-db-d1");
   });
 
-  it("spells a queue's kind q, so a fourth kind costs no project-name budget (#662)", () => {
+  it("spells a queue's kind q, so a fourth kind costs no project-name budget", () => {
     expect(featureResourceName(base, "JOBS", "queue")).toBe("acme-f69-media-cli--jobs-q");
     expect(FEATURE_KIND_SEGMENT.queue).toBe("q");
   });
@@ -79,8 +80,8 @@ describe("featureResourceName", () => {
 
   it("keeps the slug and a working binding verbatim at the worst legal project name", () => {
     // This is the guarantee `FEATURE_DERIVED_PROJECT_NAME` was derived to give: at the cap, with a
-    // six-digit issue, an eleven-character slug and a twelve-character binding still read — eleven since the
-    // double hyphen after the slug took one of its characters (#643).
+    // six-digit issue, an eleven-character slug and a twelve-character binding still read; the double hyphen after
+    // the slug takes the twelfth.
     const identity = {
       project: "a".repeat(MAX_PROJECT_NAME),
       issue: "9".repeat(MAX_ISSUE_DIGITS),
@@ -104,8 +105,8 @@ describe("featureResourceName", () => {
     expect(names.size).toBe(4);
   });
 
-  it("refuses, rather than truncates, a slug and binding that do not fit together (#643)", () => {
-    // Truncation hashed both into a few characters some sibling branch could have as its whole slug.
+  it("refuses, rather than truncates, a slug and binding that do not fit together", () => {
+    // Truncation would hash both into a few characters some sibling branch could have as its whole slug.
     const identity = { project: "acme", issue: "123", slug: "z".repeat(50) };
     for (const kind of KINDS) {
       expect(() => featureResourceName(identity, "SOME_VERY_LONG_BINDING_NAME_INDEED", kind)).toThrow(PithyError);
@@ -158,6 +159,14 @@ describe("featureResourceName for an owned binding", () => {
   });
 });
 
+describe("featureVectorizeIndexName", () => {
+  it("names a Worker's own index for the feature and the owner, beside the shared one", () => {
+    const identity = { project: "acme", issue: "958", slug: "owners" };
+    expect(featureVectorizeIndexName(identity, "vector-notes")).toBe("acme-f958-owners--vector-notes");
+    expect(featureVectorizeIndexName(identity, "vector-notes", "two")).toBe("acme-f958-owners--two---vector-notes");
+  });
+});
+
 describe("featureWorkerName", () => {
   it("composes <project>-f<issue>-<slug>-<worker>", () => {
     expect(featureWorkerName(base, "api")).toBe("acme-f69-media-cli--api");
@@ -172,7 +181,7 @@ describe("featureWorkerName", () => {
     );
     expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
     expect(name).toMatch(WORKER_SCRIPT);
-    // Past it, refused whole (#643): a truncated script name is one a sibling can compose.
+    // Past it, refused whole: a truncated script name is one a sibling can compose.
     expect(() => featureWorkerName({ project: "acme", issue: "1", slug: "media-cli" }, "w".repeat(70))).toThrow(
       PithyError,
     );
@@ -216,7 +225,7 @@ describe("featureWorkerName", () => {
 });
 
 /**
- * **A feature name parses back to exactly one owner (#643).** The double hyphen ends the slug, and the first
+ * **A feature name parses back to exactly one owner.** The double hyphen ends the slug, and the first
  * `f<digits>` segment is the issue because a project may carry none. That is what the isolation gates ask, and
  * what makes names injective across projects — `feature/naming.property.test.ts` in the CLI holds the property.
  */
@@ -305,13 +314,12 @@ describe("assertFeatureProject", () => {
 });
 
 /**
- * **No feature name is truncated (#643, the review of 4828e1fc).** A truncated slug is a hash, and a hash is a
- * slug some sibling can have: `feature/12-login` owned `feature/12-c`'s names, and two long slugs of one issue
- * composed one database. So a slug that does not fit is refused, the refusal names the longest that does, and
+ * **No feature name is truncated.** A truncated slug is a hash, and a hash is a slug some sibling can have:
+ * `feature/12-login` would own `feature/12-c`'s names, and two long slugs of one issue would compose one database. So a slug that does not fit is refused, the refusal names the longest that does, and
  * ownership is an exact parse.
  */
 describe("feature slugs are never truncated", () => {
-  /** Finding 1, the reviewer's case: `login` owned `c`, because `c` is the first hex of `login`'s hash. */
+  /** A hashed `login` would own `c`, because `c` is the first hex of `login`'s hash. */
   it("does not let feature/12-login own feature/12-c's names", () => {
     const login: FeatureIdentity = { project: "acme", issue: "12", slug: "login" };
     const c: FeatureIdentity = { project: "acme", issue: "12", slug: "c" };
@@ -320,7 +328,7 @@ describe("feature slugs are never truncated", () => {
     expect(isFeatureOwnedName(login, featureResourceName(c, "B", "r2"))).toBe(false);
   });
 
-  /** Finding 1, the reviewer's sweep: no slug owns a one-to-four-character sibling's names unless it is that slug. */
+  /** No slug owns a one-to-four-character sibling's names unless it is that slug. */
   it("owns a name only when its slug is the feature's slug, character for character", () => {
     const slugs = ["login", "auth", "billing", "signin", "feature-address", "media-cli", "docs", "api", "cache"];
     const siblings = ["a", "b", "c", "d", "e", "f", "1", "2", "3", "db", "ab", "cd", "e2", "42", "1-2", "a-1b"];
@@ -334,7 +342,7 @@ describe("feature slugs are never truncated", () => {
     }
   });
 
-  /** Finding 3, the reviewer's case: two long slugs of one issue composed one database. */
+  /** Two long slugs of one issue, hashed, would compose one database. */
   it("refuses a slug that does not fit rather than hashing it into a sibling's name", () => {
     const project = "p".repeat(MAX_PROJECT_NAME);
     for (const slug of ["add-search-import", "add-media-webhook"]) {

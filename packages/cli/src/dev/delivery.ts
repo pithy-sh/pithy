@@ -14,12 +14,12 @@ import { projectCloudflareAccount } from "../project/config";
  * the kit that puts a message on the wire. `remote: true` on that binding runs the Worker locally and
  * delivers through Cloudflare Email Service for real — the same pipeline, the same DKIM, the same
  * delivery logs as production — which is what makes a magic link triggered from localhost actually
- * arrive (pithy-sh/pithy#410).
+ * arrive.
  *
  * That depends on two things the kit does not own: a Cloudflare login `wrangler dev` can use, and a
  * sending domain already onboarded onto Email Service. The requirement is not that both always hold.
- * It is that **no path from here ends in silence** — because silence is the defect this whole issue is
- * about, and a developer waiting on an inbox is the worst possible place to discover a missing login.
+ * It is that **no path from here ends in silence**, because a developer waiting on an inbox is the worst
+ * possible place to discover a missing login.
  *
  * So there are two checks, and they are deliberately different in kind:
  *
@@ -46,14 +46,11 @@ export interface ChildCloudflareIdentity {
   /**
    * The sentence for a pin the credentials contradict, or `null` when there is no disagreement.
    *
-   * **A third state, because two could not say this and both said something false.** `pithy dev` refuses
-   * outright on a mismatch, so it never reaches the preflight — but `pithy doctor` reports rather than
-   * refuses, and with only `accountId`/`hasToken` to answer with it had to pick a lie: the resolution
-   * before #555 was non-throwing, so a mismatch read as credentials *present* and doctor announced
-   * `sending for real` about an account the repository disowns; resolving through `cloudflareEnv` instead
-   * makes it read as credentials *absent*, and doctor says `run: pithy init` — which is not the fix and
-   * would not help anyone who ran it. The remedy is one line of `pithy.config.ts`, so the state that
-   * names it has to exist.
+   * **A third state, because neither of the other two is true of a mismatch.** `pithy dev` refuses outright on
+   * one, so it never reaches the preflight, but `pithy doctor` reports rather than refuses. Read as credentials
+   * *present*, doctor would announce `sending for real` about an account the repository disowns; read as
+   * *absent*, it would say `run: pithy init`, which is not the fix. The remedy is one line of `pithy.config.ts`,
+   * so the state that names it has to exist.
    */
   mismatch: string | null;
 }
@@ -62,12 +59,9 @@ export interface ChildCloudflareIdentity {
  * What the workers this session spawns will authenticate to Cloudflare as — **read off the environment
  * they are actually handed.**
  *
- * **The preflight used to answer a different question than the one it was asked, and that is #555's
- * second half.** It resolved the *project's* credentials, found them present, and printed `Email: sending
- * for real from noreply@pithy.sh.` — then the orchestrator spawned workers carrying the *shell's*
- * credentials, because nothing overlaid the resolved pair onto the child environment. The check was not
- * wrong about what it looked at. It was looking at the wrong thing, which is why a confident banner was
- * followed by five silent failures.
+ * **The preflight reads the environment the workers are spawned with, never a resolution of its own.** The
+ * project's credentials and the shell's can differ, and a check that resolved the project's would print
+ * `Email: sending for real` over workers that authenticate as the shell's account.
  *
  * So it takes the child environment itself. There is no second resolution to agree or disagree with: the
  * map this reads is the map handed to `spawn`, so the account named in the banner and the account the
@@ -112,9 +106,9 @@ export interface DevCloudflareEnv {
 /**
  * Build that environment for one dev session.
  *
- * A pinned `cloudflare.accountId` the credentials contradict throws out of here — `cloudflareChildEnv`'s
- * refusal, which is #206's — and it throws **before any worker spawns**, which is the point: a disowned
- * account discovered by five failed sends is the incident.
+ * A pinned `cloudflare.accountId` the credentials contradict throws out of here, through `cloudflareChildEnv`'s
+ * refusal, and it throws **before any worker spawns**: a disowned account discovered by failed sends is the
+ * incident.
  */
 export function devCloudflareEnv(
   account: CloudflareAccountSelection | null,
@@ -182,7 +176,7 @@ export interface DeliveryPreflightOptions {
   fromAddress?: string;
   /**
    * What the workers this session spawns will authenticate as — from {@link childCloudflareIdentity},
-   * read off the environment they are handed rather than resolved a second time (#555).
+   * read off the environment they are handed rather than resolved a second time.
    */
   cloudflare: ChildCloudflareIdentity;
 }
@@ -263,9 +257,8 @@ export function deliveryPreflight(options: DeliveryPreflightOptions): DeliveryPr
     };
   }
 
-  // The account is named, and that is #555 in one line: a developer whose shell holds a second account's
-  // token could read `wrangler whoami`, read `pithy doctor`, and still not know which one a send from
-  // this session would use. The banner is where that stops being a deduction.
+  // The account is named: a developer whose shell holds a second account's token could read `wrangler whoami`,
+  // read `pithy doctor`, and still not know which one a send from this session would use. The banner says it.
   return {
     live: true,
     lines: [
@@ -313,5 +306,24 @@ export function deliveryFailureNote(line: string): string | undefined {
       action: match.action,
       detail: line,
     }).payload,
+  );
+}
+
+/** One sending host's verdict: the dev-set name it runs under, and what {@link deliveryPreflight} decided for it. */
+export interface HostDeliveryVerdict {
+  /** The host's dev-set name — `email`, or `<owner>---email` for a Worker's own. */
+  name: string;
+  preflight: DeliveryPreflight;
+}
+
+/**
+ * The lines every verdict says, once. One verdict, or several that say the same thing, is said as it is; verdicts
+ * that differ are each named for their host, because a Worker's own host is decided from that Worker's config.
+ */
+export function deliveryVerdictLines(verdicts: readonly HostDeliveryVerdict[]): string[] {
+  const distinct = new Set(verdicts.map((verdict) => verdict.preflight.lines.join("\n")));
+  if (distinct.size <= 1) return verdicts[0]?.preflight.lines ?? [];
+  return verdicts.flatMap(({ name, preflight }) =>
+    preflight.lines.map((line, index) => (index === 0 ? `${name}: ${line}` : line)),
   );
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
@@ -27,7 +28,7 @@ import {
 
 /**
  * A D1 with no tables — what a never-migrated database answers. The teardown counts retained rows before it
- * deletes (#591); these fakes are about names and audits, so there is nothing to count.
+ * deletes; these fakes are about names and audits, so there is nothing to count.
  */
 const EMPTY_D1 = {
   prepare: () => ({
@@ -160,7 +161,7 @@ describe("CloudflareSecretsProvisioner", () => {
   });
 
   /**
-   * **A feature's own key, and no token (#643).** The same provisioner, handed a feature, names the feature's own
+   * **A feature's own key, and no token.** The same provisioner, handed a feature, names the feature's own
    * master-key entry — and refuses to mint a manager token at all, because a feature's manager holds none: the
    * token can write every entry in the account's one Secrets Store, production's key included.
    */
@@ -207,7 +208,7 @@ describe("CloudflareSecretsProvisioner", () => {
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "minted-token" } });
   });
 
-  test("ensureRuntimeToken mints the runtime profile's union, as the project composes it there (#728)", async () => {
+  test("ensureRuntimeToken mints the runtime profile's union, as the project composes it there", async () => {
     // Secrets is one claimant of the token among several: a project composing media mints one token
     // carrying both, never a manager token beside a media one.
     const { cf, exists, rollToken } = fakeCf();
@@ -280,7 +281,7 @@ describe("CloudflareSecretsProvisioner", () => {
   });
 
   /**
-   * **The field key, on the master key's rule (#390).** Minted only when absent: a fresh key over an existing one
+   * **The field key, on the master key's rule.** Minted only when absent: a fresh key over an existing one
    * orphans every sealed field. Audited only when this run created it, and under its own entry, never the master
    * key's.
    */
@@ -751,11 +752,72 @@ describe("CloudflareSecretsDeprovisioner", () => {
 });
 
 /**
- * The account a teardown deletes from must be one something claims (#378).
+ * **An owned vault is sealed under the environment's master key, so its teardown is the shared vault's.** Its rows
+ * count against `--destroy-retained` and its database goes with the manager: a `--keys` run that deleted the key and
+ * left the vault would leave rows nothing can decrypt.
+ */
+describe("secrets deprovision and the vaults Workers own", () => {
+  /** A vault holding `rows` rows in its system table. */
+  const vaultWith = (rows: number) => ({
+    prepare: (sql: string) => ({
+      bind: () => ({
+        first: async () => (sql.includes("sqlite_master") ? { name: "present" } : null),
+        all: async () => ({ results: [], meta: { changes: 0 } }),
+      }),
+      first: async () => ({ n: rows }),
+    }),
+  });
+
+  function owning() {
+    const fake = fakeCf();
+    fake.findDatabaseByName.mockImplementation(async (name: string) =>
+      name === "acme-prod-secrets"
+        ? { uuid: "shared-vault", name }
+        : name === "acme-prod-two---secrets"
+          ? { uuid: "two-vault", name }
+          : null,
+    );
+    const cf = { ...fake.cf, d1: (id: string) => (id === "two-vault" ? vaultWith(500) : EMPTY_D1) };
+    return { ...fake, cf: cf as unknown as CloudflareClients };
+  }
+
+  const deprovisioner = (cf: CloudflareClients, budget?: number) =>
+    new CloudflareSecretsDeprovisioner({
+      workflows: workflowsHolding().workflows,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+      owners: ["two", "three"],
+      ...(budget === undefined ? {} : { budget: new RetainedBudget(budget) }),
+    });
+
+  test("countRetained counts an owner's vault beside the shared one", async () => {
+    const { cf } = owning();
+    const counted = await deprovisioner(cf).countRetained("prod");
+    expect(counted.reduce((sum, entry) => sum + entry.rows, 0)).toBeGreaterThanOrEqual(500);
+    expect(counted.every((entry) => entry.binding === "acme-prod-two---secrets")).toBe(true);
+  });
+
+  test("deleteDatabase refuses an owner's vault past the budget, and deletes every vault within it", async () => {
+    const refused = owning();
+    await expect(deprovisioner(refused.cf).deleteDatabase("prod")).rejects.toThrow(/acme-prod-two---secrets/);
+    expect(refused.deleteDatabase).not.toHaveBeenCalledWith("two-vault");
+
+    const agreed = owning();
+    await deprovisioner(agreed.cf, 10_000).deleteDatabase("prod");
+    expect(agreed.deleteDatabase).toHaveBeenCalledWith("shared-vault");
+    expect(agreed.deleteDatabase).toHaveBeenCalledWith("two-vault");
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims.
  *
  * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
- * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
- * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ * with the same `null`, so a teardown that read a miss as absence would, pointed at a stranger's account,
+ * delete nothing, audit nothing, and exit 0 — a success message printed over a production Worker that is
+ * still running.
  *
  * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
  * can fail is one word: turn `confirmation` back into something the guard ignores.
@@ -798,10 +860,10 @@ describe("teardown refuses an unconfirmed account", () => {
 });
 
 /**
- * **The manager-token race (#643, finding 2 of the review of 8858558c).** Two `pithy secrets provision` runs both
- * find the token entry absent and both roll the token, and each roll revokes the value before it. Before the fix
- * the write that landed last won, so the store could keep a value Cloudflare had already revoked, and a re-run,
- * seeing the entry, never repaired it. Now a run finishes only once the value it stored is still honored.
+ * **The manager-token race.** Two `pithy secrets provision` runs both find the token entry absent and both roll the
+ * token, and each roll revokes the value before it. If the last write simply won, the store could keep a value
+ * Cloudflare had already revoked, and a re-run, seeing the entry, would never repair it. So a run finishes only once
+ * the value it stored is still honored.
  */
 describe("ensureRuntimeToken under a race", () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -861,9 +923,9 @@ describe("ensureRuntimeToken under a race", () => {
 });
 
 /**
- * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
- * Workflows registered against it, and `pithy secrets deprovision` once did exactly that. The names are read from the template's
- * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
+ * **Every Workflow the committed template declares goes with the worker.** Deleting a Worker leaves the Workflows
+ * registered against it, so the teardown deletes them by name. The names are read from the template's own
+ * `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
  */
 describe("pithy secrets deprovision deletes its Workflows", () => {
   test("a teardown deletes every Workflow the template declares for that environment, and no other", async () => {

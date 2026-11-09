@@ -552,10 +552,10 @@ export function writeReport(
 }
 
 /**
- * What `ownBindings` changed in this run: each entry that names nothing the Worker composes, and each binding moved
- * to another resource under `--repoint`. Nothing for a project that owns nothing.
+ * What `ownBindings` changed in this run: each entry that names nothing the Worker composes, each binding moved
+ * to another resource under `--repoint`, and each Worker's own kit Worker. Nothing for a project that owns nothing.
  */
-export function describeOwnership(report: Pick<ProvisionReport, "ownership" | "repoints">): string[] {
+export function describeOwnership(report: Pick<ProvisionReport, "ownership" | "repoints" | "kitHosts">): string[] {
   const lines: string[] = [];
   for (const entry of report.ownership) {
     for (const binding of entry.unrecognized) {
@@ -568,6 +568,14 @@ export function describeOwnership(report: Pick<ProvisionReport, "ownership" | "r
     lines.push(
       `${repoint.worker}'s ${repoint.binding} now points at ${repoint.next}. ${repoint.current} keeps its data.`,
     );
+  }
+  for (const host of report.kitHosts ?? []) {
+    if (host.owner === undefined) continue;
+    for (const worker of host.workers) {
+      lines.push(
+        `${worker}'s ${host.capability} jobs run on its own kit Worker, ${host.script}, which reads its database. ${commandName("deploy")} uploads it.`,
+      );
+    }
   }
   return lines;
 }
@@ -1048,6 +1056,24 @@ const ProvisionPayload = z
       .array(KitWorkerDeploy)
       .optional()
       .describe("`--feature` only: every kit Worker the feature stood up for itself."),
+    kitHosts: z
+      .array(
+        z
+          .object({
+            capability: z.string().describe("The capability that owns the kit Worker."),
+            owner: z
+              .string()
+              .optional()
+              .describe(
+                "The apps/<owner> Worker this is the own kit Worker of, because it owns a binding the kit Worker binds. Absent for the shared one.",
+              ),
+            script: z.string().describe("The kit Worker's script name in this environment."),
+            workers: z.array(Worker).describe("The Workers whose Workflow bindings now reach it."),
+          })
+          .describe("One kit Worker the Workers' Workflow bindings reach."),
+      )
+      .optional()
+      .describe("`--env` only: each kit Worker the Workers' Workflow bindings reach. `pithy deploy` uploads them."),
     routesDropped: z
       .array(
         z

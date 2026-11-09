@@ -38,10 +38,15 @@ export interface SupportConfigParams {
   /** The target environment. */
   env: ManagedEnvironment;
   /**
-   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * **The feature this host serves, when it serves one.** Its Worker, its Workflows and every store
    * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id for this environment — where the support tables live. */
   appDatabaseId: string;
   /**
@@ -60,11 +65,13 @@ export function resolveSupportConfig(
   params: SupportConfigParams,
 ): WorkflowHostTemplate {
   const feature = params.feature;
+  const owner = params.owner;
   const { project, env } = params;
   // The semantic message index, only when `search.semantic` is on. The template carries no `vectorize`
   // entry because most inboxes have none; one is added here, named the way provisioning created it.
   const index = supportMessageIndex(params.supportConfig.search);
-  const indexName = index ? supportMessageIndexName(project, env, feature) : undefined;
+  // A Worker's own host fills an index of its own: its vectors are keyed to the rows of its own database.
+  const indexName = index ? supportMessageIndexName(project, env, feature, owner) : undefined;
   return resolveWorkflowHost(
     index && indexName
       ? { ...template, vectorize: [{ binding: index.binding, index_name: indexName, remote: true }] }
@@ -74,6 +81,7 @@ export function resolveSupportConfig(
       capability: SUPPORT_CAPABILITY,
       env,
       ...(feature ? { feature } : {}),
+      ...(owner !== undefined ? { owner } : {}),
       databaseIds: { DB: params.appDatabaseId },
       ...(index && indexName ? { vectorizeIndexNames: { [index.binding]: indexName } } : {}),
       remoteBindings: index ? ["AI", index.binding] : ["AI"],
@@ -85,6 +93,7 @@ export function resolveSupportConfig(
         capability: SUPPORT_CAPABILITY,
         env,
         ...(feature ? { feature } : {}),
+        ...(owner !== undefined ? { owner } : {}),
       }).workflows,
     },
   );

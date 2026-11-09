@@ -32,6 +32,31 @@ import { WriteWorkflowResult } from "./writeWorkflow";
 export const SECRETS_CAPABILITY = "secrets";
 
 /**
+ * One job's Workflow on one environment's manager — the shared manager's, a feature's, or the own manager of the
+ * `apps/<owner>` Worker that owns `SECRETS`. Every manager namer below is this, so the manager's resolved
+ * `wrangler.jsonc` and every CLI dispatch compose the same name.
+ */
+function managerJobWorkflowName(
+  project: string,
+  env: ManagedEnvironment,
+  job: string,
+  feature: FeatureIdentity | undefined,
+  owner: string | undefined,
+): string {
+  if (feature) {
+    return workflowScriptName({
+      project,
+      capability: SECRETS_CAPABILITY,
+      job,
+      env,
+      feature,
+      ...(owner !== undefined ? { owner } : {}),
+    });
+  }
+  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, job, owner);
+}
+
+/**
  * The canonical name of one project's manager write-Workflow in one environment —
  * `<project>-<env>-secrets-write`. This is the contract between the deployed manager and every CLI
  * dispatch site, so it is defined once here: a rename can't leave a caller dispatching to a Workflow
@@ -44,12 +69,17 @@ export const SECRETS_CAPABILITY = "secrets";
  * Named as a **Workflow** through core's facade: 64 characters, and refused rather than truncated. A
  * Workflow name is a running instance's address, so a silently reshaped one loses whatever was in
  * flight — and this particular name is also the contract every CLI dispatch resolves against.
+ *
+ * A feature's manager takes the feature's names, like every other kit host's. A Worker that owns `SECRETS` has a
+ * manager of its own, `<project>-<env>-<owner>---secrets-write`, reading its own database.
  */
-export function secretsWriteWorkflowName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
-  // A feature's manager is the feature's own (#643), and its Workflows take the feature's names like every other
-  // kit host's, through the one composer they share.
-  if (feature) return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "write", env, feature });
-  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "write");
+export function secretsWriteWorkflowName(
+  project: string,
+  env: ManagedEnvironment,
+  feature?: FeatureIdentity,
+  owner?: string,
+): string {
+  return managerJobWorkflowName(project, env, "write", feature, owner);
 }
 
 /**
@@ -58,14 +88,18 @@ export function secretsWriteWorkflowName(project: string, env: ManagedEnvironmen
  * named here beside the write Workflow because both are the same account-scoped namespace and the
  * manager's resolved `wrangler.jsonc` declares them together.
  */
-export function secretsRotateWorkflowName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
-  if (feature) return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate", env, feature });
-  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate");
+export function secretsRotateWorkflowName(
+  project: string,
+  env: ManagedEnvironment,
+  feature?: FeatureIdentity,
+  owner?: string,
+): string {
+  return managerJobWorkflowName(project, env, "rotate", feature, owner);
 }
 
 /**
  * The canonical name of one project's value-rotation Workflow in one environment —
- * `<project>-<env>-secrets-rotate-value` (#602). Started by the manager's own cron, once per due secret, and
+ * `<project>-<env>-secrets-rotate-value`. Started by the manager's own cron, once per due secret, and
  * named here beside the other two for the reason they are: one account-scoped namespace, one resolver.
  * A feature's manager runs no cron and hosts none, but the name still composes for one, like the at-rest one.
  */
@@ -73,31 +107,29 @@ export function secretsValueRotateWorkflowName(
   project: string,
   env: ManagedEnvironment,
   feature?: FeatureIdentity,
+  owner?: string,
 ): string {
-  if (feature)
-    return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate-value", env, feature });
-  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate-value");
+  return managerJobWorkflowName(project, env, "rotate-value", feature, owner);
 }
 
 /**
  * The canonical name of one project's field-key rotation Workflow in one environment —
- * `<project>-<env>-secrets-rotate-fields` (#390). Started by the manager's own cron, and by
+ * `<project>-<env>-secrets-rotate-fields`. Started by the manager's own cron, and by
  * `pithy secrets retire-version` for its guard read and its retirement past the guard.
  */
 export function secretsFieldKeyRotateWorkflowName(
   project: string,
   env: ManagedEnvironment,
   feature?: FeatureIdentity,
+  owner?: string,
 ): string {
-  if (feature)
-    return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate-fields", env, feature });
-  return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate-fields");
+  return managerJobWorkflowName(project, env, "rotate-fields", feature, owner);
 }
 
 /**
  * Every Workflow one environment's manager is deployed with — write, at-rest rotation, value rotation and field-key
  * rotation, by the four namers above, which the resolved `wrangler.jsonc` is filled from. What `pithy secrets deprovision` deletes
- * before the manager, because deleting the Worker leaves them registered (#789).
+ * before the manager, because deleting the Worker leaves them registered.
  */
 export function managerWorkflowNames(project: string, env: ManagedEnvironment): string[] {
   return [
@@ -110,7 +142,7 @@ export function managerWorkflowNames(project: string, env: ManagedEnvironment): 
 
 /**
  * What redeploys a manager: `pithy secrets provision`, which redeploys every environment's, production included — a
- * person's decision, never a fix for one environment's manager (#711).
+ * person's decision, never a fix for one environment's manager.
  */
 const REDEPLOY = remedy("secrets provision");
 
@@ -131,32 +163,38 @@ export class WorkflowSecretDispatcher
   readonly #client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">;
   readonly #project: string;
   readonly #feature: FeatureIdentity | undefined;
+  readonly #owner: string | undefined;
 
   /**
-   * `feature` binds the dispatcher to one feature's own manager (#643): a feature is provisioned a manager of its
-   * own, and its writes reach that manager's write Workflow, named for the feature, rather than one every branch
-   * would share. Bound at construction for the reason the project is — never a per-call choice.
+   * `feature` binds the dispatcher to one feature's own manager: a feature is provisioned a manager of its own, and
+   * its writes reach that manager's write Workflow, named for the feature, rather than one every branch would share.
+   * `owner` binds it to the own manager of the `apps/<owner>` Worker that owns `SECRETS`, whose vault is that Worker's
+   * database and no other. Both are bound at construction for the reason the project is — never a per-call choice.
    */
-  constructor(client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">, project: string, feature?: FeatureIdentity) {
+  constructor(
+    client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">,
+    project: string,
+    feature?: FeatureIdentity,
+    owner?: string,
+  ) {
     this.#client = client;
     this.#project = project;
     this.#feature = feature;
+    this.#owner = owner;
   }
 
-  /** The write Workflow one environment's manager runs — this feature's, when the dispatcher is bound to one. */
+  /** The write Workflow one environment's manager runs — the feature's or the owner's, when bound to one. */
   #writeWorkflow(env: ManagedEnvironment): string {
-    return secretsWriteWorkflowName(this.#project, env, this.#feature);
+    return secretsWriteWorkflowName(this.#project, env, this.#feature, this.#owner);
   }
 
   /**
-   * **`d1` only, and a request for any other backend is refused rather than performed** (#517).
+   * **`d1` only, and a request for any other backend is refused rather than performed.**
    *
    * This dispatcher's whole reach is one environment's manager Workflow, and that Workflow runs
    * `runWriteSecret` against `SystemSecretsStore` — the encrypted D1. It has no route to a Secrets Store
-   * entry and never had one. Before the request carried a backend it could not tell, so a
-   * `cf-secrets-store` write arrived here and became a D1 row: `pithy secrets create` exited 0 having
-   * written a value nothing reads, and `pithy secrets rm` deleted that row and reported the revocation of
-   * a live entry it never touched.
+   * entry. A `cf-secrets-store` write performed here would become a D1 row nothing reads, and a delete would
+   * report the revocation of a live entry it never touched.
    *
    * {@link backendRoutedDispatcher} is what sends a store write elsewhere, so this refusal should be
    * unreachable — which is exactly why it is here. A write path added later that forgets to route fails
@@ -174,13 +212,10 @@ export class WorkflowSecretDispatcher
   }
 
   /**
-   * **The same two refusals {@link dispatch} would raise, asked with nothing written** (#517).
+   * **The same two refusals {@link dispatch} would raise, asked with nothing written.**
    *
-   * This is the half of the pre-flight the first fix did not land. `storeSecretWriter` got one and this
-   * did not, the router called it with `?.`, and the omission read as *nothing to ask* — so on the more
-   * common backend `pithy secrets rotate` still called the issuer, took delivery of a new credential, and
-   * only then dispatched an `update` the manager answered `Secret 'X' does not exist` to. The old
-   * credential was dead at the issuer and the new one existed only in the process raising that error.
+   * `pithy secrets rotate` asks this before it calls an issuer: an `update` refused after the issuer has rolled
+   * the credential leaves the old one dead and the new one held only by the process raising the error.
    *
    * Both refusals are facts about the destination and both are knowable now. The manager itself may be
    * unreachable — never provisioned, deployed under another project's name, or simply down — and that is
@@ -254,7 +289,7 @@ export class WorkflowSecretDispatcher
   }
 
   /**
-   * Ask one environment's manager whether a stored `json` secret still carries one top-level field (#728).
+   * Ask one environment's manager whether a stored `json` secret still carries one top-level field.
    * The same Workflow, in its probe mode, with the field named — so the answer comes from the store the
    * writes go to, and is a bit. The value is opened inside the manager and never leaves it.
    *

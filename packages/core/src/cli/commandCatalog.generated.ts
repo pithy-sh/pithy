@@ -100,6 +100,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -1650,6 +1655,11 @@ export const COMMANDS = {
           "paddle"
         ]
       },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--dry-run": {
         "type": "boolean",
         "required": false,
@@ -1877,6 +1887,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -1990,6 +2005,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -2017,6 +2037,11 @@ export const COMMANDS = {
     ],
     "flags": {
       "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
         "type": "string",
         "required": false,
         "repeatable": false
@@ -2070,6 +2095,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,
@@ -2088,6 +2118,11 @@ export const COMMANDS = {
       },
       "--sweep": {
         "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
         "required": false,
         "repeatable": false
       },

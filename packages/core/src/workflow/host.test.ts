@@ -100,6 +100,10 @@ describe("resolveWorkflowHost", () => {
     expect(resolveWorkflowHost(emailTemplate(), hostParams()).name).toBe("acme-staging-email");
   });
 
+  it("names an owning Worker's host <project>-<env>-<owner>---<capability>", () => {
+    expect(resolveWorkflowHost(emailTemplate(), hostParams({ owner: "two" })).name).toBe("acme-staging-two---email");
+  });
+
   it("gives two projects different Worker names, so one deploy cannot overwrite the other", () => {
     const acme = resolveWorkflowHost(emailTemplate(), hostParams()).name;
     const beta = resolveWorkflowHost(emailTemplate(), hostParams({ project: "beta" })).name;
@@ -290,6 +294,19 @@ describe("hostWorkflowsFor", () => {
     expect(workflows).toEqual([
       { binding: "EMAIL_SENDER", name: "acme-staging-email-send", class_name: "EmailSendWorkflow" },
       { binding: "EMAIL_SCHEDULER", name: "acme-staging-email-schedule", class_name: "EmailSchedulerWorkflow" },
+    ]);
+  });
+
+  it("names an owning Worker's host Workflows for the owner", () => {
+    const { workflows } = hostWorkflowsFor(registry(), {
+      project: "acme",
+      capability: "email",
+      env: "staging",
+      owner: "two",
+    });
+    expect(workflows.map((workflow) => workflow.name)).toEqual([
+      "acme-staging-two---email-send",
+      "acme-staging-two---email-schedule",
     ]);
   });
 

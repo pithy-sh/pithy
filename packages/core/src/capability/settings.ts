@@ -107,6 +107,11 @@ export interface SettingsCheckContext {
    * for one Worker is written with this.
    */
   workerDirectory: string;
+  /**
+   * That Worker's `pithy.worker.jsonc` `ownBindings`: a resource it owns is named `<project>-<env>-<worker>---<thing>`,
+   * by {@link workerDirectory}. Absent owns nothing.
+   */
+  ownBindings?: readonly string[];
   /** Every environment the project declares, in declaration order. */
   environments: readonly SettingsEnvironment[];
 }
