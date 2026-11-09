@@ -1,6 +1,6 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { signOut, useSession } from "../../session";
+import { useSession, useSignOut } from "../../session";
 
 // Your screen. Pithy wrote this file once and never will again — everything under src/routes/app/ is
 // yours. Add a screen by dropping a file in beside it with its own `path` export.
@@ -21,18 +21,21 @@ const EN = {
   "app/home.signed_in_as": "Signed in as {email}.",
   "app/home.someone": "someone",
   "app/home.sign_out": "Sign out",
+  "app/home.sign_out_failed": "We couldn't sign you out, so you're still signed in. Try again.",
 } satisfies MessageCatalog;
 
 export default function Home() {
   const t = useTranslator(EN);
   const { session: current } = useSession();
+  const signOut = useSignOut();
 
   return (
     <main className="screen">
       <h1>{t.t("app/home.title")}</h1>
       <p className="muted">{t.t("app/home.signed_in_as", { email: current?.user.email ?? t.t("app/home.someone") })}</p>
       <div className="stack">
-        <button type="button" className="secondary" onClick={() => void signOut()}>
+        {signOut.failure ? <p role="alert">{t.t("app/home.sign_out_failed")}</p> : null}
+        <button type="button" className="secondary" disabled={signOut.pending} onClick={() => void signOut.run()}>
           {t.t("app/home.sign_out")}
         </button>
       </div>

@@ -1,7 +1,6 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useState } from "react";
-import { signOut } from "../../session";
+import { useSignOut } from "../../session";
 import "../../pithy-screens.css";
 
 export const path = "/account-deleted";
@@ -23,11 +22,12 @@ const EN = {
   "auth/deleted.detail": "Until then it can be restored. We emailed the date to the address on your account.",
   "auth/deleted.contact": "To restore it, reply to that email before then.",
   "auth/deleted.sign_out": "Sign out",
+  "auth/deleted.sign_out_failed": "We couldn't sign you out, so you're still signed in. Try again.",
 } satisfies MessageCatalog;
 
 export default function AccountDeleted() {
   const t = useTranslator(EN);
-  const [busy, setBusy] = useState(false);
+  const signOut = useSignOut();
 
   return (
     <main className="screen">
@@ -36,15 +36,8 @@ export default function AccountDeleted() {
       <p className="muted">{t.t("auth/deleted.detail")}</p>
       <p className="muted">{t.t("auth/deleted.contact")}</p>
       <div className="stack">
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            void signOut();
-          }}
-        >
+        {signOut.failure ? <p role="alert">{t.t("auth/deleted.sign_out_failed")}</p> : null}
+        <button type="button" className="secondary" disabled={signOut.pending} onClick={() => void signOut.run()}>
           {t.t("auth/deleted.sign_out")}
         </button>
       </div>

@@ -18,6 +18,7 @@ const EN = {
   "app/home.signed_in_as": "Signed in as {email}.",
   "app/home.someone": "someone",
   "app/home.sign_out": "Sign out",
+  "app/home.sign_out_failed": "We couldn't sign you out, so you're still signed in. Try again.",
 } satisfies MessageCatalog;
 
 export default function Home(): ReactNode {
@@ -36,9 +37,16 @@ export default function Home(): ReactNode {
       <Text style={[theme.type.body, { color: theme.colors.muted }]}>
         {t.t("app/home.signed_in_as", { email: current?.user.email ?? t.t("app/home.someone") })}
       </Text>
+      {signOut.failure ? (
+        <Text role="alert" style={[theme.type.body, { color: theme.colors.text }]}>
+          {t.t("app/home.sign_out_failed")}
+        </Text>
+      ) : null}
       <Pressable
         role="button"
-        onPress={() => void signOut()}
+        disabled={signOut.pending}
+        aria-disabled={signOut.pending}
+        onPress={() => void signOut.run()}
         style={{
           borderWidth: 1,
           borderColor: theme.colors.border,
@@ -46,6 +54,7 @@ export default function Home(): ReactNode {
           paddingVertical: theme.spacing.sm,
           paddingHorizontal: theme.spacing.md,
           alignSelf: "flex-start",
+          opacity: signOut.pending ? 0.5 : 1,
         }}
       >
         <Text style={[theme.type.button, { color: theme.colors.text }]}>{t.t("app/home.sign_out")}</Text>
