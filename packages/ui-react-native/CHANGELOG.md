@@ -1,5 +1,15 @@
 # @pithy-sh/ui-react-native
 
+## 0.2.1
+
+### Patch Changes
+
+- [#943](https://github.com/pithy-sh/pithy/pull/943) [`db748ff`](https://github.com/pithy-sh/pithy/commit/db748ffd2ee815440be40dc57c09ee8ff0dd8abf) Thanks [@kingmesal](https://github.com/kingmesal)! - A new React Native app's `app.config.ts` now loads under Expo 57, so `pithy dev` starts it beside the Workers.
+
+- [#945](https://github.com/pithy-sh/pithy/pull/945) [`f8d03e6`](https://github.com/pithy-sh/pithy/commit/f8d03e613dc637c948a2ca81f42d5d874645e4d5) Thanks [@kingmesal](https://github.com/kingmesal)! - A new React Native app's `tsconfig.json` keeps its comments when Expo starts, so the first `pithy dev` leaves the file as scaffolded.
+
+- [#950](https://github.com/pithy-sh/pithy/pull/950) [`1269f29`](https://github.com/pithy-sh/pithy/commit/1269f2909007f68e35bc99fb26a5f6b7a00cdf05) Thanks [@kingmesal](https://github.com/kingmesal)! - Test your app's screens without a device: `pithy init --react-native` now scaffolds a Vitest project on the kit's native-module stand-ins, published as `@pithy-sh/ui-react-native/testing`.
+
 ## 0.2.0
 
 ### Minor Changes

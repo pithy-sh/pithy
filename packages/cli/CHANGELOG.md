@@ -1,5 +1,24 @@
 # @pithy-sh/cli
 
+## 0.24.0
+
+### Minor Changes
+
+- [#948](https://github.com/pithy-sh/pithy/pull/948) [`f48bc27`](https://github.com/pithy-sh/pithy/commit/f48bc27b3c00462a0dbd0b071fbe088e5ff38381) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker can own a binding. List it in `ownBindings` and `pithy provision` gives that Worker its own database, namespace, bucket or queue instead of sharing its sibling's.
+
+### Patch Changes
+
+- [#943](https://github.com/pithy-sh/pithy/pull/943) [`db748ff`](https://github.com/pithy-sh/pithy/commit/db748ffd2ee815440be40dc57c09ee8ff0dd8abf) Thanks [@kingmesal](https://github.com/kingmesal)! - A new React Native app's `app.config.ts` now loads under Expo 57, so `pithy dev` starts it beside the Workers.
+
+- [#950](https://github.com/pithy-sh/pithy/pull/950) [`1269f29`](https://github.com/pithy-sh/pithy/commit/1269f2909007f68e35bc99fb26a5f6b7a00cdf05) Thanks [@kingmesal](https://github.com/kingmesal)! - Test your app's screens without a device: `pithy init --react-native` now scaffolds a Vitest project on the kit's native-module stand-ins, published as `@pithy-sh/ui-react-native/testing`.
+- Updated dependencies [[`bc72a45`](https://github.com/pithy-sh/pithy/commit/bc72a45f5ea7119daa21b8d27aa15fbc454d23a3), [`db748ff`](https://github.com/pithy-sh/pithy/commit/db748ffd2ee815440be40dc57c09ee8ff0dd8abf), [`f8d03e6`](https://github.com/pithy-sh/pithy/commit/f8d03e613dc637c948a2ca81f42d5d874645e4d5), [`1269f29`](https://github.com/pithy-sh/pithy/commit/1269f2909007f68e35bc99fb26a5f6b7a00cdf05), [`f48bc27`](https://github.com/pithy-sh/pithy/commit/f48bc27b3c00462a0dbd0b071fbe088e5ff38381)]:
+  - @pithy-sh/core@0.19.0
+  - @pithy-sh/ui-react-native@0.2.1
+  - @pithy-sh/cloudflare@0.10.2
+  - @pithy-sh/email@0.10.1
+  - @pithy-sh/secrets@0.6.7
+  - @pithy-sh/turnstile@0.8.3
+
 ## 0.23.0
 
 ### Minor Changes

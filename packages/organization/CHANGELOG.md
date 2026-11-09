@@ -1,5 +1,18 @@
 # @pithy-sh/organization
 
+## 0.13.0
+
+### Minor Changes
+
+- [#951](https://github.com/pithy-sh/pithy/pull/951) [`638dc1f`](https://github.com/pithy-sh/pithy/commit/638dc1f6fbe338c5326478ee82f1fe5180f0fb95) Thanks [@kingmesal](https://github.com/kingmesal)! - `organization({ onCreate, onJoin })` adds your own rows to the batch that founds an organization or begins a membership, so they begin with it or not at all.
+
+### Patch Changes
+
+- Updated dependencies [[`bc72a45`](https://github.com/pithy-sh/pithy/commit/bc72a45f5ea7119daa21b8d27aa15fbc454d23a3), [`f48bc27`](https://github.com/pithy-sh/pithy/commit/f48bc27b3c00462a0dbd0b071fbe088e5ff38381)]:
+  - @pithy-sh/core@0.19.0
+  - @pithy-sh/auth@0.14.1
+  - @pithy-sh/email@0.10.1
+
 ## 0.12.0
 
 ### Minor Changes

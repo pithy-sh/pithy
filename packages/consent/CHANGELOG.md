@@ -1,5 +1,12 @@
 # @pithy-sh/consent
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [[`bc72a45`](https://github.com/pithy-sh/pithy/commit/bc72a45f5ea7119daa21b8d27aa15fbc454d23a3), [`f48bc27`](https://github.com/pithy-sh/pithy/commit/f48bc27b3c00462a0dbd0b071fbe088e5ff38381)]:
+  - @pithy-sh/core@0.19.0
+
 ## 0.2.2
 
 ### Patch Changes

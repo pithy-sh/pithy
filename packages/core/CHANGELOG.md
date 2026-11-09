@@ -1,5 +1,15 @@
 # @pithy-sh/core
 
+## 0.19.0
+
+### Minor Changes
+
+- [#948](https://github.com/pithy-sh/pithy/pull/948) [`f48bc27`](https://github.com/pithy-sh/pithy/commit/f48bc27b3c00462a0dbd0b071fbe088e5ff38381) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker can own a binding. List it in `ownBindings` and `pithy provision` gives that Worker its own database, namespace, bucket or queue instead of sharing its sibling's.
+
+### Patch Changes
+
+- [#953](https://github.com/pithy-sh/pithy/pull/953) [`bc72a45`](https://github.com/pithy-sh/pithy/commit/bc72a45f5ea7119daa21b8d27aa15fbc454d23a3) Thanks [@kingmesal](https://github.com/kingmesal)! - The audit examples, seed data and validation hint name auth's real actions, `auth/signin` and `auth/signout`, so a filter copied from them finds events.
+
 ## 0.18.0
 
 ### Minor Changes
