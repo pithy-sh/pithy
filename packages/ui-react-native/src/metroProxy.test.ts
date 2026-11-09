@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_BASE_PATH } from "@pithy-sh/auth/src/client/mcp";
 import { CONSENT_BASE_PATH } from "@pithy-sh/consent/src/client/api";
+import { envStem, originVarName } from "@pithy-sh/core/src/env/stem";
 import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health";
 import { ORGANIZATION_BASE_PATH } from "@pithy-sh/organization/src/client/api";
 import { TURNSTILE_WIDGET_PATH } from "@pithy-sh/turnstile/src/http/widgetPage";
@@ -31,10 +32,15 @@ interface MetroProxy {
   proxiedPaths(config: GeneratedConfig): string[];
   isProxied(url: string, paths: readonly string[]): boolean;
   createDevProxy(input: { target: string; paths: readonly string[] }): Middleware;
+  envStem(name: string): string;
+  workerOriginVar(appDir: string): string | null;
+  exportedOrigin(appDir: string, env: Record<string, string | undefined>): string | null;
+  devTarget(generated: GeneratedConfig, appDir: string, env: Record<string, string | undefined>): string;
   withDevProxy<T extends { server?: Record<string, unknown> }>(
     config: T,
     appDir: string,
     warn?: (message: string) => void,
+    env?: Record<string, string | undefined>,
   ): T & { server: { enhanceMiddleware?: (middleware: Middleware, server: unknown) => Middleware } };
 }
 
@@ -400,6 +406,83 @@ describe("the dev proxy", () => {
   });
 });
 
+/** A project with the app at `apps/app` and, when `wrangler` is given, the Worker it calls at `apps/api`. */
+async function project(files: { manifest?: string; wrangler?: string }): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "pithy-metro-project-"));
+  dirs.push(root);
+  const app = join(root, "apps", "app");
+  await mkdir(join(app, "src"), { recursive: true });
+  if (files.manifest !== undefined) await writeFile(join(app, "pithy.worker.jsonc"), files.manifest);
+  if (files.wrangler !== undefined) {
+    await mkdir(join(root, "apps", "api"), { recursive: true });
+    await writeFile(join(root, "apps", "api", "wrangler.jsonc"), files.wrangler);
+  }
+  return app;
+}
+
+const callsApi = `{
+  // Written by pithy ui add.
+  "dev": { "command": ["bun", "x", "expo", "start"] },
+  "ui": { "stub": "react-native", "build": ["expo", "export"], "worker": "api", },
+}`;
+
+describe("the Worker origin the dev proxy prefers", () => {
+  test("the stem is the one pithy dev derives, for every shape of name", () => {
+    for (const name of ["api", "demo-api", "media.cli", "-web--app.", "worker2", "My Worker", "a_b"]) {
+      expect(proxy.envStem(name), name).toBe(envStem(name));
+      expect(`${proxy.envStem(name)}_ORIGIN`, name).toBe(originVarName(name));
+    }
+  });
+
+  test("names the Worker in ui.worker by its wrangler.jsonc name", async () => {
+    const app = await project({
+      manifest: callsApi,
+      wrangler: '{\n  // The deployed name.\n  "name": "demo-api",\n  "main": "src/index.ts",\n}\n',
+    });
+    expect(proxy.workerOriginVar(app)).toBe("DEMO_API_ORIGIN");
+  });
+
+  test("a Worker whose wrangler.jsonc names none goes by its directory, as pithy dev names it", async () => {
+    expect(proxy.workerOriginVar(await project({ manifest: callsApi, wrangler: "{}" }))).toBe("API_ORIGIN");
+    expect(proxy.workerOriginVar(await project({ manifest: callsApi, wrangler: "not json" }))).toBe("API_ORIGIN");
+    expect(proxy.workerOriginVar(await project({ manifest: callsApi }))).toBe("API_ORIGIN");
+  });
+
+  test("an app with no readable ui.worker names no variable", async () => {
+    expect(proxy.workerOriginVar(await project({}))).toBeNull();
+    expect(proxy.workerOriginVar(await project({ manifest: "{ ui: " }))).toBeNull();
+    expect(proxy.workerOriginVar(await project({ manifest: '{ "dev": {} }' }))).toBeNull();
+    expect(proxy.workerOriginVar(await project({ manifest: '{ "ui": { "stub": "react-native" } }' }))).toBeNull();
+    expect(proxy.workerOriginVar(await project({ manifest: '{ "ui": { "worker": "" } }' }))).toBeNull();
+    expect(proxy.workerOriginVar(await project({ manifest: '{ "ui": { "worker": 7 } }' }))).toBeNull();
+  });
+
+  test("the exported origin is the variable pithy dev sets for that Worker, and none when it is unset or empty", async () => {
+    const app = await project({ manifest: callsApi, wrangler: '{ "name": "demo-api" }' });
+    expect(proxy.exportedOrigin(app, { DEMO_API_ORIGIN: "http://localhost:9901" })).toBe("http://localhost:9901");
+    expect(proxy.exportedOrigin(app, {})).toBeNull();
+    expect(proxy.exportedOrigin(app, { DEMO_API_ORIGIN: "" })).toBeNull();
+    expect(proxy.exportedOrigin(await project({}), { API_ORIGIN: "http://localhost:9901" })).toBeNull();
+  });
+
+  test("the origin pithy dev exports for that Worker wins over origins.dev", async () => {
+    const app = await project({ manifest: callsApi, wrangler: '{ "name": "demo-api" }' });
+    expect(proxy.devTarget(composed, app, { DEMO_API_ORIGIN: "http://localhost:9901" })).toBe("http://localhost:9901");
+  });
+
+  test("with that variable unset or empty, origins.dev", async () => {
+    const app = await project({ manifest: callsApi, wrangler: '{ "name": "demo-api" }' });
+    expect(proxy.devTarget(composed, app, {})).toBe("http://localhost:8787");
+    expect(proxy.devTarget(composed, app, { DEMO_API_ORIGIN: "" })).toBe("http://localhost:8787");
+    expect(proxy.devTarget(composed, app, { API_ORIGIN: "http://localhost:9901" })).toBe("http://localhost:8787");
+  });
+
+  test("an app with no readable ui.worker reads origins.dev, whatever the environment holds", async () => {
+    const app = await project({});
+    expect(proxy.devTarget(composed, app, { API_ORIGIN: "http://localhost:9901" })).toBe("http://localhost:8787");
+  });
+});
+
 describe("the Metro config's middleware", () => {
   async function appDir(text: string): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), "pithy-metro-"));
@@ -420,6 +503,25 @@ describe("the Metro config's middleware", () => {
     const front = await metro(middleware);
     expect((await fetch(`${front}/teams/acme`)).status).toBe(201);
     expect(seen.map((request) => request.url)).toEqual(["/teams/acme"]);
+  });
+
+  test("in a feature worktree, sends the Worker's paths to the origin pithy dev exports for it", async () => {
+    const seen: Seen[] = [];
+    const target = await worker(seen);
+    const main = await listen(() => undefined);
+    await new Promise((done) => servers.pop()?.close(done));
+    const app = await project({ manifest: callsApi, wrangler: '{ "name": "demo-api" }' });
+    await writeFile(
+      join(app, GENERATED_CONFIG_PATH),
+      renderGeneratedConfig({ ...composed, origins: { dev: main } }, "api"),
+    );
+    const middleware = proxy
+      .withDevProxy({}, app, undefined, { DEMO_API_ORIGIN: target })
+      .server.enhanceMiddleware?.(metroOwn, {});
+    if (middleware === undefined) throw new Error("no middleware");
+    const front = await metro(middleware);
+    expect((await fetch(`${front}/api/auth/get-session`)).status).toBe(201);
+    expect(seen.map((request) => request.url)).toEqual(["/api/auth/get-session"]);
   });
 
   test("puts the proxy in front of Metro's middleware and any enhancer already there", async () => {

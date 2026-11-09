@@ -1,5 +1,9 @@
-import type { ExpoConfig } from "expo/config";
+import type { ConfigContext, ExpoConfig } from "expo/config";
+import { exportedOrigin } from "./metro-proxy.cjs";
 import generated from "./src/pithy-config.generated.ts";
+
+/** Expo evaluates this file in Node, in the `expo start` process `pithy dev` runs with the Worker's origin. */
+declare const process: { readonly env: Readonly<Record<string, string | undefined>> };
 
 /** The host whose https links open the app, once `universalLinkOrigin` names one. */
 const universalHost = generated.universalLinkOrigin?.replace(/^https:\/\//, "") ?? null;
@@ -14,10 +18,14 @@ const googleIosScheme = generated.google.iosClientId
  * a checkout returns through are stated once, in `src/pithy-config.generated.ts`, so the app cannot answer to a
  * link the config does not name.
  *
+ * `extra.pithyDevOrigin` is the origin `pithy dev` exports for the app's Worker, read the way `metro-proxy.cjs`
+ * reads it, or `null` when it is unset. A dev build on a phone calls it instead of a loopback `origins.dev`, which is
+ * committed and holds the main checkout's port, while each feature worktree has its own.
+ *
  * The name and the bundle identifiers are yours: set `ios.bundleIdentifier` and `android.package` before a store
  * build, and give Apple sign-in the same identifier the Worker's `appBundleIdentifier` names.
  */
-export default (): ExpoConfig => ({
+export default ({ projectRoot }: ConfigContext): ExpoConfig => ({
   name: "__PITHY_APP__",
   slug: "__PITHY_APP__",
   scheme: generated.appScheme,
@@ -42,6 +50,7 @@ export default (): ExpoConfig => ({
       : [],
   },
   web: { output: "single" },
+  extra: { pithyDevOrigin: exportedOrigin(projectRoot, process.env) },
   plugins: [
     "expo-router",
     "expo-secure-store",

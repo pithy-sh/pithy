@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
 import { baseUrlFor, domainFor } from "@pithy-sh/core/src/naming/domains";
@@ -13,7 +13,8 @@ import {
   type PlatformRails,
 } from "@pithy-sh/ui-react-native/src/generatedConfig";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { BASE_PORT } from "../feature/ports";
+import { BASE_PORT, resolveMainRepoRoot } from "../feature/ports";
+import { defaultGit } from "../feature/worktree";
 import { allCapabilities, loadWorkerDomains, projectEnvironments, type WorkerConfig } from "../project/config";
 import { readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { deriveWorkerFirst } from "./routeAllowlist";
@@ -33,11 +34,29 @@ import { deriveWorkerFirst } from "./routeAllowlist";
 const PROJECTED = ["auth", "i18n", "payments", "turnstile", "consent"] as const;
 
 /**
- * Where the backend answers under `pithy dev`: the origin `.dev.config.json` pins for it, or the first port of
- * the dev block when no dev session has pinned one yet. A sync rewrites it from the pinned one.
+ * The checkout whose `.dev.config.json` the committed file's dev origin comes from: the main checkout, from the
+ * main checkout or any feature worktree of it. A worktree's own block is the worktree's alone, and `pithy dev`
+ * hands it to that worktree's `expo start` as `<STEM>_ORIGIN`. A project outside git is its own checkout.
+ */
+async function mainCheckoutDir(projectDir: string): Promise<string> {
+  try {
+    const stdout = await defaultGit(["rev-parse", "--git-dir", "--git-common-dir"], projectDir);
+    const [gitDir = "", commonDir = ""] = stdout.split(/\r?\n/);
+    if (resolve(projectDir, gitDir) === resolve(projectDir, commonDir)) return projectDir;
+    return await resolveMainRepoRoot(projectDir);
+  } catch {
+    return projectDir;
+  }
+}
+
+/**
+ * Where the backend answers under `pithy dev` in the main checkout: the origin its `.dev.config.json` pins, or
+ * the first port of the dev block when no dev session has pinned one yet. The generated file is committed and a
+ * hand-run `expo start` reads it with nothing to override it, so a sync in a feature worktree writes the main
+ * checkout's origin too, never the worktree's.
  */
 export async function devOrigin(projectDir: string, deployedName: string | undefined): Promise<string> {
-  const pinned = await readDevConfig(devConfigPath(projectDir)).catch(() => null);
+  const pinned = await readDevConfig(devConfigPath(await mainCheckoutDir(projectDir))).catch(() => null);
   const origin = deployedName === undefined ? undefined : pinned?.workers[deployedName]?.origin;
   return origin ?? `http://localhost:${BASE_PORT}`;
 }

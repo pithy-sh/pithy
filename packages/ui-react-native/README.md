@@ -50,6 +50,7 @@ secureStore.failing = true; // every call now rejects
 |---|---|---|
 | `expo-secure-store` | `expo-secure-store` | `secureStore.items`, a `Map`. `failing` rejects every call. `slowWrites`, a promise, holds every write until it settles |
 | `@react-native-async-storage/async-storage` | `async-storage` | `asyncStorage.items`, a `Map` |
+| `expo-constants` | `expo-constants` | `constants.expoConfig.extra`, the `extra` the app config handed the build, empty by default. Setting `pithyDevOrigin` there is the origin `pithy dev` exported, which a dev build calls in place of a loopback `origins.dev` |
 | `expo-crypto` | `expo-crypto` | `cryptoStub.minted`, every `randomUUID` handed out. Randomness and SHA-256 are Web Crypto's, so they are real |
 | `expo-router` | `expo-router` | `expoRouter.visit(href)` lands on a path as a deep link would. `history` logs each `push` and `replace`. `place` is the current pathname and params |
 | `expo-linking` | `expo-linking` | `linking.scheme`, `pithyapp` by default. `opened` logs every `openURL` |

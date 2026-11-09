@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { appEnvironment, type GeneratedPithyConfig, originFor, projectionFor } from "../templates/src/pithy-config";
+import { constants } from "../testing/expo-constants";
 import type { GeneratedConfig } from "./generatedConfig";
 
 const origins = { dev: "http://localhost:8787", staging: "https://staging.example.com", prod: null };
@@ -56,6 +57,24 @@ describe("originFor", () => {
     expect(() => originFor(plain, "staging", "ios")).toThrow(/origins\.staging.*https/);
     expect(() => originFor(plain, "prod", "android")).toThrow(/origins\.prod.*https/);
     expect(originFor({ dev: "http://192.168.1.20:8787" }, "dev", "ios")).toBe("http://192.168.1.20:8787");
+  });
+
+  test("in dev, the origin pithy dev exported to expo start wins over origins.dev, and Android still swaps loopback", () => {
+    expect(originFor(origins, "dev", "ios", "http://localhost:9901")).toBe("http://localhost:9901");
+    expect(originFor(origins, "dev", "android", "http://localhost:9901")).toBe("http://10.0.2.2:9901");
+    expect(originFor(origins, "dev", "ios", null)).toBe("http://localhost:8787");
+    expect(originFor({ dev: "http://localhost:8787" }, "dev", "ios", "")).toBe("http://localhost:8787");
+  });
+
+  test("a dev origin set to this machine's network address, for a device, is kept over the exported one", () => {
+    const network = { dev: "http://192.168.1.20:8787" };
+    expect(originFor(network, "dev", "ios", "http://localhost:9901")).toBe("http://192.168.1.20:8787");
+    expect(originFor(network, "dev", "android", "http://localhost:9901")).toBe("http://192.168.1.20:8787");
+  });
+
+  test("a staging or prod build never calls the exported dev origin", () => {
+    expect(originFor(origins, "staging", "ios", "http://localhost:9901")).toBe("https://staging.example.com");
+    expect(() => originFor(origins, "prod", "ios", "http://localhost:9901")).toThrow(/origins\.prod/);
   });
 
   test("the web build calls relative paths, so it needs no origin and is not refused for want of one", () => {
@@ -128,6 +147,16 @@ describe("the app's config, as a build reads it", () => {
   test("consent's base path is the one the build's environment composed, and its default where none is", async () => {
     expect((await built("prod")).consentConfig.basePath).toBe("/privacy");
     expect((await built("staging")).consentConfig).toEqual({ enabled: false, basePath: "/consent" });
+  });
+
+  test("a dev build calls the origin app.config.ts passed in extra, and origins.dev without one", async () => {
+    constants.expoConfig.extra = { pithyDevOrigin: "http://localhost:9901" };
+    expect((await built("dev")).origin).toBe("http://localhost:9901");
+    expect((await built("prod")).origin).toBe("https://api.example.com");
+    constants.expoConfig.extra = { pithyDevOrigin: null };
+    expect((await built("dev")).origin).toBe("http://localhost:8787");
+    constants.expoConfig.extra = {};
+    expect((await built("dev")).origin).toBe("http://localhost:8787");
   });
 
   test("a build naming an environment the file has no projection for fails, naming the field", async () => {
