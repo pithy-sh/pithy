@@ -119,6 +119,51 @@ describe("runPackageStep", () => {
     expect(await readFile(join(dir, "bun.lock"), "utf8")).toBe(LOCK);
   });
 
+  test("a workspace member outside apps/* is moved, installed at the target, and restored on a failed install", async () => {
+    const root = ROOT.replace('"apps/*"', '"apps/*", "packages/*"');
+    const shared = `${JSON.stringify({ name: "shared", dependencies: { "@pithy-sh/auth": "^0.2.0", "@pithy-sh/core": "^0.7.2" } }, null, 2)}\n`;
+    await writeFile(join(dir, "package.json"), root);
+    await mkdir(join(dir, "packages", "shared"), { recursive: true });
+    await writeFile(join(dir, "packages", "shared", "package.json"), shared);
+    await fakeInstall()("bun", ["install"], dir);
+    const fetch = fakeRegistry({
+      "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0", "0.2.3", "0.3.1"]),
+      "@pithy-sh/core": fakePackument("@pithy-sh/core", ["0.7.2", "0.8.0"]),
+      "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["0.9.4"]),
+    });
+
+    const failed = runPackageStep({
+      projectDir: dir,
+      latest: true,
+      dryRun: false,
+      fetch,
+      runInstall: async () => {
+        throw new Error("ECONNRESET");
+      },
+    });
+    await expect(failed).rejects.toBeInstanceOf(InternalError);
+    expect(await readFile(join(dir, "package.json"), "utf8")).toBe(root);
+    expect(await readFile(join(dir, "apps", "board", "package.json"), "utf8")).toBe(BOARD);
+    expect(await readFile(join(dir, "packages", "shared", "package.json"), "utf8")).toBe(shared);
+
+    const result = await runPackageStep({
+      projectDir: dir,
+      latest: true,
+      dryRun: false,
+      fetch,
+      runInstall: fakeInstall(),
+    });
+    expect(result.report.moves.filter((move) => move.manifest === "packages/shared/package.json")).toMatchObject([
+      { name: "@pithy-sh/auth", from: "^0.2.0", to: "^0.3.1" },
+      { name: "@pithy-sh/core", from: "^0.7.2", to: "^0.8.0" },
+    ]);
+    expect(result.report.mismatches).toEqual([]);
+    const installed = async (member: string, name: string) =>
+      JSON.parse(await readFile(join(dir, member, "node_modules", "@pithy-sh", name, "package.json"), "utf8")).version;
+    for (const member of [".", "apps/board", "packages/shared"]) expect(await installed(member, "auth")).toBe("0.3.1");
+    for (const member of [".", "packages/shared"]) expect(await installed(member, "core")).toBe("0.8.0");
+  });
+
   test("an install that leaves a package below its target is a mismatch, per manifest", async () => {
     const run = fakeInstall({ hold: ["@pithy-sh/auth"] });
     const result = await runPackageStep({

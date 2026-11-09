@@ -73,6 +73,20 @@ describe("installedCapabilityVersions", () => {
   });
 });
 
+describe("installedCapabilityVersions — workspace members", () => {
+  test("a copy installed only under a member outside apps/* is read", async () => {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["packages/*"] }));
+    await mkdir(join(dir, "packages", "shared", "node_modules", "@pithy-sh", "organization"), { recursive: true });
+    await writeFile(join(dir, "packages", "shared", "package.json"), "{}");
+    await writeFile(
+      join(dir, "packages", "shared", "node_modules", "@pithy-sh", "organization", "package.json"),
+      JSON.stringify({ name: "@pithy-sh/organization", version: "0.12.0" }),
+    );
+    expect(await installedCapabilityVersions(dir)).toEqual([{ name: "@pithy-sh/organization", version: "0.12.0" }]);
+  });
+});
+
 describe("buildDoctorReport — cache bypass and state", () => {
   test("always queries the registry even when the cache is fresh", async () => {
     // Pre-seed a fresh state; doctor must still fetch.

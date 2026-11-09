@@ -253,6 +253,36 @@ describe("declaredSpecs", () => {
     ]);
   });
 
+  test("every workspace member is read once, outside apps/* included", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*", "packages/*"] }));
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(
+      join(dir, "apps", "api", "package.json"),
+      JSON.stringify({ dependencies: { "@pithy-sh/core": "^0.18.0" } }),
+    );
+    await mkdir(join(dir, "packages", "shared"), { recursive: true });
+    await writeFile(
+      join(dir, "packages", "shared", "package.json"),
+      JSON.stringify({ dependencies: { "@pithy-sh/core": "^0.18.0", "@pithy-sh/organization": "^0.12.0" } }),
+    );
+    await mkdir(join(dir, "packages", "shared", "node_modules", "@pithy-sh", "core"), { recursive: true });
+    await writeFile(
+      join(dir, "packages", "shared", "node_modules", "@pithy-sh", "core", "package.json"),
+      JSON.stringify({ dependencies: { "@pithy-sh/errors": "^1.0.0" } }),
+    );
+
+    expect(await declaredSpecs(dir)).toEqual([
+      { name: "@pithy-sh/core", manifest: "apps/api/package.json", field: "dependencies", spec: "^0.18.0" },
+      { name: "@pithy-sh/core", manifest: "packages/shared/package.json", field: "dependencies", spec: "^0.18.0" },
+      {
+        name: "@pithy-sh/organization",
+        manifest: "packages/shared/package.json",
+        field: "dependencies",
+        spec: "^0.12.0",
+      },
+    ]);
+  });
+
   test("no manifest at all declares nothing", async () => {
     expect(await declaredSpecs(dir)).toEqual([]);
   });

@@ -1216,10 +1216,17 @@ describe("runUpgrade --packages", () => {
       leftAlone: [],
       mismatches: [],
       templates: [],
-      uncompared: ["phone"],
+      uncompared: ["phone", "mobile/tablet", "./handset"],
     };
-    expect(upgradeText({ workers: [], manifestFaults: [], packages }, false)).toContain(
+    const text = upgradeText({ workers: [], manifestFaults: [], packages }, false);
+    expect(text).toContain(
       "Templates: apps/phone is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.",
+    );
+    expect(text).toContain(
+      "Templates: mobile/tablet is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.",
+    );
+    expect(text).toContain(
+      "Templates: handset is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.",
     );
   });
 
@@ -1617,6 +1624,29 @@ describe("doctor's advice clears its own line", () => {
     expect(before.cli).toMatchObject({ state: "outdated", upgradeCommand: "pithy upgrade --packages" });
     await upgradeWith(fetch, false);
     expect((await doctorAsCli()).cli).toMatchObject({ state: "current", installed: "1.3.0" });
+  });
+
+  test("a stale range in a workspace member outside apps/*: doctor names --packages, and after it the line is current", async () => {
+    await writeFile(
+      join(project, "package.json"),
+      `${JSON.stringify({ name: "replay", workspaces: ["apps/*", "packages/*"] }, null, 2)}\n`,
+    );
+    await mkdir(join(project, "packages", "shared"), { recursive: true });
+    await writeFile(
+      join(project, "packages", "shared", "package.json"),
+      `${JSON.stringify({ name: "shared", dependencies: { "@pithy-sh/auth": "^0.2.0" } }, null, 2)}\n`,
+    );
+    await rm(join(project, "node_modules"), { recursive: true, force: true });
+    await fakeInstall()("bun", ["install"], project);
+    const fetch = registryAt("0.2.3");
+    expect(authRow(await doctorWith(fetch))).toMatchObject({
+      state: "outdated",
+      installed: "0.2.0",
+      command: "pithy upgrade --packages",
+    });
+    const run = await upgradeWith(fetch, false);
+    expect(run.packages?.moves).toMatchObject([{ name: "@pithy-sh/auth", manifest: "packages/shared/package.json" }]);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.2.3" });
   });
 
   test("across a boundary: doctor names --latest, plain --packages leaves the line, and --latest clears it", async () => {

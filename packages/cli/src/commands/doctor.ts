@@ -191,6 +191,7 @@ import { checkExtensions, describeExtension, type ExtensionsCheck } from "../pro
 import { alreadyProvided, detectPackageManager } from "../project/packageManager";
 import type { ResolvedWorker } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck, workflowDriftFix } from "../project/workflows";
+import { workspaceMembers } from "../project/workspaceMembers";
 import { describeUnrepeatedKey } from "../project/wranglerInheritance";
 import { provisionFixCommand, provisionRemedy } from "../provision/provisionFix";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -817,7 +818,7 @@ export interface DoctorReportOptions {
   readRc?: (path: string) => Promise<string>;
   /** Installed-capability enumerator seam; defaults to scanning `node_modules/@pithy-sh/*`. */
   installedCapabilities?: (projectDir: string) => Promise<{ name: string; version: string }[]>;
-  /** Declared-dependency reader seam; defaults to {@link declaredSpecs} over the root and `apps/*` manifests. */
+  /** Declared-dependency reader seam; defaults to {@link declaredSpecs} over every workspace member's manifest. */
   declaredSpecs?: (projectDir: string) => Promise<DeclaredSpec[]>;
   /** Project-config loader seam; defaults to {@link loadProject} (a `NotFoundError` marks "outside a project"). */
   loadProject?: (projectDir: string) => Promise<ProjectConfig>;
@@ -982,30 +983,19 @@ export interface DoctorReportOptions {
 /**
  * Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted.
  *
- * **Across the project root and every Worker, because a capability belongs to the Worker composing it.**
- * A project that declares one only where it is used installs it under `apps/<name>/node_modules`, and a
- * root-only read would report "all up to date" about packages it never saw.
- *
- * `apps/*` is enumerated directly rather than taken from resolved Workers, for the reason every other
- * command enumerates it: the folder is the registry, and this runs before the Workers are resolved.
+ * **Across every workspace member, because a capability belongs to the Worker composing it.** A project
+ * that declares one only where it is used installs it under that member's own `node_modules`, and a
+ * root-only read would report "all up to date" about packages it never saw. The members come from
+ * {@link workspaceMembers}, the same set `pithy upgrade --packages` moves, and are read before any Worker is
+ * resolved.
  *
  * The **first** version found for a name wins, root first, so a listing stays one row per package. Two
- * Workers pinning one capability differently is a real thing this cannot say — worth a line of its own
- * one day, and still better than the four-of-nine it replaced.
+ * members pinning one capability differently is a real thing this cannot say.
  */
 export async function installedCapabilityVersions(projectDir: string): Promise<{ name: string; version: string }[]> {
-  const appsDir = join(projectDir, "apps");
-  let workers: string[] = [];
-  try {
-    workers = (await readdir(appsDir, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(appsDir, entry.name));
-  } catch {
-    // No `apps/` — a project mid-scaffold, or one whose Workers live nowhere yet.
-  }
-
   const found = new Map<string, string>();
-  for (const dir of [projectDir, ...workers]) {
+  for (const member of await workspaceMembers(projectDir)) {
+    const dir = join(projectDir, member);
     const scopeDir = join(dir, "node_modules", "@pithy-sh");
     let entries: string[];
     try {

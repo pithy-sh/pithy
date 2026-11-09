@@ -41,6 +41,7 @@ import { envArg, requireEnvironment } from "../project/environment";
 import type { InstallRunner } from "../project/packageManager";
 import { pathExists } from "../project/scaffold";
 import { workerDirName } from "../project/workerIdentity";
+import { memberPath } from "../project/workspaceMembers";
 import { workerEntryPath, workerEnvironments } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
 import { NextKey, type NextStep, upgradeNext } from "../terminal/nextSteps";
@@ -770,7 +771,7 @@ function templateLines(report: PackagesReport): string[] {
   if (report.state === "unavailable") return [];
   const native = (report.uncompared ?? []).map(
     (app) =>
-      `Templates: apps/${app} is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.`,
+      `Templates: ${memberPath(app)} is a React Native app. Its templates are not compared; diff it against @pithy-sh/ui-react-native's by hand.`,
   );
   if (report.templates.length === 0) return ["Templates: not checked. No template-bearing package moves.", ...native];
   const lines: string[] = [...native];
