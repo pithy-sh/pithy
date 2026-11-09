@@ -1,15 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Packument, RegistryFetch, RegistryResponse } from "../kitPackages/registry";
 import type { InstallRunner } from "../project/packageManager";
+import { workspaceMembers } from "../project/workspaceMembers";
 
 /**
  * A package manager that does what `<pm> install` does to the one fact `pithy upgrade --packages` checks:
- * every `@pithy-sh/*` range in the root and `apps/*` manifests is installed at its floor, in that manifest's
- * own `node_modules`. The floor is what a rewritten range pins, so a fake that installed anything else
+ * every `@pithy-sh/*` range in every workspace member's manifest is installed at its floor, in that
+ * manifest's own `node_modules`. The floor is what a rewritten range pins, so a fake that installed anything else
  * would be testing itself.
  *
  * `hold` names packages it leaves where they are, to stand in for an install that resolved something the
@@ -21,13 +22,7 @@ export function fakeInstall(
   const calls: [string, string[], string][] = [];
   const runner = async (command: string, args: string[], cwd: string) => {
     calls.push([command, args, cwd]);
-    let apps: string[] = [];
-    try {
-      apps = (await readdir(join(cwd, "apps"))).map((name) => join(cwd, "apps", name));
-    } catch {
-      // no Workers
-    }
-    for (const dir of [cwd, ...apps]) {
+    for (const dir of (await workspaceMembers(cwd)).map((member) => join(cwd, member))) {
       let doc: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
       try {
         doc = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));

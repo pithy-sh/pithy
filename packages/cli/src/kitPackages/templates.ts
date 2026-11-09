@@ -6,6 +6,7 @@ import { basename, join, relative, sep } from "node:path";
 import { compareVersions } from "../notifier/version";
 import { packageDirFrom } from "../project/kitResolve";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { memberName, workspaceMembers } from "../project/workspaceMembers";
 import { reactStub } from "../ui/react";
 import type { UiStubContext } from "../ui/stubs";
 import { substitute } from "../ui/templates";
@@ -18,17 +19,17 @@ import { readTemplateTarball } from "./tarball";
 /**
  * **Which of the files a Worker copied from a template changed upstream in the move this run makes.**
  *
- * `pithy ui add` copies `@pithy-sh/ui-react`'s templates into `apps/<worker>/` and records nothing about
- * it. So this does not ask what was copied; it diffs. The Worker's own file at each template path is
+ * `pithy ui add` copies `@pithy-sh/ui-react`'s templates into a Worker's directory and records nothing
+ * about it. So this does not ask what was copied; it diffs. Every workspace member with a React front end is
+ * read, wherever the workspace globs put it. The Worker's own file at each template path is
  * compared against the version it is moving to (T), the versions the project has installed now (F), and —
  * when a copy matches none of those — the published versions below T that nothing installs. Equal to T is
  * already current. Equal to any other version is an untouched copy of it, named whether or not F and T
  * differ there, because the copy is stale either way. Anything else is edited, and is named only where F
  * and T differ: an edit of a file this move does not change is the adopter's business.
  *
- * **The report runs on every move of the template-bearing package, not only a breaking one.** The refusal
- * code #634 was filed about moved in the 0.3.0 → 0.3.1 *patch*, so a report limited to breaking moves
- * would have missed the one failure it exists to name.
+ * **The report runs on every move of the template-bearing package, not only a breaking one.** A template
+ * can change in a patch release, and a copy left behind by one is as stale as any other.
  *
  * **The templates come from the CLI's ui-react, not the adopter's**, because `ui/react.ts` imports its
  * template directory from its own dependency. So F reads both: any ui-react installed under the project,
@@ -53,7 +54,7 @@ export type TemplateTree = ReadonlyMap<string, string>;
 
 /** One file one Worker should look at. */
 export interface TemplateFinding {
-  /** The Worker, by directory name. */
+  /** The Worker, named as {@link memberName} names a workspace member. */
   worker: string;
   /** The file, relative to the Worker. */
   path: string;
@@ -123,6 +124,15 @@ function differs(a: readonly string[] | undefined, b: readonly string[] | undefi
 
 const ORDER = { changed: 0, removed: 1, added: 2 } as const;
 
+/** One Worker's copies of template files, keyed by template path. */
+export interface HeldCopies {
+  /** The name its findings carry, {@link TemplateFinding.worker}. */
+  name: string;
+  /** Its directory name, which `pithy ui add` rendered `__PITHY_WORKER__` as when it copied the templates. */
+  directory: string;
+  files: ReadonlyMap<string, string>;
+}
+
 /**
  * Classify every Worker's copy against T. Pure.
  *
@@ -140,7 +150,7 @@ export function classifyTemplates(input: {
   /** Published versions older than F, for placing copies F cannot. Never a reason to name an edit. */
   history?: ReadonlyMap<string, TemplateTree>;
   to: { version: string; tree: TemplateTree };
-  workers: readonly { name: string; files: ReadonlyMap<string, string> }[];
+  workers: readonly HeldCopies[];
 }): TemplateFinding[] {
   const target = byTarget(input.to.tree);
   // Newest first, so an untouched copy is attributed to the latest version it matches.
@@ -154,7 +164,7 @@ export function classifyTemplates(input: {
   const paths = [...new Set([...target.keys(), ...from.flatMap(([, tree]) => [...tree.keys()])])].sort();
   const findings: TemplateFinding[] = [];
   for (const worker of input.workers) {
-    const tokens = reactStub.substitutions(everything(worker.name, true));
+    const tokens = reactStub.substitutions(everything(worker.directory, true));
     const render = (text: string) => normalize(substitute(text, tokens));
     for (const path of paths) {
       const t = target.get(path);
@@ -187,14 +197,10 @@ export function classifyTemplates(input: {
  * Whether any Worker holds a copy at a known path that is neither T's nor any F version's — the only case
  * the published history can change the answer for.
  */
-function unplaced(
-  trees: readonly TemplateTree[],
-  to: TemplateTree,
-  workers: readonly { name: string; files: ReadonlyMap<string, string> }[],
-): boolean {
+function unplaced(trees: readonly TemplateTree[], to: TemplateTree, workers: readonly HeldCopies[]): boolean {
   const all = [to, ...trees].map(byTarget);
   return workers.some((worker) => {
-    const tokens = reactStub.substitutions(everything(worker.name, true));
+    const tokens = reactStub.substitutions(everything(worker.directory, true));
     const render = (text: string) => normalize(substitute(text, tokens));
     return [...worker.files].some(
       ([path, held]) => !all.some((tree) => (tree.get(path) ?? []).some((text) => render(text) === normalize(held))),
@@ -281,17 +287,12 @@ async function versionAt(dir: string): Promise<string | null> {
   return typeof version === "string" ? version : null;
 }
 
-/** `projectDir` and each `apps/*` directory. */
-async function bases(projectDir: string): Promise<string[]> {
-  try {
-    const apps = (await readdir(join(projectDir, "apps"), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(projectDir, "apps", entry.name))
-      .sort();
-    return [projectDir, ...apps];
-  } catch {
-    return [projectDir];
-  }
+/** Each workspace member, by its report name and absolute directory, the root first. */
+async function members(projectDir: string): Promise<{ name: string; dir: string }[]> {
+  return (await workspaceMembers(projectDir)).map((member) => ({
+    name: memberName(member),
+    dir: join(projectDir, member),
+  }));
 }
 
 /**
@@ -300,7 +301,7 @@ async function bases(projectDir: string): Promise<string[]> {
  */
 export async function installedTemplateCopies(projectDir: string): Promise<Map<string, string>> {
   const dirs: string[] = [];
-  for (const base of await bases(projectDir)) {
+  for (const { dir: base } of await members(projectDir)) {
     dirs.push(join(base, "node_modules", ...TEMPLATE_PACKAGE.split("/")));
     try {
       const cli = await realpath(join(base, "node_modules", ...CLI.split("/")));
@@ -321,9 +322,9 @@ export async function installedTemplateCopies(projectDir: string): Promise<Map<s
 /** Each Worker with a React front end, by name and directory. */
 async function uiWorkers(projectDir: string): Promise<{ name: string; dir: string }[]> {
   const out: { name: string; dir: string }[] = [];
-  for (const dir of (await bases(projectDir)).slice(1)) {
+  for (const member of (await members(projectDir)).slice(1)) {
     try {
-      if ((await readWorkerUi(dir))?.stub === "react") out.push({ name: basename(dir), dir });
+      if ((await readWorkerUi(member.dir))?.stub === "react") out.push(member);
     } catch {
       // A manifest that will not read is not a front end this can compare.
     }
@@ -332,14 +333,14 @@ async function uiWorkers(projectDir: string): Promise<{ name: string; dir: strin
 }
 
 /**
- * Each app with a React Native front end, by directory name. Its templates come from `@pithy-sh/ui-react-native`,
+ * Each app with a React Native front end, named as {@link TemplateFinding.worker} is. Its templates come from `@pithy-sh/ui-react-native`,
  * and this report compares `@pithy-sh/ui-react`'s alone, so it names them as not compared.
  */
 export async function uncomparedApps(projectDir: string): Promise<string[]> {
   const out: string[] = [];
-  for (const dir of (await bases(projectDir)).slice(1)) {
+  for (const member of (await members(projectDir)).slice(1)) {
     try {
-      if ((await readWorkerUi(dir))?.stub === "react-native") out.push(basename(dir));
+      if ((await readWorkerUi(member.dir))?.stub === "react-native") out.push(member.name);
     } catch {
       // A manifest that will not read is not a front end this can name.
     }
@@ -441,7 +442,11 @@ export async function templateSections(options: {
       ...new Set([...byTarget(tree).keys(), ...[...trees.values()].flatMap((t) => [...byTarget(t).keys()])]),
     ];
     const held = await Promise.all(
-      workers.map(async (worker) => ({ name: worker.name, files: await workerFiles(worker.dir, known) })),
+      workers.map(async (worker) => ({
+        name: worker.name,
+        directory: basename(worker.dir),
+        files: await workerFiles(worker.dir, known),
+      })),
     );
     const history = unplaced([...trees.values()], tree, held)
       ? await publishedHistory(target.version, from)
