@@ -34,6 +34,7 @@ export const TEMPLATE_GROUPS = {
     "app.config.ts",
     "metro.config.js",
     "metro-proxy.cjs",
+    "metro-proxy.d.cts",
     "tsconfig.json",
     "vitest.config.ts",
     "app/_layout.tsx",

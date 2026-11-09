@@ -11,6 +11,7 @@ import {
   PAYMENTS_DISABLED,
   TURNSTILE_DISABLED,
 } from "@pithy-sh/ui-core/src/config";
+import Constants from "expo-constants";
 import { Platform } from "react-native";
 import generated from "./pithy-config.generated";
 
@@ -132,16 +133,22 @@ export const consentConfig = consent.enabled ? consent : CONSENT_DISABLED;
 const LOOPBACK = /^(https?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 /**
- * The origin a build calls. An Android emulator is a machine of its own, and reaches this one's loopback at
- * `10.0.2.2`. A device on your network reaches neither: set `origins.dev` to this machine's network address.
- * The web build calls relative paths from the Worker's own origin, so it needs none: `""` when none is set.
+ * The origin a build calls. In dev, `exported` wins over a loopback `origins.dev` when it is set: it is the origin
+ * `pithy dev` exported for the Worker to the `expo start` serving the build, the port of that checkout's Worker,
+ * where the committed `origins.dev` holds the main checkout's. An Android emulator is a machine of its own, and
+ * reaches this one's loopback at `10.0.2.2`. A device on your network reaches neither: set `origins.dev` to this
+ * machine's network address, which is kept over `exported`. The web build calls relative paths from the Worker's own
+ * origin, so it needs none: `""` when none is set.
  */
 export function originFor(
   origins: GeneratedPithyConfig["origins"],
   environment: AppEnvironment,
   platform: string,
+  exported: string | null = null,
 ): string {
-  const found = origins[environment];
+  const configured = origins[environment];
+  const local = configured === undefined || configured === null || LOOPBACK.test(configured);
+  const found = environment === "dev" && local && exported !== null && exported !== "" ? exported : configured;
   if (found === undefined || found === null) {
     if (platform === "web") return "";
     throw new Error(
@@ -158,8 +165,14 @@ export function originFor(
   return found.replace(LOOPBACK, (_match, scheme: string, _host: string, port = "") => `${scheme}10.0.2.2${port}`);
 }
 
+/** The origin `app.config.ts` read from `pithy dev` when Expo evaluated it, or `null` when it found none. */
+function devOriginFromExpo(): string | null {
+  const exported = Constants.expoConfig?.extra?.pithyDevOrigin;
+  return typeof exported === "string" ? exported : null;
+}
+
 /** The Worker's absolute origin in that environment. Every request on a phone goes here. */
-export const origin: string = originFor(config.origins, environment, Platform.OS);
+export const origin: string = originFor(config.origins, environment, Platform.OS, devOriginFromExpo());
 
 /** The app's own URL scheme. */
 export const appScheme: string = config.appScheme;
