@@ -30,7 +30,7 @@ export interface AuditQuery {
   actorKind?: ControlPlaneActorKind;
   /** Match an exact `domain/reason` action code. */
   action?: string;
-  /** Match every action under one domain — `auth` matches `auth/login`, never `authority/granted`. */
+  /** Match every action under one domain — `auth` matches `auth/signin`, never `authority/granted`. */
   actionPrefix?: string;
   /** Match the outcome (`success` | `failure` | `denied`). */
   outcome?: AuditOutcome;
