@@ -63,7 +63,7 @@ const LEDGER: Record<string, Held> = {
   // ── base ────────────────────────────────────────────────────────────────────────────────────────
   "app.config.ts": {
     ungated:
-      "The two values that must agree with the screens, the scheme a sign-in returns to and the host a universal link claims, are read from `src/pithy-config.generated.ts` rather than written here, so the agreement is one statement and the rest of the file — the name, the bundle identifiers, the plugins — is the adopter's to set. Restating the scheme as a literal breaks the first sign-in tried on a device, which is loud. `src/appConfig.test.tsx` holds the kit's template to reading both, and it is not named as a kept gate because neither wall stands: the file loads in plain Node, and the party who can break it is the adopter. The CLI's `src/ui/expoConfig.e2e.test.ts` scaffolds a project and holds the template to loading under Expo's own CLI.",
+      "The two values that must agree with the screens, the scheme a sign-in returns to and the host a universal link claims, are read from `src/pithy-config.generated.ts` rather than written here, and the dev origin it hands the phone builds is read by `metro-proxy.cjs`'s own reader, so the agreement is one statement and the rest of the file — the name, the bundle identifiers, the plugins — is the adopter's to set. Restating the scheme as a literal breaks the first sign-in tried on a device, which is loud. `src/appConfig.test.tsx` holds the kit's template to reading all three, and it is not named as a kept gate because neither wall stands: the file loads in plain Node, and the party who can break it is the adopter. The CLI's `src/ui/expoConfig.e2e.test.ts` scaffolds a project and holds the template to loading under Expo's own CLI.",
   },
   "metro.config.js": {
     ungated:
@@ -73,6 +73,10 @@ const LEDGER: Record<string, Held> = {
     keptGate: "src/metroProxy.test.ts",
     wall: "kit",
     why: "What it must agree with is the kit's: it reads `src/pithy-config.generated.ts` without TypeScript, so its reader has to accept every file the kit's own reader accepts and refuse every one it refuses, and the format changes only when the kit changes `generatedConfig.ts`. The gate holds the two readers together and holds the proxy to never forwarding a path a screen claims. It runs only under `pithy dev`, so an adopter's edit costs their own dev loop and never a build.",
+  },
+  "metro-proxy.d.cts": {
+    ungated:
+      "Declarations only: the one function of `metro-proxy.cjs` that `app.config.ts` imports, typed so the app's TypeScript compiles that import. It runs nothing. TypeScript takes the declaration as written and never checks `metro-proxy.cjs` against it, so a drift passes the typecheck; it fails when `expo start` or `expo config` evaluates `app.config.ts` and `exportedOrigin` is not the function declared, a TypeError on the first dev start, which is loud.",
   },
   "tsconfig.json": {
     ungated:
@@ -110,7 +114,7 @@ const LEDGER: Record<string, Held> = {
   "src/pithy-config.ts": {
     keptGate: "src/pithyConfig.test.tsx",
     wall: "runner",
-    why: "It picks the Worker's origin per environment and refuses a phone sending its bearer credential to staging or prod over anything but https. It reads `Platform` from `react-native`, so no test of it loads in the project's Node runner.",
+    why: "It picks the Worker's origin per environment, prefers the dev origin `pithy dev` exported over a loopback `origins.dev`, and refuses a phone sending its bearer credential to staging or prod over anything but https. It reads `Platform` from `react-native`, so no test of it loads in the project's Node runner.",
   },
   "src/pithy-config.generated.ts": {
     ungated:

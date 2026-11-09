@@ -5,6 +5,7 @@ import { I18nManager } from "react-native";
 import { afterEach } from "vitest";
 import { asyncStorage } from "./async-storage";
 import { apple } from "./expo-apple-authentication";
+import { constants } from "./expo-constants";
 import { cryptoStub } from "./expo-crypto";
 import { iap } from "./expo-iap";
 import { linking } from "./expo-linking";
@@ -30,6 +31,7 @@ afterEach(() => {
   for (const stub of [
     cryptoStub,
     apple,
+    constants,
     iap,
     linking,
     localization,

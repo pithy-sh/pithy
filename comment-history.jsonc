@@ -1794,7 +1794,6 @@
     "packages/turnstile/vitest.workers.config.ts": 1,
     "packages/ui-react/src/humanityCheckFit.test.ts": 1,
     "packages/ui-react/src/lifecycleScreens.test.ts": 1,
-    "packages/ui-react/src/lifecycleScreens.test.tsx": 1,
     "packages/ui-react/src/palette.test.ts": 2,
     "packages/ui-react/src/pricing.test.tsx": 5,
     "packages/ui-react/src/routeGlob.test.ts": 2,

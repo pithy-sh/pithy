@@ -3,6 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +25,11 @@ import { runCaptured } from "../test-utils/payloadContract";
 
 const exec = promisify(execFile);
 
+/** The scaffolded dev proxy, whose reader names the variable `pithy dev` exports the app's Worker's origin in. */
+const proxy = createRequire(import.meta.url)(join(TEMPLATE_DIR, "metro-proxy.cjs")) as {
+  workerOriginVar(appDir: string): string | null;
+};
+
 /** The template package, whose `node_modules` holds Expo and the plugins. */
 const TEMPLATE_PACKAGE = dirname(TEMPLATE_DIR);
 
@@ -43,13 +49,17 @@ describe("pithy init --target both --react-native", () => {
     await runCaptured("init", ["--dir", project, "--name", "acme", "--target", "both", "--react-native", "--json"]);
     await symlink(join(TEMPLATE_PACKAGE, "node_modules"), join(project, "node_modules"), "dir");
 
+    const app = join(project, "apps", "app");
+    const variable = proxy.workerOriginVar(app);
+    if (variable === null) throw new Error("the scaffolded app names no Worker");
     const expo = join(TEMPLATE_PACKAGE, "node_modules", ".bin", "expo");
     const { stdout } = await exec(expo, ["config", "--type", "public", "--json"], {
-      cwd: join(project, "apps", "app"),
-      env: { ...process.env, EXPO_NO_TELEMETRY: "1" },
+      cwd: app,
+      env: { ...process.env, EXPO_NO_TELEMETRY: "1", [variable]: "http://localhost:9901" },
     });
-    const config = JSON.parse(stdout) as { name: string; scheme: string };
+    const config = JSON.parse(stdout) as { name: string; scheme: string; extra?: { pithyDevOrigin?: unknown } };
     expect(config.name).toBe("app");
     expect(config.scheme).toBeTruthy();
+    expect(config.extra?.pithyDevOrigin).toBe("http://localhost:9901");
   });
 });

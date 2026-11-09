@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,10 +21,10 @@ afterEach(async () => {
   await rm(projectDir, { recursive: true, force: true });
 });
 
-/** A `.dev.config.json` pinning `workers`. */
-async function pin(workers: Record<string, { port: number; origin: string }>): Promise<void> {
+/** A `.dev.config.json` in `dir` pinning `workers`. */
+async function pin(workers: Record<string, { port: number; origin: string }>, dir = projectDir): Promise<void> {
   await writeFile(
-    join(projectDir, ".dev.config.json"),
+    join(dir, ".dev.config.json"),
     JSON.stringify({ version: 1, branch: "main", ports: { index: 0, base: 8787, size: 20 }, workers }),
   );
 }
@@ -44,6 +45,25 @@ describe("devOrigin", () => {
   test("a dev config that does not parse is no pin, not a failure", async () => {
     await writeFile(join(projectDir, ".dev.config.json"), "{ not json");
     expect(await devOrigin(projectDir, "acme-api")).toBe("http://localhost:8787");
+  });
+
+  test("in a feature worktree is the main checkout's origin, never the worktree's own block", async () => {
+    // The file a sync writes is committed, and a hand-run `expo start` on main reads it with no
+    // `<STEM>_ORIGIN` to override it, so it must hold the main checkout's port.
+    const git = (args: string[], cwd: string) => execFileSync("git", args, { cwd, stdio: "pipe" });
+    git(["init", "-q"], projectDir);
+    git(["config", "user.email", "t@t.dev"], projectDir);
+    git(["config", "user.name", "T"], projectDir);
+    git(["commit", "-q", "--allow-empty", "-m", "init"], projectDir);
+    const worktree = join(projectDir, ".worktrees", "1-demo");
+    git(["worktree", "add", "-q", "-b", "feature/1-demo", worktree], projectDir);
+    await pin({ "acme-api": { port: 8827, origin: "http://localhost:8827" } }, worktree);
+
+    expect(await devOrigin(worktree, "acme-api")).toBe("http://localhost:8787");
+    await pin({ "acme-api": { port: 8790, origin: "http://localhost:8790" } });
+    expect(await devOrigin(worktree, "acme-api")).toBe("http://localhost:8790");
+    // The main checkout still reads its own pin.
+    expect(await devOrigin(projectDir, "acme-api")).toBe("http://localhost:8790");
   });
 });
 

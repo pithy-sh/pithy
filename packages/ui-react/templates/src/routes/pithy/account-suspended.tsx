@@ -1,7 +1,6 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { useState } from "react";
-import { signOut } from "../../session";
+import { useSignOut } from "../../session";
 import "../../pithy-screens.css";
 
 export const path = "/account-suspended";
@@ -24,11 +23,12 @@ const EN = {
   "auth/suspended.detail": "We emailed the reason to the address on your account.",
   "auth/suspended.contact": "If you think this is a mistake, reply to that email.",
   "auth/suspended.sign_out": "Sign out",
+  "auth/suspended.sign_out_failed": "We couldn't sign you out, so you're still signed in. Try again.",
 } satisfies MessageCatalog;
 
 export default function AccountSuspended() {
   const t = useTranslator(EN);
-  const [busy, setBusy] = useState(false);
+  const signOut = useSignOut();
 
   return (
     <main className="screen">
@@ -37,16 +37,9 @@ export default function AccountSuspended() {
       <p className="muted">{t.t("auth/suspended.detail")}</p>
       <p className="muted">{t.t("auth/suspended.contact")}</p>
       <div className="stack">
+        {signOut.failure ? <p role="alert">{t.t("auth/suspended.sign_out_failed")}</p> : null}
         {/* A session may still be on this device; ending it is what lets somebody else sign in here. */}
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            void signOut();
-          }}
-        >
+        <button type="button" className="secondary" disabled={signOut.pending} onClick={() => void signOut.run()}>
           {t.t("auth/suspended.sign_out")}
         </button>
       </div>

@@ -1,6 +1,6 @@
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useSignOut } from "../../session";
 import { useTheme } from "../../theme";
@@ -24,13 +24,13 @@ const EN = {
   "auth/deleted.detail": "Until then it can be restored. We emailed the date to the address on your account.",
   "auth/deleted.contact": "To restore it, reply to that email before then.",
   "auth/deleted.sign_out": "Sign out",
+  "auth/deleted.sign_out_failed": "We couldn't sign you out, so you're still signed in. Try again.",
 } satisfies MessageCatalog;
 
 export default function AccountDeleted(): ReactNode {
   const t = useTranslator(EN);
   const theme = useTheme();
   const signOut = useSignOut();
-  const [busy, setBusy] = useState(false);
 
   return (
     <View
@@ -42,15 +42,18 @@ export default function AccountDeleted(): ReactNode {
       <Text style={[theme.type.body, { color: theme.colors.text }]}>{t.t("auth/deleted.body")}</Text>
       <Text style={[theme.type.body, { color: theme.colors.muted }]}>{t.t("auth/deleted.detail")}</Text>
       <Text style={[theme.type.body, { color: theme.colors.muted }]}>{t.t("auth/deleted.contact")}</Text>
+      {signOut.failure ? (
+        <Text role="alert" style={[theme.type.body, { color: theme.colors.text }]}>
+          {t.t("auth/deleted.sign_out_failed")}
+        </Text>
+      ) : null}
       {/* A session may still be on this device; ending it is what lets somebody else sign in here. */}
       <Pressable
         role="button"
-        disabled={busy}
-        aria-disabled={busy}
+        disabled={signOut.pending}
+        aria-disabled={signOut.pending}
         onPress={() => {
-          if (busy) return;
-          setBusy(true);
-          void signOut();
+          if (!signOut.pending) void signOut.run();
         }}
         style={{
           borderWidth: 1,
@@ -59,7 +62,7 @@ export default function AccountDeleted(): ReactNode {
           paddingVertical: theme.spacing.sm,
           paddingHorizontal: theme.spacing.md,
           alignSelf: "flex-start",
-          opacity: busy ? 0.5 : 1,
+          opacity: signOut.pending ? 0.5 : 1,
         }}
       >
         <Text style={[theme.type.button, { color: theme.colors.text }]}>{t.t("auth/deleted.sign_out")}</Text>

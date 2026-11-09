@@ -1,10 +1,12 @@
 import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
 import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
 import { accountRefusal } from "@pithy-sh/auth/src/client/lifecycle";
+import type { KitErrorCode } from "@pithy-sh/core/src/error/payload";
+import { useAction } from "@pithy-sh/ui-core/src/action";
 import { useRead } from "@pithy-sh/ui-core/src/read";
 import { type ScreenRole, screenPath } from "@pithy-sh/ui-core/src/routes";
 import { authConfig } from "./pithy-config";
-import { navigate, routeTable } from "./router";
+import { routeTable } from "./router";
 
 /**
  * Session state, read from the server.
@@ -58,11 +60,43 @@ export function refusedAccountScreen(code: string | null | undefined): ScreenRol
   return null;
 }
 
-/** End the session server-side and return to the sign-in screen. */
-export async function signOut(): Promise<void> {
-  await endSession(client);
-  // Where "the sign-in screen" is comes from the screen itself, never a literal here.
-  navigate(screenPath(await routeTable(), "sign-in"));
+/** The code the worker refuses a request with when it carries no live session: one already ended is ended. */
+const NO_SESSION = "auth/invalid_token" satisfies KitErrorCode;
+
+/**
+ * End the session server-side, and answer whether it ended.
+ *
+ * The cookie is httpOnly, so only the worker can clear it: the session has ended only when the worker took the
+ * sign-out, or refused it for want of a session, and a read then answers nobody. A read that fails is no answer.
+ */
+export async function signOut(): Promise<boolean> {
+  const ended = await endSession(client);
+  if (!ended.ok && ended.failure.code !== NO_SESSION) return false;
+  const read = await readSession(client);
+  return read.ok && read.value === null;
+}
+
+/** What {@link useSignOut} gives a screen. */
+export interface SignOut {
+  /** Sign out. Resolves once the page is leaving, or once the failure is set. Never rejects. */
+  readonly run: () => Promise<void>;
+  /** Whether a sign-out is in flight. */
+  readonly pending: boolean;
+  /** Why the last sign-out did not finish, or `null`. Render it: the person is still signed in. */
+  readonly failure: Error | null;
+}
+
+/**
+ * {@link signOut}, then the sign-in screen by a document load, so nothing the old session's screens held survives.
+ * A sign-out that did not end the session leaves the person where they are, with `failure` set.
+ */
+export function useSignOut(): SignOut {
+  const action = useAction(async () => {
+    if (!(await signOut())) throw new Error("The session did not end.");
+    // Where "the sign-in screen" is comes from the screen itself, never a literal here.
+    window.location.assign(screenPath(await routeTable(), "sign-in"));
+  });
+  return { run: action.run, pending: action.pending, failure: action.failure };
 }
 
 /** The session as component state, plus a `refresh` for after a sign-in completes. */

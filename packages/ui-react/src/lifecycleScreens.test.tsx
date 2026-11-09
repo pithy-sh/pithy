@@ -9,7 +9,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 /**
- * The three lifecycle screens (#620), rendered: account suspended, account deleted, organization
+ * The three lifecycle screens, rendered: account suspended, account deleted, organization
  * suspended. Copied into an adopter's repository by the auth group, so each has to stand up there on its
  * own — its own English, the shared stylesheet's classes and nothing else, in both color schemes, and no
  * address of Pithy's anywhere in it. `lifecycleScreens.test.ts` beside this holds the source-text half,
@@ -25,7 +25,7 @@ const LIFECYCLE_SCREEN_CLASSES: ReadonlySet<string> = new Set(["screen", "muted"
 const signOut = vi.fn(async () => {});
 vi.mock("../templates/src/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../templates/src/session")>()),
-  signOut: () => signOut(),
+  useSignOut: () => ({ run: () => signOut(), pending: false, failure: null }),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

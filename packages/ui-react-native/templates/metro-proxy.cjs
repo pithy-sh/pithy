@@ -2,8 +2,15 @@
 //
 // The web build calls the Worker by relative path, and in production that is right: the build is served from the
 // Worker's own origin. Under `pithy dev` it is served by Metro, on Metro's own port, so a relative call reaches
-// Metro. This sends the requests under the Worker's paths on to `origins.dev` in `src/pithy-config.generated.ts`,
-// and hands Metro everything else.
+// Metro. This sends the requests under the Worker's paths on to the Worker, and hands Metro everything else.
+//
+// The Worker is the one `ui.worker` in the app's `pithy.worker.jsonc` names, and its origin is the
+// `<STEM>_ORIGIN` that `pithy dev` exports for it, the stem being its `wrangler.jsonc` `name` (its directory when
+// that names none), upper-snaked. That variable wins because it is the port of the checkout `pithy dev` runs in:
+// each feature worktree has its own, while `origins.dev` in `src/pithy-config.generated.ts` is committed and
+// holds the main checkout's. With the variable unset, as under a hand-run `expo start`, or with no readable
+// `ui.worker`, the proxy sends to `origins.dev`. The iOS and Android builds from the same `expo start` read the
+// same variable through `app.config.ts`, so every platform calls the same Worker.
 //
 // A request goes on as it came: method, headers and body, with its path and query resolved the way the Worker
 // resolves them, so a path is matched where it lands. Its `Host` stays the page's, so the Worker answers it as
@@ -23,6 +30,9 @@ const { pipeline } = require("node:stream");
 
 /** Where the generated config sits, relative to the app. */
 const GENERATED_CONFIG = "src/pithy-config.generated.ts";
+
+/** The app's dev-set manifest, whose `ui.worker` names the Worker the app calls by its directory under `apps/`. */
+const MANIFEST = "pithy.worker.jsonc";
 
 /** Where the kit's clients call each capability by default, for a generated config that lists no paths. */
 const KIT_PATHS = {
@@ -170,6 +180,53 @@ function readGeneratedConfig(text) {
   }
 }
 
+/** The JSONC document in `file`, or `null` when it is missing or not one this reader reads. */
+function readJsonc(file) {
+  try {
+    return parseLiteral(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The env-var stem `pithy dev` derives from a Worker's name: uppercased, every run of anything but a letter or a
+ * digit collapsed to one `_`, and none at either end. `demo-api` is `DEMO_API`.
+ */
+function envStem(name) {
+  return name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/**
+ * The variable `pithy dev` exports the app's Worker's origin in, or `null` when the app's manifest names no
+ * Worker. `pithy dev` names a Worker by its `wrangler.jsonc` `name`, and by its directory when that file names
+ * none or does not read.
+ */
+function workerOriginVar(appDir) {
+  const worker = readJsonc(path.join(appDir, MANIFEST))?.ui?.worker;
+  if (typeof worker !== "string" || worker === "") return null;
+  const name = readJsonc(path.join(path.dirname(appDir), worker, "wrangler.jsonc"))?.name;
+  return `${envStem(typeof name === "string" ? name : worker)}_ORIGIN`;
+}
+
+/**
+ * The origin `pithy dev` exports in `env` for the app's Worker, or `null` when the app names no Worker or the
+ * variable is unset or empty. `app.config.ts` hands the same value to the phone builds as `extra.pithyDevOrigin`.
+ */
+function exportedOrigin(appDir, env) {
+  const variable = workerOriginVar(appDir);
+  const exported = variable === null ? undefined : env[variable];
+  return typeof exported === "string" && exported !== "" ? exported : null;
+}
+
+/** Where the proxy sends the Worker's paths: the origin `pithy dev` exports for the app's Worker, or `origins.dev`. */
+function devTarget(generated, appDir, env) {
+  return exportedOrigin(appDir, env) ?? generated.origins.dev;
+}
+
 /**
  * The paths the Worker answers. The generated config lists every base path the Worker's route table serves, as the
  * CLI composed it; a config written before it carried the list falls back to what each capability's `dev`
@@ -258,7 +315,7 @@ function createDevProxy({ target, paths }) {
  * `config` with the dev proxy in front of Metro's middleware, and of any enhancer already there. A generated
  * config it cannot read leaves `config` as it was, and says why.
  */
-function withDevProxy(config, appDir, warn = console.warn) {
+function withDevProxy(config, appDir, warn = console.warn, env = process.env) {
   let generated = null;
   try {
     generated = readGeneratedConfig(fs.readFileSync(path.join(appDir, GENERATED_CONFIG), "utf8"));
@@ -271,7 +328,7 @@ function withDevProxy(config, appDir, warn = console.warn) {
     );
     return config;
   }
-  const proxy = createDevProxy({ target: generated.origins.dev, paths: proxiedPaths(generated) });
+  const proxy = createDevProxy({ target: devTarget(generated, appDir, env), paths: proxiedPaths(generated) });
   const server = config.server || {};
   const earlier = server.enhanceMiddleware;
   return {
@@ -286,4 +343,15 @@ function withDevProxy(config, appDir, warn = console.warn) {
   };
 }
 
-module.exports = { KIT_PATHS, readGeneratedConfig, proxiedPaths, isProxied, createDevProxy, withDevProxy };
+module.exports = {
+  KIT_PATHS,
+  readGeneratedConfig,
+  proxiedPaths,
+  isProxied,
+  envStem,
+  workerOriginVar,
+  exportedOrigin,
+  devTarget,
+  createDevProxy,
+  withDevProxy,
+};

@@ -4,6 +4,7 @@
 /** Every native module that has a stand-in, and the stand-in's file under `testing/`. */
 export const STAND_INS: Readonly<Record<string, string>> = {
   "expo-secure-store": "expo-secure-store.ts",
+  "expo-constants": "expo-constants.ts",
   "expo-crypto": "expo-crypto.ts",
   "expo-router": "expo-router.ts",
   "expo-web-browser": "expo-web-browser.ts",

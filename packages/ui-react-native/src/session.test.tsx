@@ -3,6 +3,7 @@
 
 import { BEARER_STORAGE_KEY } from "@pithy-sh/auth/src/client/bearer";
 import { AUTH_DISABLED } from "@pithy-sh/ui-core/src/config";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { Platform } from "react-native";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { linking } from "../testing/expo-linking";
@@ -24,13 +25,37 @@ interface Call {
 let calls: Call[] = [];
 let sessionBody: unknown = null;
 
+/** How a route answers instead of its usual 200: a status with the kit's refusal for it, or no answer at all. */
+type Refusal = 401 | 503 | "unreachable";
+let refusals: { "sign-out"?: Refusal; "get-session"?: Refusal } = {};
+/** Whether a sign-out the Worker accepts leaves the session the next read answers with. */
+let sessionOutlivesSignOut = false;
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function refuse(refusal: Refusal): Response {
+  if (refusal === "unreachable") throw new TypeError("Failed to fetch");
+  const code = refusal === 401 ? "auth/invalid_token" : "core/internal";
+  return json({ error: { code, message: "Refused." } }, refusal);
+}
+
 beforeEach(() => {
   calls = [];
+  refusals = {};
+  sessionOutlivesSignOut = false;
   sessionBody = { user: { id: "u1", email: "ada@example.com" }, session: { expiresAt: "2999-01-01T00:00:00Z" } };
   vi.stubGlobal("fetch", async (url: string, init: Call["init"]) => {
     calls.push({ url, init });
-    const body = url.endsWith("/get-session") ? sessionBody : {};
-    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.endsWith("/sign-out")) {
+      if (refusals["sign-out"]) return refuse(refusals["sign-out"]);
+      if (!sessionOutlivesSignOut) sessionBody = null;
+      return json({ success: true });
+    }
+    if (url.endsWith("/get-session"))
+      return refusals["get-session"] ? refuse(refusals["get-session"]) : json(sessionBody);
+    return json({});
   });
 });
 
@@ -76,14 +101,26 @@ describe("on a phone", () => {
     expect(calls[0]?.init.headers?.authorization).toBe("Bearer raw-token");
   });
 
-  test("sign-out tells the Worker first, then forgets the credential", async () => {
+  test("sign-out tells the Worker first, then forgets the credential, and the session has ended", async () => {
     const session = await load("ios");
     await session.adoptSignIn({ token: "raw-token" });
-    await session.signOut();
+    expect(await session.signOut()).toBe(true);
     expect(calls.at(-1)?.url).toBe(`${ORIGIN}/auth/sign-out`);
     expect(calls.at(-1)?.init.headers?.authorization).toBe("Bearer raw-token");
     expect(secureStore.items.has(BEARER_STORAGE_KEY)).toBe(false);
   });
+
+  test.each([503, "unreachable"] as const)(
+    "a sign-out the Worker answers with %s still forgets the credential, so the session has ended here",
+    async (refusal) => {
+      const session = await load("ios");
+      await session.adoptSignIn({ token: "raw-token" });
+      refusals["sign-out"] = refusal;
+      expect(await session.signOut()).toBe(true);
+      expect(calls.at(-1)?.url).toBe(`${ORIGIN}/auth/sign-out`);
+      expect(secureStore.items.has(BEARER_STORAGE_KEY)).toBe(false);
+    },
+  );
 
   test("resuming after a sign-in opens the Worker's page in the system browser", async () => {
     const session = await load("ios");
@@ -101,6 +138,45 @@ describe("on the web", () => {
     expect(calls.at(-1)?.init.credentials).toBe("include");
     expect(secureStore.items.size).toBe(0);
   });
+
+  test("sign-out has ended the session when the Worker took it and a read then answers nobody", async () => {
+    const session = await load("web");
+    expect(await session.signOut()).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual(["/auth/sign-out", "/auth/get-session"]);
+    expect(calls.every((call) => call.init.credentials === "include")).toBe(true);
+  });
+
+  test("a sign-out the Worker refuses for want of a session has ended it, once a read answers nobody", async () => {
+    refusals["sign-out"] = 401;
+    sessionBody = null;
+    const session = await load("web");
+    expect(await session.signOut()).toBe(true);
+  });
+
+  test.each([503, "unreachable"] as const)(
+    "a sign-out the Worker answers with %s has not ended the session, whatever a read says",
+    async (refusal) => {
+      refusals["sign-out"] = refusal;
+      sessionBody = null;
+      const session = await load("web");
+      expect(await session.signOut()).toBe(false);
+    },
+  );
+
+  test("a sign-out the Worker took has not ended the session while a read still answers one", async () => {
+    sessionOutlivesSignOut = true;
+    const session = await load("web");
+    expect(await session.signOut()).toBe(false);
+  });
+
+  test.each([503, "unreachable"] as const)(
+    "a read that answers %s after the sign-out is no answer, so the session has not ended",
+    async (refusal) => {
+      refusals["get-session"] = refusal;
+      const session = await load("web");
+      expect(await session.signOut()).toBe(false);
+    },
+  );
 
   test("a Worker that answers nobody reads as signed out", async () => {
     sessionBody = null;
@@ -199,5 +275,80 @@ describe("a refused account", () => {
     expect(refusedAccountScreen("auth/account_deleted")).toBe("account-deleted");
     expect(refusedAccountScreen("auth/invalid_token")).toBeNull();
     expect(refusedAccountScreen(null)).toBeNull();
+  });
+});
+
+describe("signing out from a screen", () => {
+  let mounts = 0;
+
+  /** Register the sign-in screen, so signing out has somewhere to go. */
+  function registerSignIn(): void {
+    vi.doMock("../templates/src/route-modules", () => ({
+      pithyRoutes: [async () => ({ path: "/sign-in", role: "sign-in", default: () => null })],
+      appRoutes: [],
+      sessionModule: undefined,
+      paymentsModule: undefined,
+    }));
+  }
+
+  /** Mount a screen that signs out through the hook, on `platform`, and hand back what it saw. */
+  async function mountOn(platform: "ios" | "web") {
+    registerSignIn();
+    const session = await load(platform);
+    const { RouterProvider, createMemoryAdapter } = await import("../templates/src/router");
+    const { useEffect } = await import("react");
+    const seen: { current: ReturnType<typeof session.useSignOut> | null } = { current: null };
+    function Screen(): null {
+      seen.current = session.useSignOut();
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return null;
+    }
+    const adapter = createMemoryAdapter("/home");
+    render(
+      <RouterProvider adapter={adapter}>
+        <Screen />
+      </RouterProvider>,
+    );
+    await act(async () => {
+      await seen.current?.run();
+    });
+    return { adapter, seen, session };
+  }
+
+  beforeEach(() => {
+    mounts = 0;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("on the web, a sign-out that ended the session leaves for sign-in and remounts every screen", async () => {
+    const { adapter } = await mountOn("web");
+    await waitFor(() => expect(adapter.path()).toBe("/sign-in"));
+    expect(mounts).toBe(2);
+  });
+
+  test.each([503, "unreachable"] as const)(
+    "on the web, a sign-out the Worker answers with %s stays where it is and says it did not finish",
+    async (refusal) => {
+      refusals["sign-out"] = refusal;
+      const { adapter, seen } = await mountOn("web");
+      expect(seen.current?.failure).toBeInstanceOf(Error);
+      expect(seen.current?.pending).toBe(false);
+      expect(adapter.path()).toBe("/home");
+      expect(mounts).toBe(1);
+    },
+  );
+
+  test("on a phone, a sign-out the Worker could not take still forgets the credential and leaves for sign-in", async () => {
+    secureStore.items.set(BEARER_STORAGE_KEY, JSON.stringify({ token: "held-session", expiresAt: null }));
+    refusals["sign-out"] = 503;
+    const { adapter, seen } = await mountOn("ios");
+    await waitFor(() => expect(adapter.path()).toBe("/sign-in"));
+    expect(seen.current?.failure).toBeNull();
+    expect(secureStore.items.has(BEARER_STORAGE_KEY)).toBe(false);
   });
 });
