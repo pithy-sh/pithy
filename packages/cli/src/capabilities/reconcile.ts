@@ -1646,6 +1646,7 @@ async function applyBindings(
           env,
           capability: manifest.name,
           ...(owns === undefined ? {} : { owns, topLevel: stanza === config }),
+          ...(composedByName.has(cap.name) ? { composed: composedByName.get(cap.name) } : {}),
         },
         composedByName.get(cap.name),
         manifest === app ? new Set() : honored,

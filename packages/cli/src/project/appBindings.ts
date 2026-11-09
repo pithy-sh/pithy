@@ -130,7 +130,7 @@ export async function applyAppBindings(projectDir: string, env: string, bindings
     env?: Record<string, AppBindingStanza | undefined>;
   };
 
-  // The one reader (#581). It answers `dev` with the top level — wrangler has no `env.dev` — and a stanza
+  // The one reader. It answers `dev` with the top level — wrangler has no `env.dev` — and a stanza
   // it creates already repeats what an environment does not inherit, so a Worker whose first `staging`
   // stanza is written here is not published without its `vars`.
   const stanza = stanzaFor(config, env) as AppBindingStanza;
@@ -176,7 +176,7 @@ export async function applyAppBindings(projectDir: string, env: string, bindings
 export function appWorkflowBindings(registry: WorkflowRegistry, parts: WorkflowHostNameParts): AppWorkflowBinding[] {
   // Through the facade, so the host script is held to a Worker's 63 rather than a Workflow's 64 — the
   // one-character gap is real, and it is the one that survives an adopter enabling workers.dev.
-  const scriptName = resourceNames(parts.project).env(parts.env).worker(parts.capability);
+  const scriptName = resourceNames(parts.project).env(parts.env).worker(parts.capability, parts.owner);
   return hostWorkflowsFor(registry, parts).workflows.map((entry) => ({
     ...entry,
     script_name: scriptName,

@@ -40,10 +40,15 @@ export interface MediaConfigParams {
   /** The target environment. */
   env: ManagedEnvironment;
   /**
-   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * **The feature this host serves, when it serves one.** Its Worker, its Workflows and every store
    * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id for this environment — where media records and hashes live. */
   appDatabaseId: string;
   /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the storage credentials. */
@@ -59,6 +64,7 @@ export interface MediaConfigParams {
 /** Fill the template for one environment. */
 export function resolveMediaConfig(template: WorkflowHostTemplate, params: MediaConfigParams): WorkflowHostTemplate {
   const feature = params.feature;
+  const owner = params.owner;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, mediaConfig } = params;
   const bindsToken = mediaHostBindsRuntimeToken(mediaConfig, feature);
 
@@ -67,12 +73,13 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     capability: MEDIA_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     r2BucketNames: { MEDIA_BUCKET: resources.bucketName },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
     masterKeySecretName: masterKeySecretName(project, env, feature),
-    // The application's one runtime token (#728), at the entry `pithy token mint runtime` and the secrets
+    // The application's one runtime token, at the entry `pithy token mint runtime` and the secrets
     // manager's provisioning write — composed by the same scope call, so the two cannot name two entries.
     // A feature binds none, and neither does a host that calls Cloudflare for nothing: see below.
     ...(bindsToken
@@ -91,9 +98,10 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
       capability: MEDIA_CAPABILITY,
       env,
       ...(feature ? { feature } : {}),
+      ...(owner !== undefined ? { owner } : {}),
     }).workflows,
   });
-  // **A feature's host holds no Cloudflare API token (#643, #728)**, the way a feature's manager holds none:
+  // **A feature's host holds no Cloudflare API token**, the way a feature's manager holds none:
   // nothing mints a runtime token for a feature, so branch code never holds the application's credential.
   // Cloudflare rejects a deploy whose Secrets Store entry does not exist, so the binding goes, not just its
   // value. Images and Stream are then out of a feature's reach; R2 needs no token.
@@ -109,7 +117,7 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
 }
 
 /**
- * **Whether a media host binds the application's runtime token (#728).** Only outside a feature, and only
+ * **Whether a media host binds the application's runtime token.** Only outside a feature, and only
  * while its config stores a type on Images or Stream — the same test the app Worker's registry applies, so
  * the host and the app agree on whether this environment holds the token at all.
  */

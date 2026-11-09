@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { BindingSpec, BindingType, isWrittenBinding } from "@pithy-sh/core/src/capability/bindings";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
 import {
   appendBinding,
@@ -17,13 +18,11 @@ import {
 
 /**
  * The generated half of a binding entry: the value the writer derives, and the comparison that notices
- * when a project's stanza no longer holds it (#499).
+ * when a project's stanza no longer holds it.
  *
- * The derivation was made stable so a limiter's budget could not be renumbered by a neighbor being
- * removed. What it was **not** given is a retrofit — nothing rewrites an entry already on disk — and the
- * docstring claimed otherwise for months while a project scaffolded on the positional counter kept `1001`
- * against a green `pithy doctor`. This file pins both halves: the derivation, and the report that is the
- * whole of the remedy.
+ * The derivation is stable so a limiter's budget cannot be renumbered by a neighbor being removed. Nothing
+ * rewrites an entry already on disk, so the report is the whole of the remedy for one that differs. This file pins
+ * both halves: the derivation, and the report.
  */
 
 const LIMITER = BindingSpec.parse({ type: "ratelimit", name: "AUTH_RATE_LIMITER" });
@@ -174,7 +173,7 @@ describe("generatedFieldDrift", () => {
   });
 });
 
-describe("the kinds an app declares and the kit writes but never provisions (#662)", () => {
+describe("the kinds an app declares and the kit writes but never provisions", () => {
   const app = { project: "acme", env: "dev", capability: "app" };
   const write = (input: Record<string, unknown>, scope: typeof app = app): WranglerStanza => {
     const stanza: WranglerStanza = {};
@@ -265,7 +264,7 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
     });
   });
 
-  test("writes a consuming queue's consumer entry beside its producer, dead-lettering by name (#824)", () => {
+  test("writes a consuming queue's consumer entry beside its producer, dead-lettering by name", () => {
     const shipping = { type: "queue", name: "AUDIT_SHIP", consumer: { deadLetter: "AUDIT_SHIP_DLQ", maxRetries: 8 } };
     expect(write(shipping, { ...app, env: "prod" })).toEqual({
       queues: {
@@ -308,7 +307,7 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
     expect(stanza).toEqual({});
   });
 
-  test("writes an artifacts entry naming this environment's namespace, and nothing else (#673)", () => {
+  test("writes an artifacts entry naming this environment's namespace, and nothing else", () => {
     expect(write({ type: "artifacts", name: "ARTIFACTS" })).toEqual({
       artifacts: [{ binding: "ARTIFACTS", namespace: "acme-dev" }],
     });
@@ -354,7 +353,7 @@ describe("the kinds an app declares and the kit writes but never provisions (#66
 });
 
 /**
- * A class an adopter registered by hand is registered, whatever verb registered it (#662). An app's own
+ * A class an adopter registered by hand is registered, whatever verb registered it. An app's own
  * Durable Object reaches this writer now, and an app's class is exactly the kind a human wrote a
  * `new_classes` or `renamed_classes` tag for. Counting only `new_sqlite_classes` appended a second create
  * for a class that already exists, which wrangler refuses, and a tag is never revisited.
@@ -394,7 +393,7 @@ describe("appendDurableObjectMigrations — a class registered by any verb", () 
 });
 
 /**
- * **A class is retired by a step of its own, and the history replays in order** (#815). A deployed script
+ * **A class is retired by a step of its own, and the history replays in order.** A deployed script
  * holds its last tag, so a class taken out is a `deleted_classes` step appended under a new tag, never a tag
  * edited away, and a class created again after that is live again.
  */
@@ -454,5 +453,97 @@ describe("retiring a Durable Object class", () => {
     };
     appendDurableObjectMigrations(config, [room]);
     expect(config.migrations?.at(-1)).toEqual({ tag: "v3", new_sqlite_classes: ["PresenceRoom"] });
+  });
+});
+
+/**
+ * **A Worker that owns a binding its capability's host binds dispatches into its own host.** Its jobs are written to
+ * its own database, so a Workflow binding into the shared host would start them where nothing can read them.
+ */
+describe("a workflow binding into a capability host", () => {
+  const SENDER = BindingSpec.parse({
+    type: "workflow",
+    name: "EMAIL_SENDER",
+    className: "EmailSendWorkflow",
+    job: "send",
+  });
+  const STAGING = { project: "acme", env: "staging", capability: "email" };
+
+  test("targets the shared host for a Worker that owns nothing the host binds", () => {
+    const stanza: WranglerStanza = {};
+    appendBinding(stanza, SENDER, { ...STAGING, owns: { worker: "two", bindings: new Set(["ORDERS"]) } });
+    expect(stanza.workflows).toEqual([
+      {
+        binding: "EMAIL_SENDER",
+        name: "acme-staging-email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "acme-staging-email",
+      },
+    ]);
+  });
+
+  test("targets the Worker's own host when it owns a binding the host binds", () => {
+    const stanza: WranglerStanza = {};
+    appendBinding(stanza, SENDER, { ...STAGING, owns: { worker: "two", bindings: new Set(["DB"]) } });
+    expect(stanza.workflows).toEqual([
+      {
+        binding: "EMAIL_SENDER",
+        name: "acme-staging-two---email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "acme-staging-two---email",
+      },
+    ]);
+  });
+
+  /**
+   * Audit's host reads the database `audit({ database })` names, so which Worker owns its host is read off the
+   * composed capability, never off the default `DB`.
+   */
+  describe("for audit, from the database the composed capability names", () => {
+    const CHECKPOINT = BindingSpec.parse({
+      type: "workflow",
+      name: "AUDIT_CHECKPOINT",
+      className: "AuditCheckpointWorkflow",
+      job: "checkpoint",
+    });
+    const AUDIT = { project: "acme", env: "staging", capability: "audit" };
+    const composed = (auditDatabase: string) =>
+      ({ name: "audit", requiredBindings: [], auditDatabase }) as unknown as Capability;
+
+    test("shares the host when the Worker owns DB but audit reads a database it does not own", () => {
+      const stanza: WranglerStanza = {};
+      appendBinding(stanza, CHECKPOINT, {
+        ...AUDIT,
+        owns: { worker: "two", bindings: new Set(["DB"]) },
+        composed: composed("AUDIT_DB"),
+      });
+      expect(stanza.workflows?.[0]).toMatchObject({
+        name: "acme-staging-audit-checkpoint",
+        script_name: "acme-staging-audit",
+      });
+    });
+
+    test("gets its own host when the Worker owns the database and the checkpoint bucket audit reads", () => {
+      const stanza: WranglerStanza = {};
+      appendBinding(stanza, CHECKPOINT, {
+        ...AUDIT,
+        owns: { worker: "two", bindings: new Set(["AUDIT_DB", "AUDIT_CHECKPOINTS"]) },
+        composed: composed("AUDIT_DB"),
+      });
+      expect(stanza.workflows?.[0]).toMatchObject({
+        name: "acme-staging-two---audit-checkpoint",
+        script_name: "acme-staging-two---audit",
+      });
+    });
+
+    test("refuses a Worker that owns the database audit reads and shares its checkpoint bucket", () => {
+      expect(() =>
+        appendBinding({}, CHECKPOINT, {
+          ...AUDIT,
+          owns: { worker: "two", bindings: new Set(["AUDIT_DB"]) },
+          composed: composed("AUDIT_DB"),
+        }),
+      ).toThrow(/two owns AUDIT_DB but shares AUDIT_CHECKPOINTS/);
+    });
   });
 });

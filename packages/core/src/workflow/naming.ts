@@ -4,7 +4,7 @@
 import { InternalError } from "../error/pithyError";
 import { type FeatureIdentity, featureWorkerName, featureWorkflowName } from "../naming/feature";
 import { MAX_CAPABILITY_JOB, NAMESPACE_LIMITS } from "../naming/limits";
-import { assertValidProjectName, kebab } from "../naming/resource";
+import { assertValidProjectName, kebab, ownedThing } from "../naming/resource";
 import { NAME_SEGMENT } from "../naming/segment";
 
 /**
@@ -134,12 +134,18 @@ export interface WorkflowHostNameParts {
   /** The deployment environment (e.g. `staging`). */
   env: string;
   /**
-   * **The feature this deployment is, when it is one (#643).** A feature's host Worker and Workflows take the
+   * **The feature this deployment is, when it is one.** A feature's host Worker and Workflows take the
    * feature's head — `<project>-f<issue>-<slug>-…` — not `<project>-feature-…`, which every open branch would
    * share: Worker and Workflow names are account-wide, so a second branch's deploy would replace the first's.
    * `env` stays `feature`, which is what the host's `ENVIRONMENT` var says; only the names change.
    */
   feature?: FeatureIdentity;
+  /**
+   * **The `apps/<owner>` Worker this host belongs to, when it is that Worker's own.** A Worker that owns a binding
+   * its capability's host binds gets a host reading its resources, named `<owner>---<capability>` the way an owned
+   * resource is named. Absent for the host every other Worker shares.
+   */
+  owner?: string;
 }
 
 /** The identity of one durable job's Workflow in one environment. */
@@ -162,8 +168,12 @@ export function workflowScriptName(parts: WorkflowScriptNameParts): string {
   assertSegment(parts.capability, "capability");
   assertSegment(parts.job, "job");
   assertCapabilityJob(parts.capability, parts.job);
-  if (parts.feature) return featureWorkflowName(featureOf(parts), parts.capability, parts.job);
-  return assertLength(`${head(parts.project, parts.env)}-${parts.capability}-${parts.job}`, MAX_WORKFLOW_NAME_BYTES);
+  if (parts.feature) return featureWorkflowName(featureOf(parts), parts.capability, parts.job, parts.owner);
+  return assertOwnedLength(
+    `${head(parts.project, parts.env)}-${hostThing(parts)}-${parts.job}`,
+    MAX_WORKFLOW_NAME_BYTES,
+    parts.owner,
+  );
 }
 
 /**
@@ -175,8 +185,35 @@ export function workflowScriptName(parts: WorkflowScriptNameParts): string {
  */
 export function workflowHostName(parts: WorkflowHostNameParts): string {
   assertSegment(parts.capability, "capability");
-  if (parts.feature) return featureWorkerName(featureOf(parts), parts.capability);
-  return assertLength(`${head(parts.project, parts.env)}-${parts.capability}`, MAX_WORKER_NAME_BYTES);
+  if (parts.feature) return featureWorkerName(featureOf(parts), parts.capability, parts.owner);
+  return assertOwnedLength(`${head(parts.project, parts.env)}-${hostThing(parts)}`, MAX_WORKER_NAME_BYTES, parts.owner);
+}
+
+/** The host's `<thing>`: the capability, or `<owner>---<capability>` for a host one Worker has to itself. */
+function hostThing(parts: WorkflowHostNameParts): string {
+  if (parts.owner === undefined) return parts.capability;
+  const thing = ownedThing(parts.owner, parts.capability);
+  if (!thing) {
+    throw new InternalError({
+      message: `Invalid owner "${parts.owner}" in a workflow name.`,
+      action: "Name the apps/<worker> directory the host belongs to.",
+      detail: "An owner must keep at least one letter or digit once kebabbed.",
+    });
+  }
+  return thing;
+}
+
+/**
+ * {@link assertLength}, and an owned name that does not fit names the owner: the owner is the one segment an adopter
+ * can shorten without renaming the project. Refused rather than fitted, like every Worker and Workflow name.
+ */
+function assertOwnedLength(name: string, limit: number, owner: string | undefined): string {
+  if (owner === undefined || new TextEncoder().encode(name).length <= limit) return assertLength(name, limit);
+  throw new InternalError({
+    message: `The name "${name}" is longer than Cloudflare's ${limit}-byte limit.`,
+    action: `Shorten the apps/${owner} Worker's directory name, or take the binding out of its ownBindings.`,
+    detail: `A Worker that owns a binding its capability host binds gets a host named for it, and ${owner} makes that name too long.`,
+  });
 }
 
 /**

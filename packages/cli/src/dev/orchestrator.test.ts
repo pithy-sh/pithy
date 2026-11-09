@@ -80,10 +80,9 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
   /**
-   * Every record written into a worker's session log, and which file it went to (#671).
+   * Every record written into a worker's session log, and which file it went to.
    *
-   * One file per worker now, so the log is no longer a flat list of lines: the assertions are about a
-   * record set per worker, and the *file* is what carries the name. The paths are kept too, because
+   * One file per worker, so the assertions are about a record set per worker, and the *file* is what carries the name. The paths are kept too, because
    * where they are is half of what this change is about.
    */
   const logRecords: { worker: string; record: DevLogRecord }[] = [];
@@ -326,9 +325,8 @@ describe("startDev — bootstrapping pinned ports", () => {
 
 describe("ensureDevConfig", () => {
   /**
-   * A temp project dir plus its own registry, so nothing touches the real repo — or, since #435, the
-   * operator's own config directory. `blocks()` reads the branches filed under this checkout, which is
-   * the registry's outer key now.
+   * A temp project dir plus its own registry, so nothing touches the real repo or the operator's own config
+   * directory. `blocks()` reads the branches filed under this checkout, which is the registry's outer key.
    */
   async function project() {
     const dir = await mkdtemp(join(tmpdir(), "pithy-dev-bootstrap-"));
@@ -387,11 +385,9 @@ describe("ensureDevConfig", () => {
   });
 
   test("reclaims a block a worktree still holds, scanning the checkout and not the registry's own directory", async () => {
-    // The scan used to be handed `dirname(registryPath)`, which was the main repo root only because the
-    // registry sat in it. With the file in the config directory that argument resolves to `~/.config/pithy`
-    // — a directory with no `.worktrees` and never one — so `scanPinnedBlocks` would return `[]` forever
-    // and reclaim would short-circuit before it even took the lock. No error, no changed return value:
-    // self-healing simply dead, surfacing much later as a live feature's ports handed to a new one (#435).
+    // The registry's own directory is `~/.config/pithy`, which has no `.worktrees`: scanning it would return
+    // `[]` forever and reclaim would short-circuit before it took the lock, with no error, and a live
+    // feature's ports would later be handed to a new one.
     const p = await project();
     try {
       const pinned = join(p.dir, ".worktrees", "12-live");
@@ -427,9 +423,8 @@ describe("ensureDevConfig", () => {
   test("re-registers a pinned block the registry has lost, since a settled project never allocates", async () => {
     // The registry is machine-wide, so it can lose this project's entry to something this project never
     // did — a wiped config directory, a new machine, a moved checkout another project's allocation pruned
-    // as gone. The whole reclaim used to sit on the no-config path, which a settled project never takes,
-    // so `pithy dev` repaired nothing and a live feature's ports stayed on offer to whoever allocated
-    // next (#435).
+    // as gone. A settled project never takes the no-config path, so `pithy dev` is where the claim is
+    // repaired, or a live feature's ports stay on offer to whoever allocates next.
     const p = await project();
     try {
       const existing: DevConfig = {
@@ -522,7 +517,7 @@ describe("startDev — spawn commands and env", () => {
     const web = h.spawned.find((s) => s.opts.cwd === "/proj/apps/web");
     expect(api).toMatchObject({
       // The seam sees the command as `startWorker` names it — `bun` everywhere. The platform spelling
-      // is the spawn default's resolution (#698), applied below the seam and tested in
+      // is the spawn default's resolution, applied below the seam and tested in
       // `platform/command.test.ts`, where the Windows literal lives.
       command: "bun",
       args: [
@@ -541,7 +536,7 @@ describe("startDev — spawn commands and env", () => {
         join("/proj", ".wrangler", "state"),
         // The Worker's own address, from this checkout's allocation. It cannot derive it (`Host` is
         // caller-controlled) and it cannot write it down (a port is allocated per checkout), so this
-        // is the only place it can come from — #462.
+        // is the only place it can come from.
         "--var",
         "BASE_URL:http://localhost:8787",
       ],
@@ -550,9 +545,8 @@ describe("startDev — spawn commands and env", () => {
   });
 
   test("a second checkout's workers are told that checkout's origin, not the first one's", async () => {
-    // The whole defect, at the layer that spawns. Two checkouts get two port blocks, so a `BASE_URL`
-    // written down in `wrangler.jsonc` is right in one of them and wrong in the other — and the Worker
-    // that believed it signed control-plane tokens as somebody else (`pithy-sh/dashboard#95`).
+    // Two checkouts get two port blocks, so a `BASE_URL` written down in `wrangler.jsonc` would be right in
+    // one of them and wrong in the other, and a Worker would sign control-plane tokens as somebody else.
     const h = harness({
       loadDevConfig: async () => ({
         ...config,
@@ -581,11 +575,10 @@ describe("startDev — spawn commands and env", () => {
     expect(env.PATH).toBe("/usr/bin");
   });
 
-  test("every child env carries the project's Cloudflare credentials, not the shell's (#555)", async () => {
-    // The defect, at the only place it is observable: the environment handed to `spawn`. `pithy dev`
-    // copied the parent environment wholesale and added the port table, so `wrangler dev` authenticated
-    // as whatever the shell held — and on a machine with two accounts a magic link went out through a
-    // tenant that does not own the sending domain, five times, with nothing said.
+  test("every child env carries the project's Cloudflare credentials, not the shell's", async () => {
+    // Observable only in the environment handed to `spawn`. A `wrangler dev` authenticated as whatever the
+    // shell held would, on a machine with two accounts, send a magic link through a tenant that does not own
+    // the sending domain, with nothing said.
     const h = harness();
     await startDev({
       ...h.options,
@@ -599,8 +592,8 @@ describe("startDev — spawn commands and env", () => {
   });
 
   test("**says nothing about overriding what the shell exported — the project's account is the expectation**", async () => {
-    // This used to print a line whenever the shell held `CLOUDFLARE_*`, and a developer whose shell holds
-    // a token for other work saw it on every run, forever, announcing that the normal thing happened.
+    // A developer whose shell holds a token for other work would see such a line on every run, announcing
+    // that the normal thing happened.
     // The environment still overrides — the test above asserts the child gets the project's credentials —
     // and the case where the account is genuinely in question is the refusal below, which is a throw.
     const h = harness({
@@ -617,8 +610,7 @@ describe("startDev — spawn commands and env", () => {
   });
 
   test("a pinned account the credentials contradict refuses before a single worker spawns", async () => {
-    // #206's refusal, reaching `pithy dev` for the first time. It resolved no account at all before, so
-    // there was nothing to compare — and the disagreement surfaced as five failed sends instead.
+    // The account refusal every command makes. Unrefused, the disagreement would surface as failed sends.
     const h = harness({
       devCloudflareEnv: () => {
         throw new ConflictError({ message: "This project pins Cloudflare account A, and the file supplies B." });
@@ -650,13 +642,12 @@ async function signalReady(h: ReturnType<typeof harness>): Promise<void> {
 /**
  * The claim the seed minted — a credential, and the value these tests hold the output against.
  *
- * `#572` put it in the URL, because the artifact is a file and a Worker has no filesystem to read it
- * from. It stays out of the terminal in every run that can open a browser itself, which is what the
+ * It rides in the URL, because the artifact is a file and a Worker has no filesystem to read it from. It stays out of the terminal in every run that can open a browser itself, which is what the
  * assertions below are about; `dev/devLogin.ts` carries the boundary and `claimIsPrinted` names it.
  */
 const CLAIM = "eyJ1IjoiZXhhbXBsZS1hZGEifQ%3D%3D.c2ln";
 
-/** What `pithy seed` wrote, as `readDevLogins` hands it over — a record keyed by user id (`#667`). */
+/** What `pithy seed` wrote, as `readDevLogins` hands it over — a record keyed by user id. */
 const seededLogin = async () => ({
   "example-ada": {
     email: "ada@example.com",
@@ -719,7 +710,7 @@ function pressable(): {
 
 describe("startDev — the l keypress", () => {
   test("**with several identities, l numbers them and a digit opens the one it named**", async () => {
-    // `#667`. The user axis composes in front of the worker logic: `l` resolves *who*, and what happens
+    // The user axis composes in front of the worker logic: `l` resolves *who*, and what happens
     // then is the same four shapes it always was.
     const keys = pressable();
     const opened: string[] = [];
@@ -937,7 +928,7 @@ describe("startDev — the l keypress", () => {
 
     await keys.press("l");
 
-    // The claim rides in the URL the browser is handed, and in nothing the terminal prints — `#572`.
+    // The claim rides in the URL the browser is handed, and in nothing the terminal prints.
     expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}`]);
     expect(h.stdoutLines).toContain("Opening the dev login for ada@example.com.");
   });
@@ -1085,7 +1076,7 @@ describe("startDev — ready banner", () => {
 
   test("no session cookie reaches the terminal or a session log", async () => {
     // The reason this feature exists. `pithy dev`'s output is read, piped, tee'd and screenshotted, so a
-    // session token printed once is a session token at rest. Since `#572` the seed mints none at all.
+    // session token printed once is a session token at rest. The seed mints none at all.
     const h = harness({ readDevLogins: seededLogin });
     const handle = await startDev(h.options);
     await signalReady(h);
@@ -1174,10 +1165,9 @@ describe("startDev — ready deadline", () => {
   });
 
   /**
-   * **The report is the terminal's, and no worker's file carries it** (#671).
+   * **The report is the terminal's, and no worker's file carries it.**
    *
-   * It used to go to the single `logs/dev.log` as well, because that file was the session's record and
-   * `Still waiting on:` is a session-scoped fact. One file per worker has nowhere to put it: `waiting`
+   * `Still waiting on:` is a session-scoped fact, and one file per worker has nowhere to put it: `waiting`
    * is *about* the workers that are its subject, so a copy in each of their files would be one fact
    * written five times, into five files it is not a statement about.
    *
@@ -1221,7 +1211,7 @@ describe("startDev — ready deadline", () => {
 
     const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
     expect(records).toEqual([{ command: "dev", schemaVersion: 1, event: "still-waiting", waiting: ["web"] }]);
-    // Held to the schema `pithy schema dev` publishes (#697).
+    // Held to the schema `pithy schema dev` publishes.
     await expectConforms("dev", h.stdoutLines.filter((line) => line.startsWith("{")).join("\n"));
     // And no prose report on stdout to confuse a reader parsing line by line.
     expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
@@ -1229,12 +1219,11 @@ describe("startDev — ready deadline", () => {
   });
 
   /**
-   * **A session's stdout is a stream, and `--json` pretty-printing must not reframe it (#666).**
+   * **A session's stdout is a stream, and `--json` pretty-printing must not reframe it.**
    *
    * `docs/commands/dev.md` §`--json` promises one object per line, because a session never ends and a
-   * consumer can only read it line by line. When `--json` learned to indent for a person, this emitter
-   * was global and latched — so at a terminal, or under any PTY-allocating agent harness, every record
-   * here became a multi-line painted blob and the first line a consumer read was `{`.
+   * consumer can only read it line by line. A run latched pretty — at a terminal, or under a PTY-allocating
+   * agent harness — would otherwise turn every record into a multi-line painted blob.
    */
   test("stays one compact line per record even when this run is latched pretty", async () => {
     const { latchJsonFormat } = await import("../terminal/output");
@@ -1331,10 +1320,9 @@ describe("startDev — --json is a stream a script can parse", () => {
 
 describe("startDev — log tee", () => {
   /**
-   * **The `[name]` prefix is gone, because the file is the name** (#671).
+   * **No `[name]` prefix, because the file is the name.**
    *
-   * It carried one while every worker shared `logs/dev.log` and the prefix was the only record of which
-   * one spoke. `dev.<branch>.<worker>.jsonl` carries it in the filename, so a field — or a prefix — would
+   * `dev.<branch>.<worker>.jsonl` carries it in the filename, so a field — or a prefix — would
    * be the same fact on every line of the file. `pithy dev logs` puts it back when it renders.
    */
   test("an output record is {ts, stream, text}, ANSI-stripped, CR-normalized, with no worker field", async () => {
@@ -1368,9 +1356,8 @@ describe("startDev — log tee", () => {
   });
 
   /**
-   * **One file per worker, under the config directory, named for the branch.** The whole point of #671:
-   * `pithy feature destroy` deletes the worktree, and the session you then want to read back used to go
-   * with it.
+   * **One file per worker, under the config directory, named for the branch.** `pithy feature destroy`
+   * deletes the worktree, and the session you then want to read back must outlive it.
    */
   test("each started worker gets its own file under <config>/<project>/logs/", async () => {
     const h = harness({ ensureDeps: { branchFor: async () => "feature/671-dev-logs" } });
@@ -1698,13 +1685,11 @@ describe("startDev — the .dev.vars a checkout cannot inherit", () => {
 });
 
 describe("startDev — a Worker whose config will not import", () => {
-  test("says so, names the Worker, and states that it has no bindings (#199)", async () => {
-    // The silent path this closes. Since #179 a `cf-secrets-store` secret is materialized only if the
-    // Worker's `pithy.config.ts` imports — correct, because the registry decides which secrets a Worker
-    // gets and an unreadable registry has no honest answer. But an unresolvable Worker reached the
-    // generator as an empty target list, which is also what a project with no secrets looks like. So
-    // `pithy dev` rewrote the Worker's `.dev.vars` down to its header, started it with no bindings at
-    // all, and printed one line: `Starting replay-board.`
+  test("says so, names the Worker, and states that it has no bindings", async () => {
+    // A `cf-secrets-store` secret is materialized only if the Worker's `pithy.config.ts` imports — the
+    // registry decides which secrets a Worker gets, and an unreadable registry has no honest answer. An
+    // unresolvable Worker reaches the generator as an empty target list, which is also what a project with
+    // no secrets looks like, so without this line the Worker starts with no bindings and nothing says why.
     //
     // The adopter breaking their own config is the *likely* reader of this, and they are mid-edit with
     // something else on their mind. The run that costs them their bindings has to be the run that says
@@ -1936,8 +1921,8 @@ describe("startDev — naming what starts", () => {
 
   test("falls back to any pinned app when no app autostarts — never to the host's own address", async () => {
     // Every app Worker turned off on this branch (run by hand under a debugger, say), so there is no
-    // autostart app to prefer. The chain used to end at `started[0]`, which in this run is the host
-    // itself — a Worker holding no public route, and the exact failure the fallback exists to prevent.
+    // autostart app to prefer. Every started member in this run is the host, which holds no public route,
+    // so none of them may be the fallback.
     const seen: MaterializeHostConfigsOptions[] = [];
     const h = hosted({
       materializeHostConfigs: async (o) => {
@@ -1974,10 +1959,9 @@ describe("startDev — naming what starts", () => {
 
 describe("startDev — capability hosts", () => {
   /**
-   * `apps/` is the app-Worker registry, and nine capabilities ship a prebuilt host Worker that lives
-   * nowhere near it. None of them had ever run under `pithy dev`, which is why every email enqueued
-   * locally sat `pending` forever while the sign-in screen said "Check your inbox"
-   * (pithy-sh/pithy#410). A host is an ordinary member of the dev set, and these pin that it is one.
+   * `apps/` is the app-Worker registry, and the capabilities that own Workflows ship a prebuilt host Worker that
+   * lives nowhere near it. Without the host running, an email enqueued locally sits `pending` while the sign-in
+   * screen says "Check your inbox". A host is an ordinary member of the dev set, and these pin that it is one.
    */
 
   /** The dev config a project with an email host gets: the two apps plus the host, all pinned. */
@@ -2062,7 +2046,7 @@ describe("startDev — capability hosts", () => {
   });
 
   /**
-   * **A service binding reaches the target's pinned port, started here or not (#617).** `--app api` starts only
+   * **A service binding reaches the target's pinned port, started here or not.** `--app api` starts only
    * `api`; `web` may be running in another session, and its address is the one its feature pinned either way.
    */
   test("an app Worker's service binding is published at its target's pinned origin, under --app too", async () => {
@@ -2114,6 +2098,40 @@ describe("startDev — capability hosts", () => {
     expect(host?.args).not.toContain("EMAIL_ORIGIN:http://localhost:8789");
   });
 
+  /**
+   * **A Worker that owns its database is pointed at its own host, and its own host links to it.** `web` owns `DB`,
+   * so `web---email` runs its jobs: `web` is handed that host's address, `api` keeps the shared one, the owned host's
+   * argv carries no email address, and its config is resolved against `web`'s pinned origin.
+   */
+  test("a Worker's own host is the one it reaches, and is resolved against that Worker's origin", async () => {
+    const owned = {
+      ...emailHost,
+      sourceDir: "/proj/apps/web",
+      owner: { worker: "web", bindings: ["DB"] },
+      worker: { ...emailHost.worker, name: "web---email", dir: "/proj/.wrangler/pithy/hosts/web---email" },
+    };
+    const baseUrls: (string | undefined)[] = [];
+    const h = hosted({
+      loadDevConfig: async () => ({
+        ...withHost,
+        workers: { ...withHost.workers, "web---email": { port: 8790, origin: "http://localhost:8790" } },
+      }),
+      discoverHostWorkers: async () => ({ hosts: [emailHost as never, owned as never], notes: [] }),
+      materializeHostConfigs: async (o) => {
+        for (const host of o.hosts) baseUrls.push(o.baseUrlFor?.(host) ?? o.baseUrl);
+        return { notes: [], failed: [] };
+      },
+    });
+    await startDev(h.options);
+
+    const spawnedAt = (cwd: string) => h.spawned.find((s) => s.opts.cwd === cwd);
+    expect(spawnedAt("/proj/apps/api")?.opts.env.EMAIL_ORIGIN).toBe("http://localhost:8789");
+    expect(spawnedAt("/proj/apps/web")?.opts.env.EMAIL_ORIGIN).toBe("http://localhost:8790");
+    const ownHost = spawnedAt("/proj/.wrangler/pithy/hosts/web---email");
+    expect(ownHost?.args.some((arg) => arg.startsWith("EMAIL_ORIGIN:"))).toBe(false);
+    expect(baseUrls).toEqual(["http://localhost:8787", "http://localhost:8788"]);
+  });
+
   test("its config is resolved against the app's own local origin, not the host's", async () => {
     const h = hosted();
     const calls: { project: string; baseUrl: string; simulateDelivery?: boolean }[] = [];
@@ -2153,6 +2171,50 @@ describe("startDev — capability hosts", () => {
     await handle.ready;
     expect(calls).toEqual([false]);
     expect(h.stdoutLines.join("\n")).toContain("sending for real from hi@acme.dev");
+  });
+
+  /**
+   * **Each email host is decided from its own composition.** `web` owns `DB` and chose the simulator, so its own host
+   * simulates while the shared host sends for real, and the banner gives each verdict, named.
+   */
+  test("a Worker's own host takes its delivery verdict from its own config, not the first host's", async () => {
+    const owned = {
+      ...sender("simulator", "hi@web.dev"),
+      sourceDir: "/proj/apps/web",
+      owner: { worker: "web", bindings: ["DB"] },
+      worker: { ...emailHost.worker, name: "web---email", dir: "/proj/.wrangler/pithy/hosts/web---email" },
+    };
+    const h = hosted({
+      loadDevConfig: async () => ({
+        ...withHost,
+        workers: { ...withHost.workers, "web---email": { port: 8790, origin: "http://localhost:8790" } },
+      }),
+      discoverHostWorkers: async () => ({
+        hosts: [sender("remote", "hi@acme.dev") as never, owned as never],
+        notes: [],
+      }),
+    });
+    const calls: { simulate: boolean; hosts: string[] }[] = [];
+    const handle = await startDev({
+      ...h.options,
+      materializeHostConfigs: async (o) => {
+        calls.push({ simulate: o.simulateDelivery === true, hosts: o.hosts.map((host) => host.worker.name) });
+        return { notes: [], failed: [] };
+      },
+    });
+    for (const s of h.spawned) s.child.stdout.write("Ready on http://localhost — ready in 12ms\n");
+    await flush();
+    await handle.ready;
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { simulate: false, hosts: ["email"] },
+        { simulate: true, hosts: ["web---email"] },
+      ]),
+    );
+    const out = h.stdoutLines.join("\n");
+    expect(out).toContain("email: Email: sending for real from hi@acme.dev");
+    expect(out).toContain("web---email: Email: the simulator, by config.");
+    await handle.shutdown("done");
   });
 
   /**
@@ -2295,7 +2357,7 @@ describe("startDev — capability hosts", () => {
 });
 
 /**
- * **The reclaim and `pithy feature prune` answer one question, with one predicate** (#637). The reclaim
+ * **The reclaim and `pithy feature prune` answer one question, with one predicate.** The reclaim
  * rebuilds a lost registry from the blocks worktrees still pin, and prune frees the blocks nothing holds.
  * If the two disagree, a block prune frees is put back by the next config-less `pithy dev`, and prune frees
  * it again — or a block prune keeps is left off a rebuilt registry and handed to somebody else.
@@ -2461,7 +2523,7 @@ describe("startDev — session events", () => {
     await flush();
 
     expect(only(c.events, "waiting").map((e) => [...e.workers])).toEqual([["web"]]);
-    // The prose is still written. The event does not take its place (#670).
+    // The prose is still written. The event does not take its place.
     expect(h.stdoutLines).toContain("Still waiting on: web.");
   });
 
@@ -2648,7 +2710,7 @@ describe("startDev — restart", () => {
 /**
  * **The two key actions, reachable from the handle.**
  *
- * The live roster owns the keyboard while it renders (#670), so `l` and its digits cannot stay bound
+ * The live roster owns the keyboard while it renders, so `l` and its digits cannot stay bound
  * only inside `terminal/keys.ts`. These are the same actions the keypress cases above drive through a
  * reader; what is asserted here is that the handle reaches them.
  */
@@ -2727,7 +2789,7 @@ describe("startDev — l reads the seed as it is pressed", () => {
   });
 
   test("a seed that lands mid-session is offered as a list, not just as one identity", async () => {
-    // The whole of #667 has to survive the re-read: three identities seeded after startup still get
+    // The identity picker has to survive the re-read: three identities seeded after startup still get
     // numbered, and a digit still opens one.
     const opened: string[] = [];
     let seeded = false;
@@ -2965,8 +3027,8 @@ describe("startDev — what a roster supersedes", () => {
   });
 
   test("`Ready.` is the roster's to say now, and it says it by every row reading ready", async () => {
-    // It used to be kept here as the moment marker. With a table of five rows all saying `ready` and the
-    // footer stopped ticking, the word was the same fact twice — which is what was reported.
+    // With a table of rows all saying `ready` and the footer stopped ticking, the word would be the same fact
+    // twice.
     const h = harness();
     await startDev({ ...h.options, roster: true });
     await ready(h);
@@ -3099,13 +3161,12 @@ describe("startDev — readiness after the banner", () => {
 });
 
 /**
- * **The ready deadline outlives the banner, because a restart puts a worker back where #426's adopter was.**
+ * **The ready deadline outlives the banner, because a restart puts a worker back into a cold start.**
  *
- * The watch was armed once after the spawn loop and stopped forever at the first banner, so a worker
- * restarted with `r` that never came back ready reported *nothing*: the session looked healthy, the
- * roster kept its last row, and an agent driving `pithy dev --json` saw the records stop. It is now
- * armed from `startWorker` — the one path both the startup loop and `restart` go through — and stopped
- * whenever every worker is ready, which is no longer the same decision as having shown the banner.
+ * A worker restarted with `r` that never comes back ready must still be reported, or the session looks
+ * healthy and an agent driving `pithy dev --json` sees the records stop. The watch is armed from
+ * `startWorker` — the one path both the startup loop and `restart` go through — and stopped whenever every
+ * worker is ready, which is not the same decision as having shown the banner.
  */
 describe("startDev — the ready deadline survives a restart", () => {
   /** Both fake workers past their ready signals, so the banner fires and the watch stops. */
@@ -3153,10 +3214,9 @@ describe("startDev — the ready deadline survives a restart", () => {
 
     const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
     expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["api"] }]);
-    // **And the person's half still arrives, on stderr.** It reached them through `logs/dev.log` when
-    // that file was the session's record; a session-scoped sentence has no worker's file to go in now,
-    // so under `--json` it goes to stderr — the destination `docs/commands/dev.md` already promised
-    // (#671). The claim #684 made here is unchanged: `--json` does not stop reporting at the banner.
+    // **And the person's half still arrives, on stderr.** A session-scoped sentence has no worker's file to
+    // go in, so under `--json` it goes to stderr — the destination `docs/commands/dev.md` promises. `--json`
+    // does not stop reporting at the banner.
     expect(h.stderrLines).toContain("Still waiting on: api.");
   });
 
@@ -3169,9 +3229,8 @@ describe("startDev — the ready deadline survives a restart", () => {
   });
 
   test("a worker started from parked that never arrives is named", async () => {
-    // The set the deadline read used to be `started`, the subset this run spawned — so a worker `r`
-    // started from a parked row could never appear in a report even with the watch re-armed. The
-    // banner's own all-ready check already read the wider set, and the page already describes it.
+    // The deadline reads every member, not only the subset this run spawned, so a worker `r` started from a
+    // parked row can appear in a report. The banner's own all-ready check reads the same set.
     const h = harness();
     const handle = await startDev({ ...h.options, autostartOverrides: { web: false } });
     h.spawned[0]?.child.stdout.write("Ready on http://localhost:8787\n");
@@ -3217,7 +3276,7 @@ describe("startDev — the ready deadline survives a restart", () => {
     // **Arming is idempotent, never a stop and re-arm.** `r` is reachable before the banner — the
     // roster is mounted first and `startDev` returns before every worker is ready — so a stop and
     // re-arm would hand the innocent stuck worker another ninety seconds, and a developer pressing `r`
-    // repeatedly would starve the report #426 exists for indefinitely.
+    // repeatedly would starve the report indefinitely.
     //
     // The trade it buys, stated: a worker restarted while a watch is already live inherits that clock
     // and can be named almost at once. One line that arrives early beats a report that never arrives.
@@ -3450,7 +3509,7 @@ describe("startDev — listing and choosing an identity", () => {
   });
 
   test("it names people and never a claim", async () => {
-    // `#667`'s rule. The picker renders whatever this returns, so the omission has to be here.
+    // The picker renders whatever this returns, so the omission has to be here.
     const h = harness({ readDevLogins: seededLogins(2) });
     const handle = await startDev(h.options);
 
@@ -4015,7 +4074,7 @@ describe("startDev — the dev-login banner under a roster", () => {
 });
 
 /**
- * **A session that starts a worker the developer had parked under a previous path says so (#685).**
+ * **A session that starts a worker the developer had parked under a previous path says so.**
  *
  * `pithy dev` starts it rather than refusing. Refusing would honor the last stated intent, but the
  * dead root's branch key can itself be a path — `local:/old/app` — so nothing in the moved checkout can
@@ -4078,7 +4137,7 @@ describe("startDev — autostart answers under a checkout that is gone", () => {
     expect(h.stdoutLines).toContain(
       '{"command":"dev","schemaVersion":1,"event":"autostart-stale","roots":[{"root":"/gone/app","branches":[{"branch":"main","workers":["web"]}]}]}',
     );
-    // Held to the schema `pithy schema dev` publishes (#697).
+    // Held to the schema `pithy schema dev` publishes.
     await expectConforms("dev", h.stdoutLines.join("\n"));
   });
 

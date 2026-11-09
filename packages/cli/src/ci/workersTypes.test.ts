@@ -10,19 +10,18 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * **A package that imports `@cloudflare/workers-types` by name from shipped source declares it as a
  * `dependency`.**
  *
- * #315 settled this for `@pithy-sh/core`, and `tooling/browser-scopes/src/probe.ts:28-30` wrote the
- * argument down in two halves: "Importing them by name is what makes the dependency real, and
- * `@pithy-sh/core` declaring `@cloudflare/workers-types` as a dependency rather than a devDependency is
- * what makes it satisfiable." Fourteen other packages had the first half and not the second (#431).
+ * `tooling/browser-scopes/src/probe.ts:28-30` states the argument in two halves: "Importing them by name is
+ * what makes the dependency real, and `@pithy-sh/core` declaring `@cloudflare/workers-types` as a dependency
+ * rather than a devDependency is what makes it satisfiable." A package with the first half and not the second
+ * compiles here and fails for an adopter.
  *
  * **Nothing in this tree could notice.** Bun hoists the workspace and the root `package.json` `overrides`
  * pins one copy for every member, so a sibling's devDependency resolves for every program here. The
  * consumer is where it fails, and the consumer is not us: no package publishes `dist`, every one declares
  * `"exports": { "./src/*": "./src/*.ts" }`, so an adopter installing `@pithy-sh/auth` type-checks *our*
  * `src/data/tables.ts` inside *their* program. A devDependency is not installed for them. `docs/STACK.md`
- * (§ Capability packages) has said `bun add zod @cloudflare/workers-types` — `bun add`, not `bun add -d` —
- * the whole time; the manifests drifted from it one copied sibling at a time, which is why this is a gate
- * and not a review note.
+ * (§ Capability packages) says `bun add zod @cloudflare/workers-types` — `bun add`, not `bun add -d` — and a
+ * manifest drifts from it one copied sibling at a time, which is why this is a gate and not a review note.
  *
  * ## Scoped to one package, on purpose
  *
@@ -34,10 +33,7 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * CLI would be the wrong fix; the right one is probably to stop publishing those files, and that is a
  * decision with its own blast radius.
  *
- * The other half of that sighting is closed. `zod`, imported from twenty-five shipped `packages/cli`
- * modules and declared nowhere but `devDependencies`, was an undeclared runtime dependency satisfied only
- * because `@pithy-sh/core` carried `zod` transitively. #477 made `zod`, `kysely` and `hono`
- * `peerDependencies` of every package that imports them — which removed that cover — and
+ * `zod`, `kysely` and `hono` are `peerDependencies` of every package that imports them, and
  * `sharedRuntimeDeps.test.ts` is the gate for those three, in both directions.
  * A gate carrying an exception list of decisions nobody has made is the rot `turboInputs.test.ts` refuses.
  * So this file claims exactly what it checks, and the name says the same.
@@ -49,19 +45,13 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * breaks identically: they compile our `src` and get `Cannot find name`. This gate reads every one of
  * those packages as a clean devDependency-only package.
  *
- * A sentence naming the exception is not enough, and this file proves it: the first one named
- * `packages/cloudflare` as the survivor and cleared `packages/audit` and `packages/rating`, and all three
- * put a global `D1Database` in an exported signature. So the blind spot is swept instead —
- * {@link AMBIENT} is the measured set, deep-compared.
+ * A sentence naming the exception is not enough, because a reader cannot check it. So the blind spot is swept
+ * instead — {@link AMBIENT} is the measured set, deep-compared.
  *
- * **The sweep reads every workspace member, and that is the whole of its worth.** Its first draft read the
- * two in {@link DECLARED_ONLY}, which is 2 of 25, and reported `{}` as though the tree were clean. It was
- * not: thirteen shipped files in `auth`, `cli`, `core`, `email` and `matchmaking` named a Workers global
- * with no import, `packages/matchmaking/src/data/tables.ts` byte-for-byte the shape `packages/rating` had
- * just been fixed out of. A gate whose population is a subset of the rule's is worse than none, because
- * its green is read as the rule holding. All thirteen are fixed here rather than recorded, so
- * {@link AMBIENT} is empty and the sweep is what keeps it that way. Empty is the assertion, not the
- * absence of one.
+ * **The sweep reads every workspace member, and that is the whole of its worth.** A sweep over the two in
+ * {@link DECLARED_ONLY} would report `{}` over a tree with ambient names elsewhere, and a gate whose population is
+ * a subset of the rule's is worse than none, because its green is read as the rule holding. {@link AMBIENT} is
+ * empty and the sweep is what keeps it that way. Empty is the assertion, not the absence of one.
  */
 
 /** `packages/cli/src/ci` → the repository. */
@@ -114,59 +104,11 @@ const DECLARED_ONLY: Record<string, string> = {
  * Every package that imports the Workers types from shipped source, and how many of its files do.
  *
  * **A frozen literal, and near-exact rather than a floor.** A sweep over a population asserts what the
- * population is (`sweepPopulation.test.ts`), and its shape #8 — an anti-vacuity guard far below the real
+ * population is (`sweepPopulation.test.ts`), and one of the shapes it names — an anti-vacuity guard far below the real
  * population — is what a `toBeGreaterThan(3)` here would be. A scan that came back with three packages
  * would be reporting on a tree other than this one, and every assertion below it would be worthless.
  *
- * Measured 2026-08-22, last moved 2026-10-16 by migration state over the control plane (#729): `core`'s
- * `migrations/state.ts` and `controlPlane/migrationState/migrationState.ts`; and by `pithy setup` (#764):
- * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows; by index state over the
- * control plane (#730): `vector`'s `admin/health.ts`, which reads the corpus off `DB`; by #560: `auth`'s
- * `test-utils/scopedBackend.ts`, the fixture that composes a real auth for the scope gates; and by declared
- * secret tables (#524): `cli`'s `capabilities/retainedDatabase.ts` and `capabilities/secretsProvisioner.ts`,
- * which read the vault's table registry before a teardown, and `secrets`' `tables/tableStore.ts`; and by
- * unattended rotation (#602): `auth`'s `instance/jwksReencryption.ts`, which records in the secrets D1 that the
- * JWKS keys have moved under the session secret's newest version. A file added or removed moves a count, which
- * is the point: the number is a second reader of the same change. `artifacts` (#673) joined with two:
- * `data/tables.ts` and `binding/artifacts.test.ts`. The account lifecycle (#620) moved `auth` by two:
- * `lifecycle/hooks.ts` hands an adopter's hook the request's D1, and `lifecycle/transitions.ts` carries it.
- * Encrypted fields (#390) moved `core` by one, `privacy/fieldRotation.ts`, which re-seals a column through its D1,
- * and `secrets` by two: `rotation/fieldKeyRotation.ts` and `manager/fieldKeyWorkflow.ts`, which hand it the
- * adopter's own databases. The purge (#622) moved `auth` by two — `purge/contribution.ts` erases the account's rows
- * through one D1 batch, and `test-utils/accountFootprint.ts` seeds them — and `audit` by one: `capability.ts` builds
- * the recorder a Workflow step audits through over the env's own D1. The organization lifecycle (#623) moved
- * `organization` by four: `lifecycle/hooks.ts` and `lifecycle/transitions.ts`, the same pair auth's lifecycle added,
- * and `purge/contribution.ts` and `purge/workflow.ts`, which erase an organization through the env's own D1 — and
- * `media` and `storage` by one each: their `purge/contribution.ts`, which erases the organization's records and bytes.
- * The leaderboard's management surface (#817) moved `leaderboard` by six:
- * `entry/result.ts` and `admin/moderate.ts`, which batch an entry's change with its record on D1;
- * `http/adminRoutes.ts`, which reads the binding off `env`; and `entry/store.ts`, `http/handlers.ts` and
- * `retention/prune.ts`, which delete an entry or a window together with its contributions in one batch.
- * A person's purge and export (#814) moved `core` by one, `capability/personRows.ts`, the contribution most
- * capabilities write through, and `artifacts`, `email`, `multiplayer`, `support`, `testers` and `matchmaking` by one
- * each: their `purge/contribution.ts`, which opens the env's own D1 for the person's rows — and, for matchmaking,
- * reaches each game's queue Durable Object. It moved `leaderboard` by one too: its `purge/contribution.ts`, which
- * batches the deletes with a stale mark on every closed window a ranked entry left.
- * Rating's outcome log (#818) moved `rating` by two: `data/batch.ts`, which runs the log and the rating as one
- * `DB.batch`, and `peer.ts`, which hands a void cascade the consumer over its D1.
- * Its purge (#814, over that log) moved it by one more: `purge/contribution.ts`, which rewrites the person's place
- * in the log a page at a time and deletes their rating, each as one `d1.batch()`.
- * Assignment (#816) moved `support` by one: `store/assignment.ts`, which batches a thread's change of assignee with
- * its history row on D1, so a handover never lands without its record.
- * Multiplayer's management surface (#820) moved `multiplayer` by three: `void/void.ts`, which marks a result void and
- * hands each consumer the env's own D1; `session/peers.ts`, which types the consumer that takes it; and
- * `test-utils/database.ts`, which migrates a suite's D1 through the real chain. Keeping every spent void key moved it
- * by one more: `data/store.ts`, which spends a key in one `d1.batch()` with the void or the retry it was sent for.
- * Backup and restore (#848) moved `cli` by four: `backup/backup.ts`, `backup/inspect.ts`, `backup/owned.ts` and
- * `backup/restore.ts`, which read and write a D1 through the binding or the REST client alike; and `support` by one:
- * `store/provisionIndex.ts`, the index step `pithy support provision` and `pithy restore` share.
- * In `audit`, `chain/prune.ts`, `chain/tombstone.ts` and `workflows/prune.ts` read and write the checkpoint bucket and
- * the trail. In `core`, `retention/holds.ts` reads the legal holds over the env's own D1.
- * `support` counts `test-utils/seed.ts` too, which migrates a suite's D1 and seeds threads and messages on it.
- * In `consent`, `data/tables.ts`, `record/store.ts` and `evidence/evidence.ts` read and write its D1 and its R2, and
- * `http/routes.ts`, `purge/contribution.ts` and `capability.ts` open them off an env. In `email`, `consent/consent.ts`
- * suppresses an address and stops tracking queued mail on a withdrawal. In `organization`, `acting/rotation.ts`
- * carries the acting selection to a rotated session over the env's own D1.
+ * A file added or removed moves a count, which is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
@@ -185,7 +127,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/organization": 13,
   "packages/payments": 18,
   "packages/rating": 5,
-  "packages/secrets": 7,
+  "packages/secrets": 8,
   "packages/storage": 7,
   "packages/support": 12,
   "packages/testers": 8,
@@ -543,8 +485,7 @@ describe("the Workers types are declared the way they are used", () => {
     expect(workersNames()).toContain("ReadableStream");
     expect(names).not.toContain("ReadableStream");
 
-    // Every member, not the two that declare without importing. Reading a subset here is what let
-    // thirteen files sit under a green gate (#431); see the header.
+    // Every member, not the two that declare without importing; see the header.
     const found: Record<string, Record<string, string[]>> = {};
     for (const member of MEMBERS) {
       const sites = ambient(member.directory, names);
@@ -552,7 +493,7 @@ describe("the Workers types are declared the way they are used", () => {
     }
     expect(
       found,
-      "AMBIENT and the tree disagree. Every file here names a Workers global and imports nothing, so the gate above reads its package as clean and an adopter's compiler does not — import the names, which is what #431 did to the nineteen this record used to hold, or correct AMBIENT and say why the file is an exception",
+      "AMBIENT and the tree disagree. Every file here names a Workers global and imports nothing, so the gate above reads its package as clean and an adopter's compiler does not — import the names, or correct AMBIENT and say why the file is an exception",
     ).toEqual(AMBIENT);
   });
 
@@ -594,8 +535,7 @@ describe("the Workers types are declared the way they are used", () => {
     // And what the whole workspace actually resolves to, read from the lockfile rather than from an
     // override, because an override is an intention and the lockfile is the install. One copy, inside the
     // range every package publishes — otherwise this tree type-checks against a copy no adopter would ever
-    // install. A root override held it below `5.20260807.2`'s `declare const Buffer` until upstream made it a
-    // `var` in `5.20261009.1` (#402, docs/STACK.md §17); a pin, if one returns, is read through this too.
+    // install. A root override that pins it is read through this too (docs/STACK.md §17).
     const resolved = [...(readSource(resolve(REPO_ROOT, "bun.lock")) ?? "").matchAll(LOCKED_WORKERS_TYPES)].map(
       (match) => match[1] as string,
     );
@@ -640,8 +580,7 @@ describe("the Workers types are declared the way they are used", () => {
 
   test("an import is read one way for the vocabulary and the other way for the sweep", () => {
     // The gate over the other gate. `ambient` treats a bound identifier as resolved, so a form the parser
-    // cannot bind is a file this sweep reports as broken when it is correct — and the alias form did
-    // exactly that until it was split from the vocabulary's question (#431).
+    // cannot bind is a file this sweep reports as broken when it is correct, so the alias form is bound here.
     const sample = [
       'import type { D1Database as DB, KVNamespace } from "@cloudflare/workers-types";',
       'import { Miniflare } from "miniflare";',

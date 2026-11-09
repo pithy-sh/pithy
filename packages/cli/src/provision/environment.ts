@@ -16,11 +16,12 @@ import {
   type DeclaredNaming,
   resolveBindingNamings,
 } from "../capabilities/bindingNamings";
-import { hostWorkerFor } from "../capabilities/hostRegistry";
+import { hostOwnerFor, hostWorkerFor } from "../capabilities/hostRegistry";
 import { composedManifests, type ManifestFault, manifestFaultKey } from "../capabilities/manifests";
 import type { MintedSecret } from "../capabilities/mintSecrets";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
+import { hostedWorkflowEntries } from "../feature/hosts";
 import type { FeatureResource, FeatureScript } from "../feature/manifest";
 import { assertNoDeclaredFeatureIds, readWorkerRatelimits } from "../feature/ratelimits";
 import { migrateProject } from "../migrations/run";
@@ -30,6 +31,7 @@ import type { KitWorkerDeploy } from "../project/deployKit";
 import { workerDirName } from "../project/workerIdentity";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
+import { addProvisionedHosts, bindHostWorkflows, type ProvisionedHost } from "./hostBindings";
 import type { MintedThisRun } from "./mintedThisRun";
 import { type ProvisionedRepoint, pointsAtCounterpart, repointRefusal, stanzaPointers } from "./repoint";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -296,6 +298,12 @@ export interface ProvisionReport {
   declined: ProvisionedDeclines[];
   /** What each Worker's `ownBindings` named. Empty for a project that owns nothing, which is most of them. */
   ownership: ProvisionedOwnership[];
+  /**
+   * **The kit hosts each Worker's Workflow bindings now reach**, in a declared environment: the shared host, or a
+   * Worker's own where it owns a binding that host binds. `pithy deploy` uploads them; this run points each Worker's
+   * stanza at the one that reads its database. Absent for a feature, whose hosts are bound after they deploy.
+   */
+  kitHosts?: ProvisionedHost[];
   /**
    * Bindings whose stanza pointed at a different resource than this run named, and now points at the new one.
    * Only a run passing `--repoint` gets here with any; without it the run refuses before creating anything.
@@ -685,11 +693,15 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     });
   };
   // A service target is an `apps/` Worker, at this scope's copy of it, or a kit Worker, at the host this scope
-  // deploys. An app Worker cannot take a host's name (`assertWorkerName`), so the two never collide.
-  const serviceScript = (target: string): string =>
-    hostWorkerFor(target)
-      ? workflowHostName({ ...scope.workflowHost, capability: target })
-      : scopedName(resolveServiceTarget(workers, target));
+  // deploys — the calling Worker's own, where it owns a binding that host binds. An app Worker cannot take a host's
+  // name (`assertWorkerName`), so the two never collide.
+  const serviceScript = (target: string, caller?: ProvisionWorker): string => {
+    const spec = hostWorkerFor(target);
+    if (!spec) return scopedName(resolveServiceTarget(workers, target));
+    const composed = caller?.capabilities.find((capability) => capability.name === target);
+    const owner = caller && composed ? hostOwnerFor(spec, composed, caller)?.worker : undefined;
+    return workflowHostName({ ...scope.workflowHost, capability: target, ...(owner ? { owner } : {}) });
+  };
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
     service: serviceScript(service.target),
@@ -799,6 +811,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
   const subdomain =
     !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
+  const kitHosts = new Map<string, ProvisionedHost>();
   for (const worker of workers) {
     // The same set the resource loop filtered on, read rather than recomputed. Resolving a Worker's
     // declines once and reading the answer twice is what keeps "created but not written" — and its
@@ -863,9 +876,15 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,
-        service: serviceScript(service.target),
+        service: serviceScript(service.target, worker),
       })),
     });
+    // A declared environment's stanza binds the kit hosts now; a feature's binds them once they have deployed.
+    if (scope.source) {
+      const hosted = hostedWorkflowEntries(worker.capabilities, scope, worker);
+      await bindHostWorkflows(worker.dir, scope.stanza, hosted);
+      addProvisionedHosts(kitHosts, scopedName(worker.name), hosted);
+    }
     // The path the writer wrote, taken from the writer — never recomputed here. A report that names one
     // file while another was edited is the failure the report exists to prevent.
     configs.push({ worker: worker.name, path: relative(options.projectDir, destination), ids: written.length });
@@ -895,6 +914,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     secretBindings: secrets,
     declined: reportedDeclines(declines, wantedPerWorker, workers),
     ownership,
+    ...(scope.source ? { kitHosts: [...kitHosts.values()] } : {}),
     repoints,
     // Read out of the same call the bindings came from — a second scan of `node_modules` would be a
     // second answer to which manifests are broken, in the report about the run the first one shaped.

@@ -72,7 +72,7 @@ describe("resolveEmailConfig", () => {
     expect(config.send_email).toEqual([{ name: "EMAIL", remote: true }]);
   });
 
-  test("the link-signing key's binding is filled with this environment's entry (#603)", () => {
+  test("the link-signing key's binding is filled with this environment's entry", () => {
     const config = resolveEmailConfig(
       {
         ...template,
@@ -133,17 +133,43 @@ describe("resolveEmailConfig", () => {
 });
 
 /**
- * Real delivery is the default, and the simulator is the deliberate choice (pithy-sh/pithy#410).
+ * Real delivery is the default, and the simulator is the deliberate choice.
  *
  * The template used to carry `"remote": true` itself, which read as a decision and was in fact a
  * dead end: `resolveWorkflowHost` only ever *adds* the flag, so nothing downstream could ever turn it
  * off. Moving it here is what makes a documented config flag possible at all.
  */
 /**
- * **A feature gets its own email host (#643), named and bound as the feature.** Worker and Workflow names are
+ * **A feature gets its own email host, named and bound as the feature.** Worker and Workflow names are
  * account-wide and a Secrets Store is flat, so a host resolved with `env: "feature"` alone would be one host
  * every open branch deployed over, reading a master key no feature has. Handed the feature, every name is its own.
  */
+describe("a Worker's own email host", () => {
+  test("is named for its owner, Workflows and all, and reads the database it is handed", () => {
+    const config = resolveEmailConfig(template, {
+      project: "acme",
+      env: "staging",
+      owner: "two",
+      appDatabaseId: "two-db",
+      suppressionDatabaseId: "sup-456",
+      secretsDatabaseId: "sec-789",
+      storeId: "store-abc",
+      baseUrl: "https://two.staging.example.com",
+      theme: { ...defaultTheme, appName: "Two" },
+      messages: { es: { "email/welcome.subject": "Hola de dos" } },
+    });
+    expect(config.name).toBe("acme-staging-two---email");
+    expect(JSON.parse(config.vars.EMAIL_THEME as string).appName).toBe("Two");
+    expect(JSON.stringify(config.vars)).toContain("Hola de dos");
+    expect(config.workflows.map((workflow) => workflow.name)).toEqual([
+      "acme-staging-two---email-send",
+      "acme-staging-two---email-schedule",
+    ]);
+    expect(config.d1_databases[0]).toMatchObject({ binding: "DB", database_id: "two-db" });
+    expect(config.vars.BASE_URL).toBe("https://two.staging.example.com");
+  });
+});
+
 describe("a feature's email host", () => {
   const feature = { project: "acme", issue: "643", slug: "feature-address" };
   const config = resolveEmailConfig(
@@ -221,14 +247,12 @@ describe("how mail leaves the host under pithy dev", () => {
 /**
  * The catalogs the host renders in — **the var, asserted on the provisioner's output**.
  *
- * This is the gate for the defect that made the whole translated-body path dead in any real deployment
- * (pithy-sh/pithy#441). `EMAIL_MESSAGES` was read by `workflows/worker.ts` and by `@pithy-sh/testers`'s
- * enqueue seam, declared on `hostEnv.ts` as something `pithy email provision` writes, and written by
- * nothing: the send Workflow rendered the kit's English whatever tag was on the row, and discarded the
- * translated subject the app worker had computed at enqueue when it re-rendered.
+ * `EMAIL_MESSAGES` is read by `workflows/worker.ts` and by `@pithy-sh/testers`'s enqueue seam, and this resolver is
+ * its only writer: without it the send Workflow renders the kit's English whatever tag is on the row, and discards
+ * the translated subject the app worker computed at enqueue when it re-renders.
  *
  * It asserts what the resolver *produced*, never that a constant exists. A test over `EMAIL_MESSAGES.en`
- * passes just as happily when nobody deploys it, which is exactly how this got through.
+ * passes just as happily when nobody deploys it.
  */
 describe("the words the host is deployed with", () => {
   const base = {
@@ -314,7 +338,7 @@ describe("the words the host is deployed with", () => {
   });
 });
 
-describe("what email teardown deletes, by the names provision used (#789)", () => {
+describe("what email teardown deletes, by the names provision used", () => {
   const resolved = resolveEmailConfig(template, {
     project: "acme",
     env: "staging",

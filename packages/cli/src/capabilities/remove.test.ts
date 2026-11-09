@@ -9,7 +9,7 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
@@ -464,6 +464,7 @@ describe("removeCapability", () => {
         return over.workersUsingPackage ? over.workersUsingPackage(pkg) : [];
       },
       workersRegistering: over.workersRegistering ?? (async () => []),
+      deleteOwnHosts: over.deleteOwnHosts ?? (async () => []),
     };
     return { s, calls };
   }
@@ -557,6 +558,60 @@ describe("removeCapability", () => {
     expect(calls.dropTables).toEqual([]);
     // The config still wires the capability — nothing was unwired.
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain("turnstile()");
+  });
+
+  test("deletes the Worker's own host before unwiring it, and reports each one deleted", async () => {
+    await fixture();
+    const seen: { capability: string; wired: boolean }[] = [];
+    const { s } = steps({
+      deleteOwnHosts: async (capability) => {
+        const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+        seen.push({ capability: capability.name, wired: config.includes("turnstile()") });
+        return [{ env: "staging", script: "acme-staging-api---turnstile" }];
+      },
+    });
+
+    const result = await removeCapability({ workerDir: worker, capability: "turnstile", steps: s });
+
+    expect(seen).toEqual([{ capability: "turnstile", wired: true }]);
+    expect(result.deletedHosts).toEqual([{ env: "staging", script: "acme-staging-api---turnstile" }]);
+  });
+
+  test("a host deletion that fails leaves the capability wired, so a re-run finds the host again", async () => {
+    await fixture();
+    const { s } = steps({
+      deleteOwnHosts: async () => {
+        throw new Error("account unreachable");
+      },
+    });
+
+    await expect(removeCapability({ workerDir: worker, capability: "turnstile", steps: s })).rejects.toThrow(
+      "account unreachable",
+    );
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain("turnstile()");
+  });
+
+  test("the default host step reaches the account only for a Worker that owns what the host binds", async () => {
+    const access = vi.fn(async () => {
+      throw new Error("reached the account");
+    });
+    const real = (ownBindings: string[]) =>
+      defaultRemoveSteps({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        loadCapabilities: async () => [],
+        project: "acme",
+        ownHosts: { ownBindings, environments: ["staging", "prod"], access },
+      });
+    const support = cap("support");
+
+    expect(await real([]).deleteOwnHosts(support)).toEqual([]);
+    expect(await real(["CACHE"]).deleteOwnHosts(support)).toEqual([]);
+    expect(await real(["DB"]).deleteOwnHosts(cap("turnstile"))).toEqual([]);
+    expect(access).not.toHaveBeenCalled();
+    await expect(real(["DB"]).deleteOwnHosts(support)).rejects.toThrow("reached the account");
+    expect(access).toHaveBeenCalledOnce();
   });
 
   test("ejected: deletes the local source instead of uninstalling", async () => {

@@ -7,7 +7,7 @@ import { KIT_ROOT } from "../test-utils/kitRoot";
 import { checkLocalDelivery, describeLocalDelivery } from "./localDelivery";
 
 /**
- * Whether local email delivery is live (pithy-sh/pithy#410).
+ * Whether local email delivery is live.
  *
  * The verdict is `pithy dev`'s own preflight, so what is under test here is the wiring: which composed
  * capability answers, that a project composing nothing which sends is silent, and that the lines are
@@ -21,7 +21,7 @@ const email = (devDelivery: "remote" | "simulator", fromAddress: string): Capabi
 const scope = (capabilities: Capability[]) => [{ capabilities }];
 
 /** Stands in for a `null` answer, so an assertion on the wording fails on the text rather than on a throw. */
-const empty = { live: false, capability: "none", lines: [] };
+const empty = { live: false, capability: "none", lines: [], hosts: [] };
 
 describe("checkLocalDelivery", () => {
   test("a project composing nothing that sends has no delivery question", async () => {
@@ -75,5 +75,29 @@ describe("checkLocalDelivery", () => {
     });
     expect(check?.live).toBe(false);
     expect(describeLocalDelivery(check ?? empty)).toContain("cannot be onboarded onto Email Service");
+  });
+
+  /**
+   * **A Worker's own email host is judged by its own config.** `two` owns `DB` and chose the simulator, so its host
+   * simulates while the shared one sends for real, and the report gives both, named for their hosts.
+   */
+  test("a Worker's own host gets its own verdict beside the shared host's", async () => {
+    const check = await checkLocalDelivery({
+      projectDir: KIT_ROOT,
+      workers: [
+        { dir: "/p/apps/one", target: { ownBindings: [] }, capabilities: [email("remote", "hello@acme.dev")] },
+        { dir: "/p/apps/two", target: { ownBindings: ["DB"] }, capabilities: [email("simulator", "hi@two.dev")] },
+      ],
+      cloudflare: async () => ({ accountId: "acct-1", hasToken: true, mismatch: null }),
+    });
+    expect(check?.hosts).toEqual([
+      expect.objectContaining({ name: "email", live: true }),
+      expect.objectContaining({ name: "two---email", live: false }),
+    ]);
+    expect(check?.live).toBe(false);
+    expect(check?.lines).toEqual([
+      "email: Email: sending for real from hello@acme.dev, as Cloudflare account acct-1.",
+      "two---email: Email: the simulator, by config. Messages are logged and written to disk, never sent.",
+    ]);
   });
 });

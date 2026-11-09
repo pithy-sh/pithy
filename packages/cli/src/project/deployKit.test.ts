@@ -4,20 +4,25 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
 import { PACKAGE_VERSION } from "@pithy-sh/email/src/version.generated";
+import { i18n } from "@pithy-sh/i18n/src/capability";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { testers } from "@pithy-sh/testers/src/capability";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { z } from "zod";
 import { readHostTemplate } from "../capabilities/hostRegistry";
+import { featureOwnedIds } from "../feature/hosts";
 import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
 import {
   deployKitWorkers,
@@ -38,11 +43,10 @@ import type { WorkerTarget } from "./workers";
  * file `pithy provision` writes ids into, so the binding ids this reads are read the way the real run
  * reads them: off disk, offline, with nothing created.
  *
- * **And the capabilities it composes are the real composed objects, not `{ name: "email" }`.** They were
- * the latter, which meant no adopter configuration ever reached a resolver here and every case passed
- * against a registry that read schema defaults — the #537 defect this file is the end-to-end test for,
- * invisible to the end-to-end test. `capabilities/hostConfigParity.test.ts` holds the same property at
- * the seam, per capability; this holds it through the command.
+ * **And the capabilities it composes are the real composed objects, not `{ name: "email" }`.** With the latter
+ * no adopter configuration would reach a resolver here, and every case would pass against a registry that read
+ * schema defaults. `capabilities/hostConfigParity.test.ts` holds the same property at the seam, per capability;
+ * this holds it through the command.
  */
 
 let projectDir: string;
@@ -76,6 +80,20 @@ const PROVISIONED = [
  * The email capability as an adopter composes it. Tuned away from its defaults, so a resolver reading
  * schema defaults instead of this object produces a visibly different config.
  */
+/** The `EMAIL_THEME` an email capability's host is stamped with: its resolved theme, serialized. */
+function themeVar(capability: ReturnType<typeof email>): string {
+  return JSON.stringify(capability.emailConfig.theme);
+}
+
+/** A capability declaring the vault, as `secrets` does: what a feature creates `SECRETS` for. */
+const VAULT = defineCapability({
+  name: "vault",
+  version: null,
+  package: "@pithy-sh/vault",
+  config: z.object({}).describe("None."),
+  requiredBindings: [{ type: "d1", name: "SECRETS" }],
+});
+
 const EMAIL = email({
   fromAddress: "hello@acme.example",
   fromName: "Acme Support",
@@ -106,11 +124,11 @@ async function writeApp(
 }
 
 /**
- * One copy of `email` and `media` for the whole file, which every case's project links to.
+ * One copy of `email`, `media` and `secrets` for the whole file, which every case's project links to.
  *
  * Copies, never the repository's own packages: a deploy writes each host's resolved config beside its worker
  * module, and through a link to `packages/email` that is `packages/email/src/workflows/` — a file appearing and
- * vanishing in a tree `turboInputs.test.ts` and `sourceFiles.test.ts` read while this runs (#711). The note on
+ * vanishing in a tree `turboInputs.test.ts` and `sourceFiles.test.ts` read while this runs. The note on
  * `payments` below is the same rule. Made once rather than per case because the cases run in turn, and a copy
  * per case doubled this file's time.
  */
@@ -120,6 +138,7 @@ beforeAll(async () => {
   kitCopies = await mkdtemp(join(tmpdir(), "pithy-deploy-kit-copies-"));
   await materializeKitPackage(kitCopies, "email");
   await materializeKitPackage(kitCopies, "media");
+  await materializeKitPackage(kitCopies, "secrets");
 });
 
 afterAll(async () => {
@@ -130,7 +149,7 @@ beforeEach(async () => {
   projectDir = await mkdtemp(join(tmpdir(), "pithy-deploy-kit-"));
   const scope = join(projectDir, "node_modules", "@pithy-sh");
   await mkdir(scope, { recursive: true });
-  for (const name of ["email", "media"])
+  for (const name of ["email", "media", "secrets"])
     await symlink(join(kitCopies, "node_modules", "@pithy-sh", name), join(scope, name));
   deployed = [];
   // **The account's Secrets Store id, which every host that binds the store now requires.** Unset by
@@ -188,7 +207,7 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
       const { readFile } = await import("node:fs/promises");
       const { configFromArgs } = await import("./effectiveConfig");
       // Through the argv, the way wrangler resolves it: an argv that stopped naming the generated
-      // config would otherwise still read back as a deploy of it (#584).
+      // config would otherwise still read back as a deploy of it.
       deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
     },
   });
@@ -196,7 +215,7 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
 
 describe("deployKitWorkers", () => {
   /**
-   * **A Secrets Store entry the config binds and nothing has written is a skip, never an upload (#390).** Cloudflare
+   * **A Secrets Store entry the config binds and nothing has written is a skip, never an upload.** Cloudflare
    * refuses that deploy, and the secrets manager reached it on every upgrade: `pithy deploy` redeployed it bound to
    * `PITHY_FIELD_KEYS`, which only `pithy secrets provision` mints.
    */
@@ -246,18 +265,17 @@ describe("deployKitWorkers", () => {
       `${PACKAGE_VERSION}/${config?.vars?.[DEPLOY_STAMP_VAR]?.split("/")[1]}`,
     );
     // **The adopter's configuration, off the composed capability.** The Secrets Store entry proves the
-    // id reached the resolver rather than the `""` that used to; the theme proves the config did.
+    // id reached the resolver rather than `""`; the theme proves the config did.
     expect(config?.secrets_store_secrets?.[0]?.store_id).toBe("store-1a2b3c");
     expect(JSON.parse(config?.vars?.EMAIL_THEME as string).accent).toBe(EMAIL.emailConfig.theme.accent);
   });
 
   /**
-   * **A host that deployed is never reported as not deployed** (#645). Kit hosts are deployed with
+   * **A host that deployed is never reported as not deployed.** Kit hosts are deployed with
    * `workers_dev: false` — they are reached through bindings, never by an address — so nothing about them may
    * be established by probing a `workers.dev` URL, and nothing here does: whether one is there is read off the
-   * account's own API (`readVars`), before the upload. The line printed after the upload used to restate that
-   * reading in the present tense — `acme-prod-email: deployed. acme-prod-email is not deployed.` — two
-   * statements, the second false by the time it was read.
+   * account's own API (`readVars`), before the upload, and the line printed after the upload does not restate
+   * that reading in the present tense.
    */
   test("a first deploy of a workers.dev-less host reads as one true statement, and probes no address", async () => {
     const probes: string[] = [];
@@ -354,7 +372,7 @@ describe("deployKitWorkers", () => {
     });
 
     /**
-     * **The hole a `database_id` check could not see (#537).**
+     * **The hole a `database_id` check could not see.**
      *
      * `SECRETS_STORE_ID` is account-scoped and lives in `~/.config/pithy`, written by `pithy add
      * secrets` — which a CI runner does not have unless the job exports it, and a CI runner is exactly
@@ -424,13 +442,11 @@ describe("deployKitWorkers", () => {
   });
 
   /**
-   * **Discovery's own failures, which used to leave no trace at all (#537).**
+   * **Discovery's own failures leave a trace.**
    *
-   * `discoverHostWorkers` drops what it cannot read and says so in a note. This function took the
-   * hosts and dropped the notes, so an adopter with a broken `apps/admin/pithy.config.ts` got a run
-   * that shipped no email Worker, printed nothing about the kit, and exited 0 — indistinguishable
-   * from a project that composes no kit Worker at all. That is the silent staleness the issue is
-   * about, arriving through the command that exists to close it.
+   * `discoverHostWorkers` drops what it cannot read and says so in a note. Dropping the notes too would give an
+   * adopter with a broken `apps/admin/pithy.config.ts` a run that shipped no email Worker, printed nothing about
+   * the kit, and exited 0 — indistinguishable from a project that composes no kit Worker at all.
    */
   describe("what it could not read is a problem, and problems fail the command", () => {
     /** A second app Worker in the fixture — the one whose config is the subject of each case. */
@@ -452,11 +468,11 @@ describe("deployKitWorkers", () => {
         "admin: its capabilities could not be read, so its capability hosts will not run.",
         "  Could not load pithy.config.ts.",
       ]);
-      // The whole point: a green build was the old answer to this.
+      // The whole point: this build is not green.
       expect(kitDeployFailed(report)).toBe(true);
     });
 
-    test("a composition that will not assemble, which leaves no hosts and used to leave no rows", async () => {
+    test("a composition that will not assemble, which leaves no hosts and no rows", async () => {
       const refuses: Capability = {
         ...EMAIL,
         compose: () => {
@@ -495,7 +511,7 @@ describe("deployKitWorkers", () => {
     });
 
     /**
-     * **The pass itself must not throw (#537).**
+     * **The pass itself must not throw.**
      *
      * It runs *after* `deployProject`, so a throw here aborts the `--json` line for Workers that are
      * already live: a CI step reads no `workers[]` payload for a deploy that happened. Every such
@@ -516,11 +532,192 @@ describe("deployKitWorkers", () => {
 });
 
 /**
- * **`pithy deploy --dry-run`'s kit half (#697): every gate asked, no Worker uploaded.** A Worker the run would
+ * **`pithy deploy --dry-run`'s kit half: every gate asked, no Worker uploaded.** A Worker the run would
  * ship is planned rather than reported as a row — a row's `deployed` would be a sentence about an upload that
  * never happened — and the rows that stay are the ones the run would print without uploading anything:
  * unchanged, skipped, failed.
  */
+/**
+ * **A Worker that owns `DB` gets an email host of its own, reading its own database.** Its jobs are enqueued in its
+ * database, so a host bound to the shared one would never send them.
+ */
+describe("a Worker that owns a binding its capability host binds", () => {
+  async function writeTwo(): Promise<WorkerTarget> {
+    const dir = join(projectDir, "apps", "two");
+    await mkdir(dir, { recursive: true });
+    const stanza = {
+      d1_databases: [
+        { binding: "DB", database_id: "db-two" },
+        { binding: "EMAIL_SUPPRESSIONS", database_id: "sup-1" },
+        { binding: "SECRETS", database_id: "sec-1" },
+      ],
+      vars: { BASE_URL: "https://two.acme.example" },
+    };
+    await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify({ name: "two", env: { prod: stanza } }));
+    return { name: "two", dir, hasWrangler: true, ownBindings: ["DB"] };
+  }
+
+  test("deploys a host for it beside the shared one, named for it and bound to its database and origin", async () => {
+    const rows = await run({ alsoWorkers: [await writeTwo()] });
+    expect(rows.map((row) => [row.capability, row.owner, row.worker, row.outcome])).toEqual([
+      ["email", undefined, "acme-prod-email", "deployed"],
+      ["email", "two", "acme-prod-two---email", "deployed"],
+    ]);
+    const [shared, own] = deployed;
+    expect(shared?.d1_databases?.find((entry) => entry.binding === "DB")?.database_id).toBe("db-1");
+    expect(shared?.vars?.BASE_URL).toBe("https://acme.example");
+    expect(own?.d1_databases?.find((entry) => entry.binding === "DB")?.database_id).toBe("db-two");
+    expect(own?.vars?.BASE_URL).toBe("https://two.acme.example");
+  });
+
+  test("the owner's host carries its own theme and catalogs, and the shared host the sharing Worker's", async () => {
+    const two = await writeTwo();
+    const twoEmail = email({ fromAddress: "two@brand.example", baseUrl: "https://two.acme.example", theme: "forest" });
+    const twoWords = i18n({
+      supportedLocales: ["en", "es"],
+      messages: { es: { "email/welcome.subject": "Hola de dos" } },
+    });
+    await run({
+      alsoWorkers: [two],
+      capabilitiesFor: async (dir) => (dir === two.dir ? [twoEmail, twoWords] : [EMAIL]),
+    });
+    const shared = deployed.find((config) => config.name === "acme-prod-email");
+    const own = deployed.find((config) => config.name === "acme-prod-two---email");
+    expect(JSON.parse(String(own?.vars?.EMAIL_THEME))).toEqual(JSON.parse(String(themeVar(twoEmail))));
+    expect(JSON.parse(String(shared?.vars?.EMAIL_THEME))).toEqual(JSON.parse(String(themeVar(EMAIL))));
+    expect(JSON.stringify(own?.vars ?? {})).toContain("Hola de dos");
+    expect(JSON.stringify(shared?.vars ?? {})).not.toContain("Hola de dos");
+  });
+
+  test("an owned database never becomes the shared host's, whichever Worker is read first", async () => {
+    const two = await writeTwo();
+    const api = await writeApp(PROVISIONED);
+    await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "prod",
+      account: null,
+      workers: [two, { name: "api", dir: api, hasWrangler: true }],
+      capabilitiesFor: async () => [EMAIL],
+      readTemplate: async () => structuredClone(template),
+      readVars: async () => null,
+      runDeploy: async (args) => {
+        const { readFile } = await import("node:fs/promises");
+        const { configFromArgs } = await import("./effectiveConfig");
+        deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
+      },
+    });
+    const shared = deployed.find((config) => config.name === "acme-prod-email");
+    expect(shared?.d1_databases?.find((entry) => entry.binding === "DB")?.database_id).toBe("db-1");
+  });
+});
+
+/**
+ * **The shared secrets manager re-seals every owned vault, so it binds each one and is redeployed beside them.** Only
+ * it rotates the environment's master key and prunes a version, counting the vaults it is stamped with: a vault it
+ * does not bind is one whose rows a prune would leave undecryptable.
+ */
+describe("the secrets managers of Workers that own SECRETS", () => {
+  const SECRETS_TEMPLATE = (entry: string) => readHostTemplate(KIT_ROOT, entry);
+
+  async function writeOwner(name: string, vault: string): Promise<WorkerTarget> {
+    const dir = join(projectDir, "apps", name);
+    await mkdir(dir, { recursive: true });
+    const stanza = {
+      d1_databases: [{ binding: "SECRETS", database_name: `acme-prod-${name}---secrets`, database_id: vault }],
+      vars: { BASE_URL: `https://${name}.acme.example` },
+    };
+    await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify({ name, env: { prod: stanza } }));
+    return { name, dir, hasWrangler: true, ownBindings: ["SECRETS"] };
+  }
+
+  async function deploy(workers: WorkerTarget[], sharedVaultId?: () => Promise<string | undefined>) {
+    return deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "prod",
+      account: null,
+      ids: { accountId: "acct-1" },
+      workers,
+      capabilitiesFor: async () => [secrets({ registry: {} })],
+      readTemplate: async (_dir, entry) => SECRETS_TEMPLATE(entry),
+      readVars: async () => null,
+      ...(sharedVaultId ? { sharedVaultId } : {}),
+      runDeploy: async (args) => {
+        const { configFromArgs } = await import("./effectiveConfig");
+        deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
+      },
+    });
+  }
+
+  test("the shared manager binds each owner's vault and names it in OWNED_VAULTS", async () => {
+    const api = await writeApp([{ binding: "SECRETS", database_id: "sec-1" }]);
+    const two = await writeOwner("two", "vault-two");
+    const report = await deploy([{ name: "api", dir: api, hasWrangler: true }, two]);
+    expect(report.problems).toEqual([]);
+    const shared = deployed.find((config) => config.name === "acme-prod-secrets");
+    expect(shared?.d1_databases).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ binding: "SECRETS", database_id: "sec-1" }),
+        { binding: "VAULT_TWO", database_name: "acme-prod-two---secrets", database_id: "vault-two" },
+      ]),
+    );
+    expect(JSON.parse(String(shared?.vars?.OWNED_VAULTS))).toEqual(["VAULT_TWO"]);
+    const own = deployed.find((config) => config.name === "acme-prod-two---secrets");
+    expect(own?.vars?.OWNED_VAULTS).toBeUndefined();
+  });
+
+  test("with every Worker owning SECRETS, the shared manager is still redeployed over its own vault", async () => {
+    const two = await writeOwner("two", "vault-two");
+    const three = await writeOwner("three", "vault-three");
+    const asked: string[] = [];
+    const report = await deploy([two, three], async () => {
+      asked.push("shared");
+      return "sec-shared";
+    });
+    expect(report.problems).toEqual([]);
+    expect(asked).toEqual(["shared"]);
+    expect(report.workers.map((row) => [row.owner, row.worker, row.outcome])).toEqual(
+      expect.arrayContaining([
+        ["two", "acme-prod-two---secrets", "deployed"],
+        ["three", "acme-prod-three---secrets", "deployed"],
+        [undefined, "acme-prod-secrets", "deployed"],
+      ]),
+    );
+    const shared = deployed.find((config) => config.name === "acme-prod-secrets");
+    expect(shared?.d1_databases?.find((entry) => entry.binding === "SECRETS")?.database_id).toBe("sec-shared");
+    expect(JSON.parse(String(shared?.vars?.OWNED_VAULTS)).sort()).toEqual(["VAULT_THREE", "VAULT_TWO"]);
+  });
+
+  test("with every Worker owning SECRETS and no shared vault on the account, the deploy fails naming the provision", async () => {
+    const two = await writeOwner("two", "vault-two");
+    const report = await deploy([two], async () => undefined);
+    expect(kitDeployFailed(report)).toBe(true);
+    expect(report.problems.join("\n")).toMatch(/acme-prod-secrets is not on the account.*`pithy secrets provision`/);
+    expect(deployed.find((config) => config.name === "acme-prod-secrets")).toBeUndefined();
+  });
+
+  test("with every Worker owning SECRETS and no API credentials, the shared manager is skipped unchecked and the deploy passes", async () => {
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
+    const two = await writeOwner("two", "vault-two");
+    const report = await deploy([two]);
+    expect(report.problems).toEqual([]);
+    expect(kitDeployFailed(report)).toBe(false);
+    expect(report.workers.map((row) => [row.owner, row.worker, row.outcome])).toEqual(
+      expect.arrayContaining([
+        ["two", "acme-prod-two---secrets", "deployed"],
+        [undefined, null, "skipped"],
+      ]),
+    );
+    const skip = report.workers.find((row) => row.outcome === "skipped");
+    expect(skip?.capability).toBe("secrets");
+    expect(skip?.reason).toMatch(/acme-prod-secrets was not checked.*CLOUDFLARE_ACCOUNT_ID.*CLOUDFLARE_API_TOKEN/);
+    expect(skip?.reason).not.toMatch(/not on the account/);
+    expect(deployed.find((config) => config.name === "acme-prod-secrets")).toBeUndefined();
+  });
+});
+
 describe("deployKitWorkers under --dry-run", () => {
   test("a Worker the run would upload is planned, with the run's reason, and wrangler never runs", async () => {
     const events: ProgressEvent[] = [];
@@ -623,7 +820,7 @@ describe("kitDeployFailed", () => {
   });
 
   /**
-   * **A problem outranks every row, including a Worker that shipped (#537).**
+   * **A problem outranks every row, including a Worker that shipped.**
    *
    * A problem means the *set* is short: a Worker whose capabilities could not be read composes hosts
    * nothing in this run ever saw. Deploying the hosts it did see is not the job half done, it is the
@@ -638,7 +835,7 @@ describe("kitDeployFailed", () => {
     ).toBe(true);
   });
 
-  test("a problem on its own fails it too — the empty set that used to exit 0", () => {
+  test("a problem on its own fails it too — an empty set is not a success", () => {
     expect(kitDeployFailed({ workers: [], problems: ["The capability hosts could not be assembled."] })).toBe(true);
   });
 });
@@ -676,7 +873,7 @@ describe("summarizeKitDeploy", () => {
 });
 
 /**
- * **The kit half accounts for itself while the run is still going (#578).**
+ * **The kit half accounts for itself while the run is still going.**
  *
  * The `▸` line for a Worker that actually uploads comes from `capabilities/hostDeploy.ts`, at the spawn.
  * This is the other half: the row, as it settles — and it covers the three outcomes that never reach a
@@ -712,7 +909,7 @@ describe("each capability settles as it is decided", () => {
 });
 
 /**
- * **A feature's kit Workers (#643).** A feature's ids are in the generated config under `.wrangler/`, in its
+ * **A feature's kit Workers.** A feature's ids are in the generated config under `.wrangler/`, in its
  * `env.feature` stanza; the top level of that file is the tracked one's, which is `dev`'s. `stanzaFor` read the
  * whole file, so every kit Worker on a feature found `dev`'s ids — the local binding names — or none. And a
  * feature's host is named for the feature, never `<project>-feature-<capability>`, which every branch shares.
@@ -812,7 +1009,7 @@ describe("a feature's kit Workers", () => {
   });
 
   /**
-   * **The host gate follows every bound id to what owns it (#643).** A feature host bound to a database the feature
+   * **The host gate follows every bound id to what owns it.** A feature host bound to a database the feature
    * did not create — production's, by id — fails rather than deploys, whatever name sits beside the id; and with
    * no way to ask the account, the feature owns nothing a host could bind by id.
    */
@@ -839,7 +1036,7 @@ describe("a feature's kit Workers", () => {
   });
 
   /**
-   * **Every composed host, not email's alone (#643).** Media joins a feature the way email does — the same
+   * **Every composed host, not email's alone.** Media joins a feature the way email does — the same
    * registry entry, handed the feature — so its Worker, its Workflows and its bucket are the feature's own.
    */
   test("deploys every composed host for the feature, each named for it", async () => {
@@ -852,6 +1049,68 @@ describe("a feature's kit Workers", () => {
     ]);
     const mediaHost = deployed.find((config) => config.name === "acme-f643-feature-address--media");
     for (const workflow of mediaHost?.workflows ?? []) expect(workflow.name.startsWith("acme-f643-")).toBe(true);
+  });
+
+  test("deploys an owning Worker's feature host, named for the feature and the owner, over its own database", async () => {
+    const api = await writeFeatureApp();
+    const two = join(projectDir, "apps", "two");
+    await mkdir(join(two, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(join(two, "wrangler.jsonc"), `${JSON.stringify({ name: "two" })}\n`);
+    await writeFile(
+      join(two, ".wrangler", "pithy", "wrangler.feature.jsonc"),
+      `${JSON.stringify({
+        name: "two",
+        env: {
+          feature: {
+            name: "acme-f643-feature-address--two",
+            d1_databases: [
+              { binding: "DB", database_id: "feature-two-db" },
+              { binding: "EMAIL_SUPPRESSIONS", database_id: "feature-sup" },
+              { binding: "SECRETS", database_id: "feature-sec" },
+            ],
+            vars: { ENVIRONMENT: "feature", BASE_URL: "https://acme-f643-feature-address--two.acme.workers.dev" },
+          },
+        },
+      })}\n`,
+    );
+    // The account, as `featureOwnedIds` asks it: each name the feature created, the owner's included.
+    const created = new Map([
+      [featureResourceName(FEATURE, "DB", "d1"), "feature-db"],
+      [featureResourceName(FEATURE, "DB", "d1", "two"), "feature-two-db"],
+      [featureResourceName(FEATURE, "EMAIL_SUPPRESSIONS", "d1"), "feature-sup"],
+      [featureResourceName(FEATURE, "SECRETS", "d1"), "feature-sec"],
+    ]);
+    const provisioners = {
+      d1: { find: async (name: string) => (created.has(name) ? { id: created.get(name) as string } : undefined) },
+      kv: { find: async () => undefined },
+    } as never;
+    const report = await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "feature",
+      account: null,
+      feature: FEATURE,
+      featureOwned: (feature, composed, owners) => featureOwnedIds(provisioners, feature, composed, owners),
+      workers: [
+        { name: "api", dir: api, hasWrangler: true },
+        { name: "two", dir: two, hasWrangler: true, ownBindings: ["DB"] },
+      ],
+      // The vault the email host reads its sending secrets from is the secrets capability's binding.
+      capabilitiesFor: async () => [EMAIL, VAULT],
+      readTemplate: async () => structuredClone(template),
+      readVars: async () => null,
+      runDeploy: async (args) => {
+        const { readFile } = await import("node:fs/promises");
+        const { configFromArgs } = await import("./effectiveConfig");
+        deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
+      },
+    });
+    expect(report.workers.map((row) => [row.worker, row.outcome])).toEqual([
+      ["acme-f643-feature-address--email", "deployed"],
+      ["acme-f643-feature-address--two---email", "deployed"],
+    ]);
+    const own = deployed.find((config) => config.name === "acme-f643-feature-address--two---email");
+    expect(own?.d1_databases?.find((entry) => entry.binding === "DB")?.database_id).toBe("feature-two-db");
   });
 
   /** F3 of the review: an app Worker whose feature name is a kit host's is refused, deploying nothing. */
@@ -879,7 +1138,7 @@ describe("a feature's kit Workers", () => {
 });
 
 /**
- * **A host that composes nothing is handed the peers the project composes** (#645).
+ * **A host that composes nothing is handed the peers the project composes.**
  *
  * The payments reconcile host credits a balance when a pass repairs a purchase whose product has a
  * `grants.ledger` clause — and it may not import `@pithy-sh/ledger` to do it, because a project that never
@@ -916,8 +1175,8 @@ describe("a kit host handed the peers the project composes", () => {
     await linkKitPackages(projectDir, ["ledger"]);
     // A copy, never the link: a deploy writes its temp config and generated entry beside the host's worker,
     // and through a link that is the repository's own `packages/payments/src/workflows` — where
-    // `turboInputs.test.ts`, running beside this file, hashes `packages/**` twice and saw the file once (#645
-    // review, CI run 35468486220). `linkKit.ts` states the rule: the link or the write, never both.
+    // `turboInputs.test.ts`, running beside this file, hashes `packages/**` twice and could see the file once.
+    // `linkKit.ts` states the rule: the link or the write, never both.
     await materializeKitPackage(projectDir, "payments");
     const dir = await writeApp(PROVISIONED);
     const shipped: Shipped[] = [];
@@ -1022,11 +1281,10 @@ describe("a kit host handed the peers the project composes", () => {
 });
 
 /**
- * **A host released before the seam deploys exactly as it did** (#645 review). The CLI and the packages it
- * deploys are released apart, and the dashboard runs testers 0.2.9 beside auth — a testers with no `hostPeers`,
- * whose own `worker.ts` reaches auth itself. The first cut of #645 generated an entry importing `hostPeers`
- * anyway, and that deploy failed. Staged here by copying the workspace package and removing the module the
- * release predates; what is asserted is what the command hands wrangler, which is what changed.
+ * **A host released before the seam deploys from its own worker.** The CLI and the packages it deploys are
+ * released apart, so a testers with no `hostPeers`, whose own `worker.ts` reaches auth itself, can sit beside auth;
+ * an entry importing `hostPeers` would fail that deploy. Staged here by copying the workspace package and removing
+ * the module the release predates; what is asserted is what the command hands wrangler.
  */
 describe("a kit host older than the peer seam", () => {
   test("testers from before the seam, beside auth, deploys from its own worker with no entry written", async () => {
@@ -1074,9 +1332,9 @@ describe("a kit host older than the peer seam", () => {
 });
 
 /**
- * **A failed wrangler step shows wrangler's own reason** (#645). The payments host failed to bundle for weeks
- * as `wrangler deploy failed.`, with the one line that said why — `Could not resolve
- * "@pithy-sh/ledger/src/ledger"` — only in wrangler's log file.
+ * **A failed wrangler step shows wrangler's own reason.** A host that cannot bundle reports the line that says
+ * why — `Could not resolve "@pithy-sh/ledger/src/ledger"` — rather than `wrangler deploy failed.` with the reason
+ * left in wrangler's log file.
  *
  * Driven through the command and the real `runWrangler`, spawning **real wrangler** as a dry run over a host
  * whose entry imports a package the project does not have: the upload is the only thing replaced, so what

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { phi } from "@pithy-sh/core/src/privacy/classes";
@@ -52,6 +52,38 @@ describe("projectEncryptedColumns", () => {
       "DB:patients.diagnosis",
     ]);
     expect(stamped.databases).toEqual([{ binding: "DB", databaseName: "acme-staging-db", databaseId: "db-uuid" }]);
+  });
+
+  test("a Worker that owns the binding gets its own database stamped, under a binding of its own", async () => {
+    const shared = join(dir, "one");
+    const owner = join(dir, "two");
+    await mkdir(shared);
+    await mkdir(owner);
+    const stanza = (name: string, id: string) =>
+      JSON.stringify({ env: { staging: { d1_databases: [{ binding: "DB", database_name: name, database_id: id }] } } });
+    await writeFile(join(shared, "wrangler.jsonc"), stanza("acme-staging-db", "shared-uuid"));
+    await writeFile(join(owner, "wrangler.jsonc"), stanza("acme-staging-two---db", "owned-uuid"));
+    const at = (workerDir: string, ownBindings: string[]): ResolvedWorker => ({
+      name: workerDir,
+      dir: workerDir,
+      config: {} as never,
+      capabilities: [clinic({ patients: Patient })],
+      target: { name: workerDir, dir: workerDir, ownBindings } as never,
+    });
+    // Either order: the owner listed first must not hand the shared binding its own database.
+    for (const workers of [
+      [at(shared, []), at(owner, ["DB"])],
+      [at(owner, ["DB"]), at(shared, [])],
+    ]) {
+      const stamped = await projectEncryptedColumns({ projectDir: dir, env: "staging", workers });
+      expect(
+        stamped.stamp.columns.map((column) => `${column.binding}:${column.table}.${column.column}`).sort(),
+      ).toEqual(["DB:patients.diagnosis", "DB_OF_TWO:patients.diagnosis"]);
+      expect(stamped.databases).toEqual([
+        { binding: "DB", databaseName: "acme-staging-db", databaseId: "shared-uuid" },
+        { binding: "DB_OF_TWO", databaseName: "acme-staging-two---db", databaseId: "owned-uuid" },
+      ]);
+    }
   });
 
   test("refuses a stamped binding the environment has no database for, naming the provision", async () => {

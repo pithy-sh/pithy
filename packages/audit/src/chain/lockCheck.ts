@@ -14,7 +14,7 @@ import { auditCheckpointBucketName } from "../provision/resolveAuditConfig";
 import { AUDIT_CHECKPOINT_BINDING, AUDIT_CHECKPOINT_LOCK_PREFIX } from "./checkpoint";
 
 /**
- * **`pithy doctor`'s line on the checkpoint bucket's object lock (#822).**
+ * **`pithy doctor`'s line on the checkpoint bucket's object lock.**
  *
  * A checkpoint is evidence only while nothing can replace it. The Worker cannot tell through its binding whether
  * the bucket is locked, so doctor asks the account, per deployed environment: a bucket with no indefinite lock over
@@ -22,6 +22,9 @@ import { AUDIT_CHECKPOINT_BINDING, AUDIT_CHECKPOINT_LOCK_PREFIX } from "./checkp
  * database to be held to. A bucket that is locked says nothing, which is doctor's way of saying it is in force.
  *
  * `dev` is never asked: a developer's checkpoints are a local Miniflare bucket, and no lock means anything there.
+ *
+ * A Worker that owns `AUDIT_CHECKPOINTS` checkpoints into a bucket of its own, so that bucket is the one asked, and
+ * the lock it names is `--worker`'s.
  */
 export function checkpointLockCheck(): CapabilitySettings {
   return {
@@ -29,9 +32,10 @@ export function checkpointLockCheck(): CapabilitySettings {
     async account(context) {
       const findings: SettingsFinding[] = [];
       const unanswered: UnansweredEnvironment[] = [];
+      const owner = context.ownBindings?.includes(AUDIT_CHECKPOINT_BINDING) ? context.workerDirectory : undefined;
       for (const { name: environment } of context.environments) {
         if (environment === LOCAL_ENVIRONMENT) continue;
-        const bucket = auditCheckpointBucketName(context.project, environment);
+        const bucket = auditCheckpointBucketName(context.project, environment, owner);
         try {
           const ask = context.account.r2BucketLock;
           if (!ask) {
@@ -53,7 +57,9 @@ export function checkpointLockCheck(): CapabilitySettings {
             });
             continue;
           }
-          const lock = remedy("audit lock", { flags: { "--env": environment } });
+          const lock = remedy("audit lock", {
+            flags: { "--env": environment, ...(owner === undefined ? {} : { "--worker": owner }) },
+          });
           findings.push({
             setting: `${AUDIT_CHECKPOINT_BINDING} object lock`,
             environment,

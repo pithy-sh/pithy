@@ -91,7 +91,7 @@ describe("deleteWorker is idempotent", () => {
     const events: CliAuditEvent[] = [];
     getWorker.mockResolvedValue(null);
 
-    await expect(provisioner(cf, events).deleteWorker("staging")).resolves.toBeUndefined();
+    await expect(provisioner(cf, events).deleteWorker("staging")).resolves.toEqual([]);
     expect(deleteWorker).not.toHaveBeenCalled();
   });
 
@@ -118,6 +118,29 @@ describe("deleteWorker is idempotent", () => {
   });
 });
 
+describe("deleteWorker for a Worker's own host", () => {
+  test("deletes the shared host and each owner's, and resolves every name it deleted", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockImplementation(async (name: string) => ({ id: name }));
+    const testers = new CloudflareTestersProvisioner({
+      workflows: workflowsHolding().workflows,
+      projectDir: KIT_ROOT,
+      project: PROJECT,
+      cf,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      apiToken: "token",
+      testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
+      email: undefined,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
+      owners: ["two"],
+    });
+    const shared = testersWorkerName(PROJECT, "staging");
+    const own = `${PROJECT}-staging-two---testers`;
+    await expect(testers.deleteWorker("staging")).resolves.toEqual([shared, own]);
+    expect(deleteWorker.mock.calls.map(([name]) => name)).toEqual([shared, own]);
+  });
+});
+
 describe("the audit is optional", () => {
   test("a provisioner built without one still deletes", async () => {
     // The CLI wires an emitter, but `audit` is optional on the options and the default must not be a
@@ -137,16 +160,16 @@ describe("the audit is optional", () => {
       resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
     });
 
-    await expect(bare.deleteWorker("staging")).resolves.toBeUndefined();
+    await expect(bare.deleteWorker("staging")).resolves.toEqual([testersWorkerName(PROJECT, "staging")]);
     expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
 });
 
 /**
- * The account a teardown deletes from must be one something claims (#378).
+ * The account a teardown deletes from must be one something claims.
  *
  * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
- * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * with the same `null`, so an unguarded teardown pointed at a stranger's account would delete nothing, audit
  * nothing, and exit 0 — a success message printed over a production Worker that is still running.
  *
  * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
@@ -222,8 +245,8 @@ describe("teardown refuses an unconfirmed account", () => {
 });
 
 /**
- * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
- * Workflows registered against it, and `pithy testers deprovision` once did exactly that. The names are read from
+ * **Every Workflow the committed template declares goes with the worker.** Deleting a Worker leaves the
+ * Workflows registered against it. The names are read from
  * the template's own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
  */
 describe("pithy testers deprovision deletes its Workflows", () => {

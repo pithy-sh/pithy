@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -16,7 +16,14 @@ import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
 import { linkKitPackages } from "../test-utils/linkKit";
-import { discoverHostWorkers, hostWorkerDir, materializeHostConfigs } from "./hostWorkers";
+import {
+  discoverHostWorkers,
+  hostOriginEnv,
+  hostPortsFor,
+  hostsReachedBy,
+  hostWorkerDir,
+  materializeHostConfigs,
+} from "./hostWorkers";
 
 /** Two app Workers, the shape `discoverWorkers` hands back. */
 const apps: WorkerTarget[] = [
@@ -32,7 +39,7 @@ const capability = (name: string): Capability => ({ name }) as Capability;
  *
  * `{ name: "email" }` is enough for *discovery*, which matches on the name, and not enough for
  * *resolution*, which reads the adopter's configuration off the object and refuses anything that is
- * not its package's own shape (#537). The two fixtures are therefore different on purpose.
+ * not its package's own shape. The two fixtures are therefore different on purpose.
  */
 const composedEmail = email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" });
 
@@ -52,7 +59,7 @@ describe("discoverHostWorkers", () => {
     // The name is the wire: `buildWorkerEnv` derives `EMAIL_ORIGIN` from it, and that is the address
     // the loopback dispatcher reads. Anything else and the app Worker looks up a key nobody publishes.
     expect(found.hosts[0]?.worker.dir).toBe(hostWorkerDir("/proj", "email"));
-    // No autostart key on a host either (#548) — every worker starts, and only this branch's own
+    // No autostart key on a host either — every worker starts, and only this branch's own
     // answer says otherwise. What a host's dev block carries is the signal that marks it ready.
     expect(found.hosts[0]?.worker.dev?.autostart).toBeUndefined();
     expect(found.hosts[0]?.worker.dev?.readySignal).toBeTruthy();
@@ -66,6 +73,78 @@ describe("discoverHostWorkers", () => {
   test("two Workers composing one capability share its single host", async () => {
     const found = await discover({ "/proj/apps/api": ["email"], "/proj/apps/web": ["email", "media"] });
     expect(found.hosts.map((h) => h.worker.name)).toEqual(["email", "media"]);
+  });
+
+  test("a Worker owning a binding the host binds gets a host of its own, named for it", async () => {
+    const workers: WorkerTarget[] = [
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB", "AUDIT_CHECKPOINTS"] },
+    ];
+    const found = await discover(
+      { "/proj/apps/one": ["email", "audit"], "/proj/apps/two": ["email", "audit"] },
+      workers,
+    );
+    expect(found.hosts.map((h) => [h.worker.name, h.owner?.worker, h.sourceDir])).toEqual([
+      ["email", undefined, "/proj/apps/one"],
+      ["two---email", "two", "/proj/apps/two"],
+      ["audit", undefined, "/proj/apps/one"],
+      ["two---audit", "two", "/proj/apps/two"],
+    ]);
+    expect(found.hosts[1]?.worker.dir).toBe(hostWorkerDir("/proj", "two---email"));
+    expect(found.hosts[1]?.owner?.bindings).toEqual(["DB"]);
+    expect(found.hosts[3]?.owner?.bindings).toEqual(["DB", "AUDIT_CHECKPOINTS"]);
+  });
+
+  test("a Worker owning audit's database and sharing its checkpoint bucket is refused before any host runs", async () => {
+    const workers: WorkerTarget[] = [{ name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB"] }];
+    await expect(discover({ "/proj/apps/two": ["audit"] }, workers)).rejects.toThrow(/AUDIT_CHECKPOINTS/);
+  });
+
+  test("a Worker's own host reads across that Worker's composition, never another Worker's", async () => {
+    const workers: WorkerTarget[] = [
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB"] },
+    ];
+    const oneEmail = { name: "email", from: "one" } as unknown as Capability;
+    const twoEmail = { name: "email", from: "two" } as unknown as Capability;
+    const found = await discoverHostWorkers({
+      projectDir: "/proj",
+      workers,
+      capabilitiesFor: async (dir) =>
+        dir === "/proj/apps/one" ? [oneEmail, capability("media")] : [capability("testers"), twoEmail],
+    });
+    const own = found.hosts.find((host) => host.worker.name === "two---testers");
+    expect(own?.siblings).toEqual([twoEmail]);
+    const shared = found.hosts.find((host) => host.worker.name === "media");
+    expect(shared?.siblings).toContain(oneEmail);
+    expect(shared?.siblings).not.toContain(twoEmail);
+  });
+
+  test("an owning Worker listed first does not become the shared host's source", async () => {
+    const workers: WorkerTarget[] = [
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB"] },
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+    ];
+    const found = await discover({ "/proj/apps/one": ["email"], "/proj/apps/two": ["email"] }, workers);
+    expect(found.hosts.map((h) => [h.worker.name, h.sourceDir])).toEqual([
+      ["email", "/proj/apps/one"],
+      ["two---email", "/proj/apps/two"],
+    ]);
+  });
+
+  test("a capability every composing Worker owns its binding for has no shared host", async () => {
+    const workers: WorkerTarget[] = [{ name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB"] }];
+    const found = await discover({ "/proj/apps/two": ["email"] }, workers);
+    expect(found.hosts.map((h) => h.worker.name)).toEqual(["two---email"]);
+  });
+
+  test("owning a binding a capability's host does not bind leaves that host shared", async () => {
+    const workers: WorkerTarget[] = [
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["SECRETS"] },
+    ];
+    const found = await discover({ "/proj/apps/one": ["audit"], "/proj/apps/two": ["audit"] }, workers);
+    expect(found.hosts.map((h) => h.worker.name)).toEqual(["audit"]);
   });
 
   test("a Worker whose config will not load is survived, and said out loud", async () => {
@@ -82,13 +161,12 @@ describe("discoverHostWorkers", () => {
   });
 
   /**
-   * **A dev-only process has no `pithy.config.ts` and never had one (#537).**
+   * **A dev-only process has no `pithy.config.ts`.**
    *
    * A Vite frontend joins the set through `pithy.worker.jsonc` alone, so `loadWorkerConfig` answers
    * `core/not_found` for it on every run of every project that has a front end. `project/workerScope.ts`
-   * has partitioned the same two cases on the same strict `hasWrangler === true` since #454, and this
-   * is where it started to matter beyond a line of output: `pithy deploy --kit` fails the command on
-   * any note, and a project must not fail a deploy for having a front end.
+   * partitions the same two cases on the same strict `hasWrangler === true`, and `pithy deploy --kit` fails the
+   * command on any note, so a project must not fail a deploy for having a front end.
    */
   test("a process with no config and no wrangler.jsonc composes nothing and is not noted", async () => {
     const found = await discoverHostWorkers({
@@ -140,8 +218,7 @@ describe("materializeHostConfigs", () => {
   async function run() {
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
     // `materializeHostConfigs` writes into this directory *and* resolves each host's package from it,
-    // because in a real run those are one place. Since #533 the second half means a fixture project
-    // needs the capability installed.
+    // because in a real run those are one place, so a fixture project needs the capability installed.
     await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
@@ -190,14 +267,50 @@ describe("materializeHostConfigs", () => {
     expect(result).toEqual({ notes: [], failed: [] });
   });
 
+  test("a Worker's own host opens that Worker's local database and links to that Worker's origin", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
+    await linkKitPackages(projectDir, ["email"]);
+    const two = join(projectDir, "apps", "two");
+    await mkdir(two, { recursive: true });
+    await writeFile(
+      join(two, "wrangler.jsonc"),
+      JSON.stringify({
+        d1_databases: [{ binding: "DB", database_name: "acme-dev-two---db", database_id: "acme-dev-two---db" }],
+      }),
+    );
+    const workers: WorkerTarget[] = [{ name: "two", dir: two, hasWrangler: true, ownBindings: ["DB"] }];
+    const hosts = (await discover({ [two]: ["email"] }, workers)).hosts.map((host) => ({
+      ...host,
+      composed: composedEmail,
+      worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.worker.name) },
+    }));
+    const result = await materializeHostConfigs({
+      projectDir,
+      project: "acme",
+      baseUrl: "http://localhost:8787",
+      baseUrlFor: (host) => (host.owner?.worker === "two" ? "http://localhost:8790" : undefined),
+      hosts,
+      readTemplate: async () => structuredClone(template),
+    });
+    const written = parse(
+      await readFile(join(hostWorkerDir(projectDir, "two---email"), "wrangler.jsonc"), "utf8"),
+    ) as unknown as WorkflowHostTemplate;
+    await rm(projectDir, { recursive: true, force: true });
+    expect(result).toEqual({ notes: [], failed: [] });
+    expect(written.name).toBe("acme-dev-two---email");
+    expect(written.d1_databases).toEqual([
+      { binding: "DB", database_name: "pithy-app", database_id: "acme-dev-two---db" },
+    ]);
+    expect(written.vars?.BASE_URL).toBe("http://localhost:8790");
+  });
+
   test("a host that could not be resolved is named and reported as failed, not merely noted", async () => {
     // The caller has to be able to drop it from the dev set. A host whose resolution threw has no
     // directory at all, so starting `wrangler dev` in it fails on the spawn and takes the session with
     // it — which is the opposite of the "it will not run" the note already promised.
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
     // `materializeHostConfigs` writes into this directory *and* resolves each host's package from it,
-    // because in a real run those are one place. Since #533 the second half means a fixture project
-    // needs the capability installed.
+    // because in a real run those are one place, so a fixture project needs the capability installed.
     await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
@@ -220,7 +333,7 @@ describe("materializeHostConfigs", () => {
 });
 
 /**
- * **The local reconcile host is handed the ledger, exactly as the deployed one is** (#645).
+ * **The local reconcile host is handed the ledger, exactly as the deployed one is.**
  *
  * The payments host composes nothing and may not import the ledger, so a deploy hands it over through a
  * generated entry. `pithy dev` runs the same host, and a local pass that repaired a coin pack must be able to
@@ -296,11 +409,9 @@ describe("a local host handed the peers the project composes", () => {
  * `pithy dev` materializes the same host `pithy email provision` deploys, from the same committed
  * template through the same resolver — so the same thing has to reach it. The catalogs come off the
  * composed email capability's `hostCatalogs()`, and that value answers `{}` until every capability's
- * `compose` hook has run. Discovery built its capability set and read that value without running them,
- * which meant the app Worker enqueued a Spanish subject and stored `locale='es'` while the local host
- * re-rendered in English — and, because `runSend` overwrites the stored subject with its own render,
- * threw the Spanish one away. That is the two-Workers-disagree failure the var exists to close,
- * reproduced on a developer's machine (pithy-sh/pithy#441).
+ * `compose` hook has run. Read without them, the app Worker would enqueue a Spanish subject while the local host
+ * re-rendered in English — and, because `runSend` overwrites the stored subject with its own render, throw the
+ * Spanish one away.
  *
  * Driven through the **real** registry entry and the **real** committed `wrangler.jsonc`: the seam
  * being proved is the whole path from `apps/<name>/pithy.config.ts` to a var on disk, and a fixture
@@ -329,7 +440,7 @@ describe("a dev session for a project that speaks two languages", () => {
   }
 
   test("the local email host is written carrying the words it will render in", async () => {
-    // **An override, because since #442 the kit's own Spanish is not what travels.** The host is built
+    // **An override, because the kit's own Spanish is not what travels.** The host is built
     // with that, so a project on kit locales alone deploys no variable at all — which is the property
     // the case below pins. What still has to reach it is the adopter's diff, and that is what makes
     // this a gate on the compose step: an unassembled capability answers `{}` here too.
@@ -358,7 +469,7 @@ describe("a dev session for a project that speaks two languages", () => {
       i18n({ supportedLocales: ["en", "es"] }),
       email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
     );
-    // The point of #442: a Spanish magic link still goes out in Spanish, from a host built with it.
+    // A Spanish magic link still goes out in Spanish, from a host built with it.
     expect(catalogsFromEnv(written.vars ?? {})).toEqual({});
   });
 
@@ -367,5 +478,75 @@ describe("a dev session for a project that speaks two languages", () => {
       email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
     );
     expect(written.vars?.EMAIL_MESSAGES_ES).toBeUndefined();
+  });
+});
+
+/**
+ * **Which host a Worker's `<CAPABILITY>_ORIGIN` names.** The loopback dispatcher posts a Workflow dispatch to it, so
+ * a Worker that owns its database has to be pointed at its own host, and every other Worker at the shared one.
+ */
+describe("hostPortsFor", () => {
+  async function hosts() {
+    const workers: WorkerTarget[] = [
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB", "AUDIT_CHECKPOINTS"] },
+    ];
+    return (await discover({ "/proj/apps/one": ["email", "audit"], "/proj/apps/two": ["email", "audit"] }, workers))
+      .hosts;
+  }
+  const ports = { email: 8801, audit: 8802, "two---email": 8803, "two---audit": 8804 };
+
+  test("a Worker sharing the database reaches the shared hosts under their capability names", async () => {
+    expect(hostPortsFor(await hosts(), ports, "/proj/apps/one")).toEqual({ email: 8801, audit: 8802 });
+  });
+
+  test("the owning Worker reaches its own hosts under the same names", async () => {
+    expect(hostPortsFor(await hosts(), ports, "/proj/apps/two")).toEqual({ email: 8803, audit: 8804 });
+  });
+
+  test("an owning Worker whose own host is not running is never pointed at the shared one", async () => {
+    expect(hostPortsFor(await hosts(), { email: 8801 }, "/proj/apps/two")).toEqual({});
+  });
+});
+
+/** **Which hosts each dev-set member is handed**, hosts included: a host reaches what its source Worker reaches. */
+describe("hostsReachedBy", () => {
+  async function hosts() {
+    const workers: WorkerTarget[] = [
+      { name: "one", dir: "/proj/apps/one", hasWrangler: true },
+      { name: "two", dir: "/proj/apps/two", hasWrangler: true, ownBindings: ["DB", "AUDIT_CHECKPOINTS"] },
+    ];
+    return (await discover({ "/proj/apps/one": ["email", "audit"], "/proj/apps/two": ["email", "audit"] }, workers))
+      .hosts;
+  }
+  const ports = { email: 8801, audit: 8802, "two---email": 8803, "two---audit": 8804 };
+
+  test("an app Worker reaches the hosts its database's jobs run on", async () => {
+    const found = await hosts();
+    expect(hostsReachedBy(found, ports, { name: "one", dir: "/proj/apps/one" })).toEqual({ email: 8801, audit: 8802 });
+    expect(hostsReachedBy(found, ports, { name: "two", dir: "/proj/apps/two" })).toEqual({ email: 8803, audit: 8804 });
+  });
+
+  test("a shared host reaches the other shared hosts, and never itself", async () => {
+    const found = await hosts();
+    const shared = found.find((host) => host.worker.name === "email");
+    expect(shared && hostsReachedBy(found, ports, shared.worker)).toEqual({ audit: 8802 });
+  });
+
+  test("a Worker's own host reaches that Worker's other own hosts, never the shared ones, and never itself", async () => {
+    const found = await hosts();
+    const owned = found.find((host) => host.worker.name === "two---email");
+    expect(owned && hostsReachedBy(found, ports, owned.worker)).toEqual({ audit: 8804 });
+  });
+});
+
+describe("hostOriginEnv", () => {
+  test("is the environment a custom dev command reads its host addresses from", () => {
+    expect(hostOriginEnv({ email: 8803, "secrets-manager": 8805 })).toEqual({
+      EMAIL_ORIGIN: "http://localhost:8803",
+      EMAIL_PORT: "8803",
+      SECRETS_MANAGER_ORIGIN: "http://localhost:8805",
+      SECRETS_MANAGER_PORT: "8805",
+    });
   });
 });

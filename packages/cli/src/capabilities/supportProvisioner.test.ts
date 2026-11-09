@@ -150,10 +150,8 @@ describe("ensureBucket", () => {
   });
 
   test("creates it for in-app submissions alone, with both mail settings off", async () => {
-    // The case the old two-flag gate missed. `submission/submit.ts` writes an in-app submission's
-    // files to this same bucket, so a project that wants uploads but no mail attachments got a
-    // binding pointing at a bucket nothing had created — and every submitted file was dropped with a
-    // warning nobody was reading (#440). One predicate now answers for all three writers.
+    // `submission/submit.ts` writes an in-app submission's files to this same bucket, so a project that wants
+    // uploads but no mail attachments still needs it: without it every submitted file is dropped with a warning.
     const { cf, findBucketByName, createBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     findBucketByName.mockResolvedValue(null);
@@ -213,7 +211,7 @@ describe("the inbound routing rule", () => {
     });
   });
 
-  // What a `--storage` or `--routing-zone` teardown asks of every other environment (#591).
+  // What a `--storage` or `--routing-zone` teardown asks of every other environment.
   test("hasWorker asks for this project's classification worker in that environment, and deletes nothing", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const deprovisioner = new CloudflareSupportDeprovisioner({
@@ -291,10 +289,10 @@ describe("the committed classification worker template", () => {
 });
 
 /**
- * The account a teardown deletes from must be one something claims (#378).
+ * The account a teardown deletes from must be one something claims.
  *
  * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
- * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * with the same `null`, so an unguarded teardown pointed at a stranger's account would delete nothing, audit
  * nothing, and exit 0 — a success message printed over a production Worker that is still running.
  *
  * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
@@ -341,12 +339,8 @@ describe("teardown refuses an unconfirmed account", () => {
  * `ensureSearchIndex`, which is the only step in this file that writes schema — and the one an upgrade
  * depends on.
  *
- * It used to compare one boolean against one boolean: table present against `search.fts` set, equal
- * means nothing to do. That is precisely the state an adopter is in after taking the release that moved
- * the index onto triggers — table present, flag set, triggers never created, every write path's
- * `indexMessage` call gone. The old comparison returned early, so `pithy doctor` would have named a
- * command that did nothing. The read is of the table **and** its triggers now, and `repaired` is a
- * reported outcome rather than a silent one.
+ * The read is of the table **and** its triggers: a table present with `search.fts` set and no triggers is an index
+ * nothing writes to, so it is repaired, and `repaired` is a reported outcome rather than a silent one.
  *
  * The D1 is a recording fake rather than a live database: what is under test is the decision and the
  * statements it issues, and both halves of the SQL itself are proved against real D1 in
@@ -473,8 +467,8 @@ describe("ensureSearchIndex", () => {
 });
 
 /**
- * **Every Workflow the committed template declares goes with the worker (#789).** Deleting a Worker leaves the
- * Workflows registered against it, and `pithy support deprovision` once did exactly that. The names are read from the template's
+ * **Every Workflow the committed template declares goes with the worker.** Deleting a Worker leaves the
+ * Workflows registered against it. The names are read from the template's
  * own `workflows` block, not from any namer, so a Workflow added there and nowhere else fails this.
  */
 describe("pithy support deprovision deletes its Workflows", () => {
@@ -708,5 +702,51 @@ describe("the semantic message index", () => {
     expect(on.vectorize).toEqual([
       { binding: "SUPPORT_VECTORIZE", index_name: "acme-prod-support-messages", remote: true },
     ]);
+  });
+});
+
+describe("a support teardown with Workers that own a binding", () => {
+  test("deletes each owning Worker's own host and its Workflows beside the shared one, and no other owner's", async () => {
+    const shared = await declaredWorkflowNames("@pithy-sh/support/src/workflows/worker", PROJECT, "staging");
+    expect(shared.length).toBeGreaterThan(0);
+    const ownedBy = (owner: string) =>
+      shared.map((name) => name.replace(`${PROJECT}-staging-support-`, `${PROJECT}-staging-${owner}---support-`));
+    const { workflows, held } = workflowsHolding([...shared, ...ownedBy("two"), ...ownedBy("three")]);
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockImplementation(async (name: string) => ({ id: name }));
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf,
+      workflows,
+      owners: ["two"],
+    });
+
+    await deprovisioner.deleteWorkflows("staging");
+    await deprovisioner.deleteWorker("staging");
+    expect([...held]).toEqual(ownedBy("three"));
+    expect(deleteWorker.mock.calls.map(([name]) => name)).toEqual([
+      supportWorkerName(PROJECT, "staging"),
+      `${PROJECT}-staging-two---support`,
+    ]);
+  });
+
+  test("an environment whose only classification Worker is an owner's host still has one", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockImplementation(async (name: string) =>
+      name === `${PROJECT}-staging-two---support` ? { id: name } : null,
+    );
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      project: PROJECT,
+      cf,
+      workflows: workflowsHolding().workflows,
+      owners: ["two"],
+    });
+
+    expect(await deprovisioner.hasWorker("staging")).toBe(true);
+    expect(deleteWorker).not.toHaveBeenCalled();
   });
 });

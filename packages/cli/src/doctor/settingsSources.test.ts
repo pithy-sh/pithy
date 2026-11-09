@@ -41,9 +41,9 @@ describe("the environments a check is handed", () => {
   });
 
   /**
-   * Each origin from its own environment's composition (#586). A config may name its domains from the
-   * environment it is composed for, and the reader took the module cache — whichever environment this process
-   * composed last — so every environment was handed that one's host.
+   * Each origin from its own environment's composition. A config may name its domains from the environment it
+   * is composed for, so a reader that took the module cache would hand every environment the host of whichever
+   * one this process composed last.
    */
   test("each environment's origin is read from that environment's composition", async () => {
     const workerDir = await project(["staging", "prod"], { name: "acme-api" });
@@ -140,7 +140,34 @@ describe("reaching the account", () => {
     expect(secretProbe).toHaveBeenCalledTimes(1);
   });
 
-  test("a field and an account token are asked once each, of the manager and the token list (#728)", async () => {
+  test("a Worker that owns SECRETS has its vault questions asked of its own manager", async () => {
+    const asked: (string | undefined)[] = [];
+    const answer = await settingsAccountConnection({
+      projectDir: dir,
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      homedir: dir,
+      connect: async () => ({}) as never,
+      vaultOwners: new Map([["two", "two"]]),
+      probe: async (_credentials, _project, owner) => ({
+        probe: async () => {
+          asked.push(owner);
+          return owner === "two";
+        },
+        carries: async () => owner === "two",
+      }),
+    });
+    if (answer.state !== "reachable") throw new Error(`expected reachable, got ${answer.reason}`);
+    const question = { name: "turnstile-secret-key", environment: "prod" };
+    expect(await answer.readerFor?.("two").vaultSecret(question)).toBe(true);
+    expect(await answer.readerFor?.("one").vaultSecret(question)).toBe(false);
+    expect(await answer.readerFor?.("two").vaultSecretField({ ...question, field: "x" })).toBe(true);
+    expect(asked).toEqual(["two", undefined]);
+  });
+
+  test("a field and an account token are asked once each, of the manager and the token list", async () => {
     const carries = vi.fn(async () => true);
     const findTokenByName = vi.fn(async (name: string) =>
       name === "acme-global-secrets-manager" ? { id: "t" } : null,
@@ -169,7 +196,7 @@ describe("reaching the account", () => {
     expect(findTokenByName).toHaveBeenCalledTimes(2);
   });
 
-  test("a bucket's lock is missing, locked or unlocked, each asked of Cloudflare once (#822)", async () => {
+  test("a bucket's lock is missing, locked or unlocked, each asked of Cloudflare once", async () => {
     const findBucketByName = vi.fn(async (name: string) => (name === "acme-prod-audit-checkpoints" ? null : { name }));
     const prefixLockedIndefinitely = vi.fn(
       async (bucket: string, prefix: string) =>
@@ -276,7 +303,7 @@ describe("reaching the account", () => {
     // `false` would report every entry missing on a machine that simply never recorded the id. A refusal is
     // the runner's `unchecked`, which is the truth.
     const refusal = await answer.reader.storeEntry("acme-prod-email-link-signing-key").catch((error: unknown) => error);
-    // …and its action never names an add that would be refused: this fixture has no Worker to name (#711).
+    // …and its action never names an add that would be refused: this fixture has no Worker to name.
     expect((refusal as PithyError).payload.action).toBe(
       "This project has no Worker to compose secrets into. Name one and create it with pithy worker add, then compose secrets into it.",
     );

@@ -22,8 +22,8 @@ import { TESTERS_CAPABILITY, testersWorkflowRegistry } from "../workflows/specs"
  * all, and the CLI writes the complete entry here once the host exists.
  *
  * **This provisioner is unusually small, and the reason is worth stating.** There is no bucket to
- * create, no index, and — since the confirmation token became a random value on the tester's own row
- * rather than a signature — no secret to write and no master key to bind. What is left is a template,
+ * create, no index, and — the confirmation token being a random value on the tester's own row rather than a
+ * signature — no secret to write and no master key to bind. What is left is a template,
  * a deploy, and a binding. A capability that needs less provisioning is a capability an adopter is more
  * likely to actually finish setting up.
  *
@@ -51,7 +51,7 @@ export function testersWorkerName(project: string, env: ManagedEnvironment): str
 /**
  * The Workflows the daily-pass worker is deployed with in one environment — `<project>-<env>-testers-daily`.
  * Derived from the specs by the call `resolveTestersConfig` deploys with, so teardown deletes the names
- * provision created and no others (#789). Deleting a Worker does not delete the Workflows registered against it.
+ * provision created and no others. Deleting a Worker does not delete the Workflows registered against it.
  */
 export function testersWorkflowNames(project: string, env: ManagedEnvironment): string[] {
   return hostWorkflowsFor(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }).workflows.map(
@@ -68,19 +68,25 @@ export function testersWorkflowNames(project: string, env: ManagedEnvironment): 
 export interface TestersProvisioner {
   /** Fail before the first deploy if the account cannot host a Workflow at all. */
   preflight(): Promise<void>;
-  /** Resolve the committed template for this environment and `wrangler deploy` it. */
-  deployWorker(env: ManagedEnvironment): Promise<void>;
+  /**
+   * Resolve the committed template for this environment and `wrangler deploy` it. Resolves the script name it
+   * deployed, which is a Worker's own host's when the provision is for one; `undefined` reads as the shared host.
+   */
+  deployWorker(env: ManagedEnvironment): Promise<string | undefined>;
 }
 
 /** The live seam for taking a deployed host back down. */
 export interface TestersDeprovisioner {
   /**
    * Delete this environment's daily Workflows, by {@link testersWorkflowNames}. Absent is success. Deleting the
-   * worker leaves them registered, so they go first (#789).
+   * worker leaves them registered, so they go first.
    */
   deleteWorkflows(env: ManagedEnvironment): Promise<void>;
-  /** Delete this environment's daily-pass worker. Absent is success — teardown is idempotent. */
-  deleteWorker(env: ManagedEnvironment): Promise<void>;
+  /**
+   * Delete this environment's daily-pass worker and every Worker's own. Absent is success — teardown is idempotent.
+   * Resolves the scripts it deleted.
+   */
+  deleteWorker(env: ManagedEnvironment): Promise<readonly string[] | undefined>;
 }
 
 /** What one provisioning run did, per environment, for the command to report. */
@@ -97,7 +103,7 @@ export interface TestersProvisionResult {
  * hardest to recover from.
  *
  * `environments` is what the caller determined it can act on — the CLI narrows it by `--env` and then by
- * whether the environment's app database exists (pithy-sh/pithy#512). Nothing decides here.
+ * whether the environment's app database exists. Nothing decides here.
  */
 export async function provisionTesters(
   provisioner: TestersProvisioner,
@@ -108,15 +114,15 @@ export async function provisionTesters(
 
   const results: TestersProvisionResult[] = [];
   for (const env of environments) {
-    await provisioner.deployWorker(env);
-    results.push({ env, worker: testersWorkerName(project, env) });
+    const worker = await provisioner.deployWorker(env);
+    results.push({ env, worker: worker ?? testersWorkerName(project, env) });
   }
   return results;
 }
 
 /**
  * Take every environment's host back down: its Workflows, then its worker. Idempotent: a Workflow or a worker
- * that is already gone is success.
+ * that is already gone is success. One result per script deleted, or the shared host's name when none was there.
  */
 export async function deprovisionTesters(
   deprovisioner: TestersDeprovisioner,
@@ -126,8 +132,9 @@ export async function deprovisionTesters(
   const results: TestersProvisionResult[] = [];
   for (const env of environments) {
     await deprovisioner.deleteWorkflows(env);
-    await deprovisioner.deleteWorker(env);
-    results.push({ env, worker: testersWorkerName(project, env) });
+    const deleted = (await deprovisioner.deleteWorker(env)) ?? [];
+    const workers = deleted.length > 0 ? deleted : [testersWorkerName(project, env)];
+    for (const worker of workers) results.push({ env, worker });
   }
   return results;
 }

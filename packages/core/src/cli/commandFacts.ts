@@ -50,10 +50,11 @@ export const WORKER_SCOPED = [
 export type WorkerScopedPath = (typeof WORKER_SCOPED)[number];
 
 /**
- * The commands that take `--worker` and do not need it: each fans out over every Worker, or falls back to the
- * first that answers, and the flag narrows.
+ * The commands that take `--worker` and do not need it: each fans out over every Worker, falls back to the
+ * first that answers, or acts on what every Worker shares, and the flag narrows it to one Worker's own.
  */
 export const WORKER_NARROWS = [
+  "audit lock",
   "backup",
   "contract",
   "dashboard connections",
@@ -67,8 +68,14 @@ export const WORKER_NARROWS = [
   "init",
   "mcp disconnect",
   "migrate",
+  "payments reconcile",
   "restore",
+  "secrets create",
+  "secrets rm",
+  "secrets rotate",
   "secrets tables",
+  "secrets update",
+  "secrets verify",
   "seed",
   "support deprovision",
   "upgrade",

@@ -125,7 +125,7 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
     expect(await store.getValue("absent-one")).toBeUndefined();
   });
 
-  test("a field probe answers carries or lacks, and its output carries nothing of the value (#728)", async () => {
+  test("a field probe answers carries or lacks, and its output carries nothing of the value", async () => {
     await runWriteWorkflow(managerEnv(), {
       mode: "create",
       name: "media-storage-credentials",
@@ -163,7 +163,7 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
 });
 
 /**
- * **The rotation ledger arriving as a dispatch (`#379`).**
+ * **The rotation ledger arriving as a dispatch.**
  *
  * `pithy secrets rotate` cannot reach `pithy_secrets_rotations` — the master key is worker-only, so every
  * value-touching command is a dispatch — and it must record a rotation anyway, or a fully successful
@@ -267,8 +267,42 @@ describe("runRotationWorkflow — at-rest rotation runs locally; only the write-
     expect(await latestRotationStatus()).toBe("success");
   });
 
+  test("re-seals every owned vault the manager is stamped with, by binding", async () => {
+    const two = createDatabase(env.VAULT_TWO, secretsTables);
+    await env.VAULT_TWO.prepare("drop table if exists pithy_secrets_system_secrets").run();
+    await env.VAULT_TWO.prepare("drop table if exists pithy_secrets_rotations").run();
+    await secrets_0001_init.up(two);
+    await runWriteWorkflow(
+      { SECRETS: env.VAULT_TWO, SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS },
+      {
+        mode: "create",
+        name: "b",
+        value: "vb",
+        valueType: "text",
+        rotatable: false,
+      },
+    );
+    const store = new StubConfigStore({ bound: await resolveEncryptionConfig(managerEnv()) });
+    const stamped = { ...managerEnv(), VAULT_TWO: env.VAULT_TWO, OWNED_VAULTS: JSON.stringify(["VAULT_TWO"]) };
+
+    const result = await runRotationWorkflow(stamped, store.writer, syncStep, store.reader);
+
+    expect(result).toMatchObject({ rotated: 1, newCurrentVersion: 2 });
+    const row = await env.VAULT_TWO.prepare("select key_version as v from pithy_secrets_system_secrets").first<{
+      v: number;
+    }>();
+    expect(row?.v).toBe(2);
+  });
+
+  test("refuses a stamped vault the manager does not bind, rather than retiring a key it never counted", async () => {
+    const store = new StubConfigStore({ bound: await resolveEncryptionConfig(managerEnv()) });
+    const stamped = { ...managerEnv(), OWNED_VAULTS: JSON.stringify(["VAULT_GONE"]) };
+    await expect(runRotationWorkflow(stamped, store.writer, syncStep, store.reader)).rejects.toThrow(/VAULT_GONE/);
+    expect(store.writes).toHaveLength(0);
+  });
+
   /**
-   * **The default reader is the Worker's own binding, and that is the whole point of `#647`.**
+   * **The default reader is the Worker's own binding, and that is the whole point of the read-back.**
    *
    * Under Miniflare `SECRETS_ENCRYPTION_KEYS` is a fixed string, so a write can never come back through
    * it — which is exactly the shape of the production failure this seam exists to catch, and it means a
@@ -296,7 +330,7 @@ describe("runRotationWorkflow — at-rest rotation runs locally; only the write-
 });
 
 /**
- * **The cron's two guards (`#647`).**
+ * **The cron's two guards.**
  *
  * The rotation Workflow is started by `scheduled()`, and both of the things that keep a pass from
  * destroying a store live there rather than in the pass: the deterministic instance id that makes two

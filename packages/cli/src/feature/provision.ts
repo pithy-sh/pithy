@@ -52,6 +52,7 @@ import { bindFeatureHosts } from "../provision/wranglerEnv";
 import { provisionableBindings } from "./bindings";
 import {
   assertNoFeatureHostCollision,
+  everyFeatureIndex,
   featureHostCapabilities,
   featureHostScripts,
   featureIndexesFor,
@@ -285,6 +286,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     capabilities: options.capabilities,
     workers: workers.map(provisionWorkerNames),
     owned: ownedBindingsOf(workers),
+    hostOwners: workers,
     projectDir: options.projectDir,
   });
   // Before anything is created: an app Worker that would deploy under a kit host's name.
@@ -401,7 +403,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   // Vectorize indexes, named for the feature and created with their declared shape, each only if absent. Before
   // the hosts deploy, because a deploy binding an index that does not exist is refused.
   if (options.indexes) {
-    for (const index of await featureIndexesFor(options.capabilities, options.projectDir, options.identity)) {
+    for (const index of await everyFeatureIndex(options.capabilities, options.projectDir, options.identity, workers)) {
       await options.indexes.ensure(index);
     }
   }
@@ -411,20 +413,19 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
 
   // **Bind each app Worker to the hosts that deployed, and to no other (F2).** Written after the deploy, so a
   // host that failed leaves no binding to it for the next `pithy deploy --env feature` to ship.
+  const hostKey = (host: { capability: string; owner?: string }): string => `${host.capability}/${host.owner ?? ""}`;
   const deployed = new Set(
-    hosts.workers
-      .filter((row) => row.outcome === "deployed" || row.outcome === "unchanged")
-      .map((row) => row.capability),
+    hosts.workers.filter((row) => row.outcome === "deployed" || row.outcome === "unchanged").map(hostKey),
   );
   for (const worker of workers) {
-    const hosted = hostedWorkflowEntries(worker.capabilities, scope);
+    const hosted = hostedWorkflowEntries(worker.capabilities, scope, worker);
     await bindFeatureHosts({
       workerDir: worker.dir,
       hosted,
-      bound: hosted.filter((entry) => deployed.has(entry.capability)),
+      bound: hosted.filter((entry) => deployed.has(hostKey(entry))),
       // The feature's own indexes this Worker's capabilities bind — created above, before any host bound them.
       indexes: options.indexes
-        ? await featureIndexesFor(worker.capabilities, options.projectDir, options.identity)
+        ? await featureIndexesFor(worker.capabilities, options.projectDir, options.identity, worker)
         : [],
     });
   }
@@ -434,7 +435,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const expected = featureHostCapabilities(options.capabilities);
   const reasons = [
     ...hosts.problems,
-    ...hosts.workers.filter((row) => !deployed.has(row.capability)).map(summarizeKitDeploy),
+    ...hosts.workers.filter((row) => !deployed.has(hostKey(row))).map(summarizeKitDeploy),
     ...expected
       .filter((capability) => !hosts.workers.some((row) => row.capability === capability))
       .map((capability) => `${capability}: not deployed. Nothing composed it where the kit pass looked.`),
@@ -566,9 +567,11 @@ export interface DeprovisionFeatureOptions {
   /**
    * The project's Workers, as the branch has them now — each one's two names are what the scripts a
    * feature deployed before scripts were recorded are recomputed from. Empty when they cannot be known;
-   * the manifest's own record still runs.
+   * the manifest's own record still runs. A Worker's own `capabilities` decide which hosts and indexes it owns;
+   * without them, it is taken to compose every capability the feature spans.
    */
-  workers: readonly Pick<ProvisionWorker, "name" | "dir" | "ownBindings">[];
+  workers: readonly (Pick<ProvisionWorker, "name" | "dir" | "ownBindings"> &
+    Partial<Pick<ProvisionWorker, "capabilities">>)[];
   /**
    * The account's Secrets Store, when one is reachable. Teardown removes every entry this feature could
    * have created — and only those. An entry left behind is a live credential in a flat, account-wide
@@ -649,15 +652,14 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
 
   // What each Worker owns, read before anything is deleted, so a manifest that will not parse stops the teardown
   // here rather than halfway through it.
-  const owned = ownedBindingsOf(
-    await Promise.all(
-      options.workers.map(async (worker) => ({
-        dir: worker.dir,
-        ownBindings: worker.ownBindings ?? (await readOwnBindings(worker.dir)),
-        capabilities: options.capabilities,
-      })),
-    ),
+  const owning = await Promise.all(
+    options.workers.map(async (worker) => ({
+      dir: worker.dir,
+      ownBindings: worker.ownBindings ?? (await readOwnBindings(worker.dir)),
+      capabilities: worker.capabilities ?? options.capabilities,
+    })),
   );
+  const owned = ownedBindingsOf(owning);
 
   // Everything from here destroys infrastructure, and `deleted` grows one resource at a time. A throw anywhere
   // inside carries the list on the failure, since that record is the command's entire output, and the failure
@@ -678,7 +680,8 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     for (const worker of options.workers) {
       for (const name of featureWorkerScriptNames(options.identity, provisionWorkerNames(worker))) scripts.add(name);
     }
-    for (const host of featureHostScripts(options.identity)) scripts.add(host.script);
+    const owners = [...new Set(owned.map((binding) => binding.app))];
+    for (const host of featureHostScripts(options.identity, owners)) scripts.add(host.script);
 
     // **Their Workflows first, by name, before the scripts that host them.** Cloudflare documents that
     // deleting a Workflow leaves its script alone, and says nothing of the reverse, so teardown does not rely on
@@ -691,7 +694,10 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
 
     // The feature's own indexes, by the names its hosts' `featureIndexes` compose — after the scripts that bind them.
     if (options.indexes) {
-      for (const index of await featureIndexesFor(options.capabilities, options.projectDir, options.identity)) {
+      const indexes = await everyFeatureIndex(options.capabilities, options.projectDir, options.identity, owning, {
+        skipUncomposable: true,
+      });
+      for (const index of indexes) {
         if (await options.indexes.remove(index.name)) await record("vectorize", index.name, index.name);
       }
     }

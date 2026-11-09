@@ -120,11 +120,16 @@ export interface WorkflowHostParams {
   /** The target environment (`dev` | `staging` | `production`). */
   env: string;
   /**
-   * The feature this host serves, when it serves one (#643). Its name then takes the feature's head —
+   * The feature this host serves, when it serves one. Its name then takes the feature's head —
    * `<project>-f<issue>-<slug>-<capability>` — as the Workflows derived with the same parts do; `env` still
    * says `feature`, and that is what the host's `ENVIRONMENT` var is stamped with.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker this host is the own host of, when it is one: its name becomes
+   * `<project>-<env>-<owner>---<capability>`, as the Workflows derived with the same parts do.
+   */
+  owner?: string;
   /** D1 binding name → database id. An unlisted binding keeps the template's id. */
   databaseIds?: Record<string, string>;
   /**
@@ -192,7 +197,8 @@ function withRemote<T extends { remote?: boolean }>(entry: T, name: string, remo
  * documentation for whoever reads the file — nothing matches or replaces them, so a template that
  * spells a placeholder differently still resolves correctly.
  *
- * The worker name becomes `<project>-<env>-<capability>` through {@link workflowHostName}, and the
+ * The worker name becomes `<project>-<env>-<capability>` (or `<project>-<env>-<owner>---<capability>` for a
+ * Worker's own host) through {@link workflowHostName}, and the
  * `workflows` array is replaced wholesale by `params.workflows` (derived from the registry by
  * {@link hostWorkflowsFor}), so the deployed names cannot drift from what the dispatcher and the
  * CLI compute. `binding` and
@@ -207,6 +213,7 @@ export function resolveWorkflowHost(template: WorkflowHostTemplate, params: Work
     capability: params.capability,
     env: params.env,
     ...(params.feature ? { feature: params.feature } : {}),
+    ...(params.owner !== undefined ? { owner: params.owner } : {}),
   });
 
   if (resolved.d1_databases) {
@@ -305,7 +312,7 @@ export function hostWorkflowsFor(
   registry: WorkflowRegistry,
   parts: WorkflowHostNameParts,
 ): { workflows: HostWorkflowBinding[]; crons: string[] } {
-  const { project, capability, env, feature } = parts;
+  const { project, capability, env, feature, owner } = parts;
   const owned = Object.values(registry).filter((entry) => entry.capability === capability);
   const workflows: HostWorkflowBinding[] = [];
   const crons: string[] = [];
@@ -319,7 +326,14 @@ export function hostWorkflowsFor(
     }
     workflows.push({
       binding: entry.spec.binding,
-      name: workflowScriptName({ project, capability, job: entry.job, env, ...(feature ? { feature } : {}) }),
+      name: workflowScriptName({
+        project,
+        capability,
+        job: entry.job,
+        env,
+        ...(feature ? { feature } : {}),
+        ...(owner !== undefined ? { owner } : {}),
+      }),
       class_name: entry.spec.className,
     });
     if (entry.spec.schedule) crons.push(entry.spec.schedule);

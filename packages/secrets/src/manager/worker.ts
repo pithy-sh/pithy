@@ -11,7 +11,7 @@ import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
-import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
+import { resolveEncryptionConfig, type SecretBinding } from "../env/bindings";
 import { atRestInstanceId } from "../rotation/atRestKeyRotation";
 import { FieldKeyCommand, type FieldKeyReport } from "../rotation/fieldKeyRotation";
 import { isRotationDue } from "../rotation/keyRotation";
@@ -23,7 +23,7 @@ import { logAuditEmit } from "./auditLog";
 import { type FieldKeyEnv, runFieldKeyWorkflow, scheduleFieldKeyRotation } from "./fieldKeyWorkflow";
 import { managerRegistry } from "./managerRegistry";
 import { secretsWorkflowRetry } from "./retryPolicy";
-import { runRotationWorkflow } from "./rotationWorkflow";
+import { type OwnedVaultsEnv, runRotationWorkflow } from "./rotationWorkflow";
 import { fieldKeysConfigWriter, rotationConfigWriter } from "./secretsConfigWriter";
 import {
   runValueRotationWorkflow,
@@ -41,9 +41,9 @@ import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult }
  *   - `SecretsWriteWorkflow` — the CLI's dispatch target for create/update/remove.
  *   - `AtRestKeyRotationWorkflow` — re-encrypts the store under a fresh master key.
  *   - `SecretValueRotationWorkflow` — replaces one secret's value on its declared period, waits out its
- *     overlap, and retires the version it replaced (#602).
+ *     overlap, and retires the version it replaced.
  *   - `FieldKeyRotationWorkflow` — rotates the field key app Workers seal encrypted fields with, re-seals what
- *     is leaving, and retires it on a clean guard (#390).
+ *     is leaving, and retires it on a clean guard.
  *   - `scheduled()` — fires the at-rest rotation when its interval has elapsed, and a value rotation for
  *     every secret whose `rotateEveryDays` has.
  *
@@ -60,7 +60,12 @@ const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 configureSharedSecrets({ registry: managerRegistry });
 
 /** The manager worker's env: the secrets D1 + key binding, the rotation Workflow bindings, CF creds for the write-back. */
-export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv, FieldKeyEnv {
+export interface SecretsManagerEnv extends OwnedVaultsEnv, ValueRotationEnv, FieldKeyEnv {
+  /**
+   * The `apps/<owner>` Worker whose own manager this is. Set, the manager rotates only its own vault's values: the
+   * master key and the field key are the environment's, and the shared manager rotates both.
+   */
+  OWNER?: string;
   /**
    * The at-rest rotation Workflow binding, triggered by the cron.
    *
@@ -73,7 +78,7 @@ export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv, Fi
    */
   AT_REST_ROTATION: { create(options?: { id?: string }): Promise<unknown> };
   /**
-   * The application's one Cloudflare API token (#728), for the at-rest config write-back — the only
+   * The application's one Cloudflare API token, for the at-rest config write-back — the only
    * live-CF write. A `cf-secrets-store` binding read via
    * `sharedSecretsStore(env, managerRegistry).get(RUNTIME_TOKEN_SECRET)`, a string from `.dev.vars` in
    * local dev. Never a plaintext env var.
@@ -99,7 +104,7 @@ export interface SecretsManagerEnv extends SecretsStoreEnv, ValueRotationEnv, Fi
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
   /**
-   * The value-rotation Workflow binding (#602), started by the cron once per due secret per day, under a
+   * The value-rotation Workflow binding, started by the cron once per due secret per day, under a
    * deterministic id so a redelivered tick starts nothing twice. Absent on a feature's manager, which runs no
    * cron. A manager with a schedule and no binding refuses the tick rather than rotating nothing in silence.
    */
@@ -162,14 +167,14 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
 }
 
 /**
- * The value-rotation Workflow — one secret's value replaced on its declared period (#602).
+ * The value-rotation Workflow — one secret's value replaced on its declared period.
  *
  * The rotate step runs through `classified.once`, with no retries: a `provider` roll is a call into
  * somebody else's system, and a platform re-running the step after an eviction would roll twice. Every
  * other step runs under {@link secretsWorkflowRetry}, like the write and the at-rest rotation. See
  * `rotation/valueRotation.ts`.
  *
- * A store-backed secret is written over REST with the application's one runtime token (#728), edit-only:
+ * A store-backed secret is written over REST with the application's one runtime token, edit-only:
  * `updateExistingSecret` refuses a name with no entry rather than creating one nothing binds.
  */
 export class SecretValueRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, ValueRotationPayload> {
@@ -201,7 +206,7 @@ export class SecretValueRotationWorkflow extends WorkflowEntrypoint<SecretsManag
 }
 
 /**
- * The field-key rotation Workflow (#390) — `PITHY_FIELD_KEYS` rotated on its own period, the rows still under a
+ * The field-key rotation Workflow — `PITHY_FIELD_KEYS` rotated on its own period, the rows still under a
  * version leaving the window re-sealed, and that version retired on a clean guard. Also what
  * `pithy secrets retire-version` dispatches to, for the guard read and the retirement past it.
  *
@@ -255,7 +260,7 @@ async function startValueRotation(env: SecretsManagerEnv, id: string, payload: V
 /** The at-rest half of the cron: trigger the master-key rotation only when its interval has elapsed. */
 async function scheduleAtRestRotation(env: SecretsManagerEnv): Promise<void> {
   const config = await resolveEncryptionConfig(env);
-  // **A structurally failed pass has a cadence consequence (#647).** A pass that could not confirm its
+  // **A structurally failed pass has a cadence consequence.** A pass that could not confirm its
   // write through the binding leaves `lastRotatedAt` untouched — right for the store, since nothing
   // rotated — so without this the same pass starts again every night, mints a fresh key, and edits the
   // same entry the binding does not read, forever. The ledger is what remembers; `rotationBackedOff`
@@ -267,12 +272,12 @@ async function scheduleAtRestRotation(env: SecretsManagerEnv): Promise<void> {
   // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation
   // never come due, silently, on every tick — and keeping the two in one expression is what
   // `cli/src/ci/environmentNumbers.test.ts` reads to prove no raw `Number(env.…)` reaches a
-  // comparison unchecked (#521).
+  // comparison unchecked.
   if (isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS), now)) {
     // A deterministic id, so two triggers over one pointer on one day are one pass. See
     // `atRestInstanceId` for what two concurrent passes do to a store.
     //
-    // **The refusal it produces is the success case, so it is swallowed (#647 review).** Cron delivery is
+    // **The refusal it produces is the success case, so it is swallowed.** Cron delivery is
     // at-least-once, and a redelivered tick inside one UTC day over one pointer composes the same id;
     // Cloudflare then rejects the `create`, which would fail the whole `scheduled()` invocation over a
     // guard doing precisely its job. The pass that already exists is the one we wanted. Only this
@@ -296,33 +301,37 @@ export default {
    * after both, so the invocation is still recorded as failed.
    */
   async scheduled(_controller: unknown, env: SecretsManagerEnv): Promise<void> {
-    // A feature's manager has no cron and no rotation Workflow (#643). Should a trigger reach one anyway, it
+    // A feature's manager has no cron and no rotation Workflow. Should a trigger reach one anyway, it
     // rotates nothing: it holds no token to write the new key back with.
     if (env.ENVIRONMENT === FEATURE_ENVIRONMENT) return;
     const failures: unknown[] = [];
-    try {
-      await scheduleAtRestRotation(env);
-    } catch (error) {
-      failures.push(error);
-    }
-    try {
-      // The field key's own period, beside the master key's (#390). Independent of both other halves.
-      await scheduleFieldKeyRotation(env, new Date(), async (id, command) => {
-        if (env.FIELD_KEY_ROTATION === undefined) {
-          throw new InternalError({
-            message: "The secrets manager binds a field key and no Workflow to rotate it.",
-            action: remedy("secrets provision").say((command) => `Redeploy the manager with ${command}.`),
-            detail: `field-key rotation ${id}: the FIELD_KEY_ROTATION binding is absent on this manager`,
-          });
-        }
-        try {
-          await env.FIELD_KEY_ROTATION.create({ id, params: command });
-        } catch (error) {
-          if (!isDuplicateInstance(error)) throw error;
-        }
-      });
-    } catch (error) {
-      failures.push(error);
+    // An owner's manager rotates its own vault's values and nothing it shares: see `SecretsManagerEnv.OWNER`.
+    const shared = env.OWNER === undefined || env.OWNER === "";
+    if (shared) {
+      try {
+        await scheduleAtRestRotation(env);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        // The field key's own period, beside the master key's. Independent of both other halves.
+        await scheduleFieldKeyRotation(env, new Date(), async (id, command) => {
+          if (env.FIELD_KEY_ROTATION === undefined) {
+            throw new InternalError({
+              message: "The secrets manager binds a field key and no Workflow to rotate it.",
+              action: remedy("secrets provision").say((command) => `Redeploy the manager with ${command}.`),
+              detail: `field-key rotation ${id}: the FIELD_KEY_ROTATION binding is absent on this manager`,
+            });
+          }
+          try {
+            await env.FIELD_KEY_ROTATION.create({ id, params: command });
+          } catch (error) {
+            if (!isDuplicateInstance(error)) throw error;
+          }
+        });
+      } catch (error) {
+        failures.push(error);
+      }
     }
     try {
       await scheduleValueRotations(env, {

@@ -60,6 +60,19 @@ const BASE = {
   mediaConfig: MediaConfig.parse({}),
 };
 
+describe("a Worker's own media host", () => {
+  test("is named for its owner, Workflows and all", () => {
+    const resolved = resolveMediaConfig(template(), {
+      ...BASE,
+      env: "staging",
+      owner: "two",
+      resources: { bucketName: "acme-staging-media" },
+    });
+    expect(resolved.name).toBe("acme-staging-two---media");
+    expect(resolved.workflows?.every((workflow) => workflow.name.startsWith("acme-staging-two---media-"))).toBe(true);
+  });
+});
+
 describe("resolveMediaConfig", () => {
   test("fills the worker name, both database ids, the bucket, and the store id", () => {
     const resolved = resolveMediaConfig(template(), {
@@ -145,7 +158,7 @@ describe("resolveMediaConfig", () => {
     expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
   });
 
-  test("binds the environment's runtime token — the application's one, which a Stream job reads (#728)", () => {
+  test("binds the environment's runtime token — the application's one, which a Stream job reads", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
@@ -169,7 +182,7 @@ describe("resolveMediaConfig", () => {
     expect(JSON.stringify(resolved)).not.toContain("runtime-cf-api-token");
   });
 
-  test("a host storing both types in R2 binds no runtime token — it calls Cloudflare for nothing (#728)", () => {
+  test("a host storing both types in R2 binds no runtime token — it calls Cloudflare for nothing", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       mediaConfig: MediaConfig.parse({ images: { store: "r2" }, video: { store: "r2" } }),

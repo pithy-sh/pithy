@@ -10,6 +10,7 @@ import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflo
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { dispatchSecretWrite, type SecretDispatcher, type SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { runtimeTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -20,7 +21,8 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
-import { deleteHostWorkflows } from "./hostWorkflows";
+import type { HostOwner } from "./hostRegistry";
+import { deleteHostWorkflows, hostScriptsOf, hostWorkflowsOf } from "./hostWorkflows";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -88,7 +90,7 @@ const SECRET_FACTS = {
   backend: "d1",
   scope: "environment",
   // Not a `bootstrap` secret: its value is an envelope every reader decodes, not something read straight
-  // off a binding before the store is open. Stated because a request states it (#517).
+  // off a binding before the store is open. Stated because a request states it.
   bootstrap: false,
   rotatable: false,
   valueType: "json",
@@ -107,6 +109,11 @@ export type ResolveMediaEnv = (env: ManagedEnvironment) => Promise<MediaEnvResou
 
 export interface CloudflareMediaProvisionerOptions {
   /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
+  /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
    * `@pithy-sh/media` module is resolved against. Not derivable from `project`, which is a *name*;
    * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
@@ -114,7 +121,7 @@ export interface CloudflareMediaProvisionerOptions {
   readonly projectDir: string;
   cf: CloudflareClients;
   /**
-   * The account this provisions into, and what vouches for it (#378).
+   * The account this provisions into, and what vouches for it.
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
    * already held while a find-or-create read an empty listing as "this account has none" and minted a
@@ -168,14 +175,17 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #dispatcher: SecretDispatcher;
   readonly #probe: SecretProbe | undefined;
   /**
-   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * The project's declared environments — what a `global` secret write fans out across. Carried
    * rather than assumed, so a shared secret reaches every environment the project deploys to.
    */
   readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #resolveEnv: ResolveMediaEnv;
   readonly #audit: CliAuditEmit;
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflareMediaProvisionerOptions) {
+    this.#owner = options.owner;
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
@@ -193,7 +203,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 
   /**
    * Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the Workflow-hosting
-   * worker — and, where the host binds one, every environment's runtime token (#728).
+   * worker — and, where the host binds one, every environment's runtime token.
    *
    * The token check is here and not at the deploy, because by the deploy every bundle has been rewritten
    * without the token an old-kit Worker still requires. A refusal after that write is an outage.
@@ -220,7 +230,10 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
    */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
     const { mediaBucketName } = await loadMedia(this.#projectDir);
-    const name = mediaBucketName(this.#project, env);
+    // A Worker that owns MEDIA_BUCKET binds the bucket provision created for it, and its own host binds that one.
+    const name = this.#owner?.bindings.includes("MEDIA_BUCKET")
+      ? environmentScope(this.#project, env).resource("MEDIA_BUCKET", "r2", {}, this.#owner.worker)
+      : mediaBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
     const created = await this.#cf.r2Provisioner().createBucket(name);
@@ -306,7 +319,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   /**
    * Write the environment's two secrets. Upserts, so a re-run heals rather than fails.
    *
-   * `media-storage-credentials` is media's own — the account id, and nothing else since #728: media mints
+   * `media-storage-credentials` is media's own — the account id, and nothing else: media mints
    * Images and Stream uploads with the application's `runtime` token, so no token is asked for here.
    * `media-r2-credentials` is `@pithy-sh/storage`'s R2 bundle, which media declares and never reads; it
    * is validated against the schema the registry entry itself carries, so the value written here and the
@@ -318,8 +331,8 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     );
     // Validate before dispatching: a malformed secret is only discovered at the Worker's first read
     // otherwise, long after the operator has walked away from the terminal.
-    // Rewritten whole on every run, which is how a bundle written before #728 loses the token an operator
-    // supplied: the upgrade path is mint `runtime`, re-run this, then revoke the old token.
+    // Rewritten whole on every run, so a bundle holding a token an operator supplied loses it here: the upgrade
+    // path is mint `runtime`, re-run this, then revoke the old token.
     const storage = MediaStorageCredentials.parse({ accountId: this.#account.accountId });
     const r2 = mediaR2Registry[MEDIA_R2_SECRET].schema.parse({
       accountId: this.#account.accountId,
@@ -370,7 +383,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   }
 
   /**
-   * Refuse an environment whose Secrets Store holds no runtime token (#728). The enrichment worker binds
+   * Refuse an environment whose Secrets Store holds no runtime token. The enrichment worker binds
    * that entry, and a project upgraded from the secrets manager's own token has none until it mints one —
    * which wrangler would answer with a refused binding and no word of why. Asked from {@link preflight},
    * before anything is written.
@@ -387,13 +400,14 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: MediaResources): Promise<void> {
-    const { mediaWorkerName, resolveMediaConfig } = await loadMedia(this.#projectDir);
+    const { resolveMediaConfig } = await loadMedia(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
     const dir = await mediaWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveMediaConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       secretsDatabaseId,
       storeId: this.#storeId,
@@ -401,7 +415,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
       mediaConfig: this.#mediaConfig,
     });
 
-    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // **The gate, inherited rather than opted into.** `deployHostWorker` stamps the resolved
     // config with this package's version and a hash of the config itself, compares that against what
     // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
@@ -426,7 +440,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
           outcome: "success",
           severity: "info",
           resourceType: "cf_worker",
-          resourceId: mediaWorkerName(this.#project, env),
+          resourceId: config.name,
         });
       }
     } catch (error) {
@@ -436,7 +450,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
         outcome: "failure",
         severity: "info",
         resourceType: "cf_worker",
-        resourceId: mediaWorkerName(this.#project, env),
+        resourceId: config.name,
       });
       throw error;
     }
@@ -460,7 +474,7 @@ export interface CloudflareMediaDeprovisionerOptions {
    */
   readonly projectDir: string;
   cf: CloudflareClients;
-  /** The account's Workflows client — the enrichment Workflows are deleted through it, by name (#789). */
+  /** The account's Workflows client — the enrichment Workflows are deleted through it, by name. */
   workflows: Pick<CloudflareWorkflowsClient, "deleteWorkflow">;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -471,7 +485,7 @@ export interface CloudflareMediaDeprovisionerOptions {
    */
   r2Credentials?: R2Credentials;
   /**
-   * The account this teardown deletes from, and what vouches for it (#378).
+   * The account this teardown deletes from, and what vouches for it.
    *
    * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
    * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
@@ -480,6 +494,11 @@ export interface CloudflareMediaDeprovisionerOptions {
   account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * The `apps/` Workers that list `ownBindings`: each may have deployed a host of its own for this capability,
+   * deleted beside the shared one by its recomputed name.
+   */
+  owners?: readonly string[];
 }
 
 /**
@@ -494,6 +513,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
   readonly #account: ConfirmedAccount;
+  readonly #owners: readonly string[];
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareMediaDeprovisionerOptions) {
@@ -503,10 +523,11 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
     this.#account = options.account;
+    this.#owners = options.owners ?? [];
     this.#audit = options.audit ?? (async () => {});
   }
 
-  /** Delete the env's enrichment Workflows, by the names the project's own `@pithy-sh/media` composes (#789). */
+  /** Delete the env's enrichment Workflows, by the names the project's own `@pithy-sh/media` composes. */
   async deleteWorkflows(env: ManagedEnvironment): Promise<void> {
     const { mediaWorkflowNames } = await loadMedia(this.#projectDir);
     await deleteHostWorkflows({
@@ -514,7 +535,13 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
       account: this.#account,
       capability: "media",
       env,
-      names: mediaWorkflowNames(this.#project, env),
+      names: hostWorkflowsOf({
+        capability: "media",
+        project: this.#project,
+        env,
+        owners: this.#owners,
+        workflows: mediaWorkflowNames(this.#project, env),
+      }),
       audit: this.#audit,
     });
   }
@@ -522,23 +549,27 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   /** Delete the env's media worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { mediaWorkerName } = await loadMedia(this.#projectDir);
-    const name = mediaWorkerName(this.#project, env);
-    if (
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      })
-    ) {
-      await this.#cf.workers().deleteWorker(name);
-      await this.#audit({
-        environment: env,
-        action: "media/worker_deleted",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "cf_worker",
-        resourceId: name,
-      });
+    for (const name of hostScriptsOf(
+      { capability: "media", project: this.#project, env, owners: this.#owners },
+      mediaWorkerName(this.#project, env),
+    )) {
+      if (
+        await findOnConfirmedAccount({
+          ...this.#account,
+          what: `the ${name} Worker`,
+          find: () => this.#cf.workers().getWorker(name),
+        })
+      ) {
+        await this.#cf.workers().deleteWorker(name);
+        await this.#audit({
+          environment: env,
+          action: "media/worker_deleted",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "cf_worker",
+          resourceId: name,
+        });
+      }
     }
   }
 

@@ -36,10 +36,15 @@ export interface StorageConfigParams {
   /** The target environment. */
   env: ManagedEnvironment;
   /**
-   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * **The feature this host serves, when it serves one.** Its Worker, its Workflows and every store
    * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id for this environment — where the `pithy_storage_*` tables live. */
   appDatabaseId: string;
   /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the R2 credentials. */
@@ -58,6 +63,7 @@ export function resolveStorageConfig(
   params: StorageConfigParams,
 ): WorkflowHostTemplate {
   const feature = params.feature;
+  const owner = params.owner;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, storageConfig } = params;
 
   // Derived before the resolve rather than assigned after it: `resolveWorkflowHost` refuses to fill a
@@ -68,6 +74,7 @@ export function resolveStorageConfig(
     capability: STORAGE_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
   });
 
   const resolved = resolveWorkflowHost(template, {
@@ -75,6 +82,7 @@ export function resolveStorageConfig(
     capability: STORAGE_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     r2BucketNames: { STORAGE_BUCKET: resources.bucketName },
     secretsStoreId: storeId,

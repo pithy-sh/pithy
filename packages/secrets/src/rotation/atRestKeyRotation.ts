@@ -38,7 +38,7 @@ export interface StepRunner {
   /**
    * Pause the instance and resume it afterwards — **between** steps, never inside one.
    *
-   * The second member exists for one caller: the read-back below (`#647`). A wait that matters has to
+   * The second member exists for one caller: the read-back below. A wait that matters has to
    * cross a journal boundary. The master key arrives through a binding whose value an isolate may hold
    * for its whole life, so a timer inside one step re-reads one cached answer however long it loops —
    * while a Workflow resume may land in a fresh isolate, which is the only wait that can change what the
@@ -51,6 +51,11 @@ export interface StepRunner {
 export interface AtRestRotationDeps {
   /** The per-environment secrets D1. */
   db: SecretsDb;
+  /**
+   * The vaults of the Workers that own `SECRETS`, sealed under the same master key, each by its binding. Every row
+   * in them is re-sealed and counted beside {@link db}'s, so no version retires while one of them still holds it.
+   */
+  owned?: readonly { binding: string; db: SecretsDb }[];
   /** The current master-key config (resolved from `SECRETS_ENCRYPTION_KEYS`). */
   config: EncryptionConfig;
   /** Writes the updated config back to CF Secrets Store, over REST, by composed entry name. */
@@ -70,7 +75,7 @@ export interface AtRestRotationOptions {
   maxBatches?: number;
   /**
    * Who is running this pass — **the Workflow instance's own id**, and nothing recomposed from the pass's
-   * inputs (#647 review).
+   * inputs.
    *
    * It is the single-flight holder: `RotationTracker.claimRotation` hands an open row back to the holder
    * that opened it, so that a step retry cannot wedge the rotation by declining against its own row. That
@@ -108,7 +113,7 @@ export interface AtRestRotationResult {
    * How many rows kept this pass from retiring the generation it was due to retire — `0` when nothing was
    * due, and `0` when the prune went ahead.
    *
-   * **The count is the whole point (`#647`).** A row that will not decrypt holds a version forever: the
+   * **The count is the whole point.** A row that will not decrypt holds a version forever: the
    * prune gate refuses while any row sits on a retiring key, and it is right to — a corrupt ciphertext is
    * not a missing key, and deleting the key makes a recoverable row certainly unrecoverable. So the pass
    * closes `success` and the key set gains an entry every cadence, which fails *toward* keeping keys and
@@ -143,10 +148,17 @@ interface ReadBackPolicy {
   delayMs: number;
 }
 
+/** The rows still sealed under `versions`, in this manager's vault and every owned vault it re-seals. */
+async function countAcross(deps: AtRestRotationDeps, versions: readonly string[]): Promise<number> {
+  let total = await countOnKeyVersions(deps.db, versions);
+  for (const vault of deps.owned ?? []) total += await countOnKeyVersions(vault.db, versions);
+  return total;
+}
+
 /**
  * The deterministic Workflow instance id for a pass superseding `pointer` on the UTC day of `at`.
  *
- * **Single-flight, at the only place that can hold it (`#647`).** Two overlapping passes each confirm
+ * **Single-flight, at the only place that can hold it.** Two overlapping passes each confirm
  * their own read-backs, and the master-key entry takes a full-value replace with no conditional write
  * available — so the slower pass's promoted write deletes the key every row is by then sealed under, its
  * own read-back confirms the clobber, and the pass reports success. An undecryptable store, signaled
@@ -180,17 +192,11 @@ export function atRestInstanceId(pointer: string, at: Date): string {
  * the wrong entry on every pass, so the budget exists to tell them apart by waiting — and spending it is
  * an **abort**, not another retry.
  *
- * Each attempt is its own `step.do`, with a `step.sleep` between. **The reason is durability, not staleness,
- * and that was checked rather than assumed (#647).** This was written believing a binding might hold one
- * value for its isolate's life, which would make a loop inside one step re-read one answer forever. It does
- * not: measured against a real Secrets Store on 2026-09-25, a binding refreshes inside a live isolate about
- * 1.3-1.5s after the REST write — two isolates held warm through a write each served the old value before it
- * and the new one after, across 328 samples. So an in-step loop would in fact work.
- *
- * The shape stays because a journalled wait is still the better one: a `step.sleep` survives the instance
- * being evicted mid-wait, where a `setTimeout` inside a step burns that step's wall clock and dies with it.
- * What changed is the claim, not the code — a docblock that justifies a design with a fact nobody checked is
- * how the next reader inherits a belief instead of a reason.
+ * Each attempt is its own `step.do`, with a `step.sleep` between. **The reason is durability, not staleness.**
+ * Measured against a real Secrets Store, a binding refreshes inside a live isolate about 1.3-1.5s after the REST
+ * write, so an in-step loop would see the change. A journalled wait is still the better one: a `step.sleep`
+ * survives the instance being evicted mid-wait, where a `setTimeout` inside a step burns that step's wall clock
+ * and dies with it.
  *
  * **The refusal is raised inside the final step, and that is not a detail.** Thrown from the driver body
  * it is never classified, never becomes the platform's terminal error, and the engine is free to re-drive
@@ -260,7 +266,7 @@ function holdsKey(config: EncryptionConfig, version: string): boolean {
 /**
  * Rotate the at-rest encryption key for one environment's store, in durable steps.
  *
- * ## The sequence, and why the order is the fix (`#647`)
+ * ## The sequence, and why the order is the fix
  *
  *   1. read the config: `{ currentVersion: N, versions: { …, N } }`;
  *   2. generate key N+1;
@@ -273,12 +279,11 @@ function holdsKey(config: EncryptionConfig, version: string): boolean {
  *   7. read that back and assert the pointer moved;
  *   8. prune later — never in the pass that created the successor.
  *
- * This pass used to persist `{ currentVersion: N+1, … }` **before** re-encrypting a single row, never read
- * it back, and prune N in the same breath. The write upserted, so a write addressed to an entry name the
- * binding does not read returned 200 and created an orphan — and the pass went on to seal every row under
- * a key nothing bound. A whole environment's secrets became undecryptable, silently.
+ * The write upserts, so a write addressed to an entry name the binding does not read returns 200 and creates an
+ * orphan. A pass that persisted the new pointer before re-encrypting, without reading it back, would seal every
+ * row under a key nothing binds, and a whole environment's secrets would become undecryptable, silently.
  *
- * The order is what removes it. After step 4 the binding **holds key N+1**, and `decryptValue` resolves
+ * The order is what prevents it. After step 4 the binding **holds key N+1**, and `decryptValue` resolves
  * `versions[row.keyVersion]` rather than the pointer, so from that moment every row is readable whatever
  * happens next: an interruption at step 5 leaves a half-rotated store that reads, and an abort at step 7
  * leaves a fully re-encrypted store that reads, with the pointer still on N and new writes still sealing
@@ -291,14 +296,11 @@ function holdsKey(config: EncryptionConfig, version: string): boolean {
  * ## One known exposure, stated rather than discovered
  *
  * `stage-next-key` journals the staged key set, so the master keys of a pass sit in Cloudflare's Workflow
- * journal for that instance's retention. That is what this step already did before `#647` — the branch
- * renamed it and changed its return type, and did not make the exposure worse.
+ * journal for that instance's retention.
  *
- * **The remedy is cheaper than this note first claimed, and the claim was wrong (#647 review).** It said
- * the only fix was to journal the version alone and re-read the set from the binding, which the
- * determinism gate (`cli/src/ci/workflowDrivers.ts`) forbids outside a step. That argued against one
- * alternative and missed the obvious one: `WorkflowStepConfig.sensitive` — `"output"` — redacts a step's
- * output from the journal, and it is in the pinned `@cloudflare/workers-types` (`index.d.ts:14763`, with
+ * **The remedy is `WorkflowStepConfig.sensitive`.** Journalling the version alone and re-reading the set from the
+ * binding is forbidden outside a step by the determinism gate (`cli/src/ci/workflowDrivers.ts`), but
+ * `sensitive` — `"output"` — redacts a step's output from the journal, and it is in the pinned `@cloudflare/workers-types` (`index.d.ts:14763`, with
  * the three-argument `do` at `:14827`) and validated by wrangler. It needs no re-read and no change to the
  * gate's rule. What it does need is a `WorkflowStepConfig` threaded through `StepRunner`,
  * `DurableStepLike`, `WorkflowStepLike` and `classifiedSteps`, and the gate's *discovery* heuristic
@@ -338,7 +340,7 @@ export async function runAtRestKeyRotation(
   }
 
   /**
-   * The pass instant, journalled (pithy-sh/pithy#329).
+   * The pass instant, journalled.
    *
    * A Workflow re-executes this body from the top on a resume and serves every completed step from the
    * journal, so a clock read beside this line answers differently on every attempt. It is the instant
@@ -358,7 +360,7 @@ export async function runAtRestKeyRotation(
   const now = new Date(nowMs);
 
   /**
-   * The rotation row, which **is** the single-flight lock (`#647`).
+   * The rotation row, which **is** the single-flight lock.
    *
    * One statement takes it: `claimRotation` writes this pass's row only where the sentinel holds no open
    * one, so two contenders serialize and exactly one gets an id. It replaced a read of `liveRotation`
@@ -397,7 +399,7 @@ export async function runAtRestKeyRotation(
    * Which sentence the rotation row gets if this pass throws.
    *
    * A variable rather than a question asked of the exception, because the catch below may not look at one
-   * (`#386`). An abort on an unconfirmed write is the failure an operator most needs to tell from the
+   *. An abort on an unconfirmed write is the failure an operator most needs to tell from the
    * rest — it is the one with a cadence consequence — so the path that raises it says so on the way past,
    * and the catch writes a code exactly as it always did. Re-executed from the top on a resume along with
    * everything else in this body, and set again on the same path, so a replay records the same code.
@@ -413,7 +415,7 @@ export async function runAtRestKeyRotation(
       // The versions below the pointer, and the rows still sealed under them. At the start of a healthy
       // pass that count is zero — every row is on the current key — so a positive one is exactly the set
       // of rows that has been blocking the prune, cadence after cadence.
-      const blocked = await countOnKeyVersions(deps.db, retiredVersions(deps.config, deps.config.currentVersion));
+      const blocked = await countAcross(deps, retiredVersions(deps.config, deps.config.currentVersion));
       throw new SecretCryptoError({
         message:
           "The master key set has reached its limit. Rows that will not re-encrypt are blocking every retirement.",
@@ -465,6 +467,16 @@ export async function runAtRestKeyRotation(
       // failures remain (which would loop forever).
       if (result.rotated === 0) break;
     }
+    for (const vault of deps.owned ?? []) {
+      for (let batch = 0; batch < maxBatches; batch++) {
+        const result = await step.do(`reencrypt-${vault.binding}-${batch}`, () =>
+          reencryptBatch(vault.db, promoted, batchSize),
+        );
+        rotated += result.rotated;
+        failed += result.failed;
+        if (result.rotated === 0) break;
+      }
+    }
 
     // 6. The pointer moves last, over rows that are already on the key it names.
     await step.do("write-promoted-config", () => deps.configWriter.write(promoted, pass));
@@ -506,7 +518,7 @@ export async function runAtRestKeyRotation(
     let retirementBlocked = 0;
     const retired = retiredVersions(promoted, supersededVersion);
     if (retired.length > 0) {
-      const stranded = await step.do("count-retired", () => countOnKeyVersions(deps.db, retired));
+      const stranded = await step.do("count-retired", () => countAcross(deps, retired));
       if (stranded === 0) {
         const prunedConfig = pruneRetiredKeys(promoted, supersededVersion);
         if (prunedConfig) {
@@ -519,15 +531,14 @@ export async function runAtRestKeyRotation(
     await step.do("mark-success", () => deps.tracker.markSuccess(rotationId));
     return { rotated, failed, newCurrentVersion: Number(promoted.currentVersion), pruned, retirementBlocked };
   } catch (cause) {
-    // **The binding rethrows and does nothing else (`#386`).** It used to become the row's `error_message`
-    // via `cause.message`, and the exceptions that reach here come from decryption, envelope decoding and
-    // config parsing — the paths whose text can carry key material. `markFailure` now takes a code and
-    // renders the sentence itself, so there is no argument this `cause` would fit. The code is chosen by
-    // the path above rather than read off the exception, for the same reason.
+    // **The binding rethrows and does nothing else.** The exceptions that reach here come from decryption,
+    // envelope decoding and config parsing — the paths whose text can carry key material — so `markFailure`
+    // takes a code and renders the sentence itself, and there is no argument this `cause` would fit. The code
+    // is chosen by the path above rather than read off the exception, for the same reason.
     //
     // Rethrown unchanged, which is where the detail belongs: the Workflow logs a `PithyError` whose
     // `detail` the HTTP codec strips. Nothing about this failure is written to a column, and the column
-    // is still refused for publication — that refusal is defense in depth, not this fix.
+    // is refused for publication as defense in depth.
     await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, failure));
     throw cause;
   }

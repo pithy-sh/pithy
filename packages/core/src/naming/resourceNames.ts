@@ -12,7 +12,7 @@ import {
   featureWorkerName,
 } from "./feature";
 import { NAMESPACE_LIMITS, type NamespaceLimit } from "./limits";
-import { assertValidProjectName, kebab, ownedResourceName, resourceName } from "./resource";
+import { assertValidProjectName, kebab, ownedResourceName, ownedThing, resourceName } from "./resource";
 
 /**
  * Every Cloudflare name a project composes, behind one object — **the facade**.
@@ -53,10 +53,17 @@ import { assertValidProjectName, kebab, ownedResourceName, resourceName } from "
 
 /** The names available within one scope — an environment, or the global scope beside them. */
 export interface ScopedNames {
-  /** A capability's Worker script — `<project>-<env>-<capability>`. Refused, not truncated, past 63. */
-  worker(capability: string): string;
-  /** One durable job's Workflow — `<project>-<env>-<capability>-<job>`. Refused, not truncated, past 64. */
-  workflow(capability: string, job: string): string;
+  /**
+   * A capability's Worker script — `<project>-<env>-<capability>`. Refused, not truncated, past 63.
+   *
+   * `owner` is the `apps/<owner>` Worker whose own host this is: `<project>-<env>-<owner>---<capability>`.
+   */
+  worker(capability: string, owner?: string): string;
+  /**
+   * One durable job's Workflow — `<project>-<env>-<capability>-<job>`. Refused, not truncated, past 64. `owner` as
+   * on {@link worker}.
+   */
+  workflow(capability: string, job: string, owner?: string): string;
   /**
    * A D1 database. No Cloudflare cap; Pithy's ceiling, truncated with a stable hash.
    *
@@ -70,8 +77,11 @@ export interface ScopedNames {
   r2(binding: string, owner?: string): string;
   /** A Queue. Cloudflare's 63, truncated with a stable hash like a bucket. */
   queue(binding: string, owner?: string): string;
-  /** A Vectorize index. 64 bytes, refused rather than truncated: a renamed index has no vectors. */
-  vectorizeIndex(index: string): string;
+  /**
+   * A Vectorize index. 64 bytes, refused rather than truncated: a renamed index has no vectors. `owner` as on
+   * {@link d1}: the index a Worker's own capability host fills with that Worker's rows, `<owner>---<index>`.
+   */
+  vectorizeIndex(index: string, owner?: string): string;
   /** A Secrets Store entry. No Cloudflare cap; Pithy's ceiling. */
   secretEntry(secret: string): string;
   /** A Cloudflare API token label. No Cloudflare cap; Pithy's ceiling. */
@@ -153,7 +163,7 @@ function scopedName(project: string, scope: string, thing: string, limit: Namesp
     return name;
   }
 
-  const segment = kebab(thing);
+  const segment = owner === undefined ? kebab(thing) : ownedThing(owner, thing);
   if (!segment) {
     throw new ValidationError({
       message: `A name needs something to name.`,
@@ -190,13 +200,15 @@ function artifactsNamespaceName(project: string, environment: string): string {
 /** The getters for one scope. `global` and every environment share this, so nothing special-cases either. */
 function scopedNames(project: string, scope: string): ScopedNames {
   return {
-    worker: (capability) => workflowHostName({ project, capability, env: scope }),
-    workflow: (capability, job) => workflowScriptName({ project, capability, job, env: scope }),
+    worker: (capability, owner) =>
+      workflowHostName({ project, capability, env: scope, ...(owner !== undefined ? { owner } : {}) }),
+    workflow: (capability, job, owner) =>
+      workflowScriptName({ project, capability, job, env: scope, ...(owner !== undefined ? { owner } : {}) }),
     d1: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.d1, owner),
     kv: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.kv, owner),
     r2: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.r2, owner),
     queue: (binding, owner) => scopedName(project, scope, binding, NAMESPACE_LIMITS.queue, owner),
-    vectorizeIndex: (index) => scopedName(project, scope, index, NAMESPACE_LIMITS.vectorizeIndex),
+    vectorizeIndex: (index, owner) => scopedName(project, scope, index, NAMESPACE_LIMITS.vectorizeIndex, owner),
     secretEntry: (secret) => scopedName(project, scope, secret, NAMESPACE_LIMITS.secretEntry),
     apiToken: (profile) => scopedName(project, scope, profile, NAMESPACE_LIMITS.apiToken),
   };

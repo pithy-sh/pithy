@@ -99,6 +99,7 @@ import {
   type ReadCapabilityReach,
   type WorkerChecks,
 } from "../doctor/health";
+import { checkHostBindings, describeHostBinding, type HostBindingsCheck } from "../doctor/hostBindings";
 import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
 import {
   checkPaymentsAllowances,
@@ -367,6 +368,11 @@ export interface DoctorReport {
    * that is no Worker, no kit Worker nothing composes. `null` outside a readable project. **It fails the exit.**
    */
   serviceBindings: ServiceBindingsCheck | null;
+  /**
+   * Whether each Worker's Workflow bindings into the kit hosts reach the host that reads its database: its own, where
+   * it owns a binding the host binds, else the shared one. `null` outside a readable project. **It fails the exit.**
+   */
+  hostBindings: HostBindingsCheck | null;
   /**
    * Whether any Worker declares a rate-limit namespace in the range reserved for features. `null` outside a
    * readable project. **It fails the exit**: `provision` and `deploy` refuse the same stanza.
@@ -864,6 +870,8 @@ export interface DoctorReportOptions {
   checkDeclaredNames?: (projectDir: string) => Promise<DeclaredNamesCheck>;
   /** Service-binding seam; defaults to {@link checkServiceBindings}. Reads files only — no account call. */
   checkServiceBindings?: (projectDir: string) => Promise<ServiceBindingsCheck>;
+  /** Kit-host binding seam; defaults to {@link checkHostBindings}. Reads files only — no account call. */
+  checkHostBindings?: (projectDir: string) => Promise<HostBindingsCheck>;
   /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
   checkFeatureRatelimitIds?: (projectDir: string) => Promise<FeatureRatelimitIdsCheck>;
   /**
@@ -1071,6 +1079,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeDeclaredNames = options.checkDeclaredNames ?? ((projectDir: string) => checkDeclaredNames(projectDir));
   const probeServiceBindings =
     options.checkServiceBindings ?? ((projectDir: string) => checkServiceBindings({ projectDir }));
+  const probeHostBindings = options.checkHostBindings ?? ((projectDir: string) => checkHostBindings({ projectDir }));
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
@@ -1430,6 +1439,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         faults: [],
       })
     : null;
+  // Each Workflow binding into a kit host, held to the host that reads the Worker's database. Files only.
+  const hostBindings = inProject
+    ? await probed<HostBindingsCheck>(() => probeHostBindings(options.projectDir), {
+        state: "could-not-check",
+        stale: [],
+      })
+    : null;
   // Every Worker's rate limiters, held to the range features draw from. Files only.
   const featureRatelimitIds = inProject
     ? await probed<FeatureRatelimitIdsCheck>(() => probeFeatureRatelimitIds(options.projectDir), {
@@ -1589,7 +1605,11 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
             probeAuditSinks({
               project: rootProjectName as string,
               environments: declaredEnvironments,
-              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              workers: resolvedWorkers.map((worker) => ({
+                name: worker.name,
+                dir: worker.dir,
+                ...(worker.target?.ownBindings ? { ownBindings: worker.target.ownBindings } : {}),
+              })),
               account,
               remoteSkip,
               composeWorker:
@@ -1744,6 +1764,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     selfBinding,
     declaredNames,
     serviceBindings,
+    hostBindings,
     featureRatelimitIds,
     docsMcp,
     environments,
@@ -3110,6 +3131,22 @@ function serviceBindingsBlock(check: ServiceBindingsCheck): string {
 }
 
 /**
+ * Every Workflow binding into the kit host that reads another database — one line each, then, per environment,
+ * the provision that points it at the right one and the redeploy that ships it. The block is the finding.
+ */
+function hostBindingsBlock(check: HostBindingsCheck, productionEnvironments: readonly string[]): string {
+  const lines = ["Kit host bindings:"];
+  for (const entry of check.stale) lines.push(healthLine(entry.worker, describeHostBinding(entry)));
+  for (const env of [...new Set(check.stale.map((entry) => entry.env))]) {
+    const deploy = commandName("deploy");
+    lines.push(
+      `${HEALTH_INDENT}${provisionRemedy(env, productionEnvironments).say((command) => `Run ${command} — it points each binding at the host that reads its Worker's database — then redeploy with ${deploy} --env ${env}.`)}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * The stanzas a self-administering project has left unbound — one line each, then the one command that
  * writes them. The block is the finding: a project that declares nothing, or has them all, prints nothing.
  */
@@ -3248,6 +3285,8 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Worth the ink, not a red CI: a hand-chosen name may be the one the adopter meant.
   const declaredNamesOk = report.declaredNames?.state !== "drifted";
   const serviceBindingsOk = !report.serviceBindings || report.serviceBindings.faults.length === 0;
+  // Worth a red CI: the jobs of a Worker bound to the wrong host never run, and nothing at runtime says so.
+  const hostBindingsOk = !report.hostBindings || report.hostBindings.stale.length === 0;
   const featureRatelimitIdsOk = report.featureRatelimitIds?.state !== "reserved";
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
@@ -3347,6 +3386,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     selfBindingOk &&
     declaredNamesOk &&
     serviceBindingsOk &&
+    hostBindingsOk &&
     featureRatelimitIdsOk &&
     environmentsOk &&
     environmentInheritanceOk &&
@@ -3534,6 +3574,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // The other half of what a stanza binds: another Worker of the project. The block is the finding.
   if (report.serviceBindings && report.serviceBindings.faults.length > 0) {
     blocks.push(serviceBindingsBlock(report.serviceBindings));
+  }
+
+  // The Workflow half of what a stanza binds into another Worker: a kit host. The block is the finding.
+  if (report.hostBindings && report.hostBindings.stale.length > 0) {
+    blocks.push(hostBindingsBlock(report.hostBindings, report.productionEnvironments));
   }
 
   // A rate-limit namespace in the feature range. The block is the finding.
@@ -3842,6 +3887,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           })),
         }
       : null,
+    hostBindings: report.hostBindings
+      ? {
+          state: report.hostBindings.state,
+          stale: report.hostBindings.stale.map((entry) => ({
+            ...entry,
+            detail: `${entry.worker} ${describeHostBinding(entry)}`,
+            fix: provisionFixCommand(entry.env, report.productionEnvironments),
+          })),
+        }
+      : null,
     // Same `null` discipline once more, and each drift carries its own sentence — the remedy for an
     // orphan is not the remedy for a disagreement, and a consumer must not have to work out which.
     environments: report.environments
@@ -4040,6 +4095,11 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           live: report.localDelivery.live,
           capability: report.localDelivery.capability,
           detail: describeLocalDelivery(report.localDelivery),
+          hosts: report.localDelivery.hosts.map((host) => ({
+            host: host.name,
+            live: host.live,
+            detail: describeLocalDelivery(host),
+          })),
         }
       : null,
     devVarsLocal: reported(report.devVarsLocal)
@@ -4376,6 +4436,13 @@ const DoctorPayload = z
         ),
       },
     ),
+    hostBindings: Check(
+      "Each Worker's Workflow bindings into the kit hosts, held to the host that reads its database, or `null` outside a project.",
+      {
+        state: State("`ok`, `stale`, `could-not-check`"),
+        stale: Fixed("Workflow binding into the kit host that reads another database; redeploy after the fix"),
+      },
+    ),
     environments: Check("The declared environments against each Worker's stanzas, or `null` outside a project.", {
       state: State("`ok`, `drifted`, `could-not-check`"),
       declared: z.array(z.string().describe("An environment.")).describe("The environments the root config names."),
@@ -4474,9 +4541,22 @@ const DoctorPayload = z
       detail: z.string().describe("The sentence."),
     }),
     localDelivery: Check("Whether mail sent from this machine leaves it, or `null`.", {
-      live: z.boolean().describe("Whether a message sent from here leaves it."),
+      live: z.boolean().describe("Whether a message sent from here leaves it, from every host that sends one."),
       capability: z.string().describe("The capability that answers for delivery."),
       detail: z.string().describe("The sentence."),
+      hosts: z
+        .array(
+          z
+            .object({
+              host: z.string().describe("The host's dev-set name: the capability, or `<owner>---<capability>`."),
+              live: z.boolean().describe("Whether a message this host sends leaves the machine."),
+              detail: z.string().describe("Its sentence."),
+            })
+            .describe("The verdict for one sending host."),
+        )
+        .describe(
+          "The verdict for each sending host. A host one Worker has to itself is decided by that Worker's config.",
+        ),
     }),
     devVarsLocal: Check("Every `.dev.vars.local` key, classified, or `null`.", {}),
     devVars: Check("The root `.dev.vars` classification, names only, or `null`.", {
@@ -4554,7 +4634,8 @@ export default withContract(
     // 4: a generated value's `type` takes `artifacts`, the binding kind for a namespace of repositories.
     // 5: `failures[].check` takes `secretRotations`, where a field-key version still live at the next rotation fails
     //    the exit.
-    schemaVersion: 5,
+    // 6: `failures[].check` takes `hostBindings`, where a Workflow binding into the wrong kit host fails the exit.
+    schemaVersion: 6,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { ConflictError, PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
@@ -83,7 +83,7 @@ const noScripts = {
 };
 
 /**
- * The Workflow and token halves of teardown (#643), for a case not about them: an account hosting no Workflow and
+ * The Workflow and token halves of teardown, for a case not about them: an account hosting no Workflow and
  * holding no feature token.
  */
 function noWorkflows() {
@@ -162,7 +162,7 @@ describe("provisionFeature / deprovisionFeature", () => {
   }
 
   /**
-   * **F3 of #643's review: an app Worker can never take a kit host's name.** A feature names each Worker by its
+   * **An app Worker can never take a kit host's name.** A feature names each Worker by its
    * directory, and `apps/email` composes exactly the name email's feature host deploys under. Refused before a
    * single resource is created — for every host the registry knows, not only email's.
    */
@@ -207,17 +207,17 @@ describe("provisionFeature / deprovisionFeature", () => {
       ["kv", "CACHE", true],
       ["r2", "ASSETS", true],
     ]);
-    // Both backend steps ran, proven by the seams rather than by a field the payload asserts about itself
-    // (#231): each throws on failure, so a returned report already means they succeeded, and a hardcoded
+    // Both backend steps ran, proven by the seams rather than by a field the payload asserts about itself:
+    // each throws on failure, so a returned report already means they succeeded, and a hardcoded
     // `migrated: true, seeded: true` beside it is a constant no consumer can usefully branch on.
     expect(r.calls).toEqual({ migrate: ["feature"], seed: ["feature"] });
     // No `command`: the name of a command belongs to the command, and one command produces this report
-    // under two spellings (#251). `configs` and `committed` are the run saying which file it wrote and
+    // under two spellings. `configs` and `committed` are the run saying which file it wrote and
     // what happens to it — asserted as a property in `provision/destination.test.ts`.
     // `declined` is the same fact one level down: what this run did *not* make, and why the adopter said
-    // so (#514). A feature environment carries it for the reason a declared one does — a resource that was
+    // so. A feature environment carries it for the reason a declared one does — a resource that was
     // never created leaves no other trace of itself. `manifestFaults` is the third of that family and
-    // carries here for a third version of the reason (#513): a manifest that would not parse leaves its
+    // carries here for a third version of the reason: a manifest that would not parse leaves its
     // resources created under the generic name, which is indistinguishable from a healthy run unless the
     // report says so — and a feature is exactly where an unreleased capability's broken manifest lands.
     expect(Object.keys(report).sort()).toEqual([
@@ -255,7 +255,7 @@ describe("provisionFeature / deprovisionFeature", () => {
   });
 
   /**
-   * **The feature's address is looked up once and stamped where its Worker reads it (#643).** The script is
+   * **The feature's address is looked up once and stamped where its Worker reads it.** The script is
    * `acme-f69-demo--app` — project and Worker differ — and its origin is that name under the account's
    * `workers.dev` subdomain, which only the Cloudflare API knows; so the lookup is a seam, and asked once a run.
    */
@@ -416,7 +416,7 @@ describe("provisionFeature / deprovisionFeature", () => {
   });
 
   /**
-   * **One address per feature Worker, and it is `<project>-f<issue>-<slug>-<app>` (#587).**
+   * **One address per feature Worker, and it is `<project>-f<issue>-<slug>-<app>`.**
    *
    * The normal state after `pithy init acme`: `apps/api` deploys as `acme-api`, not `api`. Two things
    * compose a feature Worker's address from that — the stanza `name` the deploy reads, and the `service`
@@ -541,7 +541,7 @@ describe("provisionFeature / deprovisionFeature", () => {
   });
 
   /**
-   * **A queue is the fourth kind a feature creates and reaps (#662).** A producer entry names a queue and a deploy
+   * **A queue is the fourth kind a feature creates and reaps.** A producer entry names a queue and a deploy
    * refuses one that does not exist, so the feature creates its own — and destroying the feature deletes it, by
    * the id it was created under or, unrecorded, by its exact recomputed name. Both directions re-run clean.
    */
@@ -695,24 +695,20 @@ describe("provisionFeature / deprovisionFeature", () => {
   });
 
   /**
-   * **The gate for #242, and it is one sentence: provisioning a feature writes nothing a checkout
-   * tracks.**
+   * **Provisioning a feature writes nothing a checkout tracks.**
    *
-   * Stated as a property of every byte on disk rather than as a list of files, because the list was
-   * the problem. `wrangler.jsonc` is tracked and cannot be gitignored — it is the project's real
-   * config — so a feature's ids sitting in it were a modified tracked file the adopter never edited,
-   * with nothing saying it must not be committed. In CI that was fine by accident; locally `git add -A`
-   * put ids for since-deleted resources onto `main`, and `feature destroy` reversed everything except
-   * that edit.
+   * Stated as a property of every byte on disk rather than as a list of files. `wrangler.jsonc` is tracked and
+   * cannot be gitignored — it is the project's real config — so a feature's ids written into it would be a
+   * modified tracked file the adopter never edited, which `git add -A` puts onto `main` and `feature destroy`
+   * cannot take back.
    *
    * Two rules cover every path this can legitimately touch, and both are already in the scaffolded
    * `.gitignore` of every project ever created by `pithy init`: anything under a `.wrangler/`
    * directory, and `.pithy-feature.json`. A third would mean a new ignore rule, which existing
    * projects do not have — which is why the rule is the assertion rather than the file list.
    *
-   * **This is the work `pithy provision --feature` does** (#251): the command surface changed spelling,
-   * and the function it calls is this one — so the gate holds through the new spelling unchanged, which
-   * is exactly what a command-surface change is allowed to leave alone.
+   * **This is the work `pithy provision --feature` does**: the function it calls is this one, so the gate holds
+   * for that command too.
    */
   test("writes nothing a checkout tracks", async () => {
     const { provisioners } = fakeProvisioners();
@@ -799,7 +795,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     test("destroy deletes the id the account answers for the composed name, never the id the file states", async () => {
       const { stores, provisioners } = fakeProvisioners();
       // The feature's own composed name, matched to production's queue id. The name check passes, so only the
-      // account's answer for that name can keep teardown off production's queue (#662).
+      // account's answer for that name can keep teardown off production's queue.
       stores.queue.set("acme-prod-jobs", "prod-queue-id");
       const name = featureResourceName(identity, "JOBS", "queue");
       await writeCraftedManifest([{ kind: "queue", binding: "JOBS", name, id: "prod-queue-id" }]);
@@ -845,9 +841,8 @@ describe("provisionFeature / deprovisionFeature", () => {
       }).catch((error: unknown) => error as PithyError);
 
       expect(refused).toBeInstanceOf(PithyError);
-      // **It names the feature the file belongs to, and never advises deleting it (#660).** The remedy
-      // used to be "Delete .pithy-feature.json and re-run" — and that file is the only record of what
-      // *that* feature provisioned, so a reader who follows it orphans every resource in it.
+      // **It names the feature the file belongs to, and never advises deleting it.** That file is the only
+      // record of what *that* feature provisioned, so a reader who deleted it would orphan every resource in it.
       const { message, action } = (refused as PithyError).payload;
       expect(message).toContain("acme-f999-someone-else");
       expect(message).toContain("acme-f69-demo");
@@ -879,10 +874,8 @@ describe("provisionFeature / deprovisionFeature", () => {
   });
 
   /**
-   * #239: a feature environment got every resource except its secrets, so a Worker composing `secrets`
-   * deployed and failed on its first request with `Missing required bindings:
-   * secret:SECRETS_ENCRYPTION_KEYS`. Nothing told the adopter that secrets were the one thing they had
-   * to arrange by hand for an environment pithy created from a branch name.
+   * A feature environment gets its secrets with every other resource. Without them a Worker composing `secrets`
+   * deploys and fails on its first request with `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`.
    */
   describe("a feature's secrets", () => {
     /** An in-memory Secrets Store, mirroring the real exists/put/remove semantics. */
@@ -907,7 +900,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const withSecrets = [secrets({ registry: {} })];
 
     /**
-     * **The feature's secrets infrastructure, through the provisioner `pithy secrets provision` uses (#643)** —
+     * **The feature's secrets infrastructure, through the provisioner `pithy secrets provision` uses** —
      * the real `CloudflareSecretsProvisioner`, handed the feature, over a Cloudflare that is only this store.
      */
     function featureSecretsOver(entries: Map<string, string>) {
@@ -956,12 +949,12 @@ describe("provisionFeature / deprovisionFeature", () => {
 
       const entry = "acme-f69-demo--secrets-encryption-keys";
       // Its own key, under its own name — never staging's, which teardown would then delete. And no token: a
-      // feature's manager holds none, so the store gains no token entry and no account token is minted (#643).
-      // Beside it the feature's own field key (#390), in the same format, for its encrypted fields.
+      // feature's manager holds none, so the store gains no token entry and no account token is minted.
+      // Beside it the feature's own field key, in the same format, for its encrypted fields.
       expect([...entries.keys()].sort()).toEqual(["acme-f69-demo--pithy-field-keys", entry]);
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
-      // `devValue` and the #321 minter never touches it. The secrets provisioner creates it, above.
+      // `devValue` and the registry minter never touches it. The secrets provisioner creates it, above.
       expect(report.secretBindings).toEqual([
         { secret: "SECRETS_ENCRYPTION_KEYS", binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
       ]);
@@ -975,9 +968,9 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     /**
-     * **The stanza a run writes binds a kebab-case key by its derived name (#603).** The cases above use keys
-     * already in the binding shape, where the key and the binding cannot be told apart — the state the kit
-     * was in when it wrote `"binding": "email-link-signing-key"`.
+     * **The stanza a run writes binds a kebab-case key by its derived name.** The cases above use keys
+     * already in the binding shape, where the key and the binding cannot be told apart, so a stanza written as
+     * `"binding": "email-link-signing-key"` would pass them.
      */
     test("a kebab-case store secret is written into the stanza under its SCREAMING_SNAKE_CASE binding", async () => {
       const { provisioners } = fakeProvisioners();
@@ -1084,9 +1077,8 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     /**
-     * #321: `pithy feature` promises "an isolated, fully-provisioned feature environment", and one that
-     * printed `pithy secrets create` three times was not that — once per branch, forever. The registry
-     * already said which of those values were arbitrary; only local dev read it.
+     * `pithy feature` promises "an isolated, fully-provisioned feature environment", so a value the registry says
+     * is arbitrary is minted for it rather than left for `pithy secrets create` on every branch.
      */
     describe("secrets the registry says may be minted", () => {
       /** One arbitrary value, one somebody else issued. The whole distinction, in two entries. */
@@ -1237,12 +1229,11 @@ describe("provisionFeature / deprovisionFeature", () => {
 });
 
 /**
- * **A teardown that failed partway still says what it destroyed (#380).**
+ * **A teardown that failed partway still says what it destroyed.**
  *
  * `deprovisionFeature` deletes real infrastructure one resource at a time, with no transaction across
- * them, and `deleted` is the whole product of the command. A throw from the third delete used to take
- * the record of the first two with it — the databases were gone, and what had gone was not written
- * down anywhere. These tests exist to fail when that carry is removed.
+ * them, and `deleted` is the whole product of the command. A throw from the third delete must still carry
+ * the record of the first two. These tests fail when that carry is removed.
  */
 describe("deprovisionFeature — a delete that throws", () => {
   let dir: string;
@@ -1263,7 +1254,7 @@ describe("deprovisionFeature — a delete that throws", () => {
     const { provisioners, typed } = fakeProvisioners();
     await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
     // The plant, in the seam the run already takes. Synchronous on purpose: a `.catch()` guard would
-    // not see a seam that throws before it returns a promise, and #371's plant escaped exactly one.
+    // not see a seam that throws before it returns a promise.
     typed[broken].delete = () => {
       throw new Error("planted: this resource will not delete");
     };
@@ -1309,7 +1300,7 @@ describe("deprovisionFeature — a delete that throws", () => {
 });
 
 /**
- * **A feature's Artifacts repos are reaped with it (#673).** A repo costs storage against a 1 TB account cap, and
+ * **A feature's Artifacts repos are reaped with it.** A repo costs storage against a 1 TB account cap, and
  * nothing else ever deletes one, so every feature a team tears down would otherwise leak its repos forever.
  */
 describe("deprovisionFeature — a feature's Artifacts repos", () => {
@@ -1458,11 +1449,10 @@ describe("deprovisionFeature — a feature's Artifacts repos", () => {
 });
 
 /**
- * **A feature's Worker scripts are torn down with it (#592).**
+ * **A feature's Worker scripts are torn down with it.**
  *
- * `destroy` handled D1, KV, R2 and Secrets Store entries, and the manifest could not record a Worker
- * script at all. Every feature therefore left its scripts deployed, reachable on workers.dev and bound to
- * resources teardown had just deleted — one set per branch, forever.
+ * A script left behind stays reachable on workers.dev, bound to resources teardown has just deleted — one set
+ * per branch, forever.
  */
 describe("a feature's Worker scripts", () => {
   let dir: string;
@@ -1526,7 +1516,7 @@ describe("a feature's Worker scripts", () => {
   });
 
   /**
-   * **The feature's own email host goes with the feature (#643).** Provisioning deploys it under a name composed
+   * **The feature's own email host goes with the feature.** Provisioning deploys it under a name composed
    * from the branch, so teardown recomputes that name and deletes it — whatever the branch composes now, since a
    * host deployed before email was removed is still this feature's — and never another branch's host or a
    * declared environment's.
@@ -1575,13 +1565,13 @@ describe("a feature's Worker scripts", () => {
 
   test("a feature provisioned before scripts were recorded is found by both naming shapes, and nothing else", async () => {
     const { provisioners } = fakeProvisioners();
-    // A manifest from before #592, with no `scripts` at all.
+    // A manifest with no `scripts` at all.
     await writeFile(
       manifestPath(dir),
       JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "demo", env: "feature", resources: [] }),
     );
     const scripts = fakeScripts([
-      // Deployed before #587, when the project came twice.
+      // The doubled shape, with the project twice.
       "acme-f69-demo--acme-api",
       // Redeployed since, under the single shape.
       "acme-f69-demo--api",
@@ -1611,13 +1601,13 @@ describe("a feature's Worker scripts", () => {
   });
 
   /**
-   * **What a feature provisioned before #592 is not torn down by.** With a Secrets Store, its generated config
-   * lost the script name, and wrangler deployed it as `<script>-feature` — `acme-api-feature`. That name carries
+   * **What a feature teardown leaves: a `<script>-feature` Worker.** A generated config with no script name
+   * deploys as `<script>-feature` — `acme-api-feature`. That name carries
    * no issue and no slug, and every such branch of the project deployed over the same one, so it is not this
    * feature's to delete: taking it would take down whichever open branch deployed last. Teardown leaves it,
    * and the docs say to delete it by hand once no branch is live.
    */
-  test("a pre-#592 feature's `<script>-feature` Worker is left, because no feature owns that name", async () => {
+  test("a `<script>-feature` Worker is left, because no feature owns that name", async () => {
     const { provisioners } = fakeProvisioners();
     await writeFile(
       manifestPath(dir),
@@ -1723,11 +1713,10 @@ describe("a feature's Worker scripts", () => {
 });
 
 /**
- * **The gate for #592: everything provisioning and deploy put on the account, teardown takes off it.**
+ * **Everything provisioning and deploy put on the account, teardown takes off it.**
  *
- * Stated over the account and the manifest rather than as a list of kinds, because a list of kinds was the
- * defect. Teardown knew D1, KV, R2 and store entries by name, and a Worker script was not on the list, so
- * nothing ever deleted one and nothing ever failed for it.
+ * Stated over the account and the manifest rather than as a list of kinds, because a kind missing from such a
+ * list is one nothing deletes and nothing fails for.
  *
  * The account is one map per kind, and it answers **whatever kind it is asked for**: the provisioner set
  * is a proxy, so a provisioning step that starts creating a kind nobody taught teardown lands in the
@@ -1761,7 +1750,7 @@ describe("a feature's Worker scripts", () => {
  * spec and wrangler's `delete` describe it, not observed on a live account: that the manager puts `force` on
  * the SDK call is held by `workersManager.test.ts`, and this stub sees only that the manager was asked to.
  */
-describe("teardown reverses everything provisioning and deploy create (#592)", () => {
+describe("teardown reverses everything provisioning and deploy create", () => {
   let dir: string;
   const identity: FeatureIdentity = { project: "acme", issue: "69", slug: "demo" };
 
@@ -1930,20 +1919,19 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
 });
 
 /**
- * **#650: a feature deployment had none of the app's own Workflows, so it answered 500.**
+ * **A feature deployment carries the app's own Workflows, so it serves a request.**
  *
- * `pithy provision --feature` derived a feature name for every kit host's Workflow and nothing for the ones the
- * adopter declares in their own `pithy.config.ts`, whose classes are exported by their own Worker. Staging and
- * prod carry theirs — `pithy worker sync` writes them into the tracked `wrangler.jsonc` — and the feature's
- * stanza is regenerated from that file on every run with every binding array emptied, so a branch deployed with
- * no `CONNECTION_ROTATION` and no `ROTATION_SWEEP` and failed `validateBindings` on the first request,
- * `/health` included.
+ * `pithy provision --feature` derives a feature name for the Workflows the adopter declares in their own
+ * `pithy.config.ts`, whose classes are exported by their own Worker, as well as for every kit host's. The
+ * feature's stanza is regenerated on every run with every binding array emptied, so without them a branch
+ * deploys with no `CONNECTION_ROTATION` and no `ROTATION_SWEEP` and fails `validateBindings` on the first
+ * request, `/health` included.
  *
  * The proof is the whole way through: the real provisioning run, the config it generated, and a Worker composed
  * from **that file's** bindings answering a request. A test that read the stanza and stopped would pass on a
  * table of plausible-looking strings that no Worker could boot on.
  */
-describe("a feature deployment serves a request (#650)", () => {
+describe("a feature deployment serves a request", () => {
   let dir: string;
   const identity: FeatureIdentity = { project: "acme", issue: "650", slug: "app-workflows" };
 
@@ -2048,13 +2036,12 @@ describe("a feature deployment serves a request (#650)", () => {
   }
 
   /**
-   * **A job with no class is refused before anything is created (#650 review, defect 1).**
+   * **A job with no class is refused before anything is created.**
    *
-   * `className` is optional on a `WorkflowSpec`, and `hostWorkflowsFor` refuses a job without one — which is
-   * right, and is what `pithy worker sync` does with the same declaration today. What was wrong is *when*: the
-   * refusal came from the stanza writer, which runs after every D1, KV, R2 and store entry has been created, so
-   * the run threw with the feature's resources already on the account and every re-run threw again in the same
-   * place. It joins the slug-budget refusal at the front of the run instead.
+   * `className` is optional on a `WorkflowSpec`, and `hostWorkflowsFor` refuses a job without one, as
+   * `pithy worker sync` does with the same declaration. The refusal sits at the front of the run beside the
+   * slug-budget refusal: from the stanza writer, after every D1, KV, R2 and store entry exists, every re-run
+   * would throw in the same place with the feature's resources already on the account.
    */
   test("an app job with no className is refused before a single resource exists", async () => {
     // A binding whose resource provisioning creates, so "nothing exists" is a claim about a run that would
@@ -2084,7 +2071,7 @@ describe("a feature deployment serves a request (#650)", () => {
         seed: async () => {},
       }),
     ).rejects.toThrow(/board\/rotate/);
-    // Nothing on the account, which is the whole of the defect: the old refusal came after all three.
+    // Nothing on the account: a refusal after the creates would leave all three behind.
     expect([...stores.d1.keys(), ...stores.kv.keys(), ...stores.r2.keys()]).toEqual([]);
   });
 
@@ -2209,12 +2196,12 @@ describe("a feature deployment serves a request (#650)", () => {
 });
 
 /**
- * **#673: a Worker binding Artifacts deploys to a feature with `ARTIFACTS` in its env.** Before #662 the key was
- * emptied in every stanza a feature created, so `env.ARTIFACTS` was `undefined` and nothing said so. The proof is
+ * **A Worker binding Artifacts deploys to a feature with `ARTIFACTS` in its env.** A stanza that emptied the key
+ * would leave `env.ARTIFACTS` `undefined` with nothing saying so. The proof is
  * the generated config: the real provisioning run, the stanza it wrote, and a Worker composed from that stanza's
  * bindings alone answering a request.
  */
-describe("a feature deployment binds Artifacts (#673)", () => {
+describe("a feature deployment binds Artifacts", () => {
   let dir: string;
   const identity: FeatureIdentity = { project: "acme", issue: "673", slug: "repos" };
   const repos = defineCapability({ name: "app", requiredBindings: [{ type: "artifacts", name: "ARTIFACTS" }] });
@@ -2289,8 +2276,8 @@ describe("a feature deployment binds Artifacts (#673)", () => {
 });
 
 /**
- * **The run a feature's host refusal names again is the caller's own (#711).** It named `pithy provision --feature`
- * spelled at the site, which dropped the `--json` an agent's call had asked for.
+ * **The run a feature's host refusal names again is the caller's own**, so the `--json` an agent's call asked for
+ * is carried.
  */
 describe("featureHostsRefusal", () => {
   test("names the caller's own run again, every flag carried", () => {
@@ -2424,5 +2411,70 @@ describe("a feature with an owned binding", () => {
     });
     expect(report.deleted).toEqual([]);
     expect(stores.d1.has("acme-staging-business---db")).toBe(true);
+  });
+});
+
+/** Teardown of a feature's own Vectorize indexes, for Workers that own a binding the vector host binds. */
+describe("deprovisionFeature and the indexes of owning Workers", () => {
+  const identity: FeatureIdentity = { project: "replay", issue: "958", slug: "owners" };
+
+  async function teardown(
+    capabilities: Capability[],
+    workers: { name: string; dir: string; ownBindings: string[]; capabilities: Capability[] }[],
+  ) {
+    const { KIT_ROOT } = await import("../test-utils/kitRoot");
+    const asked: string[] = [];
+    const { provisioners } = fakeProvisioners();
+    const report = await deprovisionFeature({
+      ...noScripts,
+      workers,
+      projectDir: KIT_ROOT,
+      manifestDir: null,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      indexes: {
+        ensure: async () => {},
+        remove: async (name) => {
+          asked.push(name);
+          return true;
+        },
+      },
+    });
+    return { report, asked };
+  }
+
+  test("skips an owner index name too long to compose and finishes the teardown", async () => {
+    const { vector } = await import("@pithy-sh/vector/src/capability");
+    const embeddings = vector({
+      indexes: { "product-embeddings": { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } },
+    });
+    const { asked } = await teardown(
+      [embeddings],
+      [
+        {
+          name: "replay-marketing-frontend",
+          dir: "/p/apps/marketing-frontend",
+          ownBindings: ["DB"],
+          capabilities: [embeddings],
+        },
+      ],
+    );
+    expect(asked).toEqual(["replay-f958-owners--vector-product-embeddings"]);
+  });
+
+  test("asks for an owner's index only where that Worker composes the capability", async () => {
+    const { vector } = await import("@pithy-sh/vector/src/capability");
+    const notes = vector({ indexes: { notes: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } } });
+    const db = defineCapability({ name: "app", requiredBindings: [{ type: "d1", name: "DB" }] });
+    const { asked } = await teardown(
+      [notes, db],
+      [
+        { name: "replay-search", dir: "/p/apps/search", ownBindings: ["DB"], capabilities: [notes, db] },
+        { name: "replay-business", dir: "/p/apps/business", ownBindings: ["DB"], capabilities: [db] },
+      ],
+    );
+    expect(asked.sort()).toEqual(["replay-f958-owners--search---vector-notes", "replay-f958-owners--vector-notes"]);
   });
 });

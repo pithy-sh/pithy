@@ -16,6 +16,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
 import { environmentsBuiltWithoutSitekeys } from "../capabilities/turnstileSitekeys";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -51,7 +52,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /**
  * The one Worker a turnstile command acts on, and **that Worker's** turnstile config — read from the same
- * place the sitekeys are written to (#590), through {@link resolveCapabilityWorker}, the resolution every
+ * place the sitekeys are written to, through {@link resolveCapabilityWorker}, the resolution every
  * capability command that writes into a Worker shares.
  */
 export async function resolveTurnstileTarget(
@@ -66,7 +67,7 @@ export async function resolveTurnstileTarget(
 }
 
 /**
- * The Worker a deprovision acts on, and its turnstile config — `null` when it composes none (#697).
+ * The Worker a deprovision acts on, and its turnstile config — `null` when it composes none.
  *
  * Not {@link resolveTurnstileTarget}'s refusal. The modes deleted are this Worker's own declaration, never a
  * sibling's, so a Worker declaring none has no widget to name: nothing to remove, which `pithy remove` and every
@@ -103,15 +104,14 @@ function resolveModes(config: TurnstileConfig): TurnstileMode[] {
  * has its own address, so a project with several names one with `--worker` rather than have a widget
  * silently bound to the wrong host.
  *
- * This used to read `env.prod.vars.BASE_URL` directly, with its own parser and its own two errors — one
- * of the three unreconciled derivations #89 replaced. The resolver now prefers the `domains` declaration
- * and falls back to the route and then to that same var, so an adopter who set it by hand still works and
- * one who declared a domain is no longer told to set a var that would duplicate it.
+ * Through the one address resolver, which prefers the `domains` declaration and falls back to the route and
+ * then to `env.prod.vars.BASE_URL`, so an adopter who set that var by hand still works and one who declared a
+ * domain is never told to set a var that would duplicate it.
  */
 async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> {
   const stanza = ((await readWranglerConfig(worker.dir)) as { env?: Record<string, AddressStanza | undefined> }).env
     ?.prod;
-  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  // The load may fail for a reason this reader forgives; a refused declaration is not one.
   let workerConfig: WorkerConfig | undefined;
   try {
     workerConfig = await loadWorkerConfig(worker.dir);
@@ -146,7 +146,7 @@ function listed(names: readonly string[]): string {
 }
 
 /**
- * **What `provision` says about a branch deployment, true of the config in front of it (#656 review).**
+ * **What `provision` says about a branch deployment, true of the config in front of it.**
  *
  * A feature build resolves Cloudflare's always-pass sitekey only where `widgets.<mode>.sitekeys.feature` is
  * absent, and this command never writes that key. So the default is the common case and not the only one: an
@@ -179,7 +179,7 @@ export function featureSitekeyNote(config: TurnstileConfig, modes: readonly Turn
 /** Where each stranded var was, as an operator reads it: `TURNSTILE_SITEKEY_VISIBLE (staging)`. */
 /**
  * **Starting over, when the production widgets already existed and their secret was left as-is.** Both commands
- * act on the Worker this run wrote into — a project with several refuses either without `--worker` (#711) — and
+ * act on the Worker this run wrote into — a project with several refuses either without `--worker` — and
  * the provision is the caller's own run again, `--allow-shared-domain` included: without it, the rerun is refused
  * by the domain guard this run was let past.
  */
@@ -272,10 +272,11 @@ const provision = withContract(
         // guessed one reuses another project's widget and dispatches into its manager (docs/NAMING.md).
         const projectConfig = await loadProject(projectDir);
         const project = requireProjectName(projectConfig);
-        // The project's own environment set (#241): what this command fans out across, rather than a
+        // The project's own environment set: what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(projectConfig);
-        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
+        // A Worker that owns SECRETS reads its own vault, so its secret key is written through its own manager.
+        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project, undefined, secretsOwnerOf(worker));
         const audit = await buildAudit(projectDir, accountId, apiToken);
         const provisioner = new CloudflareTurnstileProvisioner({
           cf,
@@ -288,7 +289,7 @@ const provision = withContract(
           audit,
         });
 
-        // The caller's own run, the one input every line naming it again is built from (#711).
+        // The caller's own run, the one input every line naming it again is built from.
         const caller = callerOf("turnstile provision", args);
         const result = await provisionTurnstile(provisioner, {
           modes,
@@ -318,7 +319,7 @@ const provision = withContract(
         );
         // Said here because this is where an operator asks "which environments can sign in now?". A feature
         // deployment is covered by the same pair and by nothing this command wrote: its config and its secrets
-        // store are generated per branch, so the kit resolves the pair at build and at the gate (#656) — unless
+        // store are generated per branch, so the kit resolves the pair at build and at the gate — unless
         // this config states a `feature` sitekey, which `featureSitekeyNote` is what reads.
         process.stdout.write(`${featureSitekeyNote(config, modes)}\n`);
         if (result.widgets.length > 0 && !result.productionSecretWritten) {
@@ -385,10 +386,11 @@ const deprovision = withContract(
         // would delete a neighboring project's widget (docs/NAMING.md).
         const projectConfig = await loadProject(projectDir);
         const project = requireProjectName(projectConfig);
-        // The project's own environment set (#241): what this command fans out across, rather than a
+        // The project's own environment set: what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(projectConfig);
-        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
+        // A Worker that owns SECRETS reads its own vault, so its secret key is written through its own manager.
+        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project, undefined, secretsOwnerOf(worker));
         const audit = await buildAudit(projectDir, accountId, apiToken);
         const deprovisioner = new CloudflareTurnstileDeprovisioner({
           cf,

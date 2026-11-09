@@ -7,7 +7,7 @@ import { EXIT } from "../terminal/exitClass";
 import { commandAt, expectConforms, runCaptured } from "../test-utils/payloadContract";
 
 /**
- * `pithy audit lock --env` (#822), with the account stood in for: the bucket it locks, the rule it adds, the
+ * `pithy audit lock --env`, with the account stood in for: the bucket it locks, the rule it adds, the
  * refusal before `pithy provision` made the bucket, and the audit row it writes when it changed something.
  */
 
@@ -40,6 +40,22 @@ vi.mock("../project/config", async (importOriginal) => ({
   loadProjectEnvironments: () => ["dev", "staging", "prod", "live"],
   requireProjectName: () => "acme",
   projectCloudflareAccount: async () => null,
+}));
+
+const resolved = {
+  worker: {
+    dir: "/p/apps/two",
+    name: "acme-two",
+    capabilities: [{ name: "audit" }],
+    target: { ownBindings: ["DB", "AUDIT_CHECKPOINTS"] },
+  },
+};
+vi.mock("../project/composeFor", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../project/composeFor")>()),
+  resolveSingleWorkerFor: async (_env: string, { worker }: { worker: string }) => ({
+    ...resolved.worker,
+    dir: `/p/apps/${worker}`,
+  }),
 }));
 
 beforeEach(() => {
@@ -82,6 +98,31 @@ describe("pithy audit lock", () => {
     expect(emitted).toEqual([
       expect.objectContaining({ action: "audit/checkpoints_locked", resourceId: "acme-prod-audit-checkpoints" }),
     ]);
+  });
+
+  test("--worker locks the bucket of a Worker that owns AUDIT_CHECKPOINTS, never the shared one", async () => {
+    r2.findBucketByName.mockResolvedValue({ name: "acme-prod-two---audit-checkpoints" });
+    r2.lockPrefixIndefinitely.mockResolvedValue("locked");
+    const written = await runCaptured("audit lock", ["--env", "prod", "--worker", "two", "--json"]);
+    expect(JSON.parse(written.join(""))).toMatchObject({ bucketName: "acme-prod-two---audit-checkpoints" });
+    expect(r2.findBucketByName).toHaveBeenCalledWith("acme-prod-two---audit-checkpoints");
+    expect(r2.lockPrefixIndefinitely).toHaveBeenCalledWith(
+      "acme-prod-two---audit-checkpoints",
+      "checkpoints/",
+      "pithy-audit-checkpoints",
+    );
+  });
+
+  test("--worker naming a Worker that shares the checkpoint bucket locks the shared one", async () => {
+    resolved.worker.target.ownBindings = [];
+    try {
+      r2.findBucketByName.mockResolvedValue({ name: "acme-prod-audit-checkpoints" });
+      r2.lockPrefixIndefinitely.mockResolvedValue("already");
+      const written = await runCaptured("audit lock", ["--env", "prod", "--worker", "one", "--json"]);
+      expect(JSON.parse(written.join(""))).toMatchObject({ bucketName: "acme-prod-audit-checkpoints" });
+    } finally {
+      resolved.worker.target.ownBindings = ["DB", "AUDIT_CHECKPOINTS"];
+    }
   });
 
   test("a lock already in force changes nothing and records nothing", async () => {

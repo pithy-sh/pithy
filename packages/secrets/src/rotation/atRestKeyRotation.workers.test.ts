@@ -114,12 +114,11 @@ beforeEach(async () => {
 });
 
 /**
- * **The eight-step sequence, and the two read-backs that make it a sequence rather than a hope (`#647`).**
+ * **The eight-step sequence, and the two read-backs that make it a sequence rather than a hope.**
  *
- * The pass used to persist `{ currentVersion: N+1 }` before re-encrypting a row, never read it back, and
- * prune N in the same breath. A write that reached an entry the binding does not read answered 200 — and
- * every row was then sealed under a key nothing bound. These cases drive the order, both gates, and what
- * each abort costs the store.
+ * A write that reaches an entry the binding does not read answers 200, so a pass that persisted the new pointer
+ * before re-encrypting, without reading it back, would seal every row under a key nothing binds. These cases
+ * drive the order, both gates, and what each abort costs the store.
  */
 describe("runAtRestKeyRotation — the staged sequence", () => {
   test("publishes the key under the old pointer first, and moves the pointer only after re-encrypting", async () => {
@@ -132,7 +131,7 @@ describe("runAtRestKeyRotation — the staged sequence", () => {
     });
 
     // Two writes, in this order and no other: the key, then the pointer. A pass that wrote the promoted
-    // envelope first — which is what `#647` was — puts "2" in the first slot and fails here.
+    // envelope first puts "2" in the first slot and fails here.
     expect(store.writes.map((write) => write.config.currentVersion)).toEqual(["1", "2"]);
     expect(Object.keys(store.writes[0]?.config.versions ?? {}).sort()).toEqual(["1", "2"]);
     // The staged write leaves the cadence clock alone, so a pass that aborts before promoting does not
@@ -290,10 +289,10 @@ describe("runAtRestKeyRotation — the staged sequence", () => {
   });
 
   /**
-   * `#386`, from the site that violated it.
+   * No exception text reaches a column.
    *
-   * This catch is reached from decryption, envelope decoding and config parsing, and it used to write
-   * `cause.message` into `error_message`. So the exception is planted to look like what those paths
+   * This catch is reached from decryption, envelope decoding and config parsing, whose text can carry key
+   * material. So the exception is planted to look like what those paths
    * actually throw: a sentence carrying key material. The row must hold the code's fixed text and no part
    * of it — asserted over the whole row, so a future column that captured the same text fails here too.
    */
@@ -476,7 +475,7 @@ describe("runAtRestKeyRotation — one pass at a time", () => {
   });
 
   /**
-   * Replay (pithy-sh/pithy#329). A Workflow re-executes the body from the top and serves completed steps
+   * Replay. A Workflow re-executes the body from the top and serves completed steps
    * from the journal, so anything computed outside a step is computed again on the newer clock. `now` is
    * the instant this rotation writes as `lastRotatedAt` — the field the cron's cadence check reads back.
    */
@@ -526,7 +525,7 @@ describe("atRestInstanceId", () => {
 });
 
 /**
- * **The key set may not grow without bound, and the bound may never be a deletion (`#647`).**
+ * **The key set may not grow without bound, and the bound may never be a deletion.**
  *
  * A row that will not decrypt keeps `failed > 0` forever. Retirement is gated on no row sitting on a
  * retiring version, so it never happens again — while the pass closes `success` and the set gains a key
@@ -605,7 +604,7 @@ describe("runAtRestKeyRotation — a key set that cannot retire", () => {
 });
 
 /**
- * **What a pass may journal into `metadata_snapshot` (`#647`).**
+ * **What a pass may journal into `metadata_snapshot`.**
  *
  * The column is the one place on this row a writer may put something of its own, it was typed `unknown`,
  * and the steps above it hold the key set and a decrypt failure in scope. It takes a `RotationSnapshot` now:
@@ -633,5 +632,65 @@ describe("runAtRestKeyRotation — the rotation row's snapshot", () => {
     // And not one byte of the set itself. Asserted over the whole row, so a column that grew a copy of a
     // key fails here too.
     for (const key of Object.values(three.versions)) expect(JSON.stringify(row)).not.toContain(key);
+  });
+});
+
+/**
+ * **One master key, more than one vault.** A Worker that owns `SECRETS` keeps its own vault sealed under the
+ * environment's one master key, so the pass that rotates that key re-seals and counts every vault before it retires
+ * a version. A prune that counted only its own vault would drop the key the other vault's rows are still under.
+ */
+describe("runAtRestKeyRotation — a Worker's own vault under the same key", () => {
+  const vaultTwo = () => createDatabase(env.VAULT_TWO, secretsTables);
+
+  beforeEach(async () => {
+    await env.VAULT_TWO.prepare("drop table if exists pithy_secrets_system_secrets").run();
+    await env.VAULT_TWO.prepare("drop table if exists pithy_secrets_rotations").run();
+    await secrets_0001_init.up(vaultTwo());
+  });
+
+  async function versionInTwo(name: string): Promise<number | undefined> {
+    const row = await env.VAULT_TWO.prepare("select key_version as v from pithy_secrets_system_secrets where name = ?")
+      .bind(name)
+      .first<{ v: number }>();
+    return row?.v;
+  }
+
+  test("re-seals the owned vault's rows beside the shared vault's", async () => {
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+    await new SystemSecretsStore(vaultTwo(), v1).put("b", initialVersionedValue("vb"));
+    const store = new StubConfigStore({ bound: v1 });
+
+    const result = await runAtRestKeyRotation(
+      { ...depsOver(store), owned: [{ binding: "VAULT_TWO", db: vaultTwo() }] },
+      syncStep,
+      fastReadBack,
+    );
+
+    expect(result).toMatchObject({ rotated: 2, failed: 0, newCurrentVersion: 2 });
+    expect(await versionInTwo("b")).toBe(2);
+    expect(await new SystemSecretsStore(vaultTwo(), store.boundConfig).getValue("b")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "vb" },
+    });
+  });
+
+  test("a row in the owned vault still on a retiring key blocks the prune", async () => {
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+    await env.VAULT_TWO.prepare(
+      "insert into pithy_secrets_system_secrets (name, encrypted_value, iv, key_version, value_type, created_at, updated_at) values ('broken', 'Y29ycnVwdGVk', 'AAAAAAAAAAAAAAAA', 1, 'text', 0, 0)",
+    ).run();
+    const store = new StubConfigStore({ bound: v1 });
+    const deps = () => ({ owned: [{ binding: "VAULT_TWO", db: vaultTwo() }] });
+
+    await runAtRestKeyRotation({ ...depsOver(store), ...deps() }, syncStep, fastReadBack);
+    const second = await runAtRestKeyRotation(
+      { ...depsOver(store, store.boundConfig), ...deps() },
+      syncStep,
+      fastReadBack,
+    );
+
+    expect(second).toMatchObject({ pruned: false, retirementBlocked: 1 });
+    expect(Object.keys(store.lastWritten?.versions ?? {})).toContain("1");
   });
 });

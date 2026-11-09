@@ -8,7 +8,7 @@ Deploy the reconciliation Workflow that keeps stored purchases agreeing with the
 
 ```
 pithy payments provision [--worker <name>] [--json]
-pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rail>] [--dry-run] [--json]
+pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rail>] [--worker <name>] [--dry-run] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
@@ -23,6 +23,7 @@ pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rai
 | `--subject <holder>` | `reconcile` | every holder | Reconcile one holder's purchases, as `user:<id>` or `organization:<id>`. The support path: the same steps the cron runs, narrowed. An id on its own is refused — it names whichever user *or* organization carries it |
 | `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, `lemonSqueezy`, or `paddle`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
 | `--worker <name>` | `provision` | the project's only Worker | The app Worker whose `payments(...)` catalog is deployed, and whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `PAYMENTS_RECONCILE` binding. Required when a project has several |
+| `--worker <name>` | `reconcile` | the shared host | Run the pass in this Worker's own reconcile host, `<project>-<env>-<worker>---payments-reconcile`, when it owns what the host binds. Any other Worker's purchases are in the shared database, and naming it runs the shared host |
 | `--dry-run` | `reconcile` | `false` | Show the plan and write nothing. Reports the drift and repairs none |
 | `--json` | both | `false` | One line of machine-readable output |
 
@@ -52,7 +53,9 @@ Each console is per environment on its own terms: Stripe's test mode, Paddle's a
 
 **These are also where a credential is replaced.** Rotation is `manual` for this secret because none of the five returns a new value over an API — a human opens the console, mints the replacement, and sets it. `rotatable: true` means the store holds both versions while webhooks signed under the old one drain.
 
-`reconcile` runs that same pass on demand and waits for its report. It dispatches the deployed Workflow, polls until it reaches a terminal state, and prints what it found. Reconciliation is the repair path, never the primary one: a rising `drifted` count means webhooks are not arriving, which is the signal the command exists to surface.
+**A Worker that owns what the host binds gets its own.** When `--worker` names a Worker that lists a binding the payments host binds in its `ownBindings`, `provision` deploys that Worker's own host, `<project>-<env>-<worker>---payments`, bound to the Worker's own resources, and writes its Workflow bindings to reach it, `<project>-<env>-<worker>---payments-<job>`. The shared `<project>-<env>-payments` is left alone. See [A Worker's own kit hosts](../NAMING.md#a-workers-own-kit-hosts).
+
+`reconcile` runs that same pass on demand and waits for its report. With `--worker` naming a Worker that has its own reconcile host, it runs that host's pass, over that Worker's purchases. It dispatches the deployed Workflow, polls until it reaches a terminal state, and prints what it found. Reconciliation is the repair path, never the primary one: a rising `drifted` count means webhooks are not arriving, which is the signal the command exists to surface.
 
 ## `--json`
 

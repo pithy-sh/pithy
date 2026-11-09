@@ -26,9 +26,9 @@ Provisioning finds a resource by name and reuses it. Without a project segment, 
 | Queue (`queue`) | `<project>-<env>-<binding>` | `acme-prod-jobs` |
 | Artifacts namespace | `<project>-<env>` | `acme-prod` |
 | Vectorize (`index_name`) | `<project>-<env>-<capability>-<index>` | `acme-prod-vector-docs`, `acme-prod-support-messages` |
-| Worker script (capability host) | `<project>-<env>-<capability>` | `acme-prod-email` |
+| Worker script (capability host) | `<project>-<env>-<capability>`, or `<project>-<env>-<worker>---<capability>` for [a Worker's own host](#a-workers-own-kit-hosts) | `acme-prod-email`, `acme-prod-billing---email` |
 | Worker script (your own, per environment) | `<project>-<env>-<worker>` | `acme-prod-api` |
-| Workflow | `<project>-<env>-<capability>-<job>` | `acme-prod-email-send` |
+| Workflow | `<project>-<env>-<capability>-<job>`, or `<project>-<env>-<worker>---<capability>-<job>` on a Worker's own host | `acme-prod-email-send`, `acme-prod-billing---email-send` |
 | Secrets Store entry | `<project>-<env>-<secret>` | `acme-prod-secrets-encryption-keys` |
 | CF API token | `<project>-<env>-<profile>` | `acme-prod-ci-system` |
 | Email Routing rule | `<project>-<env>-<capability>-<purpose>`, or `global` for one the project shares | `acme-prod-support-inbound`, `acme-global-email-bounce` |
@@ -55,13 +55,25 @@ The owned resource puts the Worker in the thing segment, joined by three hyphens
 <project>-<env>-<worker>---<thing>
 ```
 
-`<worker>` is the `apps/<worker>` directory, never the deploy name. So `apps/billing` owning `DB` in `acme` is `acme-prod-billing---db`, beside the shared `acme-prod-db` every other Worker binds. It applies to every kind provision creates per binding: D1, KV, R2 and queues. Worker code does not change; `env.DB` is still `env.DB`.
+`<worker>` is the `apps/<worker>` directory, never the deploy name. So `apps/billing` owning `DB` in `acme` is `acme-prod-billing---db`, beside the shared `acme-prod-db` every other Worker binds. It applies to every kind provision creates per binding: D1, KV, R2 and queues, and to the kit hosts that read them ([below](#a-workers-own-kit-hosts)). Worker code does not change; `env.DB` is still `env.DB`.
 
 **Three hyphens keep it apart from two things.** From every shared name, because a kebab never holds a run of hyphens: `billing---db` is the Worker owning `DB`, and `billing-db` is a shared `BILLING_DB`. And from every feature, because `--` is a feature's ([below](#feature-environments)): the first `--` in an owned name is followed by a third hyphen, and a feature name's thing never starts with one, so no declared environment's name parses as a feature's.
 
 **Only the thing is fitted, and the separator survives.** When `<worker>---<thing>` does not fit, each side keeps a head and a hash of the whole follows: `<w>---<t>-<hash>`. The project and environment stay verbatim, as everywhere else, so the [project-name cap](#the-project-name-cap) does not move.
 
 **A `scope: "global"` binding cannot be owned.** It is one resource for the project by definition. `pithy provision`, `pithy add` and `pithy worker sync` refuse the entry, naming the binding and the capability. An entry naming no D1, KV, R2 or queue binding the Worker composes owns nothing, and `pithy provision` and `pithy doctor` say so.
+
+### A Worker's own kit hosts
+
+**A Worker that owns a binding a capability's host binds gets that host to itself.** Its email jobs, audit rows and every other host's work sit in its own resources, so a host shared with the other Workers would read the wrong ones. The host takes the owner in its thing segment the way an owned resource does: `apps/billing` owning `DB` and composing email has `acme-prod-billing---email`, with Workflows `acme-prod-billing---email-send` and `acme-prod-billing---email-schedule`, beside the shared `acme-prod-email` every other Worker reaches. A Worker that owns `SECRETS` has its own secrets manager the same way, `acme-prod-billing---secrets`, writing through `acme-prod-billing---secrets-write`. The shared manager binds that vault as `VAULT_BILLING` to re-seal it, and binds a Worker's own database holding an encrypted column as `<BINDING>_OF_<WORKER>`, so `DB_OF_BILLING`. A host that binds nothing the Worker owns stays shared.
+
+On a feature branch the host is named for the feature and the owner: `<project>-f<issue>-<slug>--<worker>---<capability>`, so `acme-f12-x--billing---email`. Locally, `pithy dev` runs it as `billing---email` on a pinned port of its own.
+
+A Worker or Workflow name is never fitted. One that does not fit is refused, naming the directory: `Shorten the apps/<worker> Worker's directory name, or take the binding out of its ownBindings.`
+
+**A host that keys a bucket to its database's rows takes both or neither.** Storage's sweep deletes every derived object with no row in the database it reads, and audit's checkpoint keys name a tenant and a count, never the database. So a Worker that owns storage's `DB` and shares `STORAGE_BUCKET`, or owns audit's database and shares `AUDIT_CHECKPOINTS`, is refused by `pithy provision`, `pithy deploy` and `pithy dev`: `<worker> owns DB but shares STORAGE_BUCKET.`, with `Add STORAGE_BUCKET to apps/<worker>/pithy.worker.jsonc ownBindings, or take DB out.` Audit's pair is refused the other way too: a Worker that owns `AUDIT_CHECKPOINTS` and shares audit's database would put a second checkpoint and prune host on the shared chain, each keeping its tombstones in a bucket the other never reads, so it is refused with `<worker> owns AUDIT_CHECKPOINTS but shares DB.` and `Add DB to apps/<worker>/pithy.worker.jsonc ownBindings, or take AUDIT_CHECKPOINTS out.` Owning storage's bucket alone is no split, and media's bucket holds nothing keyed to a row, so media is not refused.
+
+**A Worker's own host fills Vectorize indexes of its own.** A vector or support index holds vectors keyed to the rows of the database its host reads, so a Worker's own host binds `<project>-<env>-<worker>---vector-<index>` and `<project>-<env>-<worker>---support-messages`, created by `pithy vector provision --worker <worker>` and `pithy support provision --worker <worker>`, and a feature's are `<project>-f<issue>-<slug>--<worker>---<thing>`.
 
 **Moving a binding between shared and owned is a repoint, and nothing moves the rows.** A stanza still pointing at the other resource is refused by `pithy provision --env` unless the run passes `--repoint`, and the old resource keeps its data ([`commands/provision.md`](commands/provision.md)). Locally, an owned D1 entry carries a top-level `database_id` of its own, so `pithy dev`, `migrate` and `seed` keep it apart from the shared one. `pithy doctor`'s `Resource names:` block reports a stanza naming anything other than what provision would compose for that Worker.
 

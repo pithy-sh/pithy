@@ -39,17 +39,15 @@ export interface TestersEmailIdentity {
    * into the host's `EMAIL_MESSAGES` var.
    *
    * The same journey the theme makes, and it has to be: this host composes nothing. `nudge/enqueueSeam.ts`
-   * reads `env.EMAIL_MESSAGES` "exactly as the email host worker carries them", and until this field
-   * existed nothing wrote it — so the nudge shell was the kit's English however many languages the
-   * project spoke, which is the pithy-sh/pithy#441 defect surviving on the second Worker that reads
-   * the var.
+   * reads `env.EMAIL_MESSAGES` "exactly as the email host worker carries them", and this field is the only
+   * writer of it — without it the nudge shell is the kit's English however many languages the project speaks.
    *
    * The **shell** is what it moves — the document's `lang` and `dir`, the footer's opt-out word. A
    * nudge's own words are the adopter's copy, supplied per message and never in a catalog.
    *
    * **Required, and `{}` is the way to say "none".** `CloudflareEmailProvisionerOptions.messages` is
    * required for the same reason and it is the same reason twice: a provisioner that forgot the
-   * catalogs is exactly what left this var written by nobody, and a field carrying a default cannot be
+   * catalogs would leave this var written by nobody, and a field carrying a default cannot be
    * forgotten out loud. Empty writes no var at all, which is the host's own spelling of "the English I
    * bundle" and what a project serving one language wants.
    */
@@ -67,10 +65,15 @@ export interface TestersConfigParams {
   /** The target environment. */
   readonly env: ManagedEnvironment;
   /**
-   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * **The feature this host serves, when it serves one.** Its Worker, its Workflows and every store
    * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
    */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The app database id — where the `pithy_testers_*`, `pithy_auth_*` and `pithy_email_jobs` tables live. */
   readonly appDatabaseId: string;
   /**
@@ -101,6 +104,7 @@ export function resolveTestersConfig(
   params: TestersConfigParams,
 ): WorkflowHostTemplate {
   const feature = params.feature;
+  const owner = params.owner;
   const { project, env, appDatabaseId, suppressionDatabaseId, testersConfig, email } = params;
 
   // Derived before the resolve: `resolveWorkflowHost` refuses a template that declares `workflows`
@@ -110,6 +114,7 @@ export function resolveTestersConfig(
     capability: TESTERS_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
   });
 
   const resolved = resolveWorkflowHost(template, {
@@ -117,6 +122,7 @@ export function resolveTestersConfig(
     capability: TESTERS_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
     databaseIds: { DB: appDatabaseId, EMAIL_SUPPRESSIONS: suppressionDatabaseId },
     // The suppression database is email's, and its name now carries the project. Left alone, the
     // template would print `pithy-email-suppressions` — a name no account holds.

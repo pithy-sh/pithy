@@ -29,7 +29,7 @@ import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./
 import { provisionFeature } from "./provision";
 
 /**
- * **The isolation gate (#643): nothing a feature binds is anybody else's.**
+ * **The isolation gate: nothing a feature binds is anybody else's.**
  *
  * The maintainer's invariant, as a test: a feature shares nothing with any other feature, with staging, or with
  * production. The Cloudflare account and its one Secrets Store are the only containers that cannot be split, and
@@ -82,7 +82,7 @@ const COMPOSED: Record<string, Capability> = {
   media: media({}),
   storage: storage({}),
   payments: payments({ billingSubject: "user" }),
-  // A mail-only inbox: the in-app channel needs auth in this Worker, and this fixture composes none (#645).
+  // A mail-only inbox: the in-app channel needs auth in this Worker, and this fixture composes none.
   support: support({ inboundAddresses: ["help@support.replay.example"], submission: { enabled: false } }),
   testers: testers({}),
   vector: vector({ indexes: { notes: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } } }),
@@ -91,12 +91,12 @@ const COMPOSED: Record<string, Capability> = {
 const capabilities = Object.values(COMPOSED);
 
 /**
- * **The adopter's own app capability — a Workflow of its own, and a Durable Object beside it (#650).**
+ * **The adopter's own app capability — a Workflow of its own, and a Durable Object beside it.**
  *
- * The fixture composed only kit capabilities, so neither of the writes #650 added was walked by the gate that
- * exists to prove a feature binds nothing of anybody else's: the app's own `workflows` entry, named for the
- * feature and same-script, and the `durable_objects` entry a feature now carries and retargets. Both are
- * followed by `shared()` below — a Workflow by its `name`, a Durable Object by the `script_name` it reaches.
+ * So the gate that proves a feature binds nothing of anybody else's walks the app's own writes too: its
+ * `workflows` entry, named for the feature and same-script, and the `durable_objects` entry a feature carries and
+ * retargets. Both are followed by `shared()` below — a Workflow by its `name`, a Durable Object by the
+ * `script_name` it reaches.
  */
 const app = defineCapability({
   name: "board",
@@ -113,11 +113,10 @@ beforeAll(async () => {
   dir = await mkdtemp(join(import.meta.dirname, "..", "..", ".e2e-feature-isolation-"));
   appDir = join(dir, "apps", "app");
   await mkdir(appDir, { recursive: true });
-  // **Every composed capability, linked from a copy inside the fixture (#650 review).** This fixture deploys
-  // every kit host the registry knows, and a deploy writes its resolved config beside that host's worker module
-  // — through a resolution that reached the repository's own `packages/<pkg>/src/workflows/` and left eight
-  // `.wrangler.feature.json` paths there, transient and un-ignored, in the hashed input set `ci/turboInputs`
-  // compares. `test-utils/linkKit.ts` states the rule; `core` stays the repository's, as it does there.
+  // **Every composed capability, linked from a copy inside the fixture.** This fixture deploys every kit host the
+  // registry knows, and a deploy writes its resolved config beside that host's worker module, so a resolution that
+  // reached the repository's own `packages/<pkg>/src/workflows/` would leave `.wrangler.feature.json` paths there,
+  // un-ignored, in the hashed input set `ci/turboInputs` compares. `test-utils/linkKit.ts` states the rule; `core` stays the repository's, as it does there.
   await linkKitCopies(dir, Object.keys(COMPOSED));
   // The sibling `LOBBY` names, as far as this fixture needs one: a directory with a config of its own, so
   // provisioning can name it for the feature the way it names any other Worker.
@@ -138,7 +137,7 @@ beforeAll(async () => {
       d1_databases: [{ binding: "DB", database_name: "replay-dev-db", database_id: "DB" }],
       ratelimits: [TOP_LIMITER],
       // One class in this Worker's own main, one in a sibling this project deploys: the two shapes a feature
-      // must answer for, copied and retargeted (#650).
+      // must answer for, copied and retargeted.
       durable_objects: {
         bindings: [
           { name: "ROOM", class_name: "Room" },
@@ -360,7 +359,7 @@ async function provisioned() {
         env: "feature",
         account: null,
         feature: identity,
-        featureOwned: (feature, composed) => featureOwnedIds(stand.provisioners, feature, composed),
+        featureOwned: (feature, composed, owners) => featureOwnedIds(stand.provisioners, feature, composed, owners),
         workers: [{ name: "replay-app", dir: appDir, hasWrangler: true }],
         capabilitiesFor: async () => capabilities,
         ids: { storeId: "store-1", accountId: "acct-1" },
@@ -423,7 +422,7 @@ describe("a feature composing every host-owning capability", () => {
     const manager = result.hosts.find((config) => config.name === `${OWN}secrets`) as
       | (Config & { secrets_store_secrets?: { binding: string }[]; workflows?: { binding: string }[] })
       | undefined;
-    // Its own master key and its own field key (#390), and no token.
+    // Its own master key and its own field key, and no token.
     expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual([
       "SECRETS_ENCRYPTION_KEYS",
       "PITHY_FIELD_KEYS",
@@ -437,7 +436,7 @@ describe("a feature composing every host-owning capability", () => {
    * **The gate can fail.** The defects it exists for, planted back into a copy of what provisioning wrote, and the
    * walk names each one: the top level's rate-limit namespace (bound in a feature, it is production's), a store entry bound to the project's `global` copy,
    * a same-issue sibling's host and Workflow (a prefix check passed both), another project's, production's D1 and
-   * KV by id, production's service and queue, **a Durable Object in a script outside this feature (#650)**, and a
+   * KV by id, production's service and queue, **a Durable Object in a script outside this feature**, and a
    * binding kind the walk has never seen.
    */
   test("a planted shared resource fails the walk", () => {
@@ -468,7 +467,7 @@ describe("a feature composing every host-owning capability", () => {
       { binding: "NEIGHBOR", service: featureWorkerName(neighbor, "api") },
     ];
     planted.queues = { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] };
-    // **The kind #650 added, held by the list rather than by the claim that it would be caught.** Both shapes:
+    // **A Durable Object, held by the list rather than by the claim that it would be caught.** Both shapes:
     // a class in production's own sibling, and one in another project's feature.
     planted.durable_objects = {
       bindings: [
@@ -539,7 +538,7 @@ describe("a feature composing every host-owning capability", () => {
   });
 
   /**
-   * **Shared with every feature, never with a declared environment (#643).** The feature binds its limiter's fixed
+   * **Shared with every feature, never with a declared environment.** The feature binds its limiter's fixed
    * namespace, which is in the reserved range and is neither the top level's nor production's. And the walk still
    * fails the ids it exists for: production's, and another limiter's feature namespace.
    */

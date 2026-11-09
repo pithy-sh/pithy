@@ -12,15 +12,17 @@ import { findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
+import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
+import { workerDirName } from "../project/workerIdentity";
 import { provisionRemedy, withProvisionFix } from "../provision/provisionFix";
 import { EXIT } from "../terminal/exitClass";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { stripControls } from "../terminal/style";
 
 /**
- * `pithy audit` (#822): the audit trail's hash chain, from the outside.
+ * `pithy audit`: the audit trail's hash chain, from the outside.
  *
  * `verify <file>` checks an export offline — every link, every commitment it carries values for, every checkpoint
  * — so an auditor trusts neither the Worker nor us. It reads a file and nothing else: no project, no credentials,
@@ -37,9 +39,32 @@ export const AUDIT_CHECKPOINT_PREFIX = "checkpoints/";
 /** The lock rule's id on the bucket. */
 export const AUDIT_CHECKPOINT_LOCK_RULE = "pithy-audit-checkpoints";
 
-/** The checkpoint bucket's name in one environment: the name `pithy provision` gives the binding. */
-export function checkpointBucketName(project: string, env: string): string {
-  return environmentScope(project, env).resource(AUDIT_CHECKPOINT_BINDING, "r2", {});
+/**
+ * The checkpoint bucket's name in one environment: the name `pithy provision` gives the binding, and for a Worker that
+ * owns `AUDIT_CHECKPOINTS` the one it gives that Worker's, `<project>-<env>-<owner>---audit-checkpoints`.
+ */
+export function checkpointBucketName(project: string, env: string, owner?: string): string {
+  return environmentScope(project, env).resource(AUDIT_CHECKPOINT_BINDING, "r2", {}, owner);
+}
+
+/**
+ * The Worker whose own checkpoint bucket `--worker` names, or `undefined` for the shared bucket: the Worker, composed
+ * for the environment being locked, must compose audit, and its own bucket is the one it owns `AUDIT_CHECKPOINTS` for.
+ */
+async function checkpointOwner(
+  projectDir: string,
+  env: string,
+  worker: string | undefined,
+): Promise<string | undefined> {
+  if (worker === undefined) return undefined;
+  const resolved = await resolveSingleWorkerFor(env, { projectDir, worker });
+  if (!resolved.capabilities.some((capability) => capability.name === "audit")) {
+    throw new ValidationError({
+      message: `${worker} does not compose audit in ${env}.`,
+      action: "Name a Worker that composes audit with --worker, or leave it off to lock the shared checkpoint bucket.",
+    });
+  }
+  return (resolved.target.ownBindings ?? []).includes(AUDIT_CHECKPOINT_BINDING) ? workerDirName(resolved) : undefined;
 }
 
 /** `pithy audit verify --json`. */
@@ -169,6 +194,11 @@ const lock = withContract(
     meta: { name: "lock", description: "Put an indefinite object lock on the audit checkpoint bucket" },
     args: {
       env: { type: "string", description: "The environment whose checkpoint bucket to lock. Required" },
+      worker: {
+        type: "string",
+        description:
+          "The Worker whose own checkpoint bucket to lock, when it owns AUDIT_CHECKPOINTS (default: the shared one)",
+      },
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -186,7 +216,7 @@ const lock = withContract(
         const projectName = requireProjectName(project);
         const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
         const clients = await cloudflareClients({ accountId, apiToken });
-        const bucket = checkpointBucketName(projectName, env);
+        const bucket = checkpointBucketName(projectName, env, await checkpointOwner(projectDir, env, args.worker));
         const r2 = clients.r2Provisioner();
         const found = await findOnConfirmedAccount({
           ...account,

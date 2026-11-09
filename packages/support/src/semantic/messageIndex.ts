@@ -58,14 +58,20 @@ export function supportMessageIndexShape(search: SupportSearchConfig): VectorInd
 }
 
 /**
- * The index's Cloudflare name — `<project>-<env>-support-messages`, or a feature's own.
+ * The index's Cloudflare name — `<project>-<env>-support-messages`, or a feature's own. A Worker's own support host
+ * fills `<project>-<env>-<owner>---support-messages`: its vectors are keyed to the rows of its own database.
  *
  * Through the naming facade, which refuses a Vectorize name over 64 bytes rather than truncating it: a shortened
  * name is a different, empty index.
  */
-export function supportMessageIndexName(project: string, env: string, feature?: FeatureIdentity): string {
-  if (feature) return featureVectorizeIndexName(feature, SUPPORT_MESSAGES_INDEX);
-  return resourceNames(project).env(env).vectorizeIndex(SUPPORT_MESSAGES_INDEX);
+export function supportMessageIndexName(
+  project: string,
+  env: string,
+  feature?: FeatureIdentity,
+  owner?: string,
+): string {
+  if (feature) return featureVectorizeIndexName(feature, SUPPORT_MESSAGES_INDEX, owner);
+  return resourceNames(project).env(env).vectorizeIndex(SUPPORT_MESSAGES_INDEX, owner);
 }
 
 /** The text one message is embedded as: its subject, then its body, bounded. */

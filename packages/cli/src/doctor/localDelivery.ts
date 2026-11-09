@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { HOST_WORKERS } from "../capabilities/hostRegistry";
+import { HOST_WORKERS, hostOwnerFor } from "../capabilities/hostRegistry";
 import {
   type ChildCloudflareIdentity,
   projectChildCloudflareIdentity as defaultChildCloudflareIdentity,
   deliveryPreflight,
+  deliveryVerdictLines,
+  type HostDeliveryVerdict,
 } from "../dev/delivery";
+import { ownedHostName } from "../dev/hostWorkers";
 
 /**
  * Whether local email delivery is **live** — the question `pithy doctor` answers about a machine, and
- * the one nothing else in the report asks (pithy-sh/pithy#410).
+ * the one nothing else in the report asks.
  *
  * `Settings:` says whether the values work. Every other block says whether something is there. Neither
  * says the thing a developer actually wants to know before they sit waiting on an inbox: does a magic
@@ -31,24 +34,36 @@ import {
 
 /** What this machine would do with a message, and the words the run said it in. */
 export interface LocalDeliveryCheck {
-  /** Whether a message sent from localhost actually leaves the machine. */
+  /** Whether a message sent from localhost actually leaves the machine, from every host that sends one. */
   live: boolean;
   /** The capability that answers for delivery — `email` today, the only one holding a send binding. */
   capability: string;
   /** The verdict verbatim: the same lines `pithy dev` prints in its ready banner, action included. */
   lines: string[];
+  /**
+   * Each sending host's own verdict, by its dev-set name: the shared host from the Workers that share it, and a
+   * Worker's own host from that Worker's config.
+   */
+  hosts: { name: string; live: boolean; lines: string[] }[];
 }
 
 /** Everything the check reads, all of it injectable so a unit test never touches a credential file. */
 export interface LocalDeliveryOptions {
   projectDir: string;
-  /** The Workers in scope, with the capability instances doctor already resolved. */
-  workers: readonly { capabilities: readonly Capability[] }[];
+  /**
+   * The Workers in scope, with the capability instances doctor already resolved, and what each owns: a Worker that
+   * owns a binding a sending host binds has a host of its own, decided by its own config.
+   */
+  workers: readonly {
+    dir?: string;
+    target?: { ownBindings?: readonly string[] };
+    capabilities: readonly Capability[];
+  }[];
   /**
    * Seam: what a worker `pithy dev` starts would authenticate as. Defaults to the dev command's own reader.
    *
-   * The *child's* identity, not the CLI's, and they are not always the same thing — which is the whole of
-   * #555. Doctor reports on the machine a dev session would run on, so it has to ask the question that
+   * The *child's* identity, not the CLI's, and the two can differ: the project's pinned account replaces whatever
+   * the shell exports. Doctor reports on the machine a dev session would run on, so it asks the question that
    * session will answer.
    */
   cloudflare?: (projectDir: string, env: NodeJS.ProcessEnv) => Promise<ChildCloudflareIdentity>;
@@ -63,39 +78,65 @@ export interface LocalDeliveryOptions {
  * failing the report — the `Settings:` block reaches the same package on the same run and names it.
  */
 export async function checkLocalDelivery(options: LocalDeliveryOptions): Promise<LocalDeliveryCheck | null> {
-  const composed = new Map<string, Capability>();
-  for (const worker of options.workers) {
-    for (const capability of worker.capabilities) {
-      if (!composed.has(capability.name)) composed.set(capability.name, capability);
-    }
-  }
-
+  // Asked once, and only once a host has something to send: every verdict is judged against the same login.
+  let cloudflare: ChildCloudflareIdentity | undefined;
   for (const spec of HOST_WORKERS) {
-    const capability = composed.get(spec.capability);
-    if (!capability || !spec.delivery) continue;
-    let identity: Awaited<ReturnType<NonNullable<typeof spec.delivery>>>;
-    try {
-      identity = await spec.delivery(capability, options.projectDir);
-    } catch {
-      continue;
+    if (!spec.delivery) continue;
+    // The hosts `pithy dev` runs for this capability: the first sharing Worker's composition, and each owner's own.
+    const hosts: { name: string; capability: Capability }[] = [];
+    for (const worker of options.workers) {
+      const capability = worker.capabilities.find((one) => one.name === spec.capability);
+      if (!capability) continue;
+      const owner =
+        worker.dir === undefined
+          ? undefined
+          : hostOwnerFor(
+              spec,
+              capability,
+              { dir: worker.dir, ownBindings: worker.target?.ownBindings ?? [] },
+              { refuseSplit: false },
+            )?.worker;
+      const name = owner ? ownedHostName(owner, spec.capability) : spec.capability;
+      if (!hosts.some((host) => host.name === name)) hosts.push({ name, capability });
     }
-    if (!identity) continue;
-    const preflight = deliveryPreflight({
-      composed: true,
-      requested: identity.requested,
-      ...(identity.fromAddress !== undefined ? { fromAddress: identity.fromAddress } : {}),
-      cloudflare: await (options.cloudflare ?? defaultChildCloudflareIdentity)(
+    if (hosts.length === 0) continue;
+    hosts.sort((left, right) => Number(left.name !== spec.capability) - Number(right.name !== spec.capability));
+    const verdicts: HostDeliveryVerdict[] = [];
+    for (const host of hosts) {
+      let identity: Awaited<ReturnType<NonNullable<typeof spec.delivery>>>;
+      try {
+        identity = await spec.delivery(host.capability, options.projectDir);
+      } catch {
+        continue;
+      }
+      if (!identity) continue;
+      cloudflare ??= await (options.cloudflare ?? defaultChildCloudflareIdentity)(
         options.projectDir,
         options.env ?? process.env,
-      ),
-    });
-    return { live: preflight.live, capability: spec.capability, lines: preflight.lines };
+      );
+      verdicts.push({
+        name: host.name,
+        preflight: deliveryPreflight({
+          composed: true,
+          requested: identity.requested,
+          ...(identity.fromAddress !== undefined ? { fromAddress: identity.fromAddress } : {}),
+          cloudflare,
+        }),
+      });
+    }
+    if (verdicts.length === 0) continue;
+    return {
+      live: verdicts.every((verdict) => verdict.preflight.live),
+      capability: spec.capability,
+      lines: deliveryVerdictLines(verdicts),
+      hosts: verdicts.map(({ name, preflight }) => ({ name, live: preflight.live, lines: preflight.lines })),
+    };
   }
 
   return null;
 }
 
 /** The check as one sentence — the `--json` `detail`, and never a second wording of the lines. */
-export function describeLocalDelivery(check: LocalDeliveryCheck): string {
+export function describeLocalDelivery(check: Pick<LocalDeliveryCheck, "lines">): string {
   return check.lines.join(" ").replace(/\s+/g, " ").trim();
 }

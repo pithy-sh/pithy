@@ -42,15 +42,14 @@ export interface DestroyReport {
   /** Whether the remote teardown ran (false when no provisioners were available, e.g. no CF credentials). */
   remote: boolean;
   /**
-   * Whether the feature's port block was freed — **whether there was one**, since #660.
+   * Whether the feature's port block was freed — **whether there was one**.
    *
-   * It was the literal `true`, which is a claim about a registry nobody had read. A CI runner holds no
-   * block at all (the registry is machine-local and the machine is a fresh container), so the honest
-   * answer there is `false` and the run is still a success: nothing local was there to tear down.
+   * A CI runner holds no block at all (the registry is machine-local and the machine is a fresh container), so
+   * the answer there is `false` and the run is still a success: nothing local was there to tear down.
    */
   portsFreed: boolean;
   /**
-   * The feature branch this run was about, canonically spelled (#660).
+   * The feature branch this run was about, canonically spelled.
    *
    * Published because `--branch` is an *input* that the parse may correct: `feature/012-x` and
    * `feature/12-x` are one feature, so both arrive here as `feature/12-x`. A caller that logs what it
@@ -62,17 +61,16 @@ export interface DestroyReport {
   /** Whether the feature branch was deleted (only when merged). */
   branchDeleted: boolean;
   /**
-   * **Whether the feature's own manifest was read — #660.**
+   * **Whether the feature's own manifest was read.**
    *
    * The manifest is the record of what `provision --feature` actually created, and it is the only way to
    * reach a resource whose binding the branch has since dropped. It lives in the feature's worktree,
    * which is machine-local: a runner tearing down a merged pull request has none, so it deletes by
    * recomputed name alone.
    *
-   * **Read, not reachable.** This answered "the directory exists", and a bare `.worktrees/<issue>-<slug>`
-   * left behind by an earlier teardown satisfies that while holding no record — so a narrower teardown
-   * reported that it had consulted one. It comes from `readManifest` now: `false` when no remote half
-   * ran, when the worktree is not on this machine, and when the directory is there and the file is not.
+   * **Read, not reachable.** A bare `.worktrees/<issue>-<slug>` left behind by an earlier teardown exists and
+   * holds no record, so this comes from `readManifest`: `false` when no remote half ran, when the worktree is
+   * not on this machine, and when the directory is there and the file is not.
    *
    * The narrowing is published rather than left to be inferred from a shorter list. The command that must
    * never "leak while reporting success" cannot answer a narrower question in silence.
@@ -90,13 +88,11 @@ function isDestroyReport(value: unknown): value is DestroyReport {
 }
 
 /**
- * **Where the record of a teardown that failed partway rides out of it (#380).**
+ * **Where the record of a teardown that failed partway rides out of it.**
  *
- * A teardown destroys infrastructure and reports what it destroyed. Until now a throw from the remote
- * half took that report with it, so an operator whose token expired on the fourth of five deletes was
- * told only that it failed — and the three databases that were already gone were gone unrecorded. The
- * report is the whole product of this command, so it survives the failure the same way a partial mint
- * does (#324).
+ * A teardown destroys infrastructure and reports what it destroyed. An operator whose token expires on the
+ * fourth of five deletes still needs to know which three are gone. The report is the whole product of this
+ * command, so it survives the failure the same way a partial mint does.
  */
 const deprovisionReport = partialWriteReport<DestroyReport>("pithy.cli.destroyReport", isDestroyReport);
 
@@ -106,11 +102,10 @@ export function destroyedBeforeFailure(error: unknown): DestroyReport | undefine
 }
 
 /**
- * The account seams remote teardown deletes through — both, or neither (#592).
+ * The account seams remote teardown deletes through — both, or neither.
  *
- * One pair rather than two optional fields, because the failure this issue was is a teardown that ran
- * against the account and skipped a kind. Neither is "remote teardown skipped", which the report says;
- * one without the other is not expressible.
+ * One pair rather than two optional fields, so a teardown that runs against the account cannot skip a kind.
+ * Neither is "remote teardown skipped", which the report says; one without the other is not expressible.
  */
 export type RemoteTeardown =
   | {
@@ -118,11 +113,11 @@ export type RemoteTeardown =
       provisioners: ResourceProvisioners;
       /** The account's Worker scripts, confirmed then deleted by name. */
       scripts: WorkerScripts;
-      /** The account's Workflow definitions — every one a feature script hosts is deleted by name (#643). */
+      /** The account's Workflow definitions — every one a feature script hosts is deleted by name. */
       workflows: WorkflowDefinitions;
-      /** The feature's own Vectorize indexes, deleted by recomputed name (#643). */
+      /** The feature's own Vectorize indexes, deleted by recomputed name. */
       indexes?: FeatureIndexes;
-      /** The repos in the feature's own Artifacts namespace, every one deleted (#673). */
+      /** The repos in the feature's own Artifacts namespace, every one deleted. */
       repos?: FeatureRepos;
     }
   | {
@@ -156,7 +151,7 @@ export interface DestroyFeatureBaseOptions {
    * The project's Workers as the branch has them — what the scripts of a feature deployed before scripts
    * were recorded are recomputed from. Empty when they cannot be known.
    */
-  workers: readonly Pick<ProvisionWorker, "name" | "dir">[];
+  workers: readonly (Pick<ProvisionWorker, "name" | "dir"> & Partial<Pick<ProvisionWorker, "capabilities">>)[];
   /** The environment being torn down. Recorded on each audit event. */
   env: string;
   /**
@@ -174,8 +169,8 @@ export interface DestroyFeatureBaseOptions {
   /** Override the main checkout root, the registry's key (tests inject; a real run resolves it via git-common-dir). */
   root?: string;
   /**
-   * The feature's own worktree, when this run is not standing in it — `pithy feature destroy --branch`
-   * (#660). Defaults to `{ dir: projectDir, present: true }`, which is the inferred path exactly as before.
+   * The feature's own worktree, when this run is not standing in it — `pithy feature destroy --branch`.
+   * Defaults to `{ dir: projectDir, present: true }`: this run is standing in the feature.
    *
    * **Two things are the feature's own rather than the cwd's, and both are here.** Its `.pithy-feature.json`
    * is the record teardown deletes by exact id — reading the *checkout's* copy tears down by recomputed
@@ -188,13 +183,12 @@ export interface DestroyFeatureBaseOptions {
    */
   record?: FeatureRecord;
   /**
-   * The issue as it was spelled, when that differs from the canonical one (#660 review).
+   * The issue as it was spelled, when that differs from the canonical one.
    *
    * Every **name** this teardown composes comes from the canonical issue, because that is what
-   * provisioning composed them from. Three local things may not: a feature created before the issue was
-   * canonicalised has `.worktrees/012-x`, a `feature/012-x` branch and a `feature/012-x` port key, and
-   * canonicalising on its own makes all three invisible while the run reports nothing local to tear
-   * down. Canonical is tried first, always; this is the second thing tried, and only when the first
+   * provisioning composed them from. Three local things may not: a feature filed under a padded issue has
+   * `.worktrees/012-x`, a `feature/012-x` branch and a `feature/012-x` port key, and the canonical spelling
+   * alone finds none of them. Canonical is tried first, always; this is the second thing tried, and only when the first
    * found nothing.
    */
   spelled?: string;
@@ -209,20 +203,20 @@ export interface DestroyFeatureBaseOptions {
  */
 export async function destroyFeature(options: DestroyFeatureOptions): Promise<DestroyReport> {
   const git = options.git ?? defaultGit;
-  // The inferred path's answer, unchanged: this run is standing in the feature (#660).
+  // Without a record, this run is standing in the feature.
   const record: FeatureRecord = options.record ?? { dir: options.projectDir, present: true };
   const manifest = manifestPath(record.dir);
 
   let deleted: DeprovisionedResource[] = [];
   // False until a manifest is actually read. A remote half that never ran read nothing, which is the
-  // honest answer for `--local-only` and for a run with no credentials (#660 review).
+  // honest answer for `--local-only` and for a run with no credentials.
   let manifestRead = false;
   const remote = options.provisioners !== undefined;
   if (options.provisioners) {
     try {
       const report = await deprovisionFeature({
         /*
-          Two directories, because there are two questions and `--branch` answers them differently (#660).
+          Two directories, because there are two questions and `--branch` answers them differently.
 
           **The manifest is the feature's own, always.** It records the resources `provision --feature`
           created, by id, and it is the only way to reach one whose binding the branch has since dropped.
@@ -253,7 +247,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
       manifestRead = report.manifest;
     } catch (error) {
       // What the remote half destroyed before it failed, moved onto this report and carried on again so
-      // the command can print it beside the failure (#380). The local half below deliberately does not
+      // the command can print it beside the failure. The local half below deliberately does not
       // run: pruning the worktree would remove the checkout the re-run has to happen from, and the
       // feature manifest that says what is left to delete lives in it.
       throw deprovisionReport.carry(error, {
@@ -274,8 +268,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // The same git-common-dir derivation the registry key was always freed by — `projectDir` is the
   // worktree (or, under `--branch`, the checkout it belongs to), and this is the main checkout. Pinned in
   // `ports.test.ts` against the `git worktree list` derivation `feature create` reserves under, because a
-  // key freed under a root create never wrote frees nothing at all (#435). It would also have reported
-  // `portsFreed: true` doing it; that half is `freePortBlock`'s answer now (#660).
+  // key freed under a root create never wrote frees nothing at all.
   const root = options.root ?? (await resolveMainRepoRoot(options.projectDir));
   const canonical = featureNames(options.identity.issue, options.identity.slug, root).branch;
   // The spelling a feature created before the issue was canonicalised filed itself under, or none.
@@ -294,7 +287,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // and nothing to do; in a checkout that is not this feature's, the file belongs to another branch.
   if (record.present) await rm(devConfigPath(record.dir), { force: true });
   // Canonical first; the padded spelling only when the canonical key held nothing. Never both blindly:
-  // a free that reports `true` having dropped somebody else's key is the shape #435 was.
+  // a free that reports `true` having dropped somebody else's key frees a live feature's ports.
   let portsFreed = await freePortBlock({ registryPath, root, branch: canonical });
   let branch = canonical;
   if (!portsFreed && padded !== null) {
@@ -303,8 +296,8 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   }
 
   // Same order for the worktree and the branch. `teardownWorktree` is a clean no-op when neither is
-  // there, so a canonical run that found nothing may try the spelling it was given, and a feature
-  // created after this change never reaches the second call.
+  // there, so a canonical run that found nothing may try the spelling it was given, and a feature filed
+  // under its canonical issue never reaches the second call.
   let teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });
   if (!teardown.pruned && !teardown.branchDeleted && padded !== null) {
     const fallback = await teardownWorktree({ issue: options.spelled as string, slug: options.identity.slug, git });

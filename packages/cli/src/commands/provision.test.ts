@@ -559,6 +559,26 @@ describe("pithy provision reports ownBindings", () => {
     ]);
   });
 
+  test("names each Worker's own kit Worker, and nothing for the shared ones", () => {
+    expect(
+      describeOwnership({
+        ownership: [{ worker: "my-app-other", owned: ["DB"], unrecognized: [] }],
+        repoints: [],
+        kitHosts: [
+          { capability: "email", script: "my-app-staging-email", workers: ["my-app-staging-api"] },
+          {
+            capability: "email",
+            owner: "other",
+            script: "my-app-staging-other---email",
+            workers: ["my-app-staging-other"],
+          },
+        ],
+      }),
+    ).toEqual([
+      "my-app-staging-other's email jobs run on its own kit Worker, my-app-staging-other---email, which reads its database. pithy deploy uploads it.",
+    ]);
+  });
+
   test("says nothing for a project that owns nothing", () => {
     expect(describeOwnership({ ownership: [], repoints: [] })).toEqual([]);
   });

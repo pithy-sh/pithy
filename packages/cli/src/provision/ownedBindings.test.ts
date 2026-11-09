@@ -10,6 +10,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import type { WorkerConfig } from "../project/config";
 import { type ProvisionWorker, provisionEnvironment } from "./environment";
 import type { ResourceProvisioner, ResourceProvisioners } from "./resources";
@@ -178,6 +179,63 @@ describe("provisionEnvironment with ownBindings", () => {
       ...noBackend,
     });
     expect([...stores.d1.keys()]).toEqual(["my-app-staging-api---db", "my-app-staging-other---db"]);
+  });
+
+  /**
+   * **Each Worker's Workflow bindings reach the host that reads its database.** `other` owns `DB`, which email's host
+   * binds, so its `EMAIL_SENDER` is pointed at its own host; `api` keeps the shared one.
+   */
+  test("points each Worker's Workflow bindings at the capability host that reads its database", async () => {
+    const mailer = defineCapability({
+      name: "email",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "workflow", name: "EMAIL_SENDER", job: "send", className: "EmailSendWorkflow" },
+      ] satisfies BindingSpecInput[],
+      workflows: {
+        send: { binding: "EMAIL_SENDER", params: z.object({}).describe("None."), className: "EmailSendWorkflow" },
+      },
+    });
+    const { provisioners } = fakeProvisioners();
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope: environmentScope("my-app", "staging"),
+      capabilities: [mailer],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "my-app-api", dir: api, capabilities: [mailer], ownBindings: [] },
+        { name: "my-app-other", dir: other, capabilities: [mailer], ownBindings: ["DB"] },
+      ],
+      ...noBackend,
+    });
+
+    const sender = async (workerDir: string) =>
+      ((await stanzaOf(workerDir, "staging")) as { workflows?: { binding: string; script_name: string }[] })?.workflows;
+    expect(await sender(api)).toEqual([
+      {
+        binding: "EMAIL_SENDER",
+        name: "my-app-staging-email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "my-app-staging-email",
+      },
+    ]);
+    expect(await sender(other)).toEqual([
+      {
+        binding: "EMAIL_SENDER",
+        name: "my-app-staging-other---email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "my-app-staging-other---email",
+      },
+    ]);
+    expect(report.kitHosts).toEqual([
+      { capability: "email", script: "my-app-staging-email", workers: ["my-app-api-staging"] },
+      {
+        capability: "email",
+        owner: "other",
+        script: "my-app-staging-other---email",
+        workers: ["my-app-other-staging"],
+      },
+    ]);
   });
 
   test("reports an ownBindings entry naming nothing the Worker composes, and owns nothing for it", async () => {

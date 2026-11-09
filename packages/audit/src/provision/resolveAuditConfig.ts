@@ -8,8 +8,8 @@ import { AUDIT_CHECKPOINT_BINDING } from "../chain/checkpoint";
 import { AUDIT_CAPABILITY, auditWorkflowRegistry } from "../workflows/specs";
 
 /**
- * Resolve the checkpoint host's committed `wrangler.jsonc` template into one environment's standalone config
- * (#822). Thin over core's {@link resolveWorkflowHost}: this file owns only which database the host reads, which
+ * Resolve the checkpoint host's committed `wrangler.jsonc` template into one environment's standalone config.
+ * Thin over core's {@link resolveWorkflowHost}: this file owns only which database the host reads, which
  * bucket it writes, and the Workflow names derived from audit's own specs.
  */
 
@@ -18,8 +18,8 @@ import { AUDIT_CAPABILITY, auditWorkflowRegistry } from "../workflows/specs";
  * `AUDIT_CHECKPOINTS` binding**, read through the very function it composes it with, so the host and the app
  * Worker cannot bind two different buckets.
  */
-export function auditCheckpointBucketName(project: string, env: string): string {
-  return environmentScope(project, env).resource(AUDIT_CHECKPOINT_BINDING, "r2", {});
+export function auditCheckpointBucketName(project: string, env: string, owner?: string): string {
+  return environmentScope(project, env).resource(AUDIT_CHECKPOINT_BINDING, "r2", {}, owner);
 }
 
 /** The resolved resource ids and names for one environment's checkpoint host. */
@@ -28,8 +28,13 @@ export interface AuditConfigParams {
   project: string;
   /** The target environment. */
   env: string;
-  /** The feature this host serves, when it serves one (#643). */
+  /** The feature this host serves, when it serves one. */
   feature?: FeatureIdentity;
+  /**
+   * The `apps/<owner>` Worker whose own host this is, when it owns a binding the host binds. The Worker and its
+   * Workflows then carry `<owner>---<capability>`, so it never takes the shared host's names.
+   */
+  owner?: string;
   /** The audit database's id — the D1 behind the binding `audit({ database })` names. */
   auditDatabaseId: string;
   /** The checkpoint bucket's name. */
@@ -38,18 +43,20 @@ export interface AuditConfigParams {
 
 /** Fill the template for one environment. */
 export function resolveAuditConfig(template: WorkflowHostTemplate, params: AuditConfigParams): WorkflowHostTemplate {
-  const { project, env, feature } = params;
+  const { project, env, feature, owner } = params;
   const derived = hostWorkflowsFor(auditWorkflowRegistry, {
     project,
     capability: AUDIT_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
   });
   const resolved = resolveWorkflowHost(template, {
     project,
     capability: AUDIT_CAPABILITY,
     env,
     ...(feature ? { feature } : {}),
+    ...(owner !== undefined ? { owner } : {}),
     // The host always reads it as `DB`; which database that is follows the adopter's `audit({ database })`.
     databaseIds: { DB: params.auditDatabaseId },
     r2BucketNames: { [AUDIT_CHECKPOINT_BINDING]: params.bucketName },

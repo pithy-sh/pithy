@@ -63,6 +63,21 @@ describe("checkpointLockCheck (#822)", () => {
     expect(findings?.[0]?.problem).toMatch(/not in force on acme-staging-audit-checkpoints/);
   });
 
+  test("asks a Worker's own bucket where it owns AUDIT_CHECKPOINTS, and names the lock for that Worker", async () => {
+    const findings = await checkpointLockCheck().account?.({
+      ...context(
+        reader({ "acme-staging-two---audit-checkpoints": "unlocked", "acme-prod-two---audit-checkpoints": "locked" }),
+      ),
+      worker: "acme-two",
+      workerDirectory: "two",
+      ownBindings: ["DB", "AUDIT_CHECKPOINTS"],
+    });
+    expect(findings).toEqual([
+      expect.objectContaining({ environment: "staging", fix: "pithy audit lock --env staging --worker two" }),
+    ]);
+    expect(findings?.[0]?.problem).toMatch(/not in force on acme-staging-two---audit-checkpoints/);
+  });
+
   test("names a bucket that does not exist, and an unlocked one beside it", async () => {
     const findings = await checkpointLockCheck().account?.(
       context(reader({ "acme-staging-audit-checkpoints": "missing", "acme-prod-audit-checkpoints": "unlocked" })),

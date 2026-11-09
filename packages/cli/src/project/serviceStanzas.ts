@@ -1,18 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { stringify } from "comment-json";
-import { hostWorkerFor } from "../capabilities/hostRegistry";
+import { hostOwnerFor, hostWorkerFor } from "../capabilities/hostRegistry";
 import type { ServiceDeclaration } from "./configBindingSource";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { stanzaFor } from "./wranglerInheritance";
 
 /**
- * **Write an app's declared service bindings into every stanza of its `wrangler.jsonc` (#617).**
+ * **Write an app's declared service bindings into every stanza of its `wrangler.jsonc`.**
  *
  * A service binding names a *script*, and a script is per environment: `app-b` deploys as `acme-app-b` in dev,
  * `acme-staging-app-b` in staging, and the email host as `acme-prod-email` in prod. So the declaration in
@@ -34,10 +35,17 @@ export interface ServiceWorkerNames {
   dir: string;
   /** Its deploy name, the top-level `name` of its `wrangler.jsonc`. */
   deployedAs: string;
+  /** The bindings it lists in `ownBindings`. A kit target it calls is its own host where it owns one that binds. */
+  ownBindings?: readonly string[];
+  /** The capabilities it composes, when they loaded: the host a target binds is read off the composed object. */
+  composed?: readonly Capability[];
 }
 
-/** The script a target deploys as in one environment, `dev` being the top level. */
-export type ScriptResolver = (target: string, env: string) => string;
+/**
+ * The script a target deploys as in one environment, `dev` being the top level. `from` is the calling Worker's
+ * `apps/<app>` name: a kit target is that Worker's own host where it owns a binding the host binds.
+ */
+export type ScriptResolver = (target: string, env: string, from?: string) => string;
 
 /**
  * The script each of the project's Workers, and each kit Worker, deploys as per environment. Reads each app
@@ -56,7 +64,7 @@ export async function serviceScripts(project: string, workers: readonly ServiceW
       declared.set(worker.app, {});
     }
   }
-  return (target, env) => {
+  return (target, env, from) => {
     // By either name: `pithy provision` has always taken a deploy name here, and a declaration may carry one.
     const worker = workers.find((candidate) => candidate.app === target || candidate.deployedAs === target);
     if (worker) {
@@ -66,8 +74,19 @@ export async function serviceScripts(project: string, workers: readonly ServiceW
         declared.get(worker.app)?.[env],
       );
     }
-    if (hostWorkerFor(target))
-      return workflowHostName({ ...environmentScope(project, env).workflowHost, capability: target });
+    const spec = hostWorkerFor(target);
+    if (spec) {
+      const caller = from === undefined ? undefined : workers.find((candidate) => candidate.app === from);
+      const composed =
+        caller?.composed?.find((capability) => capability.name === target) ??
+        ({ name: target, requiredBindings: [] } as unknown as Capability);
+      const owner = caller ? hostOwnerFor(spec, composed, caller)?.worker : undefined;
+      return workflowHostName({
+        ...environmentScope(project, env).workflowHost,
+        capability: target,
+        ...(owner ? { owner } : {}),
+      });
+    }
     throw new ValidationError({
       message: `A service binding targets "${target}", which is not one of this project's Workers.`,
       action: `Name an apps/ Worker or a kit Worker. Known: ${workers.map((candidate) => candidate.app).join(", ") || "none"}.`,
@@ -99,6 +118,8 @@ export interface ReconcileServiceStanzasOptions {
   services: readonly ServiceDeclaration[];
   /** The script each target deploys as, per environment. */
   scripts: ScriptResolver;
+  /** The binding Worker's `apps/<app>` name, so a kit target resolves to its own host where it has one. */
+  from?: string;
   /** One environment only, or every stanza the file has when omitted. */
   env?: string;
   /** Binding names to take out of every stanza — `pithy worker unbind`'s. */
@@ -146,7 +167,7 @@ export async function planServiceStanzas(options: ReconcileServiceStanzasOptions
     const stanzaBefore = stringify(stanza);
     const entries = options.services.map((declaration) => ({
       binding: declaration.binding,
-      service: options.scripts(declaration.target, env),
+      service: options.scripts(declaration.target, env, options.from),
     }));
     if (stanza.services && removed.size > 0) {
       // In place, so comment-json keeps the array's comments.

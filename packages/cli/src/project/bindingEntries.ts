@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { BindingSpec, type BindingType, TARGET_KINDS } from "@pithy-sh/core/src/capability/bindings";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { z } from "zod";
+import { hostOwnerFor, hostWorkerFor } from "../capabilities/hostRegistry";
 
 /**
  * One writer for the `wrangler.jsonc` entry a capability's binding needs, and one reader for whether a
@@ -275,6 +277,12 @@ export interface BindingScope {
    * its own, so Miniflare, `pithy migrate` and `pithy seed` keep it apart from the shared one.
    */
   topLevel?: boolean;
+  /**
+   * The composed capability these bindings belong to, when the writer holds it. Which Worker's host a Workflow
+   * binding reaches is read off it ({@link hostOwnerFor}), because a host can bind what the capability's config
+   * names, such as the database `audit({ database })` sets.
+   */
+  composed?: Capability;
 }
 
 /**
@@ -480,12 +488,29 @@ function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindi
   if (binding.job === undefined || binding.className === undefined) {
     return { reason: `${binding.name} declares no ${binding.job === undefined ? "job" : "className"}` };
   }
+  const owner = hostOwnerIn(scope);
   return {
     binding: binding.name,
-    name: workflowScriptName({ project, capability, job: binding.job, env }),
+    name: workflowScriptName({ project, capability, job: binding.job, env, ...(owner ? { owner } : {}) }),
     class_name: binding.className,
-    script_name: resourceNames(project).env(env).worker(capability),
+    script_name: resourceNames(project).env(env).worker(capability, owner),
   };
+}
+
+/**
+ * The Worker whose own capability host this scope's Workflow bindings reach, or `undefined` for the shared host: it
+ * owns a binding that capability's host binds ({@link hostOwnerFor}). Decided off the composed capability when the
+ * scope carries it, which also refuses an owner that splits a database from the bucket keyed to it. A writer handed
+ * only the capability's name decides off the host's default bindings and leaves the refusal to the paths that hold
+ * the composition; `pithy provision` rewrites the entry from the composed capability.
+ */
+function hostOwnerIn(scope: BindingScope): string | undefined {
+  const spec = hostWorkerFor(scope.capability);
+  if (spec === undefined || scope.owns === undefined) return undefined;
+  const worker = { dir: scope.owns.worker, ownBindings: [...scope.owns.bindings] };
+  if (scope.composed !== undefined) return hostOwnerFor(spec, scope.composed, worker)?.worker;
+  const capability = { name: scope.capability, requiredBindings: [] } as unknown as Capability;
+  return hostOwnerFor(spec, capability, worker, { refuseSplit: false })?.worker;
 }
 
 /**

@@ -16,6 +16,7 @@ import {
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
@@ -23,7 +24,8 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
-import { hostWorkerFor } from "../capabilities/hostRegistry";
+import { hostWorkerFor, provisionHostOwner } from "../capabilities/hostRegistry";
+import { projectHostOwners } from "../capabilities/hostWorkflows";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import { loadTesters, testersAuth } from "../capabilities/testersLoader";
@@ -222,13 +224,13 @@ async function openTesters(requested: string) {
   // Capabilities live per Worker; the roster is one project-wide thing, so the first Worker composing
   // testers supplies both the config and the database binding.
   const worker = workers.find((entry) => entry.capabilities?.some(isTestersCapability)) ?? workers[0];
-  // No Worker at all is the same refusal as none composing testers, with the same `pithy add` (#711).
+  // No Worker at all is the same refusal as none composing testers, with the same `pithy add`.
   if (!worker) throw await testersNotComposed(projectDir, workers);
 
   // The account this project belongs to, before the driver resolves a credential. For any env but
   // `dev` this driver is a REST client writing into a real D1 and a real R2, and `openSeedDriver`'s own
-  // doc comment calls this the guard against putting this project's rows in another company's tenant
-  // (#206). `buildProvisioner` below has named its account since then; this door had not.
+  // doc comment calls this the guard against putting this project's rows in another company's tenant.
+  // `buildProvisioner` below names its account the same way.
   const driver = await openSeedDriver({
     workerDir: worker.dir,
     persistRoot: projectDir,
@@ -242,7 +244,7 @@ async function openTesters(requested: string) {
     db: modules.testersDatabase(driver.d1("DB")),
     config: capability.testersConfig,
     // What the activity read sees through: the project's composed auth, exactly as the daily-pass host is
-    // handed it. Every reader below takes it, and `readCohort` requires it (#645 review).
+    // handed it. Every reader below takes it, and `readCohort` requires it.
     auth: testersAuth(projectDir, projectCapabilities(workers)),
     modules,
     enqueue: await buildEnqueue(projectDir, workers, driver.d1("DB")),
@@ -256,8 +258,31 @@ async function openTesters(requested: string) {
 const EMAIL_MODULE = "@pithy-sh/email/src/capability";
 
 /**
+ * The `workflows` entries `pithy testers provision` writes into the app Worker: into that Worker's own daily-pass
+ * host when it owns a binding the host binds, and into the shared host otherwise, by the rule the deploy uses.
+ */
+export function testersAppWorkflows(
+  registry: WorkflowRegistry,
+  parts: {
+    project: string;
+    capability: string;
+    env: string;
+    testers: Capability;
+    worker: Pick<ResolvedWorker, "target">;
+  },
+): ReturnType<typeof appWorkflowBindings> {
+  const owner = provisionHostOwner(parts.testers, parts.worker.target);
+  return appWorkflowBindings(registry, {
+    project: parts.project,
+    capability: parts.capability,
+    env: parts.env,
+    ...(owner ? { owner: owner.worker } : {}),
+  });
+}
+
+/**
  * Run an optional `@pithy-sh/email` import, answering `undefined` **only** for a package that is
- * genuinely absent (#230).
+ * genuinely absent.
  *
  * Email really is optional to `pithy testers`: a project that composes none still advances the roster,
  * records the day, and writes its snapshot — it just sends nothing, and both call sites say so. So
@@ -272,7 +297,7 @@ const EMAIL_MODULE = "@pithy-sh/email/src/capability";
  *
  * That is `docs/CONVENTIONS.md` §Refusals — **a `catch` reachable by more than one underlying failure
  * may not name a single specific remedy** — and {@link classifyCapabilityLoadFailure} is the function
- * #217 left for it. Exported so it is tested as a pure function against both runtimes' cause shapes,
+ * that keeps it. Exported so it is tested as a pure function against both runtimes' cause shapes,
  * per the same convention: the `bin` runs on Bun, and a cause is read by its fields, never its class.
  */
 export async function loadOptionalEmail<T>(load: () => Promise<T> | T, projectDir?: string): Promise<T | undefined> {
@@ -392,10 +417,10 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // project is not a Cloudflare problem to report as one.
   const config = await loadProject(projectDir);
   const project = requireProjectName(config);
-  // The project's own environment set (#241), carried rather than assumed.
+  // The project's own environment set, carried rather than assumed.
   const environments = loadProjectEnvironments(config);
   const selection = await projectCloudflareAccount(projectDir);
-  // What vouches for the id (#378) rides with it: the host teardown reads a missing Worker as "already gone", and
+  // What vouches for the id rides with it: the host teardown reads a missing Worker as "already gone", and
   // an account nothing claims answers exactly that way about a host that is still running.
   const { account, accountId, apiToken } = commandCredentials(selection);
 
@@ -439,7 +464,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   //
   // The file is the **app Worker's**, under `apps/<name>/`, because there is no root Worker (CLAUDE.md
   // §CLI). This read `<root>/wrangler.jsonc`, which no scaffolded project has, so every run died on a
-  // missing file before it reached the partition, the skip, the report or the exit code (#512).
+  // missing file before it reached the partition, the skip, the report or the exit code.
   let readiness: Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }> | undefined;
   const appReadiness = () => {
     readiness ??= (async () => {
@@ -462,9 +487,13 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   return {
     email,
     project,
+    testers,
     environments,
     appReadiness,
     provisioner: new CloudflareTestersProvisioner({
+      owners: await projectHostOwners(projectDir),
+      // A Worker that owns what the daily-pass host binds gets a host of its own, decided once the Worker resolves.
+      owner: async () => provisionHostOwner(testers, (await appReadiness()).appWorker.target),
       cf,
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
       projectDir,
@@ -473,7 +502,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
       apiToken,
       testersConfig: testers.testersConfig,
       email,
-      // Auth, handed to the daily-pass host when the project composes it — asked only when a deploy runs (#645).
+      // Auth, handed to the daily-pass host when the project composes it — asked only when a deploy runs.
       hostEntry: () => {
         const spec = hostWorkerFor("testers");
         const siblings = capabilities.filter((capability) => capability !== testers);
@@ -497,7 +526,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
  *
  * The app `DB` id comes out of {@link EnvironmentReadiness}, which read the project's `wrangler.jsonc` once
  * and partitioned the declared environments before anything was deployed — an environment with no app
- * database is skipped and reported rather than failing the run part way through (#512). The suppression
+ * database is skipped and reported rather than failing the run part way through. The suppression
  * database is still a live refusal, because it is project-global and its absence means `pithy email
  * provision` has not run at all, which no per-environment skip could express.
  */
@@ -522,7 +551,7 @@ function buildResolveEnv(
       find: () => cf.d1Provisioner().findDatabaseByName(suppressionName),
     });
     if (!suppression) {
-      // The Worker this run resolved, so the `fix` runs in a project with several (#697).
+      // The Worker this run resolved, so the `fix` runs in a project with several.
       throw suppressionDatabaseMissing(
         suppressionName,
         "the daily pass reads it to reconcile bounced addresses.",
@@ -647,7 +676,9 @@ const TestersProvisionPayload = z
 const TestersDeprovisionPayload = z
   .object({
     command: z.literal("testers deprovision").describe('`"testers deprovision"`.'),
-    results: Results.describe("One entry per environment torn down."),
+    results: Results.describe(
+      "One entry per daily-pass Worker deleted, in each environment torn down. An environment with none deployed has one entry, naming the shared Worker.",
+    ),
   })
   .describe("What `pithy testers deprovision` removed.");
 
@@ -777,6 +808,7 @@ const provision = withContract(
           provisioner,
           project,
           email,
+          testers,
           environments: declared,
           appReadiness,
         } = await buildProvisioner(projectDir, args.worker);
@@ -790,7 +822,7 @@ const provision = withContract(
           : managedEnvironments(declared);
         // Two narrowings, and they answer different questions. `--env` is which environments the operator
         // meant; readiness is which of those have an app database yet. Skip-and-report layers onto the flag
-        // rather than replacing it (#512).
+        // rather than replacing it.
         const { appWorker, readiness: declaredReadiness } = await appReadiness();
         const readiness = narrowReadiness(declaredReadiness, selected);
 
@@ -804,21 +836,27 @@ const provision = withContract(
           // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
           // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
           await applyAppBindings(appWorker.dir, env, {
-            workflows: appWorkflowBindings(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }),
+            workflows: testersAppWorkflows(testersWorkflowRegistry, {
+              project,
+              capability: TESTERS_CAPABILITY,
+              env,
+              testers,
+              worker: appWorker,
+            }),
           });
         }
 
         const deployed = new Map(results.map((entry) => [entry.env, entry.worker]));
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, the environment it
-        // was narrowed to among them, and the Worker it resolved when none was named (#711).
+        // was narrowed to among them, and the Worker it resolved when none was named.
         const rerun = rerunRemedy(callerOf("testers provision", args), {
           flags: { "--worker": workerDirName(appWorker) },
           productionEnvironments: readiness.productionEnvironments,
         });
 
         if (args.json) {
-          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          // One outcome: the error line alone when nothing was provisioned, or this report alone.
           writeProvisionReport(
             {
               command: "testers provision",
@@ -1346,7 +1384,7 @@ const run = withContract(
             suppressionD1: undefined,
             optOutLinkFor: (member: { optInToken: string }) => modules.optOutUrl(config, member.optInToken),
             // The snapshot this pass writes counts who was observed, so it is built on the project's auth or it
-            // is a day of nobody observed. Required by the pass for that reason (#645 review).
+            // is a day of nobody observed. Required by the pass for that reason.
             auth,
             linkFor: args["skip-nudges"]
               ? undefined

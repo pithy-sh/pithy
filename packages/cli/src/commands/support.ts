@@ -7,6 +7,8 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { provisionHostOwner } from "../capabilities/hostRegistry";
+import { projectHostOwners } from "../capabilities/hostWorkflows";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import {
   CloudflareSupportDeprovisioner,
@@ -93,11 +95,10 @@ export function messageIndexOutcome(
  * Resolve the per-environment app database the classification worker binds, from the **app Worker's**
  * `wrangler.jsonc`.
  *
- * The read and the judgment both happened once already, in {@link environmentReadiness}, before anything
- * was created — so this is a lookup rather than a file read, and an environment with no app database was
- * skipped and reported instead of failing the run part way through (#512). It used to re-read and re-parse
- * that file once per environment per phase, because the provisioner calls this from both `deployWorker`
- * and `ensureSearchIndex`.
+ * The read and the judgment both happen once, in {@link environmentReadiness}, before anything is created — so
+ * this is a lookup rather than a file read, and an environment with no app database is skipped and reported
+ * instead of failing the run part way through. The provisioner calls this from both `deployWorker` and
+ * `ensureSearchIndex`, so a read here would parse the file once per environment per phase.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc`, so a project with several
  * names one with `--worker`; one Worker needs no ceremony. Workers sharing a database share the `DB`
@@ -240,7 +241,11 @@ const SupportProvisionPayload = z
         z
           .object({
             env: z.string().describe("The environment."),
-            indexName: z.string().describe("The environment's message index, `<project>-<env>-support-messages`."),
+            indexName: z
+              .string()
+              .describe(
+                "The environment's message index, `<project>-<env>-support-messages`, or `<project>-<env>-<worker>---support-messages` for a Worker's own host.",
+              ),
             created: z.boolean().describe("Whether this run created it."),
             dropped: z.boolean().describe("Whether this run dropped it, because `search.semantic` is off."),
             backfilled: z
@@ -327,13 +332,13 @@ const provision = withContract(
         // another project's inbox (docs/NAMING.md).
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // The project's own environment set (#241): what this command fans out across, rather than a
+        // The project's own environment set: what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
         const { provisionSupport } = await loadSupport(projectDir);
         const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
         // One resolution for the config and the app database the classification hosts are deployed against:
-        // that Worker's own support capability, never a sibling's (#590 review).
+        // that Worker's own support capability, never a sibling's.
         const { isSupportCapability } = await loadSupport(projectDir);
         const { worker: appWorker, capability } = await resolveCapabilityWorker({
           projectDir,
@@ -342,9 +347,11 @@ const provision = withContract(
           is: isSupportCapability,
         });
         const supportConfig = capability.supportConfig;
+        // A Worker that owns what the support host binds gets a host of its own.
+        const owner = provisionHostOwner(capability, appWorker.target);
         const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
         // Which environments this run can act on, decided once and before the bucket exists. An environment
-        // whose app database is not provisioned yet is skipped and reported, never fatal (#512).
+        // whose app database is not provisioned yet is skipped and reported, never fatal.
         const readiness = await environmentReadiness({
           workerDir: appWorker.dir,
           label: `${appWorker.name}'s wrangler.jsonc`,
@@ -359,6 +366,7 @@ const provision = withContract(
           apiToken,
           supportConfig,
           resolveEnv: buildResolveEnv(readiness),
+          ...(owner ? { owner } : {}),
           ...(routing !== undefined
             ? { routing }
             : {
@@ -389,7 +397,7 @@ const provision = withContract(
         await recordSemanticBindings(appWorker.dir, supportConfig, result.semantic ?? []);
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
-        // resolved when none was named (#711).
+        // resolved when none was named.
         const again = rerunRemedy(callerOf("support provision", args), {
           flags: { "--worker": workerDirName(appWorker) },
           productionEnvironments: readiness.productionEnvironments,
@@ -401,7 +409,7 @@ const provision = withContract(
           ? [`It created the project's support bucket (${result.bucket.bucket}), which every environment shares.`]
           : [];
         if (args.json) {
-          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          // One outcome: the error line alone when nothing was provisioned, or this report alone.
           writeProvisionReport(
             {
               command: "support provision",
@@ -480,7 +488,7 @@ const deprovision = withContract(
     },
     args: {
       json: { type: "boolean", default: false, description: "Machine-readable output" },
-      // No default (#591): a bare `deprovision` removed every declared environment's classification worker,
+      // No default: a bare `deprovision` removed every declared environment's classification worker,
       // production's included.
       env: TEARDOWN_ENV_ARG,
       worker: {
@@ -516,7 +524,7 @@ const deprovision = withContract(
         // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
         const config = await loadProject(projectDir);
         const project = requireProjectName(config);
-        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // One named environment, settled before any credential is read: naming nothing, or something
         // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
@@ -532,6 +540,7 @@ const deprovision = withContract(
         const cf = await cloudflareClients({ accountId, apiToken });
         const audit = await buildAudit(projectDir, accountId, apiToken, args.worker);
         const deprovisioner = new CloudflareSupportDeprovisioner({
+          owners: await projectHostOwners(projectDir),
           account,
           cf,
           workflows: await cloudflareWorkflows({ accountId, apiToken }),
@@ -542,9 +551,9 @@ const deprovision = withContract(
           audit,
         });
 
-        // The limits are held here, not by the orchestrator. It is the project's installed copy, and one from before
-        // #591 removed the routing rule first and asked nothing after. So what every environment shares is refused
-        // now, before that copy is called, and it may delete only what was typed, for `env` alone.
+        // The limits are held here, not by the orchestrator. It is the project's installed copy, and an older one may
+        // remove the routing rule first and ask nothing after. So what every environment shares is refused before
+        // that copy is called, and it may delete only what was typed, for `env` alone.
         const confined = await confineTeardown({
           kit: "@pithy-sh/support",
           target: env,

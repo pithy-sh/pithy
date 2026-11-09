@@ -1101,6 +1101,7 @@ describe("docs/commands/doctor.md", () => {
               "Email: no Cloudflare credentials, so real delivery is not possible here — using the simulator.",
               "  set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for real delivery",
             ],
+            hosts: [],
           }),
         }),
       ),

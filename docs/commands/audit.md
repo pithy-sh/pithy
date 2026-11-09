@@ -8,7 +8,7 @@ Verify the audit trail's hash chain from outside the Worker, and lock the checkp
 
 ```bash
 pithy audit verify <file> [--json]
-pithy audit lock --env <name> [--json]
+pithy audit lock --env <name> [--worker <name>] [--json]
 ```
 
 ## Flags
@@ -17,6 +17,7 @@ pithy audit lock --env <name> [--json]
 |---|---|
 | `<file>` | `verify` only. An export saved from `GET {audit}/control-plane/export`, as it came. Required. |
 | `--env <name>` | `lock` only. The deployed environment whose checkpoint bucket to lock. Required; `dev` is refused, because a local bucket has nothing to lock. |
+| `--worker <name>` | `lock` only. A Worker that owns `AUDIT_CHECKPOINTS`: lock its own checkpoint bucket, `<project>-<env>-<worker>---audit-checkpoints`. A Worker that shares the bucket locks the shared one, as leaving the flag off does. |
 | `--json` | Machine-readable output. Default `false`. |
 
 ## What it does
@@ -39,7 +40,9 @@ A broken chain is an answer, not an error: the report is printed and the run exi
 
 Adds an indefinite object-lock rule over `checkpoints/` to the environment's checkpoint bucket, `<project>-<env>-audit-checkpoints` — the bucket `pithy provision` creates for the `AUDIT_CHECKPOINTS` binding. From then on no checkpoint can be replaced or deleted, by the Worker, by you, or by anyone holding the bucket's keys, which is what makes it evidence. The bucket's other rules are kept. A re-run finds the rule in force and changes nothing. Where the account does not support bucket locks, Cloudflare's refusal is reported as it came.
 
-`pithy doctor` says per environment whether the lock is in force, and names this command when it is not.
+A Worker that owns `AUDIT_CHECKPOINTS` checkpoints its chain into a bucket of its own, so its bucket is locked with `--worker`: `pithy audit lock --env prod --worker two` locks `acme-prod-two---audit-checkpoints` ([A Worker's own kit hosts](../NAMING.md#a-workers-own-kit-hosts)).
+
+`pithy doctor` says per environment whether the lock is in force, for the shared bucket and for each owner's, and names this command, with `--worker` for an owner's, when it is not.
 
 ## `--json`
 

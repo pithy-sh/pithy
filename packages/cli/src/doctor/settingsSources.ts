@@ -10,11 +10,13 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretFieldProbe, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { addAction, addSecretsPlan } from "../capabilities/addCommand";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { secretsOwnerOf } from "../capabilities/secretsOwner";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { composeFor } from "../project/composeFor";
 import { loadProject, loadWorkerDomains, projectEnvironments, requireProjectName } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
+import { discoverWorkers } from "../project/workers";
 import { readOptionalWranglerConfig, readWranglerConfig } from "../project/wrangler";
 import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsCheck } from "./settings";
 
@@ -111,7 +113,14 @@ export interface SettingsAccountOptions {
   probe?: (
     credentials: { accountId: string; apiToken: string },
     project: string,
+    /** The Worker that owns `SECRETS`, whose own manager answers for its vault; absent, the shared manager. */
+    owner?: string,
   ) => Promise<SecretProbe & SecretFieldProbe>;
+  /**
+   * Each Worker's `apps/` directory that reads a vault of its own, to the owner its manager is named for. A vault
+   * question about one of them is asked of that manager, through {@link SettingsAccountConnection} `readerFor`.
+   */
+  vaultOwners?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -145,18 +154,72 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
 
   const credentials = { accountId, apiToken };
   const clients = await (options.connect ?? cloudflareClients)(credentials);
-  const probe = await (
-    options.probe ?? ((creds, project) => buildSecretDispatcher(creds.accountId, creds.apiToken, project))
-  )(credentials, options.project);
+  const buildProbe =
+    options.probe ??
+    ((creds, project, owner) => buildSecretDispatcher(creds.accountId, creds.apiToken, project, undefined, owner));
+  const probes = new Map<string, Promise<SecretProbe & SecretFieldProbe>>();
+  const probeFor = (owner: string | undefined) => {
+    const key = owner ?? "";
+    let answer = probes.get(key);
+    if (answer === undefined) {
+      answer = buildProbe(credentials, options.project, owner);
+      probes.set(key, answer);
+    }
+    return answer;
+  };
 
   let databases: Promise<readonly string[]> | undefined;
   const zones = new Map<string, Promise<boolean>>();
-  const secrets = new Map<string, Promise<boolean>>();
-  const fields = new Map<string, Promise<boolean>>();
   const storeEntries = new Map<string, Promise<boolean>>();
   const accountTokens = new Map<string, Promise<boolean>>();
   const bucketLocks = new Map<string, Promise<"locked" | "unlocked" | "missing">>();
   const sendingDomains = new Map<string, Promise<boolean>>();
+
+  // The vault questions, asked of the manager whose vault the Worker reads. Memoized per manager.
+  const vaultReader = (owner: string | undefined): Pick<SettingsAccountReader, "vaultSecret" | "vaultSecretField"> => {
+    const secrets = new Map<string, Promise<boolean>>();
+    const fields = new Map<string, Promise<boolean>>();
+    return {
+      vaultSecret: async ({ name, environment }) => {
+        // **`dev` is refused rather than answered.** A `d1` secret's value is sealed under a master key that
+        // never leaves that environment's manager Worker, and `dev` has no manager — it is local Miniflare.
+        // Answering `false` would report a signing key as missing on every developer's machine, which is a
+        // fault nobody has and a report nobody would read twice.
+        if (environment === "dev") {
+          throw new InternalError({
+            message: "A dev secret cannot be asked of the account.",
+            action: `Ask about a deployed environment, or read the local value through ${pithyCommand("secrets edit")}.`,
+            detail: `secret ${name} in dev has no manager Worker to answer`,
+          });
+        }
+        // Memoized like the two above: doctor judges each environment's composition of a capability, and every
+        // one of them asks the same question of the same manager.
+        const key = `${environment}\u0000${name}`;
+        const existing = secrets.get(key);
+        if (existing) return existing;
+        const answer = (await probeFor(owner)).probe({ env: environment as "staging" | "prod", name });
+        secrets.set(key, answer);
+        return answer;
+      },
+      // The same refusal of `dev` as `vaultSecret`, for its reason: no manager there to open the value.
+      vaultSecretField: async ({ name, environment, field }) => {
+        if (environment === "dev") {
+          throw new InternalError({
+            message: "A dev secret cannot be asked of the account.",
+            action: `Ask about a deployed environment, or read the local value through ${pithyCommand("secrets edit")}.`,
+            detail: `secret ${name}.${field} in dev has no manager Worker to answer`,
+          });
+        }
+        const key = `${environment}\u0000${name}\u0000${field}`;
+        const existing = fields.get(key);
+        if (existing) return existing;
+        const answer = (await probeFor(owner)).carries({ env: environment as "staging" | "prod", name, field });
+        fields.set(key, answer);
+        return answer;
+      },
+    };
+  };
+  const vaults = new Map<string, Pick<SettingsAccountReader, "vaultSecret" | "vaultSecretField">>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -199,43 +262,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       storeEntries.set(name, answer);
       return answer;
     },
-    vaultSecret: async ({ name, environment }) => {
-      // **`dev` is refused rather than answered.** A `d1` secret's value is sealed under a master key that
-      // never leaves that environment's manager Worker, and `dev` has no manager — it is local Miniflare.
-      // Answering `false` would report a signing key as missing on every developer's machine, which is a
-      // fault nobody has and a report nobody would read twice.
-      if (environment === "dev") {
-        throw new InternalError({
-          message: "A dev secret cannot be asked of the account.",
-          action: `Ask about a deployed environment, or read the local value through ${pithyCommand("secrets edit")}.`,
-          detail: `secret ${name} in dev has no manager Worker to answer`,
-        });
-      }
-      // Memoized like the two above: doctor judges each environment's composition of a capability, and every
-      // one of them asks the same question of the same manager.
-      const key = `${environment}\u0000${name}`;
-      const existing = secrets.get(key);
-      if (existing) return existing;
-      const answer = probe.probe({ env: environment as "staging" | "prod", name });
-      secrets.set(key, answer);
-      return answer;
-    },
-    // The same refusal of `dev` as `vaultSecret`, for its reason: no manager there to open the value.
-    vaultSecretField: async ({ name, environment, field }) => {
-      if (environment === "dev") {
-        throw new InternalError({
-          message: "A dev secret cannot be asked of the account.",
-          action: `Ask about a deployed environment, or read the local value through ${pithyCommand("secrets edit")}.`,
-          detail: `secret ${name}.${field} in dev has no manager Worker to answer`,
-        });
-      }
-      const key = `${environment}\u0000${name}\u0000${field}`;
-      const existing = fields.get(key);
-      if (existing) return existing;
-      const answer = probe.carries({ env: environment as "staging" | "prod", name, field });
-      fields.set(key, answer);
-      return answer;
-    },
+    ...vaultReader(undefined),
     // By the exact name, through the account's token list. Memoized like the rest.
     accountToken: async (name) => {
       const existing = accountTokens.get(name);
@@ -302,7 +329,36 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       return (listed.results ?? []).map((row) => row.id);
     },
   };
-  return { state: "reachable", reader };
+  const readerFor = (workerDirectory: string): SettingsAccountReader => {
+    const owner = options.vaultOwners?.get(workerDirectory);
+    if (owner === undefined) return reader;
+    let vault = vaults.get(owner);
+    if (vault === undefined) {
+      vault = vaultReader(owner);
+      vaults.set(owner, vault);
+    }
+    return { ...reader, ...vault };
+  };
+  return { state: "reachable", reader, readerFor };
+}
+
+/**
+ * Each Worker in scope that reads a vault of its own, by its `apps/` directory, to the owner its manager is named for.
+ * Read off the Workers' `pithy.worker.jsonc` `ownBindings`; a set that will not enumerate reads every vault as shared.
+ */
+async function vaultOwnersOf(
+  projectDir: string,
+  workers: readonly SettingsWorkerScope[],
+): Promise<ReadonlyMap<string, string>> {
+  const targets = await discoverWorkers(projectDir).catch(() => []);
+  const owners = new Map<string, string>();
+  for (const worker of workers) {
+    const target = targets.find((candidate) => candidate.dir === worker.dir);
+    if (target === undefined) continue;
+    const owner = secretsOwnerOf({ capabilities: [...worker.capabilities], target });
+    if (owner !== undefined) owners.set(basename(worker.dir), owner);
+  }
+  return owners;
 }
 
 /** One Worker as `pithy doctor` already holds it: its name, its directory, and what it composes. */
@@ -310,6 +366,8 @@ export interface SettingsWorkerScope {
   name: string;
   dir: string;
   capabilities: readonly Capability[];
+  /** Its discovered target, whose `ownBindings` name the resources it has to itself. */
+  target?: { ownBindings?: readonly string[] };
 }
 
 /** What the default settings probe needs, all of it already resolved once by `buildDoctorReport`. */
@@ -352,6 +410,7 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
       name: worker.name,
       directory: basename(worker.dir),
       capabilities: worker.capabilities,
+      ...(worker.target?.ownBindings === undefined ? {} : { ownBindings: worker.target.ownBindings }),
     })),
     environments: (worker) => {
       let answer = environments.get(worker);
@@ -361,11 +420,12 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
       }
       return answer;
     },
-    connect: () =>
+    connect: async () =>
       settingsAccountConnection({
         projectDir: options.projectDir,
         account: options.account,
         project,
+        vaultOwners: await vaultOwnersOf(options.projectDir, options.workers),
         offline: options.offline,
         ...(options.homedir ? { homedir: options.homedir } : {}),
         ...(options.env ? { env: options.env } : {}),

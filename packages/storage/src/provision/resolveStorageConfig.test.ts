@@ -48,6 +48,12 @@ describe("resolveStorageConfig", () => {
     expect(resolved.secrets_store_secrets?.[0]?.store_id).toBe("store-id");
   });
 
+  test("a Worker's own host is named for its owner, Workflows and all", () => {
+    const resolved = resolveStorageConfig(template(), { ...params, owner: "two" });
+    expect(resolved.name).toBe("acme-staging-two---storage");
+    expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual(["acme-staging-two---storage-sweep"]);
+  });
+
   test("the master key entry is the project's and the environment's, as the secrets manager named it", () => {
     const resolved = resolveStorageConfig(template(), params);
     // Asserted through the secrets package's own function rather than a literal: it owns that naming,

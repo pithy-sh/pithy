@@ -43,7 +43,7 @@ const entry: SecretRegistryEntry = {
  * A store that records what it was told to write, so a test can read the envelope back.
  *
  * `create`, with the real create-if-absent answer: `created` when this call made the entry, `present`
- * when one was already there. What the minter does with that answer is what #660's review was about.
+ * when one was already there. The minter records and audits a value only on `created`.
  */
 function recordingStore() {
   const written = new Map<string, string>();
@@ -467,11 +467,9 @@ describe("mintDeclaredSecrets", () => {
   });
 
   /**
-   * **The refusal used to offer a repair no command can perform (#324).** Its first branch read *"give
-   * the others the same value with `pithy secrets create`"* — and for these secrets nobody can. They are
-   * `d1`, minted from `crypto.getRandomValues`, sealed under a master key that never leaves the manager
-   * Worker. There is no way to read the value out of the environment that has it, so the operator who
-   * reached for the first branch found no way to take a single step of it.
+   * **The refusal offers no repair a command cannot perform.** These secrets are `d1`, minted from
+   * `crypto.getRandomValues`, sealed under a master key that never leaves the manager Worker, so copying the
+   * value to another environment is not a step anyone can take.
    *
    * The gate is the **set of commands the action offers**, extracted from the text rather than compared
    * to it: a menu whose first item cannot be chosen fails whatever words surround it.
@@ -501,9 +499,8 @@ describe("mintDeclaredSecrets", () => {
   });
 
   /**
-   * **The report entry used to be pushed after the delivery loop, so a throw inside it took the whole
-   * record with it (#324).** The environments already written held a new secret and the run reported
-   * nothing created — the operator arrived at the next run's refusal with no record of what happened.
+   * **A throw inside the delivery loop still reports what landed.** The environments already written hold a
+   * new secret, and the operator must learn which before the next run's refusal.
    *
    * Asserted against the fake managers' own stores as well as the report, so the report is checked
    * against what landed rather than against itself.
@@ -735,5 +732,21 @@ describe("mintDeclaredSecrets", () => {
       resourceId: "auth-session-secret",
     });
     expect(JSON.stringify(events[0])).not.toContain(dispatcher.sent[0]?.value);
+  });
+});
+
+describe("mintReportLines for a Worker's own vault", () => {
+  test("names the Worker whose vault a secret was minted into", () => {
+    expect(
+      mintReportLines([
+        { name: "auth-session-secret", environments: ["staging"], created: ["staging"] },
+        { name: "auth-session-secret", environments: ["staging"], created: ["staging"], worker: "two" },
+        { name: "auth-session-secret", environments: ["prod"], created: [], worker: "two" },
+      ]),
+    ).toEqual([
+      "auth-session-secret created in staging.",
+      "two's auth-session-secret created in staging.",
+      "two's auth-session-secret already in prod.",
+    ]);
   });
 });

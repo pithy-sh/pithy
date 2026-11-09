@@ -119,6 +119,8 @@ const OPEN_SUBTREES = [
   "doctor: $.extensions|0",
   "doctor: $.extensions|0.extensions[]",
   "doctor: $.featureRatelimitIds|0",
+  "doctor: $.hostBindings|0",
+  "doctor: $.hostBindings|0.stale[]",
   "doctor: $.localDelivery|0",
   "doctor: $.origins|0",
   "doctor: $.origins|0.drift[]",

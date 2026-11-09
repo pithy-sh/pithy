@@ -26,7 +26,14 @@ import { resolveTestersConfig, type TestersEmailIdentity } from "./resolveTester
  * the same shape `@pithy-sh/storage` uses. What matters here is sequence and idempotency, and both are
  * properties of this file rather than of the CF client.
  */
-function fake(overrides: { failPreflight?: boolean; failOn?: ManagedEnvironment } = {}) {
+function fake(
+  overrides: {
+    failPreflight?: boolean;
+    failOn?: ManagedEnvironment;
+    deployed?: (env: ManagedEnvironment) => string;
+    deleted?: (env: ManagedEnvironment) => string[];
+  } = {},
+) {
   const calls: string[] = [];
   const provisioner: TestersProvisioner & TestersDeprovisioner = {
     preflight: async () => {
@@ -36,12 +43,14 @@ function fake(overrides: { failPreflight?: boolean; failOn?: ManagedEnvironment 
     deployWorker: async (env) => {
       calls.push(`deploy:${env}`);
       if (overrides.failOn === env) throw new Error(`deploy failed for ${env}`);
+      return overrides.deployed?.(env) ?? testersWorkerName(PROJECT, env);
     },
     deleteWorkflows: async (env) => {
       calls.push(`deleteWorkflows:${env}`);
     },
     deleteWorker: async (env) => {
       calls.push(`delete:${env}`);
+      return overrides.deleted?.(env) ?? [];
     },
   };
   return { calls, provisioner };
@@ -84,6 +93,13 @@ describe("provisioning the daily-pass host", () => {
     ]);
   });
 
+  test("reports the script the provisioner deployed, a Worker's own host included", async () => {
+    const { provisioner } = fake({ deployed: (env) => `acme-${env}-two---testers` });
+    expect(await provisionTesters(provisioner, PROJECT, ["staging"])).toEqual([
+      { env: "staging", worker: "acme-staging-two---testers" },
+    ]);
+  });
+
   test("provisioning one environment leaves the others alone", async () => {
     const { calls, provisioner } = fake();
     await provisionTesters(provisioner, PROJECT, ["prod"]);
@@ -104,11 +120,19 @@ describe("provisioning the daily-pass host", () => {
 });
 
 describe("deprovisioning", () => {
-  test("deletes each environment's Workflows, then its worker, and reports it (#789)", async () => {
+  test("deletes each environment's Workflows, then its worker, and reports it", async () => {
     const { calls, provisioner } = fake();
     const results = await deprovisionTesters(provisioner, PROJECT, ENVIRONMENTS);
     expect(calls).toEqual(["deleteWorkflows:staging", "delete:staging", "deleteWorkflows:prod", "delete:prod"]);
     expect(results.map((r) => r.worker)).toEqual(["acme-staging-testers", "acme-prod-testers"]);
+  });
+
+  test("reports every host the provisioner deleted, a Worker's own included", async () => {
+    const { provisioner } = fake({ deleted: (env) => [`acme-${env}-testers`, `acme-${env}-two---testers`] });
+    expect(await deprovisionTesters(provisioner, PROJECT, ["prod"])).toEqual([
+      { env: "prod", worker: "acme-prod-testers" },
+      { env: "prod", worker: "acme-prod-two---testers" },
+    ]);
   });
 
   test("runs no preflight — tearing down does not need the account to be able to host anything", async () => {
@@ -119,7 +143,7 @@ describe("deprovisioning", () => {
 });
 
 describe("testersWorkflowNames", () => {
-  test("names the daily Workflow the host is deployed with, for one environment (#789)", () => {
+  test("names the daily Workflow the host is deployed with, for one environment", () => {
     expect(testersWorkflowNames(PROJECT, "staging")).toEqual(["acme-staging-testers-daily"]);
     expect(testersWorkflowNames(PROJECT, "prod")).toEqual(["acme-prod-testers-daily"]);
   });
@@ -149,12 +173,9 @@ describe("resolving the host template", () => {
    * The **committed** template, not a fixture.
    *
    * A hand-written stand-in is a template that does not exist, and a resolver test against one proves a
-   * property of the test. That is not hypothetical here: this file previously declared a `vars` block
-   * carrying only `TESTERS_CONFIG` and `ENVIRONMENT`, so the assertion that the `EMAIL_*` vars are
-   * omitted when no email capability is composed passed without the resolver doing anything — the real
-   * template declares all three as `<filled-at-provision>`, and they were shipping through. Reading the
-   * file means a template edit that breaks the deploy breaks this test, which is the point of the
-   * template being a file.
+   * property of the test: a fixture without the template's `<filled-at-provision>` `EMAIL_*` vars would pass the
+   * assertion that they are omitted without the resolver doing anything. Reading the file means a template edit
+   * that breaks the deploy breaks this test.
    */
   const TEMPLATE = parse(
     readFileSync(join(import.meta.dirname, "../workflows/wrangler.jsonc"), "utf8"),
@@ -193,9 +214,8 @@ describe("resolving the host template", () => {
   });
 
   test("rewrites the suppression database name, which is email's and now carries the project", () => {
-    // Left alone, the deployed config would print `pithy-email-suppressions` — a name no account holds
-    // once the database is project-scoped. The id is what binds, but a config that names a resource
-    // that does not exist is one nobody can debug from.
+    // Left alone, the deployed config would print `pithy-email-suppressions`, a name no account holds. The id is
+    // what binds, but a config that names a resource that does not exist is one nobody can debug from.
     const resolved = resolve();
     expect(resolved.d1_databases?.find((d) => d.binding === "EMAIL_SUPPRESSIONS")?.database_name).toBe(
       suppressionDatabaseName(PROJECT),
@@ -236,13 +256,10 @@ describe("resolving the host template", () => {
   /**
    * **The var this worker reads and nobody wrote.**
    *
-   * `nudge/enqueueSeam.ts` collects the catalog vars into `catalogLayers` "exactly as the
-   * email host worker carries them" — and the resolver that fills this host's vars wrote the from
-   * address, the from name and the theme, and not that. So a project speaking two languages nudged its
-   * testers in the kit's English whatever `i18n({ supportedLocales })` said. It is literally the
-   * pithy-sh/pithy#441 defect surviving on the second Worker that reads the var, which is why the field
-   * it travels in is required rather than optional: the same rule the email provisioner already ran on
-   * (pithy-sh/pithy#441).
+   * `nudge/enqueueSeam.ts` collects the catalog vars into `catalogLayers` exactly as the email host worker
+   * carries them, so a resolver that writes the from address, the from name and the theme but not the catalogs
+   * nudges a two-language project's testers in the kit's English. The field they travel in is required rather
+   * than optional, the same rule the email provisioner runs on.
    */
   test("carries the project's catalogs, because this host composes nothing and can be told no other way", () => {
     const resolved = resolve("staging", {
@@ -315,9 +332,7 @@ describe("the configured snapshot hour", () => {
   }
 
   test("reaches the deployed cron", () => {
-    // It was a fully described, bounded, defaulted knob that nothing read: an adopter moving the pass
-    // off 05:00 because it collided with their own nightly job changed nothing, with no error and no
-    // warning, and a config field that read as though it had taken effect.
+    // A config field that does not reach the cron reads as though it took effect and changes nothing.
     expect(cronFor(9)).toBe("0 9 * * *");
     expect(cronFor(0)).toBe("0 0 * * *");
   });

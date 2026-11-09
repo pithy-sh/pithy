@@ -132,6 +132,7 @@
       "path": "audit lock",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json"
       ]
@@ -678,6 +679,7 @@
         "--env",
         "--subject",
         "--rail",
+        "--worker",
         "--dry-run",
         "--dryRun",
         "--no-dry-run",
@@ -766,6 +768,7 @@
       "path": "secrets create",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json"
       ]
@@ -820,6 +823,7 @@
       "path": "secrets rm",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json",
         "--backend"
@@ -829,6 +833,7 @@
       "path": "secrets rotate",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json",
         "--dry-run",
@@ -849,6 +854,7 @@
       "path": "secrets update",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json"
       ]
@@ -859,6 +865,7 @@
         "--env",
         "--sweep",
         "--no-sweep",
+        "--worker",
         "--json",
         "--no-json"
       ]

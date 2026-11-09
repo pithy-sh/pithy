@@ -14,6 +14,7 @@ import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import type { FeatureIndexes } from "../provision/resources";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import type { HostOwner } from "./hostRegistry";
 import { capabilityLoadError } from "./loadFailure";
 import { capabilityProvisionRemedy } from "./provisionCommand";
 
@@ -109,6 +110,11 @@ export const METADATA_POLL_INTERVAL_MS = 2_000;
 
 export interface CloudflareVectorProvisionerOptions {
   /**
+   * The Worker this provision deploys its own host for, when `--worker` names one that owns a binding the host binds.
+   * The host then takes that Worker's names and resources, exactly as `pithy deploy` names it.
+   */
+  owner?: HostOwner;
+  /**
    * The project root — the directory `pithy.config.ts` was read from, and the base every
    * `@pithy-sh/vector` module is resolved against. Not derivable from `project`, which is a *name*;
    * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
@@ -165,7 +171,10 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   readonly #now: () => number;
   readonly #target: { worker: WorkerDir; env: string; productionEnvironments: readonly string[] } | undefined;
 
+  readonly #owner: HostOwner | undefined;
+
   constructor(options: CloudflareVectorProvisionerOptions) {
+    this.#owner = options.owner;
     this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#accountId = options.accountId;
@@ -296,6 +305,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     const config = resolveVectorConfig(template, {
       project: this.#project,
       env,
+      ...(this.#owner ? { owner: this.#owner.worker } : {}),
       appDatabaseId,
       indexNames,
       config: this.#config,
@@ -323,14 +333,14 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     await this.#cf.vectorizeProvisioner().deleteIndex(indexName);
   }
 
-  /** Trigger the deployed reprocess Workflow for this environment and wait for it to finish. */
+  /** Trigger this host's deployed reprocess Workflow for the environment, the owner's own where it has one, and wait. */
   async reprocess(
     env: string,
     index: string,
     options: { all?: boolean; filter?: Record<string, unknown> },
   ): Promise<unknown> {
     const { VECTOR_CAPABILITY } = await loadVector(this.#projectDir);
-    const name = resourceNames(this.#project).env(env).workflow(VECTOR_CAPABILITY, "reprocess");
+    const name = resourceNames(this.#project).env(env).workflow(VECTOR_CAPABILITY, "reprocess", this.#owner?.worker);
     return this.#workflows.dispatchAndPoll(name, {
       index,
       ...(options.all !== undefined ? { all: options.all } : {}),
