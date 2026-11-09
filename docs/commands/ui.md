@@ -84,7 +84,7 @@ Both are `composite`, because both are referenced from the project's root `tscon
 | `src/pithy-screens.css` | always | Pithy's: every class name a Pithy screen renders, in a `@layer pithy` cascade layer. Written whenever absent, which is what makes a later `--auth` backfill produce screens that render styled — the adopter's `styles.css` is correctly skipped, so the rules cannot live in it |
 | `src/pithy-config.tsx` | always | Every `virtual:pithy/*` module, narrowed once for the screens. The consent screen narrows `virtual:pithy/consent` itself |
 | `src/pithy-locale.tsx`, `src/pithy-locale.test.tsx` | always | Resolves the reader's language and keeps `<html lang>` on it, and a seeded test that the two agree. Renders its children untouched when nothing is composed |
-| `src/session.tsx` | `--auth` | The session hook, `signOut`, and the signed-in route guard |
+| `src/session.tsx` | `--auth` | The session hook, `signOut` and `useSignOut`, and the signed-in route guard |
 | `src/turnstile.tsx`, `src/turnstile.test.tsx` | `--auth` | The Turnstile widget and the token placement the middleware reads, and a seeded test that it solves for the action your config names |
 | `src/routes/pithy/*.tsx` | `--auth` | Pithy's screens: sign-in, OTP, callback, and account suspended, account deleted, organization suspended. `sign-in.test.tsx` holds the link to the path `callback.tsx` declares, and `otp.test.tsx` sends a suspended or deleted account to its own screen |
 | `src/payments.tsx`, `src/routes/pithy/paywall.tsx`, `pricing.tsx`, `subscription.tsx` | `--payments` | The payments client bound to its base path, and the paywall, pricing and subscription screens |

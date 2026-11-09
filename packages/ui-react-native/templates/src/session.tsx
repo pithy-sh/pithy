@@ -8,10 +8,11 @@ import {
 } from "@pithy-sh/auth/src/client/api";
 import { createHandoffVerifier, exchangeHandoff, handoffCallbackURL } from "@pithy-sh/auth/src/client/handoff";
 import { accountRefusal } from "@pithy-sh/auth/src/client/lifecycle";
+import type { KitErrorCode } from "@pithy-sh/core/src/error/payload";
+import { useAction } from "@pithy-sh/ui-core/src/action";
 import { useRead } from "@pithy-sh/ui-core/src/read";
 import { matchPath, type ScreenRole, screenPath } from "@pithy-sh/ui-core/src/routes";
 import { CryptoDigestAlgorithm, digest, getRandomBytes } from "expo-crypto";
-import { useCallback } from "react";
 import { Linking } from "react-native";
 import { authConfig, origin, universalLinkOrigin } from "./pithy-config";
 import { appLink, onDevice, openExternal, parseQuery, queryString } from "./platform";
@@ -186,19 +187,48 @@ export function refusedAccountScreen(code: string | null | undefined): ScreenRol
   return null;
 }
 
-/** End the session: the Worker's first, then the credential this device holds. */
-export async function signOut(): Promise<void> {
-  await endSession(transport.auth);
-  await transport.forget();
+/** The code the Worker refuses a request with when it carries no live session: one already ended is ended. */
+const NO_SESSION = "auth/invalid_token" satisfies KitErrorCode;
+
+/**
+ * End the session, and answer whether it ended: the Worker's first, then the credential this device holds.
+ *
+ * On a phone it has ended once the credential is forgotten, which happens whatever the Worker answered. On the web
+ * the session is an httpOnly cookie only the Worker can clear, so it has ended only when the Worker took the
+ * sign-out, or refused it for want of a session, and a read then answers nobody. A read that fails is no answer.
+ */
+export async function signOut(): Promise<boolean> {
+  const ended = await endSession(transport.auth);
+  if (transport.bearer) {
+    await transport.forget();
+    return true;
+  }
+  if (!ended.ok && ended.failure.code !== NO_SESSION) return false;
+  const read = await readSession(transport.auth);
+  return read.ok && read.value === null;
 }
 
-/** {@link signOut}, then the sign-in screen. */
-export function useSignOut(): () => Promise<void> {
+/** What {@link useSignOut} gives a screen. */
+export interface SignOut {
+  /** Sign out. Resolves once the app is leaving, or once the failure is set. Never rejects. */
+  readonly run: () => Promise<void>;
+  /** Whether a sign-out is in flight. */
+  readonly pending: boolean;
+  /** Why the last sign-out did not finish, or `null`. Render it: the person is still signed in. */
+  readonly failure: Error | null;
+}
+
+/**
+ * {@link signOut}, then the sign-in screen, remounting every screen so nothing the old session's screens held
+ * survives. A sign-out that did not end the session leaves the person where they are, with `failure` set.
+ */
+export function useSignOut(): SignOut {
   const go = useGo();
-  return useCallback(async () => {
-    await signOut();
-    go(screenPath(await routeTable(), "sign-in"));
-  }, [go]);
+  const action = useAction(async () => {
+    if (!(await signOut())) throw new Error("The session did not end.");
+    go(screenPath(await routeTable(), "sign-in"), { load: true });
+  });
+  return { run: action.run, pending: action.pending, failure: action.failure };
 }
 
 /** The session as component state, plus a `refresh` for after a sign-in completes. */

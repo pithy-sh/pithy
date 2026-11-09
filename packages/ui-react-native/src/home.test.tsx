@@ -5,7 +5,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createMemoryAdapter, RouterProvider } from "../templates/src/router";
 
-const session = vi.hoisted(() => ({ signOut: vi.fn(async () => undefined) }));
+const session = vi.hoisted(() => ({
+  signOut: { run: vi.fn(async () => undefined), pending: false, failure: null as Error | null },
+}));
 
 vi.mock("../templates/src/session", () => ({
   useSession: () => ({
@@ -19,6 +21,7 @@ vi.mock("../templates/src/session", () => ({
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  session.signOut = { run: vi.fn(async () => undefined), pending: false, failure: null };
 });
 
 describe("the signed-in home screen", () => {
@@ -32,8 +35,41 @@ describe("the signed-in home screen", () => {
       </RouterProvider>,
     );
     expect(screen.getByText("Signed in as ada@example.com.")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByRole("button"));
-    expect(session.signOut).toHaveBeenCalled();
+    expect(session.signOut.run).toHaveBeenCalled();
+  });
+
+  test("a sign-out that did not finish says the person is still signed in, and offers it again", async () => {
+    session.signOut = {
+      run: vi.fn(async () => undefined),
+      pending: false,
+      failure: new Error("The session did not end."),
+    };
+    const home = await import("../templates/src/routes/app/home");
+    render(
+      <RouterProvider adapter={createMemoryAdapter("/")}>
+        <home.default />
+      </RouterProvider>,
+    );
+    expect(screen.getByRole("alert").textContent).toBe(
+      "We couldn't sign you out, so you're still signed in. Try again.",
+    );
+    expect(screen.getByText("Signed in as ada@example.com.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button"));
+    expect(session.signOut.run).toHaveBeenCalled();
+  });
+
+  test("a sign-out in flight cannot be started twice", async () => {
+    session.signOut = { run: vi.fn(async () => undefined), pending: true, failure: null };
+    const home = await import("../templates/src/routes/app/home");
+    render(
+      <RouterProvider adapter={createMemoryAdapter("/")}>
+        <home.default />
+      </RouterProvider>,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(session.signOut.run).not.toHaveBeenCalled();
   });
 });
 
