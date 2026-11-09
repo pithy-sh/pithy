@@ -1146,6 +1146,91 @@ describe("the adopter's own rows begin with the account", () => {
     expect((await theirRows()).map((row) => row.kind)).toEqual(["settings", "profile"]);
   });
 
+  /** Makes the founder `owner` in the founding batch, the role founding itself never hands out. */
+  const ownership: OrganizationCreateStatements = (d1, { membershipId }) => [
+    {
+      compile: () =>
+        sql`update pithy_organization_memberships set role = 'owner' where id = ${membershipId}`.compile(theirs(d1)),
+    },
+  ];
+
+  test("**the founder's membership is returned with the role the batch committed**", async () => {
+    const { membership } = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      { onCreate: ownership },
+    );
+    expect(membership.role).toBe("owner");
+  });
+
+  test("the organization is returned as the batch committed it", async () => {
+    const { organization } = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: (d1, { organizationId }) => [
+          {
+            compile: () =>
+              sql`update pithy_organization_organizations set seat_limit = 5 where id = ${organizationId}`.compile(
+                theirs(d1),
+              ),
+          },
+        ],
+      },
+    );
+    expect(organization.seatLimit).toBe(5);
+  });
+
+  test("a derived slug that retries returns the committed role", async () => {
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", slug: "acme-games", founderUserId: STRANGER });
+
+    const { organization, membership } = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", founderUserId: FOUNDER, newSuffix: (length) => "q".repeat(length) },
+      { onCreate: ownership },
+    );
+
+    expect(organization.slug).toBe("acme-games-qqqq");
+    expect(membership.role).toBe("owner");
+  });
+
+  test("onJoin is told the role founding inserted, before onCreate's statements run", async () => {
+    const joined: MembershipJoined[] = [];
+    await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: ownership,
+        onJoin: (_d1, event) => {
+          joined.push(event);
+          return [];
+        },
+      },
+    );
+    expect(joined.map((event) => event.role)).toEqual(["admin"]);
+  });
+
+  test("an onCreate that removes the founder's membership refuses rather than answering a row that is gone", async () => {
+    const failure = await createOrganization(
+      env.DB,
+      NESTING,
+      { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER },
+      {
+        onCreate: (d1, { membershipId }) => [
+          {
+            compile: () =>
+              sql`delete from pithy_organization_memberships where id = ${membershipId}`.compile(theirs(d1)),
+          },
+        ],
+      },
+    ).catch((error: unknown) => error);
+    expect(codeOf(failure)).toBe("core/internal");
+  });
+
   test("a founding the input refuses never runs the builders", async () => {
     let built = 0;
     const failure = await createOrganization(

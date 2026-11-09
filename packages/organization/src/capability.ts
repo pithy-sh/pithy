@@ -194,7 +194,8 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    *
    * Return statements, as for `onDelete`: they join the founding `d1.batch` after the organization and
    * the founder's membership, so they may reference both, and a failure in any of them rolls the founding
-   * back. A derived slug's retry reuses them, so a founding that commits writes them once.
+   * back. A derived slug's retry reuses them, so a founding that commits writes them once. A statement
+   * that changes the founder's role is what the 201 answers and what `organization/created` records.
    *
    * Handed the binding and `{ organizationId, membershipId, founderUserId, name }`. Your own setup flow
    * passes the same function to `createOrganization`.

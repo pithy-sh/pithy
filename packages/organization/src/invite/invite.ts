@@ -23,7 +23,7 @@ import {
   OrganizationSeatLimitReachedError,
 } from "../error/errors";
 import { organizationStanding } from "../lifecycle/state";
-import { compileStatements, type OrganizationWriteStatements } from "../provision/provision";
+import { compileStatements, heldRole, type OrganizationWriteStatements } from "../provision/provision";
 import type { RoleCatalog } from "../roles/roles";
 import { invitationDigest, mintInvitationToken } from "./token";
 
@@ -350,7 +350,10 @@ export interface AcceptedInvitation<Role extends string> {
   readonly invitation: Invitation;
   /** The membership that exists as a result — created by this call, or already there. */
   readonly membershipId: string;
-  /** The role granted, decoded through the catalog rather than taken off the row as text. */
+  /**
+   * The role the membership holds once acceptance is done, read back and decoded through the catalog: the
+   * one an `onJoin` statement set when one did, and the standing role of somebody already a member.
+   */
   readonly role: Role;
   /**
    * Whether this call is what created the membership.
@@ -468,7 +471,7 @@ export async function acceptInvitation<Power extends string, Role extends string
     return {
       invitation: accepted(invitation, options.now),
       membershipId: existing.id,
-      role: role.data,
+      role: await heldRole(d1, catalog, existing.id),
       joined: false,
     };
   }
@@ -544,11 +547,10 @@ export async function acceptInvitation<Power extends string, Role extends string
         ) and ${roomFor} and ${open} then ${membership.organizationId} end,
         ${membership.userId}, ${membership.role}, ${membership.createdAt}
     `;
-    return await joinWithAdopterStatements(d1, {
+    return await joinWithAdopterStatements(d1, catalog, {
       invitation,
       membershipId: membership.id,
       userId: options.session.userId,
-      role: role.data,
       now: options.now,
       batch: [
         prepared(d1, guardedJoin.compile(db)),
@@ -582,7 +584,7 @@ export async function acceptInvitation<Power extends string, Role extends string
         { cause },
       );
     }
-    return await alreadyJoined(db, invitation, settled.id, role.data, options.now);
+    return await alreadyJoined(d1, catalog, invitation, settled.id, options.now);
   }
 
   // `undefined` is `withD1Retry`'s idempotency guard — a constraint failure on a *retry*, which it reads
@@ -615,20 +617,25 @@ export async function acceptInvitation<Power extends string, Role extends string
  * live token is left pointing at an account this person is already in. Conditional on `pending`, so a
  * redemption that already spent it is not overwritten.
  */
-async function alreadyJoined<Role extends string>(
-  db: OrganizationDatabase,
+async function alreadyJoined<Power extends string, Role extends string>(
+  d1: D1Database,
+  catalog: RoleCatalog<Power, Role>,
   invitation: Invitation,
   membershipId: string,
-  role: Role,
   now: Date,
 ): Promise<AcceptedInvitation<Role>> {
-  await db
+  await organizationDatabase(d1)
     .updateTable(INVITATIONS_TABLE)
     .set({ status: "accepted", acceptedAt: SQLiteDate.encode(now) })
     .where("id", "=", invitation.id)
     .where("status", "=", "pending")
     .execute();
-  return { invitation: accepted(invitation, now), membershipId, role, joined: false };
+  return {
+    invitation: accepted(invitation, now),
+    membershipId,
+    role: await heldRole(d1, catalog, membershipId),
+    joined: false,
+  };
 }
 
 /**
@@ -639,13 +646,13 @@ async function alreadyJoined<Role extends string>(
  * that committed, somebody else's is a concurrent redemption, and none is the refusal the conditions
  * now give, or a failure.
  */
-async function joinWithAdopterStatements<Role extends string>(
+async function joinWithAdopterStatements<Power extends string, Role extends string>(
   d1: D1Database,
+  catalog: RoleCatalog<Power, Role>,
   attempt: {
     invitation: Invitation;
     membershipId: string;
     userId: string;
-    role: Role;
     now: Date;
     batch: D1PreparedStatement[];
   },
@@ -653,19 +660,21 @@ async function joinWithAdopterStatements<Role extends string>(
   const { invitation, now } = attempt;
   const db = organizationDatabase(d1);
   let failure: unknown;
+  let written: D1Result<unknown>[] | undefined;
   try {
     // `undefined` is `withD1Retry`'s idempotency guard, which is answered by the read below like a failure.
-    const written = await withD1Retry<D1Result<unknown>[] | undefined>(() => d1.batch(attempt.batch));
-    if (written !== undefined) {
-      return {
-        invitation: accepted(invitation, now),
-        membershipId: attempt.membershipId,
-        role: attempt.role,
-        joined: true,
-      };
-    }
+    written = await withD1Retry<D1Result<unknown>[] | undefined>(() => d1.batch(attempt.batch));
   } catch (cause) {
     failure = cause;
+  }
+  // Outside the try: a refusal from reading the role back is the answer, not a batch failure to re-read.
+  if (written !== undefined) {
+    return {
+      invitation: accepted(invitation, now),
+      membershipId: attempt.membershipId,
+      role: await heldRole(d1, catalog, attempt.membershipId),
+      joined: true,
+    };
   }
 
   const settled = await db
@@ -678,11 +687,11 @@ async function joinWithAdopterStatements<Role extends string>(
     return {
       invitation: accepted(invitation, now),
       membershipId: attempt.membershipId,
-      role: attempt.role,
+      role: await heldRole(d1, catalog, attempt.membershipId),
       joined: true,
     };
   }
-  if (settled) return await alreadyJoined(db, invitation, settled.id, attempt.role, now);
+  if (settled) return await alreadyJoined(d1, catalog, invitation, settled.id, now);
 
   // Nothing was written. Say which condition stopped it, asked again, and otherwise report the failure.
   await refuseIfFull(db, invitation.organizationId);

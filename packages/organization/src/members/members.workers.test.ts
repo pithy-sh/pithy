@@ -1070,6 +1070,55 @@ describe("the operator's doors", () => {
       expect(await profiles()).toEqual([{ membership_id: added.membership.id, via: "operator" }]);
     });
 
+    /** Makes the new member `admin` in the add's batch, past the role the operator named. */
+    const promote: OrganizationJoinStatements = (d1, { membershipId }) => [
+      {
+        compile: () =>
+          sql`update pithy_organization_memberships set role = 'admin' where id = ${membershipId}`.compile(
+            organizationDatabase(d1),
+          ),
+      },
+    ];
+
+    test("**the membership is returned with the role the batch committed, when onJoin changes it**", async () => {
+      const added = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: promote });
+      expect(added.membership.role).toBe("admin");
+    });
+
+    test("the role is the committed one under a seat limit too", async () => {
+      await setSeatLimit(5);
+      const added = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: promote });
+      expect(added.membership.role).toBe("admin");
+    });
+
+    test("**an onJoin that sets a role the catalog does not declare refuses rather than answering it**", async () => {
+      const undeclared: OrganizationJoinStatements = (d1, { membershipId }) => [
+        {
+          compile: () =>
+            sql`update pithy_organization_memberships set role = 'superuser' where id = ${membershipId}`.compile(
+              organizationDatabase(d1),
+            ),
+        },
+      ];
+      const payload = await refusal(addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: undeclared }));
+      expect(payload.code).toBe("core/internal");
+      expect(payload.detail).toMatch(/holds role "superuser", which this catalog does not declare$/);
+    });
+
+    test("**an onJoin that deletes the new membership refuses rather than answering a row that is gone**", async () => {
+      const removing: OrganizationJoinStatements = (d1, { membershipId }) => [
+        {
+          compile: () =>
+            sql`delete from pithy_organization_memberships where id = ${membershipId}`.compile(
+              organizationDatabase(d1),
+            ),
+        },
+      ];
+      const payload = await refusal(addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: removing }));
+      expect(payload.code).toBe("core/internal");
+      expect(payload.detail).toMatch(/is not there after its batch committed$/);
+    });
+
     test("**a statement that fails leaves no membership**", async () => {
       // The failure itself, as any write failure here always was: the error handler answers it as a 500.
       const failure = await addMember(env.DB, OWNED, { ...add, organizationId: acme }, { onJoin: failing }).catch(

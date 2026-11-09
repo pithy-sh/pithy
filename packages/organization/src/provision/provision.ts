@@ -169,11 +169,14 @@ function isSlugTaken(error: unknown): boolean {
   return error instanceof PithyError && error.payload.code === "organization/slug_taken";
 }
 
-/** What was founded. Returned decoded, so a caller never re-reads what it just wrote. */
+/** What was founded, read back after the founding batch committed, so a caller never re-reads it. */
 export interface CreatedOrganization {
-  /** The account. */
+  /** The account, as the batch left it. */
   readonly organization: Organization;
-  /** The founder's membership — the row that makes the account reachable at all. */
+  /**
+   * The founder's membership — the row that makes the account reachable at all — as the batch left it.
+   * Its `role` is the one an `onCreate` statement set, when one did.
+   */
   readonly membership: Membership;
 }
 
@@ -198,6 +201,10 @@ export interface OrganizationCreated {
  * Handed the binding, like {@link OrganizationDeleteSweep}, so an adopter builds a Kysely over their own
  * schema. The statements run after the organization and membership inserts, so they may reference both,
  * and a failure in any of them rolls the founding back.
+ *
+ * They may also change both rows: a statement that makes the founder `owner` is what `createOrganization`
+ * returns, what `POST /organizations` answers in `organization.role`, and the `role` fact on
+ * `organization/created`, because both rows are read back after the batch commits.
  */
 export type OrganizationCreateStatements = (
   d1: D1Database,
@@ -215,7 +222,14 @@ export interface MembershipJoined {
   readonly membershipId: string;
   /** The person who joined. */
   readonly userId: string;
-  /** The role the membership holds, as a name from the project's catalog. */
+  /**
+   * The role the membership holds, as a name from the project's catalog.
+   *
+   * It is the role the membership is inserted with, decided before the batch runs. For `via: "founded"`
+   * that is the role founding inserted, before `onCreate`'s statements run, so an `onCreate` that changes
+   * the founder's role is not reflected here. A statement of `onJoin`'s own that changes it is not either.
+   * What the route answers and audits is the role the batch committed, read back after it.
+   */
   readonly role: string;
   /** How the membership began. */
   readonly via: MembershipJoinedVia;
@@ -229,7 +243,9 @@ export interface MembershipJoined {
  * Runs for every membership that begins, through founding, an accepted invitation or an operator's add,
  * and never for an acceptance by somebody who was already a member. The statements run after the
  * membership insert, and a failure in any of them rolls the membership back, along with whatever else
- * that batch wrote.
+ * that batch wrote. A statement that changes the new member's role is what the accepting and adding
+ * routes answer and audit, and what `addMember` and `acceptInvitation` return, because the role is read
+ * back after the batch commits.
  */
 export type OrganizationJoinStatements = (d1: D1Database, joined: MembershipJoined) => readonly OrganizationStatement[];
 
@@ -246,6 +262,35 @@ export interface OrganizationWriteStatements {
   readonly onJoin?: OrganizationJoinStatements;
 }
 
+/**
+ * The role a membership holds as D1 has it, decoded through the catalog.
+ *
+ * Read after a batch that ran the adopter's statements, which may change the role the membership was
+ * inserted with, so what a route answers and audits is the role that committed. A row that is gone, or a
+ * role the catalog does not declare, is an adopter statement that broke the membership, and refuses.
+ */
+export async function heldRole<Power extends string, Role extends string>(
+  d1: D1Database,
+  catalog: RoleCatalog<Power, Role>,
+  membershipId: string,
+): Promise<Role> {
+  const row = await organizationDatabase(d1)
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .select("role")
+    .where("id", "=", membershipId)
+    .executeTakeFirst();
+  const role = catalog.Role.safeParse(row?.role);
+  if (!role.success) {
+    throw new InternalError({
+      message: "The membership could not be read back.",
+      detail: row
+        ? `membership ${membershipId} holds role ${JSON.stringify(row.role)}, which this catalog does not declare`
+        : `membership ${membershipId} is not there after its batch committed`,
+    });
+  }
+  return role.data;
+}
+
 /** Compile an adopter's statements for a batch. */
 export function compileStatements(d1: D1Database, statements: readonly OrganizationStatement[]): D1PreparedStatement[] {
   return statements.map((statement) => compile(d1, statement));
@@ -257,6 +302,8 @@ export function compileStatements(d1: D1Database, statements: readonly Organizat
  * `statements` adds the adopter's own rows to that batch: `onCreate`'s, then `onJoin`'s with `via:
  * "founded"`, both after the two inserts. Each builder runs once, after the input has been validated, and
  * a derived slug's retry reuses what they returned, so a founding that commits writes their rows once.
+ * Both rows are read back after the batch commits, so what is returned is what the adopter's statements
+ * left, the founder's role included.
  *
  * A taken slug refuses with {@link OrganizationSlugTakenError}, decided by asking the database *after*
  * the write failed rather than by checking first. A check-then-insert has a window between the two, and
@@ -426,7 +473,37 @@ async function foundOrganization<Role extends string>(
     }
   }
 
-  return { organization: Organization.parse(rows.organization), membership: Membership.parse(rows.membership) };
+  return await committedFounding(d1, organization.id, membership.id);
+}
+
+/**
+ * Both rows as the founding batch committed them, which is after the adopter's statements ran: an
+ * `onCreate` that changes the founder's role or the account's columns is answered and audited as it left
+ * them, not as they were inserted.
+ */
+async function committedFounding(
+  d1: D1Database,
+  organizationId: string,
+  membershipId: string,
+): Promise<CreatedOrganization> {
+  const db = organizationDatabase(d1);
+  const organization = await db
+    .selectFrom(ORGANIZATIONS_TABLE)
+    .selectAll()
+    .where("id", "=", organizationId)
+    .executeTakeFirst();
+  const membership = await db
+    .selectFrom(MEMBERSHIPS_TABLE)
+    .selectAll()
+    .where("id", "=", membershipId)
+    .executeTakeFirst();
+  if (!organization || !membership) {
+    throw new InternalError({
+      message: "The organization could not be created.",
+      detail: `founding committed without ${organization ? `membership ${membershipId}` : `organization ${organizationId}`}`,
+    });
+  }
+  return { organization: Organization.parse(organization), membership: Membership.parse(membership) };
 }
 
 /**

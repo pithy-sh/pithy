@@ -698,6 +698,8 @@ describe("acceptInvitation", () => {
     // The standing role is not downgraded by an offer of a weaker one.
     const [membership] = await db.selectFrom(MEMBERSHIPS_TABLE).selectAll().execute();
     expect(membership?.role).toBe("admin");
+    // And the answer is the role held, not the one offered.
+    expect(accepted.role).toBe("admin");
     // And the offer is consumed, so no live token points at an account this person is already in.
     expect(await listInvitations(db, ORG)).toHaveLength(0);
   });
@@ -1157,6 +1159,71 @@ describe("acceptInvitation with the adopter's onJoin", () => {
     );
     expect(accepted.joined).toBe(true);
     expect(await links()).toEqual([{ membership_id: accepted.membershipId, invitation_id: minted.invitation.id }]);
+  });
+
+  test("**the role answered is the one the batch committed, when onJoin changes it**", async () => {
+    const minted = await offer({ role: "member" });
+    const accepted = await acceptInvitation(
+      d1,
+      catalog,
+      { token: minted.token, session: ada, now: NOW },
+      {
+        onJoin: (binding, { membershipId }) => [
+          {
+            compile: () =>
+              sql`update pithy_organization_memberships set role = 'owner' where id = ${membershipId}`.compile(
+                organizationDatabase(binding),
+              ),
+          },
+        ],
+      },
+    );
+    expect(accepted.joined).toBe(true);
+    expect(accepted.role).toBe("owner");
+  });
+
+  /** An onJoin that runs `statement` against the new membership's id. */
+  function touching(statement: (membershipId: string) => ReturnType<typeof sql>): OrganizationJoinStatements {
+    return (binding, { membershipId }) => [
+      { compile: () => statement(membershipId).compile(organizationDatabase(binding)) },
+    ];
+  }
+
+  test("**an onJoin that sets a role the catalog does not declare refuses rather than answering it**", async () => {
+    const minted = await offer({ role: "member" });
+    const error = await refusal(() =>
+      acceptInvitation(
+        d1,
+        catalog,
+        { token: minted.token, session: ada, now: NOW },
+        {
+          onJoin: touching(
+            (membershipId) =>
+              sql`update pithy_organization_memberships set role = 'superuser' where id = ${membershipId}`,
+          ),
+        },
+      ),
+    );
+    expect(error.payload.code).toBe("core/internal");
+    expect(error.payload.detail).toMatch(/holds role "superuser", which this catalog does not declare$/);
+  });
+
+  test("**an onJoin that deletes the new membership refuses rather than answering a row that is gone**", async () => {
+    const minted = await offer({ role: "member" });
+    const error = await refusal(() =>
+      acceptInvitation(
+        d1,
+        catalog,
+        { token: minted.token, session: ada, now: NOW },
+        {
+          onJoin: touching(
+            (membershipId) => sql`delete from pithy_organization_memberships where id = ${membershipId}`,
+          ),
+        },
+      ),
+    );
+    expect(error.payload.code).toBe("core/internal");
+    expect(error.payload.detail).toMatch(/is not there after its batch committed$/);
   });
 
   test("somebody already a member begins nothing, so onJoin does not run", async () => {

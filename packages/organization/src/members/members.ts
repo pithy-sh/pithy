@@ -25,7 +25,7 @@ import {
   OrganizationNotFoundError,
   OrganizationSeatLimitReachedError,
 } from "../error/errors";
-import { compileStatements, type OrganizationWriteStatements } from "../provision/provision";
+import { compileStatements, heldRole, type OrganizationWriteStatements } from "../provision/provision";
 import type { KitPower, RoleCatalog } from "../roles/roles";
 
 /**
@@ -910,7 +910,10 @@ export interface AddMemberOptions<Role extends string = string> {
 
 /** What an operator's add wrote, and what it cost against the seat limit. */
 export interface AddedMember<Role extends string> {
-  /** The membership that now exists. */
+  /**
+   * The membership that now exists, with the role read back after the add's batch: the one an `onJoin`
+   * statement set when one did.
+   */
   readonly membership: Membership & { readonly role: Role };
   /** The account's seat limit when the add ran, or null for none. */
   readonly seatLimit: number | null;
@@ -1046,7 +1049,12 @@ export async function addMember<Power extends string, Role extends string>(
     throw cause;
   }
 
-  return { membership, seatLimit, membersBefore, overrodeSeatLimit };
+  return {
+    membership: { ...membership, role: await heldRole(d1, catalog, membership.id) },
+    seatLimit,
+    membersBefore,
+    overrodeSeatLimit,
+  };
 }
 
 /** How many memberships one organization holds. */
