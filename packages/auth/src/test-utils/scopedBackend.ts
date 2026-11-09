@@ -16,6 +16,7 @@ import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
+import { dropOrder } from "./dropOrder";
 
 /**
  * The fixtures a workers suite needs to put a **real** `auth()` in front of a request.
@@ -61,15 +62,14 @@ export interface ExtraMigrations {
  *
  * Every table rather than a list of them, so a suite composing a capability beside auth does not have to
  * restate what that capability's migrations create, and a second test never meets the first one's rows.
+ * Whatever the foreign keys between an app's own tables, children go before the tables they reference; a
+ * cycle no order can drop is refused with its tables named, before anything is dropped.
  */
 export async function prepareScopedBackend(
   env: SecretsStoreEnv & { DB: D1Database },
   extra: readonly ExtraMigrations[] = [],
 ): Promise<void> {
-  const tables = await env.DB.prepare(
-    "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name not like '\\_cf\\_%' escape '\\'",
-  ).all<{ name: string }>();
-  for (const { name } of tables.results) await env.DB.prepare(`drop table if exists "${name}"`).run();
+  await dropEveryTable(env.DB);
   const provider = createMigrationRegistry([
     { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     { database: "app", namespace: "email", order: EMAIL_MIGRATION_ORDER, migrations: { "0001_init": email_0001_init } },
@@ -78,6 +78,38 @@ export async function prepareScopedBackend(
   if (!provider) throw new Error('expected a migration provider for database "app"');
   await runMigrations(env.DB, provider);
   await seedSecrets(env, SCOPED_REGISTRY, SCOPED_SECRETS);
+}
+
+/**
+ * Drop every table but SQLite's and D1's own, in the order `dropOrder` reads off the schema's foreign keys.
+ *
+ * D1 will not turn `foreign_keys` off, so the keys stay on and the order carries the drop. One batch, so
+ * `defer_foreign_keys` holds across every drop in it. Outside a batch it lasts one statement, since each
+ * statement commits on its own.
+ */
+async function dropEveryTable(db: D1Database): Promise<void> {
+  const tables = await db
+    .prepare(
+      "select name from sqlite_master where type = 'table' and name not like 'sqlite_%' and name not like '\\_cf\\_%' escape '\\'",
+    )
+    .all<{ name: string }>();
+  const names = tables.results.map(({ name }) => name);
+  if (names.length === 0) return;
+  const keyLists = await db.batch<{ table: string; on_delete: string }>(
+    names.map((name) => db.prepare(`pragma foreign_key_list(${quoted(name)})`)),
+  );
+  const foreignKeys = names.flatMap((name, index) =>
+    (keyLists[index]?.results ?? []).map((key) => ({ table: name, references: key.table, onDelete: key.on_delete })),
+  );
+  await db.batch([
+    db.prepare("pragma defer_foreign_keys = on"),
+    ...dropOrder(names, foreignKeys).map((name) => db.prepare(`drop table if exists ${quoted(name)}`)),
+  ]);
+}
+
+/** A table name as an SQL identifier. */
+function quoted(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
 }
 
 /**
