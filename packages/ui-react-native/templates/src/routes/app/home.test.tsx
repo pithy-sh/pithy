@@ -31,16 +31,25 @@ interface Sent {
 }
 
 let sent: Sent[] = [];
+/** Whether the Worker can take a sign-out. When it can, the session it reads afterwards is nobody's. */
+let workerUp = true;
 
 beforeEach(() => {
   sent = [];
+  workerUp = true;
+  let signedIn = true;
   vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
     const headers: Record<string, string> = {};
     new Headers(init.headers).forEach((value, name) => {
       headers[name] = value;
     });
     sent.push({ url, headers });
-    const body = url.endsWith("/get-session") ? { user: { id: "u1", email: "ada@example.com" } } : {};
+    if (url.endsWith("/sign-out")) {
+      if (!workerUp) throw new TypeError("Failed to fetch");
+      signedIn = false;
+    }
+    const session = signedIn ? { user: { id: "u1", email: "ada@example.com" } } : null;
+    const body = url.endsWith("/get-session") ? session : {};
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   });
 });
@@ -85,6 +94,16 @@ test("on the web, the session is the page's cookie, and signing out goes to the 
   await waitFor(() => expect(adapter.path()).toBe("/sign-in"));
   expect(sent.some((request) => request.url.endsWith("/sign-out"))).toBe(true);
   expect(secureStore.items.size).toBe(0);
+});
+
+test("on the web, a sign-out the Worker can't take leaves you on the screen, and says you're still signed in", async () => {
+  const { adapter } = await openOn("web");
+  workerUp = false;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  });
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/still signed in/));
+  expect(adapter.path()).toBe("/");
 });
 
 test("on a phone, the session comes from the secure store, and signing out forgets it", async () => {

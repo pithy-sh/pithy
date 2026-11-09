@@ -161,18 +161,26 @@ export function useSearchParam(name: string): string | null {
   return parseQuery(useSearch())[name] ?? null;
 }
 
+/** How {@link useGo} goes. */
+export interface GoOptions {
+  /** Swap the current entry rather than push one, for a correction the reader did not make. */
+  readonly replace?: boolean;
+  /** Remount every screen as it goes, as {@link RedirectProps.load} does: a change of account, such as a sign-out. */
+  readonly load?: boolean;
+}
+
 /**
  * How a screen navigates after something a person did: `go(to)` pushes, `go(to, { replace: true })` swaps the
- * current entry for a correction the reader did not make. Going where the app already is does nothing.
+ * current entry, and `go(to, { load: true })` remounts every screen. Going where the app already is pushes nothing.
  */
-export function useGo(): (to: string, options?: { replace?: boolean }) => void {
-  const { adapter } = useRouterState();
+export function useGo(): (to: string, options?: GoOptions) => void {
+  const { adapter, reload } = useRouterState();
   return useCallback(
-    (to: string, options?: { replace?: boolean }) => {
-      if (to === adapter.path()) return;
-      adapter.go(to, { replace: options?.replace ?? false });
+    (to: string, options?: GoOptions) => {
+      if (to !== adapter.path()) adapter.go(to, { replace: options?.replace ?? false });
+      if (options?.load) reload();
     },
-    [adapter],
+    [adapter, reload],
   );
 }
 
@@ -248,16 +256,10 @@ function RedirectToScreen(props: Extract<RedirectTarget, { screen: ScreenRole }>
 }
 
 function Go(props: { to: string; replace?: boolean | undefined; load?: boolean | undefined }): ReactNode {
-  const { adapter, reload } = useRouterState();
+  const go = useGo();
   const load = props.load ?? false;
-  const go = useCallback(
-    (to: string, options: { replace: boolean }) => {
-      if (to !== adapter.path()) adapter.go(to, options);
-      if (load) reload();
-    },
-    [adapter, reload, load],
-  );
-  return <Navigate to={props.to} replace={props.replace} go={go} />;
+  const goOnce = useCallback((to: string, options: { replace: boolean }) => go(to, { ...options, load }), [go, load]);
+  return <Navigate to={props.to} replace={props.replace} go={goOnce} />;
 }
 
 // ── guard ────────────────────────────────────────────────────────────────────

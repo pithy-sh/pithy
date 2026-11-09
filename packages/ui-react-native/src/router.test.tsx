@@ -34,6 +34,7 @@ function route(
 function Counter(): ReactNode {
   const [count, setCount] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  const go = useGo();
   if (leaving) return <Redirect to="/counter?again=1" load />;
   return (
     <>
@@ -43,6 +44,9 @@ function Counter(): ReactNode {
       </Pressable>
       <Pressable onPress={() => setLeaving(true)}>
         <Text>switch</Text>
+      </Pressable>
+      <Pressable onPress={() => go("/counter?again=2", { load: true })}>
+        <Text>go and load</Text>
       </Pressable>
     </>
   );
@@ -154,6 +158,15 @@ describe("going elsewhere", () => {
     expect(screen.getByText("count 1")).toBeTruthy();
     fireEvent.click(screen.getByText("switch"));
     await waitFor(() => expect(adapter.path()).toBe("/counter?again=1"));
+    expect(await screen.findByText("count 0")).toBeTruthy();
+  });
+
+  test("going with load remounts every screen too", async () => {
+    const adapter = await mount("/counter");
+    fireEvent.click(await screen.findByText("more"));
+    expect(screen.getByText("count 1")).toBeTruthy();
+    fireEvent.click(screen.getByText("go and load"));
+    expect(adapter.path()).toBe("/counter?again=2");
     expect(await screen.findByText("count 0")).toBeTruthy();
   });
 

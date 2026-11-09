@@ -49,7 +49,7 @@ apps/api/
     pithy-config.tsx         new   narrows each virtual:pithy/* module once
     pithy-locale.tsx         new   the negotiated locale: <html lang> and the translator, one value
     pithy-locale.test.tsx    new   the gate that fails if the page stops speaking the language it declares
-    session.tsx              new   --auth  session hook, signOut, signed-in guard
+    session.tsx              new   --auth  session hook, signOut and useSignOut, signed-in guard
     turnstile.tsx            new   --auth  the widget and its token placement
     turnstile.test.tsx       new   --auth  the gate that fails if the widget stops reading it
     payments.tsx             new   --payments  the client bound to the base path, and the guard's data
@@ -467,6 +467,8 @@ Cookie mode means CSRF protection, always, and Pithy's is `requireSameOrigin()` 
 The session cookie's name comes off the same resolution. Better Auth prefixes it `__Secure-` when the base URL is HTTPS, so a dev composition reads the unprefixed name — the name `pithy seed` writes. Both are computed from one place; they cannot disagree.
 
 **Your own routes wear the same gate, and it takes no arguments.** `@pithy-sh/auth` publishes the check already bound to the origins it resolved, so `requireSameOrigin()` on a route of yours is the policy auth is enforcing — not a second copy of it that can drift. There is no origin list to pass, which is why there is no wrong one.
+
+**A sign-out is confirmed, not assumed.** The cookie is httpOnly, so only the Worker can clear it. The scaffolded `signOut()` in `session.tsx` answers whether the session ended: true only when `/sign-out` was taken, or refused for want of a session, and a session read then answers nobody. A read that fails is no answer, so a Worker that cannot be reached or answers 5xx leaves `signOut()` false. Screens sign out through `useSignOut()`, which returns `{ run, pending, failure }` as `useAction` does: on success it leaves for sign-in by a full document load, so nothing the old session's screens held survives; on failure the person stays where they are and the screen shows that they are still signed in. In the React Native app a phone's session has ended once its bearer credential is forgotten, which happens whatever the Worker answered, and its web build checks as above; `useGo()` takes `{ load: true }` to remount every screen as it goes, which is how it leaves.
 
 **No token is ever put in `localStorage`.** Not the access token, not the refresh token, not a copy "just for convenience". A token in `localStorage` is readable by any script that ends up on the page, and the whole point of the cookie path is that the credential is not reachable from JavaScript at all.
 
