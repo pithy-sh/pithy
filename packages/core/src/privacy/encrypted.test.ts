@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { EncryptedEnvelope } from "../crypto/envelope";
-import { sqliteJson } from "../data/codecs";
+import { isSqliteJson, sqliteJson } from "../data/codecs";
 import { ValidationError } from "../error/pithyError";
 import type { Logger } from "../logger/logger";
 import { phi, pii } from "./classes";
@@ -18,6 +18,7 @@ import {
   encryptedSpecOf,
   encryptedTable,
   encryptedTableOf,
+  hasEncryptedFields,
   normalizeForIndex,
   sqlIdentifier,
 } from "./encrypted";
@@ -124,6 +125,19 @@ describe("encrypted()", () => {
     expect(encryptedSpecOf(sqliteJson(EncryptedEnvelope))).toBeUndefined();
   });
 
+  test("a clone onto a new definition is not the field: a refinement is a schema of its own", () => {
+    const Field = encrypted(z.string().describe("x"));
+    expect(encryptedSpecOf(Field.refine(() => true))).toBeUndefined();
+    expect(
+      encryptedSpecOf(
+        Field.describe("y")
+          .refine(() => true)
+          .optional(),
+      ),
+    ).toBeUndefined();
+    expect(hasEncryptedFields(z.object({ a: Field.refine(() => true) }))).toBe(false);
+  });
+
   test("refuses presence inside the marker, a second marker, and a normalizer that is not the kit's", () => {
     expect(() => encrypted(z.string().optional())).toThrow(ValidationError);
     expect(() => encrypted(z.string().nullable())).toThrow(ValidationError);
@@ -224,5 +238,55 @@ describe("encryptedLayout()", () => {
   test("the SQL column is the plugin's own snake_case", () => {
     expect(sqlIdentifier("emailIndex")).toBe("email_index");
     expect(sqlIdentifier("diagnosis")).toBe("diagnosis");
+  });
+});
+
+/** A second, separately evaluated copy of this module and the codecs beside it, as a project's copy is to the CLI's. */
+async function secondCopy() {
+  vi.resetModules();
+  const copy = { encrypted: await import("./encrypted"), codecs: await import("../data/codecs") };
+  // Two module instances, or the test proves nothing.
+  expect(copy.encrypted.encrypted).not.toBe(encrypted);
+  expect(copy.encrypted.hasEncryptedFields).not.toBe(hasEncryptedFields);
+  expect(copy.codecs.sqliteJson).not.toBe(sqliteJson);
+  return copy;
+}
+
+describe("two copies of core", () => {
+  test("a table one copy marks holds an encrypted field to the other, with its spec", async () => {
+    const other = await secondCopy();
+    const Account = other.encrypted.encryptedTable(
+      z.object({
+        id: z.string().describe("id"),
+        number: other.encrypted.encrypted(pii(z.string().describe("The number.")), { index: "exact" }),
+        numberIndex: other.encrypted.blindIndex("number"),
+      }),
+      { name: "account", key: "id" },
+    );
+
+    expect(hasEncryptedFields(Account)).toBe(true);
+    expect(encryptedSpecOf(Account.shape.number.describe("again").optional())?.index).toBe("exact");
+    expect(other.encrypted.hasEncryptedFields(Patient)).toBe(true);
+  });
+
+  test("a JSON column one copy builds is read through by the other, so a nested field is located", async () => {
+    const other = await secondCopy();
+    const Visit = other.encrypted.encryptedTable(
+      z.object({
+        id: z.string(),
+        profile: other.codecs.sqliteJson(z.object({ phone: other.encrypted.encrypted(z.string()).optional() })),
+      }),
+      { name: "visit", key: "id" },
+    );
+
+    expect(isSqliteJson(Visit.shape.profile.describe("again"))).toBe(true);
+    const layout = encryptedLayout(Visit);
+    expect(layout.problems).toEqual([]);
+    expect(layout.fields.map((field) => field.path)).toEqual(["profile.phone"]);
+  });
+
+  test("a refinement is no more the field across copies than within one", async () => {
+    const other = await secondCopy();
+    expect(encryptedSpecOf(other.encrypted.encrypted(z.string()).refine(() => true))).toBeUndefined();
   });
 });
