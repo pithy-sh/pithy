@@ -15,7 +15,7 @@ import { ControlPlaneActorKind } from "../controlPlane/data/connection";
  * generated audit-event catalog the dashboard reads.
  */
 
-/** `domain/reason` — a namespaced lowercase action code (`auth/login`, `admin/config_changed`). */
+/** `domain/reason` — a namespaced lowercase action code (`auth/signin`, `admin/config_changed`). */
 const AUDIT_ACTION_PATTERN = /^[a-z][a-z0-9]*\/[a-z][a-z0-9_]*$/;
 
 /**
@@ -28,9 +28,11 @@ export const AuditAction = z
   .string()
   .regex(
     AUDIT_ACTION_PATTERN,
-    "An audit action must be a namespaced `domain/reason` code: lowercase, the domain and reason separated by a single `/` (e.g. `auth/login`).",
+    "An audit action must be a namespaced `domain/reason` code: lowercase, the domain and reason separated by a single `/` (e.g. `auth/signin`).",
   )
-  .describe("A namespaced `domain/reason` action code (`auth/login`, `admin/config_changed`); the federated taxonomy.");
+  .describe(
+    "A namespaced `domain/reason` action code (`auth/signin`, `admin/config_changed`); the federated taxonomy.",
+  );
 export type AuditAction = z.output<typeof AuditAction>;
 
 /** The result of an audited action. A blocked authorization attempt is a first-class record. */

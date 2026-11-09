@@ -92,7 +92,7 @@ export const ListAuditEventsQuery = z
       .transform((value) => value.replace(/\/$/, ""))
       .optional()
       .describe(
-        "Filter to every action under one domain — `auth` or `auth/` matches `auth/login` and `auth/logout`, never `authority/granted`. The domain is the only prefix: a reason is never matched by its start.",
+        "Filter to every action under one domain — `auth` or `auth/` matches `auth/signin` and `auth/signout`, never `authority/granted`. The domain is the only prefix: a reason is never matched by its start.",
       ),
     outcome: AuditOutcome.optional().describe(
       "Filter to one outcome. `denied` is the one worth watching: a run of denials is what a credential being probed looks like.",

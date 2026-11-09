@@ -11052,7 +11052,7 @@
             "name": "actionPrefix",
             "in": "query",
             "required": false,
-            "description": "Filter to every action under one domain — `auth` or `auth/` matches `auth/login` and `auth/logout`, never `authority/granted`. The domain is the only prefix: a reason is never matched by its start.",
+            "description": "Filter to every action under one domain — `auth` or `auth/` matches `auth/signin` and `auth/signout`, never `authority/granted`. The domain is the only prefix: a reason is never matched by its start.",
             "schema": {
               "type": "string",
               "maxLength": 256,
