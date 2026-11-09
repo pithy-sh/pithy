@@ -8,6 +8,8 @@ import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
+import { bindingDeclarations } from "../capabilities/bindingNamings";
+import { composedManifests } from "../capabilities/manifests";
 import { withContract } from "../contract/commandContract";
 import { describeStaleAutostartRoots, StaleAutostartRoot } from "../feature/ports";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
@@ -17,7 +19,7 @@ import { askDomains, writeDomains } from "../project/askDomains";
 import { loadProject, loadWorkerDomains, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
-import { reconcileOwnedDatabases } from "../project/ownedStanzas";
+import { reconcileOwnedDatabases, refuseOwnedGlobals } from "../project/ownedStanzas";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { reconcileServiceStanzas, type ServiceWorkerNames, serviceScripts } from "../project/serviceStanzas";
 import { bindableFrom, bindWorker, readServiceProject, unbindWorker } from "../project/workerBind";
@@ -684,15 +686,14 @@ const sync = withContract(
           ...(args.worker === undefined ? {} : { worker: args.worker }),
         });
 
-        // The address first, and separately from the app capability: `domains` says where this Worker
-        // answers, and a Worker with no `app` block still answers somewhere. Validated on the way through —
-        // a malformed declaration must name the field here, not produce a route Cloudflare rejects at deploy.
+        // The address, validated first and separately from the app capability — a malformed declaration must
+        // name the field here, not produce a route Cloudflare rejects at deploy.
         const domains = loadWorkerDomains(target.config);
-        const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
 
         const app = target.config.app;
         // The D1 names `ownBindings` implies — and, for an entry taken out, the ones it no longer does. Asked of
-        // every Worker composing a database, because the second half has nothing listed to trigger it.
+        // every Worker composing a database, because the second half has nothing listed to trigger it, and of
+        // every Worker listing an owned binding, because a global one of any kind is refused there.
         const ownBindings = target.target.ownBindings ?? [];
         const composesDatabase = target.capabilities.some((capability) =>
           capability.requiredBindings.some((binding) => binding.type === "d1"),
@@ -710,16 +711,29 @@ const sync = withContract(
                   .then(requireProjectName)
                   .catch(() => undefined)
               : undefined;
-        const ownedBindings =
-          project && composesDatabase
-            ? await reconcileOwnedDatabases({
+        const owning =
+          project && (composesDatabase || ownBindings.length > 0)
+            ? {
                 workerDir: target.dir,
                 project,
                 capabilities: target.capabilities,
+                declarations: bindingDeclarations(
+                  (await composedManifests(projectDir, target.dir)).manifests,
+                  target.config.app,
+                ),
                 ownBindings,
-                ...(env === undefined ? {} : { env }),
-              })
-            : [];
+              }
+            : undefined;
+        // Before any write: a global binding in `ownBindings` fails the command with wrangler.jsonc untouched.
+        if (owning) refuseOwnedGlobals(owning);
+
+        // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
+        // and a Worker with no `app` block still answers somewhere.
+        const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
+
+        const ownedBindings = owning
+          ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
+          : [];
         if (!app && domains === undefined && ownBindings.length === 0 && ownedBindings.length === 0) {
           throw new NotFoundError({
             message: `${target.name} declares neither domains nor an app capability.`,

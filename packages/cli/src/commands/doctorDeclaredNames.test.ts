@@ -26,6 +26,7 @@ const DRIFTED: DeclaredNamesCheck = {
       declared: "my-app-staging-other-db",
       expected: "my-app-staging-db",
       owned: false,
+      global: false,
     },
   ],
   unrecognized: [{ worker: "other", binding: "DBB" }],

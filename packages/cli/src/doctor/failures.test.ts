@@ -964,6 +964,7 @@ describe("every finding in every block carries fix", () => {
             declared: "acme-staging-other-db",
             expected: "acme-staging-db",
             owned: false,
+            global: false,
           },
         ],
         unrecognized: [{ worker: "other", binding: "DBB" }],
