@@ -94,7 +94,7 @@ export const reactNativeStub: UiStub = {
     "@pithy-sh/ui-react-native": kitRange(UI_REACT_NATIVE_VERSION),
     "@testing-library/react": "16.3.3",
     "@types/react": "^19.2.18",
-    "happy-dom": "^20.11.1",
+    "happy-dom": "^21.0.4",
     vitest: "^4.1.0",
   },
   // Expo's Metro server on the port `pithy dev` pins for the app. `pithy dev` reads its output through a pipe, and

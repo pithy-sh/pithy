@@ -131,6 +131,14 @@ export async function applyInbound(
 }
 
 /**
+ * The largest inbound message the bounce handler reads, by its declared size. What comes back here is
+ * a DSN or a feedback report about a templated send with no attachments, so even a report that returns
+ * the whole original runs to tens of kilobytes; 2 MiB, support's default bound, leaves that a wide
+ * margin and refuses anything else before a byte of it is buffered.
+ */
+export const MAX_BOUNCE_RAW_BYTES = 2 * 1024 * 1024;
+
+/**
  * Build the inbound-email handler for the `Capability.email` seam. Reads `DB` + `EMAIL_SUPPRESSIONS` from env.
  *
  * It never throws. `createEntrypoint` runs every capability's handler in turn, so a throw here would stop the ones
@@ -144,6 +152,16 @@ export function createBounceHandler(): CapabilityEmailHandler {
     const environment = typeof env.ENVIRONMENT === "string" ? env.ENVIRONMENT : undefined;
     const log = createWorkerLogger({ name: "email", fields: { env: environment ?? "unknown" } });
     try {
+      const declared = message.rawSize;
+      if (typeof declared === "number" && declared > MAX_BOUNCE_RAW_BYTES) {
+        log.warn("email inbound message refused before parsing", {
+          reason: "too_large",
+          rawSize: declared,
+          maxRawBytes: MAX_BOUNCE_RAW_BYTES,
+        });
+        return;
+      }
+
       const raw = await new Response(message.raw).text();
       const parsed = await PostalMime.parse(raw);
       const headers: Record<string, string> = {};

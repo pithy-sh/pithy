@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
-import { applyInbound, createBounceHandler } from "./handler";
+import { applyInbound, createBounceHandler, MAX_BOUNCE_RAW_BYTES } from "./handler";
 
 /** The shared suppression database handle for the test. */
 const supDb = () => emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS);
@@ -358,6 +358,21 @@ describe("createBounceHandler — untrusted input", () => {
     expect(await suppressionTotal()).toBe(0);
   });
 
+  test("a Subject of a hundred thousand joinable encoded words decodes in linear time", async () => {
+    // Adjacent RFC 2047 base64 words in one charset are joined before they are decoded. A parser that
+    // re-tests the joined text on every word spends quadratic time on this 1.7 MB header — seconds of
+    // CPU from one message anyone can send. A linear decode finishes it in tens of milliseconds.
+    const words = Array.from({ length: 100_000 }, () => "=?UTF-8?B?QUJD?=").join(" ");
+    const raw = ["From: stranger@example.net", "To: bounces@pithy.sh", `Subject: ${words}`, "", "hello", ""].join(
+      "\r\n",
+    );
+
+    const started = Date.now();
+    await expect(handle(raw)).resolves.toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(await suppressionTotal()).toBe(0);
+  });
+
   test("an unauthenticated stranger can suppress any address they name", async () => {
     // Recorded, not endorsed. Nothing authenticates the sender of an inbound message: Cloudflare stamps
     // a verdict but the handler reads none, so a DSN invented by anyone who can reach the routed address
@@ -505,6 +520,63 @@ describe("createBounceHandler — never throws", () => {
     const logs = await handle(SOFT, { EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS });
     expect(warned(logs)).toEqual([{ binding: "DB", skipped: "job" }]);
     expect(await suppressionCount("u@example.com")).toBe(0);
+  });
+
+  test("a message declared over MAX_BOUNCE_RAW_BYTES is refused before a byte of it is read", async () => {
+    let pulled = false;
+    const message = {
+      ...inbound(DSN),
+      // A high-water mark of 0 keeps the stream from pulling ahead of a reader.
+      raw: new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulled = true;
+            controller.enqueue(new TextEncoder().encode(DSN));
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      rawSize: MAX_BOUNCE_RAW_BYTES + 1,
+    } as unknown as ForwardableEmailMessage;
+
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      await createBounceHandler()(
+        message,
+        { DB: env.DB, EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS },
+        {} as ExecutionContext,
+      );
+    } finally {
+      console.log = original;
+    }
+
+    expect(pulled).toBe(false);
+    expect(await suppressionCount("u@example.com")).toBe(0);
+    const logs = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(logs.map((line) => [line.level, line.msg, line.fields])).toEqual([
+      [
+        "warn",
+        "email inbound message refused before parsing",
+        expect.objectContaining({
+          reason: "too_large",
+          rawSize: MAX_BOUNCE_RAW_BYTES + 1,
+          maxRawBytes: MAX_BOUNCE_RAW_BYTES,
+        }),
+      ],
+    ]);
+  });
+
+  test("a message declared at exactly MAX_BOUNCE_RAW_BYTES is still read and acted on", async () => {
+    const message = { ...inbound(DSN), rawSize: MAX_BOUNCE_RAW_BYTES } as unknown as ForwardableEmailMessage;
+    await createBounceHandler()(
+      message,
+      { DB: env.DB, EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS },
+      {} as ExecutionContext,
+    );
+    expect(await suppressionCount("u@example.com")).toBe(1);
   });
 
   test("a database that fails is logged with the error it hit, and the handler returns", async () => {

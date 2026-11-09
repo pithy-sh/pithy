@@ -106,7 +106,7 @@ export const reactStub: UiStub = {
     // node project collects `.tsx` co-located tests but runs them in `environment: "node"`, where
     // `document` does not exist — so `src/turnstile.test.tsx` names its own environment in a docblock,
     // and this is the package that has to be installed for that name to resolve.
-    "happy-dom": "^20.11.2",
+    "happy-dom": "^21.0.4",
     vite: "^8.2.1",
     // The Worker's own pin, imported from the producer that writes it, so there is one statement of it.
     wrangler: WRANGLER_RANGE,

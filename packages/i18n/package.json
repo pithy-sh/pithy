@@ -71,7 +71,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.0",
     "expo-localization": "57.0.2",
-    "happy-dom": "^20.11.1",
+    "happy-dom": "^21.0.4",
     "hono": "^4.13.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
