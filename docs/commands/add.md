@@ -98,11 +98,13 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Which Worker.** `--worker` names it. A single-Worker project needs no ceremony. A project with several never guesses: it prompts a human, and fails `input/required` for anyone else, naming `--worker` and every Worker in `choices` — an agent driving `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` is told what to pass rather than hanging on a question it cannot answer.
 
-**`--dry-run` is the add, made in a copy.** The whole flow above runs — the same prerequisite refusal, the same required options, the same config, binding, entry, seam, test-binding and manifest writes — against a private copy of the project under the system temporary directory, and the plan is what changed there: each file with its diff, so the bytes a person reviews are the bytes the add writes. The copy is gone before the command exits. Five steps are not made, and the plan says what each would do instead: the install names the command it would run, on the `package.json` it would run against — the Worker's own for a workspace member, the root's otherwise — and declares the package there in the copy at `^<installed>`, so the diff is the declaration the real run writes; the dev migrations are a note, because which are pending is known only once the wiring is on disk; the dev secrets the add would mint are listed under `secrets`, without a value; an `--eject` copy is one directory created rather than a diff of every file in the package; and the root install after a test binding's import was declared at the root is named on the root `package.json`. No account is reached and nothing is audited.
+**`--dry-run` is the add, made in a copy.** The whole flow above runs — the same prerequisite refusal, the same required options, the same config, binding, entry, seam, test-binding and manifest writes — against a private copy of the project under the system temporary directory, and the plan is what changed there: each file with its diff, so the bytes a person reviews are the bytes the add writes. The copy is gone before the command exits. Five steps are not made, and the plan says what each would do instead: the install declares the package in the copy at `^<installed>` in the `package.json` it would run against — the Worker's own for a workspace member, the root's otherwise — and is named there, with the command it would run, when that changes the declaration. A package already declared at that range is no edit, but the real install still runs, and it names no version: a release newer than the installed one moves the declaration and the lockfile to it. A dry run reads no registry, so it names that install as a step, with the condition under which it changes the two files; the dev migrations are a note, because which are pending is known only once the wiring is on disk; the dev secrets the add would mint are listed under `secrets`, without a value; an `--eject` copy is one directory created rather than a diff of every file in the package, and its dependency install is named only when it would change a declaration; and the root install after a test binding's import was declared at the root is named on the root `package.json`. No account is reached and nothing is audited.
+
+**A plan names only the files the add would change.** A step that would leave a file as it is plans no edit, so the dry run and the real run agree file by file. On a Worker whose `pithy.config.ts` already registers the capability, both say `<capability> is already wired into <worker>.` in place of `Would wire …` and `Wired …`, and the plan lists only what would still change: a binding the config has since lost, or a declaration at another range. The install that still runs is named under it as a step.
 
 The manifest has to be installed, because it is what says what a capability wires and installing it is the one step a plan cannot make in a copy. A capability that is not installed is refused, exit 3, naming the install command.
 
-Idempotent. A second `pithy add auth` changes nothing. Adding the same capability to a second Worker runs that Worker's own install, declaring the package in its own `package.json`, and writes its config and bindings.
+Idempotent. A second `pithy add auth` wires nothing new, and says `auth is already wired into <worker>.` Its install still runs, so a release of the package newer than the one installed moves the declaration and the lockfile to it. Adding the same capability to a second Worker runs that Worker's own install, declaring the package in its own `package.json`, and writes its config and bindings.
 
 ## `--json`
 
@@ -136,7 +138,7 @@ A faulted package is reported rather than refused: one broken manifest must not 
 
 ```
 $ pithy add secrets --json
-{"command":"add","schemaVersion":2,"capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run `pithy add secrets --worker board --json` again.", …]}
+{"command":"add","schemaVersion":2,"capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","alreadyWired":false,"databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run `pithy add secrets --worker board --json` again.", …]}
 ```
 
 | key | type | meaning |
@@ -149,6 +151,7 @@ $ pithy add secrets --json
 | `deployedAs` | string | The same Worker's deployed script name, from `wrangler.jsonc`. What the Cloudflare dashboard shows |
 | `package` | string | The npm package the capability ships in |
 | `packageManager` | `"npm" \| "pnpm" \| "yarn" \| "bun"` | The project's package manager, detected from its lockfile. Reported whether or not an install ran — it is a fact about the project, not a record of a spawn |
+| `alreadyWired` | boolean | Whether the Worker's `pithy.config.ts` registered the capability before this add. When `true` nothing new is wired, and under `--dry-run` `plan.files` lists only what would still change — empty when nothing would |
 | `databases` | array | The dev migration run, one entry per database this Worker's registry touched. Empty under `--dry-run`, which runs none |
 | `databases[].database` | string | The database name — a capability's `databases` key |
 | `databases[].binding` | string | The D1 binding it resolves to in this Worker's `wrangler.jsonc` |
@@ -179,7 +182,7 @@ $ pithy add secrets --json
 
 ```
 $ pithy add audit --dry-run --json
-{"command":"add","schemaVersion":2,"dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -3,3 +3,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
+{"command":"add","schemaVersion":2,"dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","alreadyWired":false,"databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -3,3 +3,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
 ```
 
 ## Errors
@@ -357,6 +360,17 @@ Would edit apps/board/package.json.
   Runs bun add @pithy-sh/audit here, which also writes the lockfile.
 Would edit apps/board/pithy.config.ts.
 Would edit apps/board/wrangler.jsonc.
+Then applies board's pending dev migrations to the local database.
+Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store.
+Dry run. Nothing written.
+```
+
+The same dry run on a Worker that already composes it plans no edit, and names the install that still runs.
+
+```
+$ pithy add audit --dry-run
+audit is already wired into board.
+Runs bun add @pithy-sh/audit for apps/board/package.json. It leaves that file and the lockfile as they are while 0.4.0 is the newest release of @pithy-sh/audit, and moves both to a newer one if it is out.
 Then applies board's pending dev migrations to the local database.
 Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store.
 Dry run. Nothing written.
