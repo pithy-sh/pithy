@@ -876,7 +876,7 @@ Everything else that fails the exit — credentials, the project name, a stamp, 
 | `projectName.misnamed` | `null` — a rename orphans what is provisioned, so it is yours to make |
 | `secretBindings.missing` | `null` for a value the kit composes — `pithy secrets provision` mints it, and runs against every environment, production included, so it is a person's decision; `pithy secrets create <secret>` for one only you have, with `--env <env>` unless the secret is `global` — then `pithy secrets provision` binds it |
 | `docsMcp.clients` | `pithy docs connect --client <id>` |
-| `testBindings.missing` | `pithy add <capability> --worker <worker>` for the first Worker composing it; a re-run writes the test bindings and changes nothing else |
+| `testBindings.missing` | `pithy add <capability> --worker <worker>` for the first Worker composing it; a re-run writes the test bindings and wires nothing else |
 | `rootImports.unresolved` | `null` — the `line` goes in the root `package.json`'s `devDependencies`, then an install at the root |
 | `duplicateCapabilities.duplicates` | `null` — the entry comes out of the root `package.json`'s `dependencies` |
 | `varStanzas.vars` | As in `failures` above for a var the Worker declares, whose entry also gates; `null` for an undeclared var, which reports only and whose `line` goes in that stanza's `vars` by hand |
