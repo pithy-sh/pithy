@@ -15,20 +15,13 @@ import {
   describeWorkflowDrift,
   workflowDrift,
   workflowDriftFix,
+  workflowExports,
 } from "./workflows";
 
 /**
- * **What the app capability declares is what the environment's stanza binds.**
- *
- * One invariant, both directions, and until #267 nothing asked it in either. `reconcileAppWorkflows`
- * writes the `workflows` table and `triggers.crons` from the declaration, its only caller is
- * `pithy worker sync`, and nothing read the two halves back — so a job declared and never synced
- * deployed clean and its cron never fired, with no error anywhere.
- *
- * Stated as one comparison of the whole table rather than as a list of the ways the two can differ,
- * because the list is what goes stale: a missing binding, a binding nothing declares, a stale cron and
- * a name carrying the wrong environment are one fault with one remedy, and a gate enumerating three of
- * them would have shipped blind to the fourth.
+ * **What the app capability declares is what the environment's stanza binds**, in both directions: a job declared
+ * and never synced is drift, and so is a binding nothing declares. A missing binding, a stale cron and a name
+ * carrying the wrong environment are one fault with one remedy, so each case below is the same comparison.
  */
 
 let dir: string;
@@ -84,7 +77,7 @@ async function worker(
   return workerDir;
 }
 
-/** The digest job the issue is written about: bound as `DIGEST`, fired nightly. */
+/** A digest job: bound as `DIGEST`, fired nightly. */
 const DIGEST: Record<string, Job> = {
   digest: { binding: "DIGEST", className: "DigestWorkflow", schedule: "0 4 * * *" },
 };
@@ -93,7 +86,7 @@ const DIGEST: Record<string, Job> = {
 const DIGEST_PROD = { binding: "DIGEST", name: "replay-prod-board-digest", class_name: "DigestWorkflow" };
 
 describe("workflowDrift", () => {
-  /** The whole issue: a job declared, `worker sync` never run, and every check green. */
+  /** A job declared and `worker sync` never run. */
   test("a declared Workflow the stanza does not bind is drift", async () => {
     await worker("board", { env: { prod: {} } }, DIGEST);
 
@@ -111,7 +104,7 @@ describe("workflowDrift", () => {
   /**
    * And the writer is the whole difference. Run through `reconcileAppWorkflows` — the same function
    * `pithy worker sync` calls, not a hand-built fixture of what it is imagined to write — the config is
-   * clean, which is the acceptance criterion and the only way the reader and the writer cannot drift.
+   * clean, which is the only way the reader and the writer cannot drift.
    */
   test("and pithy worker sync makes it clean, with no other edit", async () => {
     const workerDir = await worker("board", { env: { prod: {} } }, DIGEST);
@@ -238,7 +231,7 @@ describe("workflowDrift", () => {
   });
 });
 
-describe("a library's adopter-hosted jobs are not drift (#622)", () => {
+describe("a library's adopter-hosted jobs are not drift", () => {
   /** `@pithy-sh/auth`'s purge, as `auth()` declares it: no class, optional, the daily pass on a cron. */
   const AUTH = `[{ name: "auth", requiredBindings: [], workflows: {
     purge: { binding: "AUTH_PURGE", optional: true },
@@ -308,7 +301,7 @@ describe("describeWorkflowDrift", () => {
   });
 });
 
-/** The same two branches, as `pithy doctor --json`'s `fix` (#697): the sync for that Worker and environment, or none. */
+/** The same two branches, as `pithy doctor --json`'s `fix`: the sync for that Worker and environment, or none. */
 describe("workflowDriftFix", () => {
   test("an unsynced stanza is the sync, narrowed to its Worker and environment", async () => {
     await worker("board", { env: { prod: {} } }, DIGEST);
@@ -330,7 +323,7 @@ describe("assertWorkflowsBound", () => {
 
     await expect(assertWorkflowsBound(dir, "prod")).rejects.toBeInstanceOf(PithyError);
     await expect(assertWorkflowsBound(dir, "prod")).rejects.toThrow(/board/);
-    // The stanza is behind the declaration: a precondition, with the command doctor names for it (#697).
+    // The stanza is behind the declaration: a precondition, with the command doctor names for it.
     const failure = (await assertWorkflowsBound(dir, "prod").catch((error: unknown) => error)) as PithyError;
     expect(failure.payload.code).toBe("core/precondition_failed");
     expect(fixOf(failure)).toBe("pithy worker sync --worker board --env prod");
@@ -394,9 +387,8 @@ describe("checkWorkflows", () => {
 });
 
 /**
- * **Each stanza is compared with its own environment's declaration (#586).** An app may schedule a job
- * differently per environment. The reader took the module cache, which held whichever environment this
- * process composed last, so every stanza was compared with that one's schedule.
+ * **Each stanza is compared with its own environment's declaration.** An app may schedule a job differently per
+ * environment, and the module cache holds whichever environment this process composed last, which must not decide.
  */
 describe("an environment's declaration is read from its own composition", () => {
   test("the deploy gate and doctor's check each compare the environment they answer", async () => {
@@ -423,5 +415,114 @@ describe("an environment's declaration is read from its own composition", () => 
     await expect(assertWorkflowsBound(dir, "staging")).resolves.toBeUndefined();
     await expect(assertWorkflowsBound(dir, "prod")).resolves.toBeUndefined();
     expect(await checkWorkflows(dir)).toEqual({ state: "ok", drift: [] });
+  });
+});
+
+/** The Worker's main module, at the path its `wrangler.jsonc` names. */
+async function main(workerDir: string, source: string): Promise<void> {
+  await mkdir(join(workerDir, "src"), { recursive: true });
+  await writeFile(join(workerDir, "src", "index.ts"), source);
+}
+
+/** Two jobs, two classes: the shape a Worker exporting one and forgetting the other takes. */
+const TWO_JOBS: Record<string, Job> = {
+  digest: DIGEST.digest as Job,
+  sweep: { binding: "SWEEP", className: "SweepWorkflow" },
+};
+
+describe("workflowExports", () => {
+  test("a main exporting every declared class has nothing missing", async () => {
+    const workerDir = await worker("board", { main: "src/index.ts", env: { prod: {} } }, TWO_JOBS);
+    await main(
+      workerDir,
+      'export default {};\nexport class DigestWorkflow {}\nexport { SweepWorkflow } from "./sweep";\n',
+    );
+
+    expect(await workflowExports(workerDir, PROJECT, ["prod"])).toEqual({ state: "exported" });
+  });
+
+  test("names exactly the class main does not export", async () => {
+    const workerDir = await worker("board", { main: "src/index.ts", env: { prod: {} } }, TWO_JOBS);
+    await main(workerDir, "export default {};\nexport class DigestWorkflow {}\n");
+
+    expect(await workflowExports(workerDir, PROJECT, ["prod"])).toEqual({
+      state: "missing",
+      main: "src/index.ts",
+      missing: ["SweepWorkflow"],
+    });
+  });
+
+  test("a class named in a comment or exported as a type only is still missing", async () => {
+    const workerDir = await worker("board", { main: "src/index.ts", env: { prod: {} } }, DIGEST);
+    await main(workerDir, '// export class DigestWorkflow {}\nexport type { DigestWorkflow } from "./digest";\n');
+
+    expect(await workflowExports(workerDir, PROJECT, ["prod"])).toEqual({
+      state: "missing",
+      main: "src/index.ts",
+      missing: ["DigestWorkflow"],
+    });
+  });
+
+  test("a wrangler.jsonc naming no main is unreadable, not a missing export", async () => {
+    const workerDir = await worker("board", { env: { prod: {} } }, DIGEST);
+
+    const exports = await workflowExports(workerDir, PROJECT, ["prod"]);
+    expect(exports.state).toBe("unreadable");
+    expect(exports.state === "unreadable" && exports.reason).toContain("main");
+  });
+
+  test("a main that is not on disk is unreadable, and says which file", async () => {
+    const workerDir = await worker("board", { main: "src/index.ts", env: { prod: {} } }, DIGEST);
+
+    const exports = await workflowExports(workerDir, PROJECT, ["prod"]);
+    expect(exports.state).toBe("unreadable");
+    expect(exports.state === "unreadable" && exports.reason).toContain("src/index.ts");
+  });
+
+  test("a star re-export cannot establish a class is missing", async () => {
+    const workerDir = await worker("board", { main: "src/index.ts", env: { prod: {} } }, DIGEST);
+    await main(workerDir, 'export default {};\nexport * from "./workflows";\n');
+
+    const exports = await workflowExports(workerDir, PROJECT, ["prod"]);
+    expect(exports.state).toBe("unreadable");
+    expect(exports.state === "unreadable" && exports.reason).toContain("export *");
+  });
+
+  test("a Worker declaring no Workflow reads no main", async () => {
+    const workerDir = await worker("board", { env: { prod: {} } }, {});
+
+    expect(await workflowExports(workerDir, PROJECT, ["prod"])).toEqual({ state: "exported" });
+  });
+
+  /**
+   * One resolution with `checkWorkflows`: each environment's own composition. A class one environment declares
+   * and another does not is still a class main must export, and the export check names the same set doctor's
+   * drift declares.
+   */
+  test("asks after the classes checkWorkflows declares, environment by environment", async () => {
+    await project('["staging", "prod"]');
+    const workerDir = await worker("board", { main: "src/index.ts", env: { staging: {}, prod: {} } });
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        'const classes = { staging: "DigestWorkflow", prod: "DigestV2Workflow" };',
+        'const className = classes[process.env.ENVIRONMENT] ?? "DevDigestWorkflow";',
+        'export default { app: { name: "board", workflows: { digest: { binding: "DIGEST", className } } }, capabilities: [] };',
+        "",
+      ].join("\n"),
+    );
+    await main(workerDir, "export default {};\n");
+    await composeFor("dev", (load) => load(workerDir));
+
+    const check = await checkWorkflows(dir);
+    const declared = [
+      ...new Set(check.drift.flatMap((entry) => entry.declared.workflows.map((workflow) => workflow.class_name))),
+    ];
+    expect(declared).toEqual(["DigestWorkflow", "DigestV2Workflow"]);
+    expect(await workflowExports(workerDir, PROJECT, ["staging", "prod"])).toEqual({
+      state: "missing",
+      main: "src/index.ts",
+      missing: declared,
+    });
   });
 });

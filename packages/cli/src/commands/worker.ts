@@ -31,6 +31,7 @@ import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/w
 import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { discoverWorkers } from "../project/workers";
 import { declaredWorkerVars, reconcileWorkerVars, type WorkerVarRun } from "../project/workerVars";
+import { type WorkflowExports, workflowExports } from "../project/workflows";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -285,6 +286,32 @@ const WorkerSyncPayload = z
           .describe("One environment's declared vars."),
       )
       .describe("What the Worker's declared vars wrote, per environment."),
+    exports: z
+      .discriminatedUnion("state", [
+        z
+          .object({ state: z.literal("exported").describe('`"exported"`.') })
+          .describe("main exports every Workflow class the app declares, or it declares none."),
+        z
+          .object({
+            state: z.literal("missing").describe('`"missing"`.'),
+            main: z.string().describe("The main module wrangler.jsonc names, relative to the Worker."),
+            missing: z
+              .array(z.string().describe("A `WorkflowEntrypoint` subclass name."))
+              .describe(
+                "Each declared class main does not export, in declaration order. A deploy is refused until it does.",
+              ),
+          })
+          .describe("main does not export every declared Workflow class."),
+        z
+          .object({
+            state: z.literal("unreadable").describe('`"unreadable"`.'),
+            reason: z.string().describe("Why main could not be checked, in an operator's words."),
+          })
+          .describe("main could not be read, or re-exports in a way that cannot establish a class is absent."),
+      ])
+      .describe(
+        "Whether the Worker's main module exports each Workflow class the app declares for the environments reconciled.",
+      ),
     plan: PlanKey,
   })
   .describe("What `pithy worker sync` wrote, or under `--dry-run` would.");
@@ -730,6 +757,8 @@ interface WorkerSyncReport {
   vars: WorkerVarRun[];
   /** How many bindings the Worker's `pithy.worker.jsonc` lists in `ownBindings`. */
   owned: number;
+  /** Whether main exports each Workflow class the app declares for the environments reconciled. */
+  exports: WorkflowExports;
 }
 
 /** Reconcile one Worker's `wrangler.jsonc` in `projectDir` with what its `pithy.config.ts` declares. */
@@ -876,7 +905,24 @@ async function syncWorker(options: {
     declared: declaredVars,
     ...(env === undefined ? {} : { env }),
   });
-  return { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned: ownBindings.length };
+  const exports: WorkflowExports = project
+    ? await workflowExports(
+        target.dir,
+        project,
+        runs.map((run) => run.env),
+      )
+    : { state: "exported" };
+  return { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned: ownBindings.length, exports };
+}
+
+/**
+ * What a sync says about the Workflow classes main exports: the classes it does not, or that main could not be
+ * read. Nothing when every class is exported.
+ */
+function exportLines(exports: WorkflowExports): string[] {
+  if (exports.state === "unreadable") return [`Could not check main exports each Workflow class: ${exports.reason}.`];
+  if (exports.state === "exported") return [];
+  return [`Export a WorkflowEntrypoint subclass from ${exports.main} for each: ${exports.missing.join(", ")}.`];
 }
 
 /** One sentence per change a sync report holds, as the text output and a dry run's plan both say it. */
@@ -923,7 +969,8 @@ function syncChanges(report: WorkerSyncReport): string[] {
 /**
  * {@link syncWorker} in a private copy of the project, and the plan of what it changed there. The Worker's
  * `wrangler.jsonc` entry carries the run's own sentences as its `changes`. A run that changed no file still has
- * sentences when it skipped a binding, and those go in the plan's `notes`, so the plan says everything the run prints.
+ * sentences when it skipped a binding, and those go in the plan's `notes`, as do the run's lines about the Workflow
+ * classes main does not export, so the plan says everything the run prints.
  */
 async function planWorkerSync(
   projectDir: string,
@@ -942,7 +989,7 @@ async function planWorkerSync(
       files: files.map((file) =>
         file.path === result.wrangler ? { ...file, changes: [...file.changes, ...changes] } : file,
       ),
-      notes: planned ? notes : [...changes, ...notes],
+      notes: [...(planned ? [] : changes), ...notes, ...exportLines(result.report.exports)],
     },
   };
 }
@@ -988,10 +1035,10 @@ const sync = withContract(
         const { report, plan } = dryRun
           ? await planWorkerSync(projectDir, options)
           : { report: await syncWorker({ ...options, projectDir }), plan: undefined };
-        const { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned } = report;
+        const { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned, exports } = report;
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, vars, plan })}\n`,
+            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, vars, exports, plan })}\n`,
           );
           return;
         }
@@ -1023,17 +1070,12 @@ const sync = withContract(
           process.stdout.write(
             nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
           );
+          for (const line of exportLines(exports)) process.stdout.write(dim(`${line}\n`));
           process.stdout.write(`${formatDone()}\n`);
           return;
         }
         for (const line of syncChanges(report)) process.stdout.write(`${line}\n`);
-        // Cloudflare resolves class_name in the script the binding names, and that script is this one.
-        const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
-        if (classes.length > 0) {
-          process.stdout.write(
-            dim(`Export a WorkflowEntrypoint subclass from main for each: ${classes.join(", ")}.\n`),
-          );
-        }
+        for (const line of exportLines(exports)) process.stdout.write(dim(`${line}\n`));
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
