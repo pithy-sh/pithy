@@ -74,6 +74,49 @@ describe("uninstallArgs", () => {
 });
 
 describe("uninstallPackage", () => {
+  test("runs where the install ran: in the Worker, when it is a workspace member", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));
+    const worker = join(dir, "apps", "board");
+    await mkdir(worker, { recursive: true });
+    await writeFile(join(worker, "package.json"), "{}");
+    const cwds: string[] = [];
+
+    await uninstallPackage({
+      projectDir: dir,
+      workerDir: worker,
+      pkg: "@pithy-sh/secrets",
+      run: async (_command, _args, cwd) => {
+        cwds.push(cwd);
+      },
+    });
+
+    expect(cwds).toEqual([worker]);
+  });
+
+  test("runs at the root for a member Worker when only the root declares the package", async () => {
+    await writeFile(join(dir, "pnpm-lock.yaml"), "");
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "root", workspaces: ["apps/*"], dependencies: { "@pithy-sh/turnstile": "^0.3.0" } }),
+    );
+    const worker = join(dir, "apps", "web");
+    await mkdir(worker, { recursive: true });
+    await writeFile(join(worker, "package.json"), JSON.stringify({ name: "web" }));
+    const cwds: string[] = [];
+
+    await uninstallPackage({
+      projectDir: dir,
+      workerDir: worker,
+      pkg: "@pithy-sh/turnstile",
+      run: async (_command, _args, cwd) => {
+        cwds.push(cwd);
+      },
+    });
+
+    expect(cwds).toEqual([dir]);
+  });
+
   test("detects the PM and runs its remove command in the project dir", async () => {
     await writeFile(join(dir, "bun.lock"), "");
     const calls: { command: string; args: string[]; cwd: string }[] = [];
@@ -143,6 +186,26 @@ describe("promoteDependencies", () => {
     expect(calls).toEqual([{ command: "yarn", args: ["add", "better-auth@^1.6.19", "zod@^4.0.0"], cwd: dir }]);
   });
 
+  test("runs in the Worker when it is a workspace member, so the copy's deps are declared there", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));
+    const worker = join(dir, "apps", "board");
+    await mkdir(worker, { recursive: true });
+    await writeFile(join(worker, "package.json"), "{}");
+    const cwds: string[] = [];
+
+    await promoteDependencies(
+      dir,
+      ["zod@^4.0.0"],
+      async (_command, _args, cwd) => {
+        cwds.push(cwd);
+      },
+      worker,
+    );
+
+    expect(cwds).toEqual([worker]);
+  });
+
   test("is a no-op when there is nothing to promote", async () => {
     let ran = false;
     await promoteDependencies(dir, [], async () => {
@@ -154,8 +217,8 @@ describe("promoteDependencies", () => {
 
 describe("runPackageManager", () => {
   /**
-   * #593. A cold install is minutes of collected output and nothing on the terminal, so the step is raised
-   * before the child exists — the marker the child writes is not there yet when the step is heard.
+   * A cold install is minutes of collected output and nothing on the terminal, so the step is raised before
+   * the child exists — the marker the child writes is not there yet when the step is heard.
    */
   test("names the command line in a step before the child starts", async () => {
     const marker = join(dir, "ran");
@@ -202,6 +265,56 @@ describe("installPackage", () => {
 
     expect(result.packageManager).toBe("pnpm");
     expect(calls).toEqual([{ command: "pnpm", args: ["add", "@pithy-sh/auth"], cwd: dir }]);
+  });
+
+  test("runs in the Worker when it is a workspace member, never at the root", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));
+    const worker = join(dir, "apps", "board");
+    await mkdir(worker, { recursive: true });
+    await writeFile(join(worker, "package.json"), "{}");
+    const calls: { command: string; args: string[]; cwd: string }[] = [];
+
+    await installPackage({
+      projectDir: dir,
+      workerDir: worker,
+      pkg: "@pithy-sh/secrets",
+      run: async (command, args, cwd) => {
+        calls.push({ command, args, cwd });
+      },
+    });
+
+    expect(calls).toEqual([{ command: "bun", args: ["add", "@pithy-sh/secrets"], cwd: worker }]);
+  });
+
+  test("skips the registry for a checkout linked into the Worker's own node_modules", async () => {
+    await writeFile(join(dir, "bun.lock"), "");
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));
+    const worker = join(dir, "apps", "api");
+    await mkdir(worker, { recursive: true });
+    await writeFile(join(worker, "package.json"), "{}");
+    await link(worker, "@pithy-sh/secrets");
+    const calls: string[] = [];
+
+    await installPackage({
+      projectDir: dir,
+      workerDir: worker,
+      pkg: "@pithy-sh/secrets",
+      run: async (_command, _args, cwd) => {
+        calls.push(cwd);
+      },
+    });
+    const removed = await uninstallPackage({
+      projectDir: dir,
+      workerDir: worker,
+      pkg: "@pithy-sh/secrets",
+      run: async (_command, _args, cwd) => {
+        calls.push(cwd);
+      },
+    });
+
+    expect(calls).toEqual([]);
+    expect(removed.uninstalled).toBe(false);
   });
 
   test("skips the registry when the package is already provided — a local checkout installs nothing", async () => {
@@ -303,14 +416,40 @@ describe("alreadyProvided", () => {
     await link(dir, "react");
     expect(await alreadyProvided(dir, "react")).toBe(false);
   });
+
+  test("asked from a Worker, a checkout linked into the Worker's own node_modules is provided", async () => {
+    const worker = join(dir, "apps", "api");
+    await link(worker, "@pithy-sh/secrets");
+    expect(await alreadyProvided(dir, "@pithy-sh/secrets")).toBe(false);
+    expect(await alreadyProvided(dir, "@pithy-sh/secrets", worker)).toBe(true);
+  });
+
+  test("asked from a Worker, a checkout linked at the root still answers", async () => {
+    const worker = join(dir, "apps", "api");
+    await mkdir(worker, { recursive: true });
+    await link(dir, "@pithy-sh/secrets");
+    expect(await alreadyProvided(dir, "@pithy-sh/secrets", worker)).toBe(true);
+  });
+
+  test("a Worker's link into the root's Bun store is a registry install, not a checkout", async () => {
+    // Bun's isolated linker: `apps/api/node_modules/@pithy-sh/secrets` points into `<root>/node_modules/.bun`,
+    // outside the Worker's own `node_modules` but inside the project's.
+    const worker = join(dir, "apps", "api");
+    const store = join(dir, "node_modules", ".bun", "@pithy-sh+secrets@0.6.8", "node_modules", "@pithy-sh", "secrets");
+    await mkdir(store, { recursive: true });
+    await writeFile(join(store, "package.json"), JSON.stringify({ name: "@pithy-sh/secrets" }));
+    await mkdir(join(worker, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(store, join(worker, "node_modules", "@pithy-sh", "secrets"), "dir");
+
+    expect(await alreadyProvided(dir, "@pithy-sh/secrets", worker)).toBe(false);
+  });
 });
 
 /**
- * The Worker's manifest is what says what the Worker is made of — #480.
+ * The Worker's manifest is what says what the Worker is made of.
  *
  * `pithy add <cap> --worker <w>` writes its import into `apps/<w>/pithy.config.ts`, so `apps/<w>` is
- * what depends on the capability. The install stays at the root, where the lockfile is and where every
- * manifest-discovery site looks; only the declaration moves.
+ * what depends on the capability, and its `package.json` declares it with the peers it requires.
  */
 describe("declareOnWorker", () => {
   /**
@@ -342,6 +481,42 @@ describe("declareOnWorker", () => {
     return (JSON.parse(raw) as { dependencies: Record<string, string> }).dependencies;
   }
 
+  test("keeps the range an install in the Worker wrote, adds the peers it resolves there, and leaves the root alone", async () => {
+    const workerDir = await project({}, { "@pithy-sh/secrets": "^0.6.8", "@pithy-sh/core": "^0.20.0" });
+    const at = join(workerDir, "node_modules", "@pithy-sh", "secrets");
+    await mkdir(at, { recursive: true });
+    await writeFile(
+      join(at, "package.json"),
+      JSON.stringify({ name: "@pithy-sh/secrets", peerDependencies: { "@pithy-sh/cloudflare": "^0.10.3" } }),
+    );
+    const root = await readFile(join(dir, "package.json"), "utf8");
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/secrets")).toEqual(["@pithy-sh/cloudflare"]);
+    expect(await readFile(join(dir, "package.json"), "utf8")).toBe(root);
+    expect(await workerDeps()).toEqual({
+      "@pithy-sh/cloudflare": "^0.10.3",
+      "@pithy-sh/core": "^0.20.0",
+      "@pithy-sh/secrets": "^0.6.8",
+    });
+  });
+
+  test("writes the Worker's dependencies in name order", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/auth": "^0.1.4" },
+      { "@pithy-sh/core": "^0.1.4", zod: "^4.4.0" },
+      { "@pithy-sh/auth": { peerDependencies: { kysely: "^0.29.0", "@pithy-sh/cloudflare": "^0.1.0" } } },
+    );
+
+    await declareOnWorker(dir, workerDir, "@pithy-sh/auth");
+    expect(Object.keys(await workerDeps())).toEqual([
+      "@pithy-sh/auth",
+      "@pithy-sh/cloudflare",
+      "@pithy-sh/core",
+      "kysely",
+      "zod",
+    ]);
+  });
+
   test("copies the range the root resolved, rather than inventing one", async () => {
     const workerDir = await project({ "@pithy-sh/auth": "^0.1.4" }, { "@pithy-sh/core": "^0.1.4" });
 
@@ -350,10 +525,9 @@ describe("declareOnWorker", () => {
   });
 
   /**
-   * **The half 0.1.3 shipped without.** A peer is a requirement on the consumer, and npm satisfies one
-   * at the top while bun, for a workspace member, does not — so a Worker that declared its capabilities
-   * and not their peers could not resolve `zod` at all, and `@pithy-sh/core` failed to load inside the
-   * project with `ERR_MODULE_NOT_FOUND`.
+   * A peer is a requirement on the consumer, and npm satisfies one at the top while bun, for a workspace
+   * member, does not — so a Worker that declared its capabilities and not their peers could not resolve
+   * `zod` at all, and `@pithy-sh/core` would fail to load with `ERR_MODULE_NOT_FOUND`.
    */
   test("declares the capability's required peers with it", async () => {
     const workerDir = await project(
@@ -393,7 +567,7 @@ describe("declareOnWorker", () => {
   // A kit sibling peer is a *prerequisite*: the CLI refuses a composition missing one and names the
   // command that fixes it, and once composed it is declared by its own `pithy add`. Every kit peer of
   // that shape carries `peerDependenciesMeta.optional` — `@pithy-sh/support` really does — which is what
-  // lets one rule (`optional`) say both this and React, rather than a second rule about the scope (#542).
+  // lets one rule (`optional`) say both this and React, rather than a second rule about the scope.
   test("skips a kit sibling, which the prerequisite check owns", async () => {
     const workerDir = await project(
       { "@pithy-sh/support": "^0.1.4" },
@@ -412,14 +586,14 @@ describe("declareOnWorker", () => {
   });
 
   /**
-   * **A *required* kit peer is declared like any other required peer — #542.**
+   * **A *required* kit peer is declared like any other required peer.**
    *
    * `@pithy-sh/core` is a peer of every capability and `@pithy-sh/secrets` a peer of the six that read a
    * secret, because two copies of either is the defect: two `Capability` types the compiler will not name,
    * and two module-level `config`s where `configureSharedSecrets` wrote to one and every reader holds the
    * other. Skipping them here on the grounds that they are kit-scoped leaves the Worker declaring a
-   * capability whose own requirements nothing satisfies — 0.1.3's `ERR_MODULE_NOT_FOUND` with a
-   * `@pithy-sh/*` name in it.
+   * capability whose own requirements nothing satisfies — `ERR_MODULE_NOT_FOUND` with a `@pithy-sh/*`
+   * name in it.
    */
   test("declares a required kit peer, which is not a prerequisite to compose", async () => {
     const workerDir = await project(
@@ -458,7 +632,7 @@ describe("declareOnWorker", () => {
 
   // The linked-checkout case `installPackage` documents: nothing is declared anywhere, because the only
   // range available names a version no registry has.
-  test("writes nothing when the root declares nothing", async () => {
+  test("writes nothing when neither the Worker nor the root declares it", async () => {
     const workerDir = await project({}, { "@pithy-sh/core": "^0.1.4" });
 
     expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual([]);
@@ -469,8 +643,8 @@ describe("declareOnWorker", () => {
    * **It runs on every `pithy add`, so a second run must write nothing.**
    *
    * `addCapability` is idempotent by contract — CI re-runs it, and a script re-applies a manifest over a
-   * project that already composes the capability. This step is inside that contract now, and it declares
-   * more than it used to: the package *and* its peers. Answering `[]` is the observable half; not
+   * project that already composes the capability. This step is inside that contract, and it declares the
+   * package *and* its peers. Answering `[]` is the observable half; not
    * touching the file is the half that matters, because a rewrite of identical bytes still shows up as a
    * dirty tree in whatever runs next.
    */

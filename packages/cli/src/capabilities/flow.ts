@@ -22,7 +22,7 @@ import { type AddBootstrapOptions, bootstrapAdd } from "./addBootstrap";
 import { addAgain, addCallerOf, composedBy, projectAddFacts } from "./addCommand";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
-import { availableManifests, loadManifest } from "./manifests";
+import { composedManifests, loadManifest } from "./manifests";
 import { MCP_CAPABILITY, mcpConfigValues, mcpNotes, mcpPromptOptions } from "./mcpAdd";
 import { optionForm } from "./optionForms";
 import { prerequisiteClosure } from "./prerequisiteClosure";
@@ -179,16 +179,18 @@ export interface PrerequisiteQuestion {
  */
 export type PrerequisitePrompt = (question: PrerequisiteQuestion) => Promise<boolean>;
 
-/** Install the package with the project's package manager. Injectable for tests. */
-export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
+/**
+ * Install the package with the project's package manager, in the Worker when it is a workspace member and at the
+ * root otherwise. Injectable for tests.
+ */
+export type InstallStep = (input: { projectDir: string; workerDir: string; pkg: string }) => Promise<{
+  packageManager: string;
+}>;
 
 /**
- * Declare the capability on the Worker whose config imports it, at the range the root resolved.
- *
- * A separate step from the install rather than a flag on it, because the two answer to different
- * directories on purpose: the install belongs at the root, where the lockfile is and where every
- * manifest-discovery site looks, and the declaration belongs beside the `pithy.config.ts` that names
- * the capability. Injectable for tests.
+ * Declare the capability, and the peers it requires, on the Worker whose config imports it, at the range the
+ * install wrote. A separate step from the install because the install's own write is the package manager's, and
+ * the peers are read from the installed package after it. Injectable for tests.
  */
 export type DeclareStep = (input: { projectDir: string; workerDir: string; pkg: string }) => Promise<string[]>;
 
@@ -249,7 +251,7 @@ const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, proj
 };
 
 export interface RunAddOptions {
-  /** The project root — where the lockfile and `node_modules` live; the package installs here. */
+  /** The project root — where the lockfile lives, and where the package installs when the Worker is no workspace member. */
   projectDir: string;
   /** The target Worker's directory (`apps/<name>`) — its `pithy.config.ts` and `wrangler.jsonc`. */
   workerDir: string;
@@ -385,7 +387,7 @@ async function missingFor(
   manifest: CapabilityManifest,
 ): Promise<{ missing: string[]; composed: Set<string> }> {
   if (manifest.peerCapabilities.length === 0) return { missing: [], composed: new Set() };
-  const { manifests } = await availableManifests(projectDir);
+  const { manifests } = await composedManifests(projectDir, workerDir);
   const composed = composedBy(
     workerDir,
     manifests.map((found) => found.name),
@@ -414,9 +416,10 @@ export function addRunCaller(
     | "json"
     | "caller"
   >,
-  keys: readonly string[] = projectAddFacts(options.projectDir)(options.capability)?.requiredOptions.map(
-    (option) => option.key,
-  ) ?? [],
+  keys: readonly string[] = projectAddFacts(
+    options.projectDir,
+    options.workerDir,
+  )(options.capability)?.requiredOptions.map((option) => option.key) ?? [],
 ): Caller<"add"> {
   return options.caller ?? addCallerOf(options, statedKeys(options.workerDir, options.capability, keys));
 }
@@ -478,7 +481,7 @@ async function composePrerequisites(
     capability: manifest.name,
     worker: workerDirName({ dir: workerDir }),
     missing,
-    factsFor: projectAddFacts(projectDir),
+    factsFor: projectAddFacts(projectDir, workerDir),
     composed: alreadyComposed,
     // The caller's own run: a fix that dropped --eject composes from the package what the caller asked to
     // eject, one that dropped a dry run's --dry-run writes what the caller asked only to see, and one that ignored
@@ -564,9 +567,9 @@ async function mcpValues(
  * Worker's dev migrations. Handler logic stays in the package (principle 3) — only the thin
  * registration lands in the user's repo. Idempotent: a second run changes nothing.
  *
- * The package is a project dependency (one install at the root, shared by every Worker); the wiring is
- * per-Worker. Adding the same capability to a second Worker re-uses the installed package and writes
- * only that Worker's config and bindings.
+ * The package is a dependency of the Worker that composes it, installed in that Worker's workspace member
+ * (at the root when it is none), and the wiring is per-Worker. Adding the same capability to a second Worker
+ * declares it there too and writes only that Worker's config and bindings.
  *
  * Audited on success and on failure as `capability/added` — routine (`info`) severity, since adding a
  * capability is reversible and never touches production data. The whole run is wrapped rather than
@@ -586,14 +589,14 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     // `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed and the install
     // would fail before the manifest was ever read.
     const pkg = capabilityPackageName(capability);
-    const { packageManager } = await install({ projectDir, pkg });
+    const { packageManager } = await install({ projectDir, workerDir, pkg });
 
     // The Worker composing it is what depends on it. Immediately after the install, because the range
     // to mirror is the one the install just wrote — and before any refusal below, so a run that stops
     // at a missing option still leaves the manifest agreeing with what is on disk.
     await declare({ projectDir, workerDir, pkg });
 
-    const manifest = await loadManifest(capability, projectDir);
+    const manifest = await loadManifest(capability, projectDir, workerDir);
 
     // Before a byte of this capability's wiring is written: what it composes against, and whether this
     // Worker has it. Refusing here leaves an installed package and nothing else, never a config half-wired

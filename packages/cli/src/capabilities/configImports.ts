@@ -73,6 +73,13 @@ const EXPORT_CLAUSE = /^[ \t]*export\s*\{([^}]*)\}(?:\s*from\s*(["'])([^"']+)\2)
 const EXPORTED_DECLARATION =
   /^[ \t]*export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:class|function\s*\*?|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
 
+/**
+ * Any static import statement — named, default, namespace, `import type`, or a bare side-effect `import "…";` —
+ * with its specifier in group 2. What {@link insertImport} positions a new statement among; a dynamic
+ * `import("…")` does not match.
+ */
+const ANY_IMPORT = /^[ \t]*import\s+(?:[^;"'`]*?\s*from\s*)?(["'])([^"']+)\1;?/gm;
+
 /** Which statement form {@link findNamedBinding} reads. Both bind names from another module. */
 export type ClauseKind = "import" | "export";
 
@@ -373,8 +380,8 @@ export function isCapabilityImport(specifier: string, pkg: string, ejectPath: st
  * name in the clause, including the newline it sat on so no blank line is left behind.
  *
  * The binding, not the statement, because `findNamedImport` deliberately matches one name inside a
- * multi-name clause: deleting the statement took `import { auth, hashPassword } from …` down to
- * nothing and left a config that no longer compiles, over bindings that were never the capability's.
+ * multi-name clause, and the other names in `import { auth, hashPassword } from …` are not the
+ * capability's to delete.
  * What remains may still import a package that is about to be uninstalled — that is a typecheck
  * failure the adopter can read, which beats silently deleting code they wrote.
  *
@@ -385,4 +392,41 @@ export function withoutBinding(source: string, found: ConfigImport): string {
   if (source.slice(found.start, end) !== found.statement) return source;
   if (!found.soleBinding) return source.slice(0, found.bindingStart) + source.slice(found.bindingEnd);
   return source.slice(0, found.start) + source.slice(source.startsWith("\n", end) ? end + 1 : end);
+}
+
+/** Where a specifier sorts among imports: built-ins, then packages, then paths, each group by specifier. */
+function importRank(specifier: string): [number, string] {
+  if (/^(?:node|bun):/.test(specifier)) return [0, specifier];
+  if (specifier.startsWith(".") || specifier.startsWith("/")) return [2, specifier];
+  return [1, specifier];
+}
+
+/** Whether import `a` sorts after import `b`. */
+function sortsAfter(a: [number, string], b: [number, string]): boolean {
+  return a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1];
+}
+
+/**
+ * The source with `statement`, an import of `specifier`, placed among its imports: ahead of the first import that
+ * sorts after it, else on the line after the last one. A file with no imports takes it after its leading header
+ * comment, ahead of the first line of code, with a blank line between. Comments and string literals are never
+ * read as imports, so a commented-out import is not an anchor.
+ */
+export function insertImport(source: string, statement: string, specifier: string): string {
+  const imports = [...namedClauses(source, ANY_IMPORT)];
+  const rank = importRank(specifier);
+  const after = imports.find((match) => sortsAfter(importRank(match[2] ?? ""), rank));
+  if (after !== undefined) return `${source.slice(0, after.index)}${statement}\n${source.slice(after.index)}`;
+
+  const last = imports.at(-1);
+  if (last !== undefined) {
+    const lineEnd = source.indexOf("\n", last.index + last[0].length);
+    if (lineEnd === -1) return `${source}\n${statement}\n`;
+    return `${source.slice(0, lineEnd + 1)}${statement}\n${source.slice(lineEnd + 1)}`;
+  }
+
+  const firstCode = scanConfig(source).code.search(/\S/);
+  if (firstCode === -1) return `${source}${source === "" || source.endsWith("\n") ? "" : "\n"}${statement}\n`;
+  const lineStart = source.lastIndexOf("\n", firstCode - 1) + 1;
+  return `${source.slice(0, lineStart)}${statement}\n\n${source.slice(lineStart)}`;
 }

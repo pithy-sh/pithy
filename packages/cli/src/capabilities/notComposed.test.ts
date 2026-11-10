@@ -10,7 +10,7 @@ import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
 import { capabilityNotComposed, secretsStoreIdMissing } from "./notComposed";
 
 /**
- * **A capability nobody composed exits 3, with a `pithy add` that runs as written as its `fix` (#697).** The
+ * **A capability nobody composed exits 3, with a `pithy add` that runs as written as its `fix`.** The
  * call was right; the project is missing what it depends on. `docs/CLI.md` §3.8.
  *
  * Runnable as written means with nobody to ask: `--worker` by apps/ directory when there are several Workers,
@@ -61,11 +61,11 @@ describe("capabilityNotComposed", () => {
       action: "Run `pithy add audit --worker api`.",
     });
     expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
-    // The Worker is named even where there is one: the command acts on one, and naming it costs nothing (#711).
+    // The Worker is named even where there is one: the command acts on one, and naming it costs nothing.
     expect(fixOf(error)).toBe("pithy add audit --worker api");
   });
 
-  // #711: the sentence and the `fix` are one command, from one builder, so they cannot disagree.
+  // The sentence and the `fix` are one command, from one builder, so they cannot disagree.
   test("the action names exactly the command the fix carries", async () => {
     const api = await worker("api");
     await worker("admin");
@@ -81,7 +81,7 @@ describe("capabilityNotComposed", () => {
   });
 
   // No single Worker can be named, so no `fix`; the sentence names one command per Worker, each runnable as
-  // written, rather than a `--worker <name>` placeholder every project refuses (#711).
+  // written, rather than a `--worker <name>` placeholder every project refuses.
   test("no fix still exits 3, and the action names a command for each Worker", async () => {
     await worker("api");
     await worker("admin");
@@ -93,7 +93,7 @@ describe("capabilityNotComposed", () => {
   });
 
   // An option with no default and no fixed values is only the adopter's to answer: the line says so, rather than
-  // naming a command that is refused for the `--set` it lacks (#412, #711).
+  // naming a command that is refused for the `--set` it lacks.
   test("a required option with no values to offer withholds the fix, and says what a person decides", async () => {
     await worker("api");
     await manifest("payments", {
@@ -107,7 +107,7 @@ describe("capabilityNotComposed", () => {
     );
   });
 
-  // A closed set is named whole, one command per value, and the kit picks none of them (#412, #711).
+  // A closed set is named whole, one command per value, and the kit picks none of them.
   test("a required option with fixed values names one command per value, and no fix", async () => {
     await worker("api");
     await manifest("payments", {
@@ -159,7 +159,7 @@ describe("the fix capabilityNotComposed attaches", () => {
     expect(await addFix("email", { projectDir: dir })).toBe("pithy add email --worker api --with-prerequisites");
   });
 
-  // The kit's own manifest answers while the package is absent (#711), so its peers are read, not guessed.
+  // The kit's own manifest answers while the package is absent, so its peers are read, not guessed.
   test("a manifest that is not installed is read from the kit's", async () => {
     await worker("api");
     expect(await addFix("turnstile", { projectDir: dir })).toBe(
@@ -179,7 +179,7 @@ describe("the fix capabilityNotComposed attaches", () => {
 });
 
 /**
- * **The store-id refusal names the `pithy add secrets` that records it, runnable as written (#711).** It is the
+ * **The store-id refusal names the `pithy add secrets` that records it, runnable as written.** It is the
  * refusal `email`, `media`, `payments`, `storage` and `secrets` provision share, so its sentence is pinned here
  * once: the Workers that compose secrets are named, every configured one only when none does, and `why` rides in
  * parentheses only when the caller gave one.
@@ -207,8 +207,7 @@ describe("secretsStoreIdMissing", () => {
     );
   });
 
-  // #711: offered for every configured Worker, the line composed secrets into a Worker that had nothing to do
-  // with it. The Workers that compose secrets already are the ones named.
+  // The Workers that compose secrets already are the ones named, never a Worker that has nothing to do with it.
   test("names only the Workers composing secrets, when one does", async () => {
     await worker("web");
     const api = await worker("api");

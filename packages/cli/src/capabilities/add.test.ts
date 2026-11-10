@@ -119,25 +119,24 @@ describe("addCapability", () => {
   });
 
   test("a commented-out import is not an import", async () => {
-    // The decoy that made the guard answer for a binding it never bound: a block comment above the
-    // managed region read as the capability already being imported, so `add` wrote the registration and
-    // no import at all — `auth()` against nothing, a config that fails to load.
+    // A block comment above the managed region holding the import is not the capability being imported:
+    // read as one, `add` would write `auth()` against nothing, a config that fails to load.
     const path = join(worker, "pithy.config.ts");
     const commented = ["/*", 'import { auth } from "@pithy-sh/auth/src/index";', "*/", ""].join("\n");
     await writeFile(path, `${commented}${await readFile(path, "utf8")}`);
 
     await addCapability({ workerDir: worker, manifest });
 
-    // Two lines read as an import now: the adopter's comment, untouched, and the real one above it.
+    // Two lines read as an import now: the adopter's comment, untouched, and the real one among the imports below it.
     const after = await readFile(path, "utf8");
     expect(after.match(/^import\s*\{\s*auth\s*\}/gm)).toHaveLength(2);
-    expect(after.slice(0, after.indexOf("/*"))).toContain('import { auth } from "@pithy-sh/auth/src/index";');
+    expect(after.slice(after.indexOf("*/"))).toContain('import { auth } from "@pithy-sh/auth/src/index";');
     expect(after).toContain("auth(),");
   });
 
   test("refuses an import of the bare package — it resolves to nothing", async () => {
-    // `@pithy-sh/auth` declares no "." export, so this line throws at load. Read as wiring, it made
-    // `add` write the registration against an import that could never bind, and exit 0 saying so.
+    // `@pithy-sh/auth` declares no "." export, so this line throws at load. It is not wiring, and `add`
+    // must not write a registration against an import that can never bind.
     const path = join(worker, "pithy.config.ts");
     const before = `import { auth } from "@pithy-sh/auth";\n${await readFile(path, "utf8")}`;
     await writeFile(path, before);
@@ -205,7 +204,7 @@ describe("addCapability", () => {
     expect(wrangler.env.prod?.migrations).toBeUndefined();
 
     // And the half of the binding that lives in the adopter's code: wrangler resolves `class_name`
-    // against the module `main` names, and refuses the deploy when nothing there exports it (#428).
+    // against the module `main` names, and refuses the deploy when nothing there exports it.
     const entry = await readFile(join(worker, "src", "index.ts"), "utf8");
     expect(entry).toContain('export { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";');
     // The Worker it was already is untouched — the export is written after it, never into it.
@@ -288,11 +287,9 @@ describe("addCapability", () => {
    * already been applied sends nothing at all — the namespace is never created, and the deploy then fails
    * on a binding to a class with no migration behind it.
    *
-   * `appendDurableObjectMigrations` merged every class into `v1` for as long as it existed, and its own
-   * comment said why that was safe: multiplayer was the only capability shipping a Durable Object, so
-   * every add was a first add. #415 made `@pithy-sh/matchmaking` addable — two more classes — and its
-   * README pairs it with multiplayer, so `pithy add multiplayer` → `pithy deploy` → `pithy add
-   * matchmaking` is the ordinary path rather than an exotic one.
+   * `@pithy-sh/matchmaking` and `@pithy-sh/multiplayer` both ship Durable Objects, and the matchmaking
+   * README pairs them, so `pithy add multiplayer` → `pithy deploy` → `pithy add matchmaking` is the
+   * ordinary path rather than an exotic one.
    */
   test("a second DO capability lands in a new tag, never inside the one already deployed", async () => {
     const multiplayerManifest = CapabilityManifest.parse({
@@ -455,16 +452,14 @@ describe("addCapability", () => {
       expect(wrangler.env.prod?.d1_databases).toEqual([{ binding: "DB", database_name: "acme-prod-db" }]);
     });
 
-    test("a project-global database is one name, identical in every environment (#513)", async () => {
-      // **The defect this field exists for.** `EMAIL_SUPPRESSIONS` is one database "bound identically in
-      // every environment" (`email/src/workflows/hostEnv.ts`), and this writer had no way to hear that: it
-      // wrote `<p>-dev-`, `<p>-staging-` and `<p>-prod-email-suppressions` while `pithy email provision`
-      // created `<p>-global-email-suppressions`, so the app Worker and the email Worker read different
-      // suppression lists and an unsubscribe recorded through either was invisible to the other.
+    test("a project-global database is one name, identical in every environment", async () => {
+      // `EMAIL_SUPPRESSIONS` is one database "bound identically in every environment"
+      // (`email/src/workflows/hostEnv.ts`): a per-environment name here would give the app Worker and the
+      // email Worker different suppression lists, and an unsubscribe recorded through either would be
+      // invisible to the other.
       //
-      // The manifest is synthetic rather than `@pithy-sh/email`'s own, which is still to declare it — that
-      // edit is what `ci/bindingResourceNames.test.ts` is red on. What is asserted here is the **writer**:
-      // given the declaration, it composes the capability's own name, byte for byte.
+      // The manifest is synthetic, so what is asserted is the **writer**: given the declaration, it composes
+      // the capability's own name, byte for byte.
       const emailManifest = CapabilityManifest.parse({
         name: "email",
         package: "@pithy-sh/email",
@@ -492,8 +487,8 @@ describe("addCapability", () => {
 
     test("a KV namespace is proposed under the `<thing>` its manifest declares, not its binding", async () => {
       // The other half of the pair: `resource` moves the last segment and leaves the scope alone. R2 is
-      // where it actually ships (#519), and R2 has no name in a wrangler entry at all, so KV is where the
-      // writer's answer is observable.
+      // where it ships, and R2 has no name in a wrangler entry at all, so KV is where the writer's answer is
+      // observable.
       const named = CapabilityManifest.parse({
         name: "media",
         package: "@pithy-sh/media",
@@ -567,8 +562,7 @@ describe("addCapability", () => {
     });
 
     test("a D1 name is composed against D1's budget, not R2's — the longest binding survives whole", async () => {
-      // 25 + `-prod-` + 33 = 64: over the 63 this used to be truncated at, and nowhere near a D1 cap,
-      // because Cloudflare publishes none. The binding is the thing an operator recognizes in
+      // 25 + `-prod-` + 33 = 64: over R2's 63, and nowhere near a D1 cap, because Cloudflare publishes none. The binding is the thing an operator recognizes in
       // `wrangler d1 list`, so hashing it away to satisfy another namespace's limit bought nothing.
       const project = "a".repeat(MAX_PROJECT_NAME);
       const longBinding = CapabilityManifest.parse({
@@ -584,7 +578,7 @@ describe("addCapability", () => {
       expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.d1.maxLength);
     });
 
-    test("a KV title is composed against KV's 512, not the 63 it used to be hashed at", async () => {
+    test("a KV title is composed against KV's 512, not R2's 63", async () => {
       const project = "a".repeat(MAX_PROJECT_NAME);
       const longBinding = CapabilityManifest.parse({
         name: "auth",
@@ -672,7 +666,7 @@ describe("addCapability", () => {
      * `runAdd` refuses a required option before it ever calls this, so reaching here with no value is a
      * bug one step upstream — and `addCapability` is reachable from more than one place. It fails loudly
      * rather than rendering the word `undefined` into an adopter's config, which is the failure they
-     * would find later and somewhere else (#412).
+     * would find later and somewhere else.
      */
     const withRequired = CapabilityManifest.parse({
       name: "payments",
@@ -710,9 +704,8 @@ describe("addCapability", () => {
 
     test("seeds an empty object or array for an option whose value is the adopter's to write", async () => {
       // The option a manifest cannot fill in. `@pithy-sh/secrets` requires a `registry` and `add` cannot
-      // invent one, so it wrote every option but that — and left a `pithy.config.ts` that does not
-      // typecheck (#161). The empty literal is what makes the config compile before the adopter has been
-      // told the option exists; `describe` above it is what tells them.
+      // invent one. The empty literal is what makes the config compile before the adopter has been told
+      // the option exists; `describe` above it is what tells them.
       const seeded = CapabilityManifest.parse({
         name: "auth",
         package: "@pithy-sh/auth",

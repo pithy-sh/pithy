@@ -273,8 +273,8 @@ describe("readPackagePlan", () => {
   });
 
   test("bun's isolated layout is an install, not a checkout: a Worker's link into the root store is moved", async () => {
-    // `apps/board/node_modules/@pithy-sh/auth` → `<root>/node_modules/.bun/…`, which is outside the
-    // Worker's own `node_modules`. Judged from the Worker, every package bun installed there read as linked.
+    // `apps/board/node_modules/@pithy-sh/auth` → `<root>/node_modules/.bun/…`, outside the Worker's own
+    // `node_modules` and inside the project's.
     const store = join(dir, "node_modules", ".bun", "@pithy-sh+auth@0.2.0", "node_modules", "@pithy-sh", "auth");
     await mkdir(store, { recursive: true });
     await writeFile(join(store, "package.json"), JSON.stringify({ name: "@pithy-sh/auth", version: "0.2.0" }));
@@ -289,6 +289,24 @@ describe("readPackagePlan", () => {
     if (read.state !== "read") return;
     expect(read.plan.leftAlone.filter((entry) => entry.reason === "linked")).toEqual([]);
     expect(read.plan.moves.map((move) => move.manifest)).toEqual(["package.json", "apps/board/package.json"]);
+  });
+
+  test("a checkout linked into a Worker is left alone as linked in that Worker's manifest", async () => {
+    const checkout = join(dir, "checkout", "auth");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/auth", version: "0.2.0" }));
+    await mkdir(join(dir, "apps", "board", "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "apps", "board", "node_modules", "@pithy-sh", "auth"));
+    const fetch = registry({
+      "@pithy-sh/auth": packument("@pithy-sh/auth", ["0.2.0", "0.2.3"]),
+      [UI]: packument(UI, ["0.2.0"]),
+    });
+    const read = await readPackagePlan({ projectDir: dir, latest: false, fetch });
+    expect(read.state).toBe("read");
+    if (read.state !== "read") return;
+    expect(read.plan.leftAlone.filter((entry) => entry.reason === "linked").map((entry) => entry.manifest)).toEqual([
+      "apps/board/package.json",
+    ]);
   });
 
   test("one packument that fails makes the whole step unavailable — never a partial plan", async () => {

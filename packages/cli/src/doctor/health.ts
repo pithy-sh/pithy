@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
+import { type AvailableManifests, type ManifestFault, projectManifests } from "../capabilities/manifests";
 import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
   type BindingDeclines,
@@ -55,9 +55,8 @@ export interface ConfigHealth {
  *
  * One check, because a Durable Object is one binding written in two files. The `durable_objects.bindings`
  * entry names a `class_name` and wrangler resolves that name against the module `main` names; a Worker
- * carrying the first and not the second is refused at deploy. Reporting only the half that lives in
- * `wrangler.jsonc` is what let `doctor` call a project healthy that `wrangler deploy` would not take
- * (#428).
+ * carrying the first and not the second is refused at deploy, so a project with only the half that lives in
+ * `wrangler.jsonc` is not healthy.
  */
 export interface BindingHealth {
   ok: boolean;
@@ -69,7 +68,7 @@ export interface BindingHealth {
    *
    * Taken from the plan **by reference**, never re-projected: `groupMissingBindings` below constructs a
    * fresh object per binding, and a field that had to survive that construction is a field the two
-   * commands would eventually disagree about — which is #440 itself, one level up.
+   * commands would eventually disagree about.
    *
    * An honored decline does not fail `ok`. A decline that cannot be honored does, because it means
    * the adopter believes a binding is being left out that is not.
@@ -77,7 +76,7 @@ export interface BindingHealth {
   declinedBindings: BindingDeclines;
   /**
    * Generated binding values this Worker holds that the current kit would derive differently, with each
-   * `pinnedBindings` entry resolved (#499).
+   * `pinnedBindings` entry resolved.
    *
    * Taken from the plan by reference, on the rule the field above states.
    *
@@ -91,15 +90,13 @@ export interface BindingHealth {
 
 /**
  * The `migrations` check: **every environment's** ledger against what this Worker declares for that
- * environment — both directions, one answer per environment (#586).
+ * environment — both directions, one answer per environment.
  *
- * `pending` alone passed a database `pithy migrate` refused to touch. An extra applied migration is
- * invisible to declared-minus-applied: nothing is missing, so nothing is pending, so the check was
- * green while the migrator read the same ledger as a corrupted chain and applied nothing (#282). Each
- * half fails the check on its own, because either one means the schema is not where the project says.
+ * An extra applied migration is invisible to declared-minus-applied: nothing is missing, so nothing is pending,
+ * while the migrator reads the same ledger as a corrupted chain and applies nothing. Each half fails the check on
+ * its own, because either one means the schema is not where the project says.
  *
- * It was one environment, and it was `dev`'s, whatever the reader believed they had asked about (#586).
- * Each environment is now its own {@link EnvironmentMigrations}, composed for itself and read for itself.
+ * Each environment is its own {@link EnvironmentMigrations}, composed for itself and read for itself.
  */
 export interface MigrationHealth {
   /**
@@ -115,7 +112,7 @@ export interface MigrationHealth {
   ok: boolean;
   /**
    * One answer per environment, `dev` first, then the declared ones in declaration order. Each carries its
-   * ledger behind its own discriminant, never flattened (#371): a database that could not be read is not
+   * ledger behind its own discriminant, never flattened: a database that could not be read is not
    * `0 pending`.
    */
   environments: EnvironmentMigrations[];
@@ -130,10 +127,8 @@ export interface MigrationHealth {
 export interface EntitlementHealth {
   ok: boolean;
   /**
-   * The scan's answer, exactly as the plan carried it (#371) — the file list behind its discriminant.
-   *
-   * A flat `gates: []` said "no gap" and "no scan" in the same two characters, and only one of those is
-   * good news.
+   * The scan's answer, exactly as the plan carried it — the file list behind its discriminant, because "no gap"
+   * and "no scan" are different news.
    */
   gap: EntitlementGap;
 }
@@ -143,8 +138,7 @@ export interface EntitlementHealth {
  * compose.
  *
  * **The only check here that is a boot failure rather than drift.** `createBackend` refuses to assemble
- * on exactly this pair, so the Worker does not start at all — which is what `pithy add auth` used to
- * leave behind, on a project this command called healthy (#273). It reports and does not fix, like the
+ * on exactly this pair, so the Worker does not start at all. It reports and does not fix, like the
  * entitlement gap: `pithy upgrade` writes bindings and config keys, and composing a capability is a
  * different kind of decision. The line names the command that makes it.
  */
@@ -162,7 +156,7 @@ export interface WorkerChecks {
   entitlements: EntitlementHealth;
   prerequisites: PrerequisiteHealth;
   /**
-   * Its scope gates against a resolver (#560) — `dev`'s composition, read for what it composes. **Not one of
+   * Its scope gates against a resolver — `dev`'s composition, read for what it composes. **Not one of
    * the five and not in `ok`**: a gate nobody can open is reported on every run and fails nothing, because a
    * route the project never calls is not a fault anyone can clear. See `doctor/scopeGates.ts`.
    */
@@ -181,20 +175,17 @@ export interface WorkerChecks {
 }
 
 /**
- * One Worker's health — **or that this Worker could not be checked at all (#371)**.
+ * One Worker's health — **or that this Worker could not be checked at all**.
  *
  * The plan behind a Worker's five checks reads that Worker's own `pithy.config.ts` and `wrangler.jsonc`
  * and, through the ledger, its databases. Any of that can fail for reasons that belong to one Worker: a
- * config that will not import, a stanza that will not parse. It used to throw out of the loop, and one
- * Worker in that state erased every *other* Worker's config, bindings, migrations, entitlement and
- * prerequisite lines — from the command whose whole job is to say which part of a project is broken.
+ * config that will not import, a stanza that will not parse. One Worker in that state never costs the
+ * report on the others.
  *
  * **The state rides on the value**, so an unchecked Worker cannot be rendered as a checked one. The five
  * checks live behind `checked`, and `unavailable` carries nothing but the Worker's name: a Worker with no
- * `ok`, no empty drift lists and no `0 pending` to mistake for a clean bill.
- *
- * This is the same treatment the *manifest* half of {@link buildProjectHealth} got under #184. It was
- * applied to one loop in this file and not the other.
+ * `ok`, no empty drift lists and no `0 pending` to mistake for a clean bill. The manifest half of
+ * {@link buildProjectHealth} is held to the same standard.
  */
 export type WorkerHealth =
   | ({
@@ -203,8 +194,8 @@ export type WorkerHealth =
       /** The Worker's name, as `pithy worker list` shows it. */
       worker: string;
       /**
-       * The Worker's `apps/` directory: what `--worker` takes, and what every command a finding names carries
-       * (#711). Not {@link worker}, which is the deployed name and which `--worker` does not resolve first.
+       * The Worker's `apps/` directory: what `--worker` takes, and what every command a finding names carries.
+       * Not {@link worker}, which is the deployed name and which `--worker` does not resolve first.
        */
       directory: WorkerDir;
       /** The AND of the five checks below. */
@@ -222,10 +213,10 @@ export type WorkerHealth =
 /**
  * The `manifests` check: installed packages whose `pithy.manifest.json` is present and unusable.
  *
- * Project-wide rather than per Worker, because manifests resolve once from the project root. It fails the
- * doctor exit for the same reason the others do: a capability nobody can read is a capability every check
- * below silently leaves out, and `doctor` reporting a healthy project around that hole is what #184 was
- * reported about. `pithy upgrade` cannot fix it — the manifest belongs to someone else's package.
+ * Project-wide rather than per Worker: one scan of the root's `node_modules` and every workspace member's, each
+ * broken package named once. It fails the doctor exit for the same reason the others do: a capability nobody can
+ * read is a capability every check below silently leaves out. `pithy upgrade` cannot fix it — the manifest
+ * belongs to someone else's package.
  */
 export interface ManifestHealth {
   ok: boolean;
@@ -238,7 +229,7 @@ export interface ProjectHealth {
   workers: WorkerHealth[];
   manifests: ManifestHealth;
   /**
-   * The `bindingScope` check: a resource the whole project shares, bound to more than one of it (#513).
+   * The `bindingScope` check: a resource the whole project shares, bound to more than one of it.
    *
    * Project-wide rather than per Worker, because the property is: the app Worker's stanzas and every
    * other Worker's have to name the *same* database, so a per-Worker answer cannot see the disagreement
@@ -247,7 +238,7 @@ export interface ProjectHealth {
    */
   bindingScope: BindingScopeHealth;
   /**
-   * The `capabilities` check: a capability this project composes that the CLI cannot resolve (#533).
+   * The `capabilities` check: a capability this project composes that the CLI cannot resolve.
    *
    * Project-wide rather than per Worker because the resolution is: a Worker's `pithy.config.ts` resolves
    * its own imports from `apps/<name>/`, and every `pithy <capability> …` command resolves the same
@@ -257,7 +248,7 @@ export interface ProjectHealth {
   capabilityReach: CapabilityReachHealth;
 }
 
-/** The manifest-scan seam: defaults to {@link availableManifests}, the scan every capability command reads. */
+/** The manifest-scan seam: defaults to {@link projectManifests}, the root's `node_modules` and every member's. */
 export type ReadManifests = (projectDir: string) => Promise<AvailableManifests>;
 
 /** The plan-builder seam: defaults to {@link buildReconcilePlan}, the engine `upgrade` shares. */
@@ -284,7 +275,7 @@ export const defaultBuildPlan: BuildPlan = buildReconcilePlan;
 /**
  * The minimum a health check needs to know about a Worker: which one, and where. **Never what it composes** —
  * every check reads the Worker as composed for its own environment, through
- * {@link ProjectHealthOptions.composeWorker} (#586).
+ * {@link ProjectHealthOptions.composeWorker}.
  */
 export interface HealthWorker {
   /** The Worker's name. */
@@ -299,7 +290,7 @@ export interface ProjectHealthOptions {
   projectDir: string;
   /**
    * The deployed environments the root `pithy.config.ts` declares, in declaration order. The migration
-   * check answers each of them and `dev` besides, each composed and read for itself (#586).
+   * check answers each of them and `dev` besides, each composed and read for itself.
    */
   environments: readonly string[];
   /**
@@ -309,8 +300,8 @@ export interface ProjectHealthOptions {
   remoteSkip: RemoteSkip | null;
   /**
    * The Cloudflare account this project belongs to, or `null` when it names none. `doctor` already
-   * resolves it for the `Cloudflare:` block; the migration reads are what need it, and they were reading
-   * whichever credentials file the machine defaulted to (#234).
+   * resolves it for the `Cloudflare:` block; the migration reads need it, never whichever credentials file
+   * the machine defaults to.
    */
   account: CloudflareAccountSelection | null;
   /** The Workers to check, in report order. Doctor resolves them once and passes them in. */
@@ -325,7 +316,7 @@ export interface ProjectHealthOptions {
   composeWorker?: ComposeWorker;
   /** Test seam: substitute the plan builder. Defaults to the shared reconcile engine. */
   buildPlan?: BuildPlan;
-  /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
+  /** Test seam: substitute the manifest scan. Defaults to {@link projectManifests}. */
   readManifests?: ReadManifests;
   /** Test seam: substitute the project-global binding comparison. Defaults to the real wrangler read. */
   readBindingScope?: ReadBindingScope;
@@ -353,7 +344,7 @@ function groupMissingBindings(plan: ReconcilePlan): BindingHealth["missing"] {
  * A plan reports, for every stanza in `wrangler.jsonc`, the bindings its composition needs there and the
  * stanza lacks. Which bindings a stanza needs is its composition's to say, so a declared environment's
  * stanza is taken from the plan built for that environment and from no other: `dev`'s plan saying what
- * `prod` lacks is `dev`'s composition answering for `prod` (#586). A stanza no environment declares has no
+ * `prod` lacks is `dev`'s composition answering for `prod`. A stanza no environment declares has no
  * composition of its own, so `dev`'s answer stands for it, and `Environments:` reports the stanza. A
  * declared environment with no plan — its config did not compose — contributes nothing, and `dev`'s answer
  * does not stand in for it; `Environment configs:` fails the exit on that config.
@@ -418,7 +409,7 @@ function migrationHealth(environments: EnvironmentMigrations[]): MigrationHealth
   const local = environments.find((entry) => entry.env === LOCAL_ENVIRONMENT);
   // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
   // check did not compare, and a check that did not run is not a check that passed — the same standard
-  // `pithy doctor` already applies to a manifest it could not parse (#184).
+  // `pithy doctor` already applies to a manifest it could not parse.
   const ok =
     local?.state === "checked" &&
     local.ledger.state === "read" &&
@@ -501,7 +492,7 @@ function healthFromPlan(
  * ## The invariant, and where it stops
  *
  * **No per-environment answer here is taken from a composition built for another environment, or for
- * none (#586).** Every Worker is composed once for each environment, through `composeWorker` — the primitive
+ * none.** Every Worker is composed once for each environment, through `composeWorker` — the primitive
  * in `project/composeFor.ts` by default — and nothing in this function holds a composition it did not get
  * from there. An environment's migrations, the bindings its stanza lacks, and what its composition asks of
  * the entry, the registration and the other capabilities are that environment's.
@@ -512,29 +503,27 @@ function healthFromPlan(
  */
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {
   const build = options.buildPlan ?? defaultBuildPlan;
-  const scan = options.readManifests ?? availableManifests;
+  const scan = options.readManifests ?? projectManifests;
   const readScope = options.readBindingScope ?? bindingScopeHealth;
   const readReach = options.readCapabilityReach ?? capabilityReachHealth;
 
-  // Read once, at the project, because that is where manifests live: one install under the root's
-  // `node_modules/@pithy-sh`, shared by every Worker. Every plan below is built from the same scan, so a
-  // capability whose manifest will not read is missing from every Worker's checks at once — which is the
-  // hole this reports, and the reason it is not a per-Worker line.
+  // Read once, at the project: the root's `node_modules/@pithy-sh` and every workspace member's, each broken
+  // package named once, because one package is broken for every Worker that resolves it.
   const { faults } = await scan(options.projectDir);
 
   // Read once, at the project, for the reason the manifest scan is: a project-global resource is shared
   // *between* Workers, so the disagreement lives across them and no per-Worker answer can see it.
   const bindingScope = await readScope(options.projectDir);
 
-  // **One Worker at a time (#371).** The wiring is per Worker, so a failure to read it is per Worker too —
+  // **One Worker at a time.** The wiring is per Worker, so a failure to read it is per Worker too —
   // and this is a diagnostic, so one Worker nobody could check must never cost the report on the others.
-  // The manifest scan above is not a contributor to this loop: it is read once, at the project, and every
-  // plan is built from it, which is why it is a project-wide line and why it still throws.
+  // The manifest scan above is not a contributor to this loop: it is read once, at the project, which is why
+  // it is a project-wide line and why it still throws.
   //
   // The guard takes no binding. A plan reaches a customer's D1 and imports their config, so what it throws
   // is throw-site context; the Worker's name is the actionable fact and `doctor` already prints it.
   //
-  // **Every environment, each answered for itself (#586).** `dev` first, then the declared ones in the
+  // **Every environment, each answered for itself.** `dev` first, then the declared ones in the
   // order the project declares them. Each Worker is composed once per environment, and that one composition
   // answers both that environment's migrations and that environment's plan. `environmentMigrations` never
   // throws, so an environment that cannot be answered costs its own line and not its neighbors'.
@@ -639,7 +628,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // from the project root, so "can this be reached" has one answer for the whole project however many
   // Workers compose it. The Workers are handed over for what they compose, never for where to look — and
   // what they compose is every environment's composition, so a capability one environment composes alone
-  // is still asked about (#586). An environment that did not compose contributes nothing.
+  // is still asked about. An environment that did not compose contributes nothing.
   const reachable: ComposedWorker[] = [];
   for (const [index, worker] of options.workers.entries()) {
     const seen = new Map<string, Capability>();
@@ -652,10 +641,8 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   const capabilityReach = await readReach(options.projectDir, reachable);
 
   const manifests: ManifestHealth = { ok: faults.length === 0, faults };
-  // An unchecked Worker fails the project, on the same standard #184 set for an unreadable manifest: a
-  // check that did not run established nothing, and a report calling a project healthy around a hole is
-  // the under-report this whole family exists to prevent. It is also what the behavior already was —
-  // the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the gate does not weaken.
+  // An unchecked Worker fails the project, on the standard an unreadable manifest is held to: a check that did
+  // not run established nothing, and a report calling a project healthy around a hole is an under-report.
   const checked = workers.every((worker) => worker.state === "checked" && worker.ok);
   return {
     ok: manifests.ok && bindingScope.ok && capabilityReach.ok && checked,

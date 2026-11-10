@@ -22,7 +22,7 @@ import { removeTempDir } from "../test-utils/tempRepo";
 import { snapshotTree } from "../test-utils/treeSnapshot";
 
 /**
- * **A dry run and the real run, side by side, over links that lead out of the project (#697).**
+ * **A dry run and the real run, side by side, over links that lead out of the project.**
  *
  * A plan is worth reading only if it is the run. So each case builds two identical fixtures — a project and,
  * beside it, a directory outside it that the project links into — runs the command dry in one and for real in
@@ -296,9 +296,12 @@ async function plannedLandings(real: Fixture, files: PlanFile[]): Promise<string
   return (await Promise.all(files.map((file) => landing(real, file.path)))).sort();
 }
 
-/** What the install writes at the root, which the stub that stands in for it has to write too: `pkg` at `^1.2.3`. */
-async function declare(fixture: Fixture, pkg: string): Promise<void> {
-  const path = join(fixture.project, "package.json");
+/**
+ * What the install writes in the directory it runs in — the Worker, a workspace member — which the stub that stands
+ * in for it has to write too: `pkg` at `^1.2.3`.
+ */
+async function declare(dir: string, pkg: string): Promise<void> {
+  const path = join(dir, "package.json");
   const doc = JSON.parse(await readFile(path, "utf8")) as { dependencies?: Record<string, string> };
   const dependencies = { ...(doc.dependencies ?? {}), [pkg]: "^1.2.3" };
   doc.dependencies = Object.fromEntries(Object.entries(dependencies).sort(([a], [b]) => a.localeCompare(b)));
@@ -327,7 +330,7 @@ function collapse(changed: string[], collapsed: string[]): string[] {
 /**
  * `pithy add <capability>` dry in one fixture and for real in the other — the module the command calls, with the
  * steps that reach past the project (the install, the migrate, the bootstrap, the eject's own install) replaced the
- * same way on both sides, and the install's write to the root manifest made by its stand-in.
+ * same way on both sides, and the install's write to the Worker's manifest made by its stand-in.
  */
 async function addParity(name: string, shape: Shape, capability: string, eject: boolean): Promise<void> {
   const dry = await fixtureFor("dry", shape);
@@ -353,8 +356,8 @@ async function addParity(name: string, shape: Shape, capability: string, eject: 
     real,
     await runAdd({
       ...options(real),
-      install: async ({ pkg }) => {
-        await declare(real, pkg);
+      install: async ({ workerDir, pkg }) => {
+        await declare(workerDir, pkg);
         return { packageManager: "npm" };
       },
       migrate: async () => [],

@@ -13,7 +13,7 @@ import { captureStdout, expectConforms, runCaptured } from "../test-utils/payloa
 import { snapshotTree } from "../test-utils/treeSnapshot";
 
 /**
- * **`pithy add --dry-run` writes nothing and calls nothing that writes (#697)** — the real command, in a
+ * **`pithy add --dry-run` writes nothing and calls nothing that writes** — the real command, in a
  * scaffolded project, with the Cloudflare clients replaced by one that records every write and the network
  * by one that refuses. The flow itself is `capabilities/planAdd.test.ts`'s; this is the command around it.
  */
@@ -70,7 +70,6 @@ describe("pithy add --dry-run", () => {
       "apps/api/package.json",
       "apps/api/pithy.config.ts",
       "apps/api/wrangler.jsonc",
-      "package.json",
     ]);
     expect(await snapshotTree(dir)).toEqual(before);
     expect(account.writes).toEqual([]);

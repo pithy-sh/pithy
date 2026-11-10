@@ -67,6 +67,24 @@ describe("checkSharedRuntimes", () => {
     expect(check.resolutions[0]?.copies).toEqual(["/app/node_modules/zod"]);
   });
 
+  test("a capability installed in a Worker's own member is asked too", () => {
+    const check = checkSharedRuntimes({
+      projectDir: PROJECT,
+      members: [".", "apps/board"],
+      resolveFrom: resolverOver({
+        "/app/apps/board": { zod: "/app/node_modules/.bun/zod@4.4.0/node_modules/zod/index.js" },
+        "/app/apps/board/node_modules/@pithy-sh/auth": {
+          zod: "/app/node_modules/.bun/zod@4.1.0/node_modules/zod/index.js",
+        },
+      }),
+    });
+
+    expect(check.duplicated[0]?.copies).toEqual([
+      "/app/node_modules/.bun/zod@4.1.0/node_modules/zod",
+      "/app/node_modules/.bun/zod@4.4.0/node_modules/zod",
+    ]);
+  });
+
   // A project that has installed nothing, or composes no capability needing one, is not a fault.
   test("a runtime nothing resolves is absent rather than reported", () => {
     const check = checkSharedRuntimes({ projectDir: PROJECT, resolveFrom: () => null });

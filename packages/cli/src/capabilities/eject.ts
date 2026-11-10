@@ -5,7 +5,8 @@ import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import { promoteDependencies } from "../project/packageManager";
+import { installedPackageBase } from "../project/installedPackage";
+import { type InstallRunner, promoteDependencies } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { workerEntryPath } from "../project/wrangler";
@@ -61,8 +62,8 @@ export function ejectSpecifierFromDir(workerDir: string, fromDir: string, capabi
 /**
  * The capabilities a `pithy.config.ts` source has ejected — those imported from the local
  * `./capabilities/<name>` path rather than an `@pithy-sh/*` package. The local import **is** the
- * ejected signal: a future `pithy upgrade` reads this to skip forks (issue #33), since ejected code
- * no longer tracks the package.
+ * ejected signal: ejected code no longer tracks the package, so a reader deciding what upgrades skips
+ * these.
  */
 export function parseEjectedCapabilities(configSource: string): string[] {
   const names: string[] = [];
@@ -108,13 +109,16 @@ export async function isEjected(workerDir: string, capability: string): Promise<
   return (await ejectedCapabilities(workerDir)).includes(capability);
 }
 
-/** Promote a forked capability's runtime deps into the project. Injected in tests. */
+/** Promote a forked capability's runtime deps into the Worker that holds the copy. Injected in tests. */
 export type PromoteDeps = (projectDir: string, deps: string[]) => Promise<void>;
 
 export interface EjectCapabilityOptions {
-  /** The project root — where `package.json`, the lockfile, and `node_modules` live. */
+  /** The project root — where the lockfile lives. */
   projectDir: string;
-  /** The Worker's directory (`apps/<name>`) — its `pithy.config.ts`, and where the fork lands. */
+  /**
+   * The Worker's directory (`apps/<name>`) — its `pithy.config.ts`, where the fork lands, where the package's
+   * source is resolved from, and, as a workspace member, where its runtime deps are promoted.
+   */
   workerDir: string;
   /** The capability's short name, e.g. `auth` — the local directory and import leaf. */
   capability: string;
@@ -124,6 +128,8 @@ export interface EjectCapabilityOptions {
   force?: boolean;
   /** Promote the package's runtime deps; defaults to the detected package manager. */
   promoteDeps?: PromoteDeps;
+  /** The spawner the default promotion runs (tests inject a stub); defaults to the real package manager. */
+  run?: InstallRunner;
 }
 
 /** What eject did: where the source landed and which deps it promoted. */
@@ -133,7 +139,7 @@ export const EjectResult = z
     path: z.string().describe("The Worker-relative directory the source was copied into, `capabilities/<cap>`."),
     promotedDependencies: z
       .array(z.string().describe("One dependency, `name@version`."))
-      .describe("The dependencies promoted into the project. Workspace-internal ones are excluded."),
+      .describe("The dependencies promoted into the Worker. Workspace-internal ones are excluded."),
     forced: z.boolean().describe("Whether an existing local copy was overwritten (`--force`)."),
   })
   .describe("What `--eject` did: where the source landed and which dependencies it promoted.");
@@ -144,11 +150,11 @@ export type EjectResult = z.infer<typeof EjectResult>;
  * Workspace-internal versions (`workspace:*`) are dropped — they exist only inside this monorepo and a
  * published package never carries them; an adopter's install resolves them to real ranges.
  */
-async function promotableDependencies(projectDir: string, pkg: string): Promise<string[]> {
-  // Absent and corrupt are both answered by reinstalling; a mode bit and a directory are not, and one
-  // `try` around the read and the parse said *reinstall* to all four (#217). `readOptionalFile` owns the
-  // errno that is not absence and hedges on it, which leaves each of the other three its own sentence.
-  const path = join(projectDir, "node_modules", pkg, "package.json");
+async function promotableDependencies(base: string, pkg: string): Promise<string[]> {
+  // Absent and corrupt are both answered by reinstalling; a mode bit and a directory are not.
+  // `readOptionalFile` owns the errno that is not absence and hedges on it, which leaves each of the other
+  // three its own sentence.
+  const path = join(base, "node_modules", pkg, "package.json");
   const raw = await readOptionalFile(path);
   if (raw === null) {
     throw new InternalError({
@@ -200,7 +206,7 @@ async function repointImport(projectDir: string, workerDir: string, pkg: string,
     );
     return;
   }
-  // The add that composes it into this Worker, with whatever its manifest says it needs (#711).
+  // The add that composes it into this Worker, with whatever its manifest says it needs.
   throw new NotFoundError({
     message: `${path} doesn't import ${pkg}.`,
     action: addAction(resolveAdd(capability, { projectDir, workerDir }), (add) => `Run ${add} first, then eject.`),
@@ -235,11 +241,11 @@ function localSpecifier(pkg: string, local: string, specifier: string): string {
  *
  * **The other half of the wiring, and the half that decides which code actually runs.** `pithy add` writes
  * `export { <Class> } from "@pithy-sh/<cap>/…"` into the entry, because wrangler resolves a Durable
- * Object's `class_name` against the module `main` names (#428). Ejecting only `pithy.config.ts` left that
- * line pointing at the package: Cloudflare instantiated the package's class while the adopter edited the
- * copy, and nothing said so — it builds, it deploys, and every change to the forked actor is ignored.
- * `docs/EJECT.md` promised the project imports nothing from the package afterwards, and this is what makes
- * that sentence true rather than nearly true.
+ * Object's `class_name` against the module `main` names. Ejecting only `pithy.config.ts` would leave that
+ * line pointing at the package: Cloudflare would instantiate the package's class while the adopter edited
+ * the copy, and nothing would say so — it builds, it deploys, and every change to the forked actor is
+ * ignored. `docs/EJECT.md` says the project imports nothing from the package afterwards, and this is what
+ * makes that true.
  *
  * Every re-export pointing into the package, not only the ones the CLI wrote. A line an adopter added by
  * hand reaches the same class through the same package, and `repointImport` follows whatever path into the
@@ -262,8 +268,7 @@ async function planEntryExports(
   const local = ejectSpecifierFromDir(workerDir, dirname(path), capability);
   // Planned as spans and applied last-first, so each splice lands where the scanner found it and no
   // earlier edit moves a later one. Found by offset because a commented-out copy of a line contains
-  // that line verbatim, and a literal search repointed the comment while the live export kept naming
-  // the package (#428). `namedReexports` yields in source order, so reversing gives descending starts.
+  // that line verbatim. `namedReexports` yields in source order, so reversing gives descending starts.
   const edits: { start: number; end: number; text: string }[] = [];
   for (const { statement, specifier, start } of namedReexports(source)) {
     if (specifier !== pkg && !specifier.startsWith(`${pkg}/`)) continue;
@@ -284,7 +289,7 @@ async function planEntryExports(
 /**
  * Eject a capability into **one Worker**: copy its entire installed `src/` into
  * `apps/<worker>/capabilities/<cap>/`, repoint that Worker's `pithy.config.ts` import at the local copy,
- * and promote the package's runtime deps into the project so the copy builds standalone. The capability
+ * and promote the package's runtime deps into that Worker so the copy builds standalone. The capability
  * is now the user's — nothing from `@pithy-sh/<cap>` is imported and it no longer upgrades (the
  * principle-3 trade). Another Worker that wires the same capability keeps the package; a fork is scoped
  * to the Worker that asked for it. Refuses to overwrite an existing local copy unless `force` is set;
@@ -292,13 +297,14 @@ async function planEntryExports(
  */
 export async function ejectCapability(options: EjectCapabilityOptions): Promise<EjectResult> {
   const { projectDir, workerDir, capability, package: pkg, force } = options;
-  const source = join(projectDir, "node_modules", pkg, "src");
+  const base = (await installedPackageBase(projectDir, workerDir, pkg)) ?? projectDir;
+  const source = join(base, "node_modules", pkg, "src");
   const dest = join(workerDir, EJECT_DIR, capability);
 
   if (!(await pathExists(source))) {
     throw new NotFoundError({
       message: `${pkg} is not installed (no ${pkg}/src to eject).`,
-      // The kit's manifest says what the add needs while the package is absent (#711).
+      // The kit's manifest says what the add needs while the package is absent.
       action: addAction(resolveAdd(capability, { projectDir, workerDir }), (add) => `Run ${add} first.`),
     });
   }
@@ -323,8 +329,9 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   // whose dependencies were never installed.
   await cp(source, dest, { recursive: true });
 
-  const promotedDependencies = await promotableDependencies(projectDir, pkg);
-  const promote = options.promoteDeps ?? ((dir, deps) => promoteDependencies(dir, deps).then(() => {}));
+  const promotedDependencies = await promotableDependencies(base, pkg);
+  const promote =
+    options.promoteDeps ?? ((dir, deps) => promoteDependencies(dir, deps, options.run, workerDir).then(() => {}));
   await promote(projectDir, promotedDependencies);
 
   // Planned before either write, and written after both: {@link localSpecifier} refuses a re-export it

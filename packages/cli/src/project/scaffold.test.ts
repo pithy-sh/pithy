@@ -1162,10 +1162,6 @@ describe("the gate on the gate", () => {
       probes: "stat",
       why: "Asks what a link out of the project leads to, to copy the project into a private directory for a dry run. Following is the question: a link to a file becomes a regular copy of that file, because the real run writes through it, and any other stays a link that leads nowhere. It writes only inside its own temporary directory, at the path `lstat` already found to be a link, never where the link leads.",
     },
-    "cli/src/capabilities/remove.ts": {
-      probes: "stat",
-      why: "Asks whether `node_modules/<pkg>` is installed. Nothing is written there, and following is the right answer — a shared-store package manager links that path.",
-    },
     "cli/src/devSecrets/mode.ts": {
       probes: "stat",
       why: "Takes the group and other bits off a dev secrets file. Narrowing only, regular files we own only, best effort, and the `chmod` follows the same path the `stat` answered about.",

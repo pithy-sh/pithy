@@ -185,6 +185,15 @@ export type PackagePlanRead =
     };
 
 /**
+ * Whether a linked checkout provides `spec`'s package, judged from the directory that declares it, as that member
+ * resolves the package. `pithy upgrade --packages` leaves such an entry alone, and `pithy doctor` advises from the
+ * same answer.
+ */
+export async function linkedWhereDeclared(projectDir: string, spec: DeclaredSpec): Promise<boolean> {
+  return alreadyProvided(projectDir, spec.name, join(projectDir, dirname(spec.manifest)));
+}
+
+/**
  * Read every declaration, fetch each managed package's packument once, and plan.
  *
  * **One packument that fails makes the whole step unavailable.** A plan built from the packages that
@@ -197,15 +206,10 @@ export async function readPackagePlan(options: {
 }): Promise<PackagePlanRead> {
   const specs = await declaredSpecs(options.projectDir);
   const dirOf = (spec: DeclaredSpec) => join(options.projectDir, dirname(spec.manifest));
-  // **Judged at the project root, the way every other caller of `alreadyProvided` judges it.** Asked of a
-  // Worker's directory it is wrong under bun's isolated layout: `apps/<w>/node_modules/@pithy-sh/<pkg>` is a
-  // link into `<root>/node_modules/.bun`, which is outside the Worker's own `node_modules`, so every package
-  // bun installed there read as a checkout and was left alone. Scaffolds are workspaces; a checkout linked
-  // in is linked at the root.
   const linked = new Set<DeclaredSpec>();
   for (const spec of specs) {
     if (parseRange(spec.spec) === null) continue;
-    if (await alreadyProvided(options.projectDir, spec.name)) linked.add(spec);
+    if (await linkedWhereDeclared(options.projectDir, spec)) linked.add(spec);
   }
   const installed = new Map<DeclaredSpec, string | null>();
   for (const spec of specs) installed.set(spec, await installedVersionFrom(dirOf(spec), spec.name));

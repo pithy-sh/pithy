@@ -6,7 +6,9 @@ import { basename, join, resolve } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, messageOf, NotFoundError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { installedPackageBase } from "../project/installedPackage";
 import { readFileOutcome } from "../project/readOptionalFile";
+import { workspaceMembers } from "../project/workspaceMembers";
 import { addAction, addListCommand } from "./addCommand";
 import {
   type CatalogEntry,
@@ -88,11 +90,21 @@ export async function installedManifest(projectDir: string, name: string): Promi
  * "not installed" — telling an adopter to run `pithy add auth` when the file is unreadable sends them to
  * the command that just declined to run. Neither is a package that is installed and ships no manifest;
  * see {@link absenceRefusal}.
+ *
+ * Read from the package `fromDir` resolves — a Worker's own `node_modules` first, up to the project root and
+ * never above it ({@link installedPackageBase}) — so a capability installed in a workspace member is found.
+ * `fromDir` defaults to the root.
  */
-export async function loadManifest(name: string, projectDir: string): Promise<CapabilityManifest> {
-  const read = await readInstalledManifest(manifestPath(projectDir, name));
+export async function loadManifest(
+  name: string,
+  projectDir: string,
+  fromDir: string = projectDir,
+): Promise<CapabilityManifest> {
+  const base =
+    (await installedPackageBase(projectDir, fromDir, `${SCOPE}/${capabilityPackageDir(name)}`)) ?? projectDir;
+  const read = await readInstalledManifest(manifestPath(base, name));
   if (read.state === "manifest") return read.manifest;
-  if (read.state === "absent") throw await absenceRefusal(name, projectDir);
+  if (read.state === "absent") throw await absenceRefusal(name, projectDir, base);
   throw new InternalError({
     message: `${SCOPE}/${capabilityPackageDir(name)} ships a malformed ${capabilityManifestFile(name)}${firstFault(read.cause)}`,
     action: "Reinstall the capability, or report this to its maintainer.",
@@ -112,9 +124,9 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
  * capability at all, or its author left the one file that makes a capability addable out of the publish.
  * `capabilities/addable.test.ts` is what keeps that from being one of ours again.
  */
-async function absenceRefusal(name: string, projectDir: string): Promise<PithyError> {
+async function absenceRefusal(name: string, projectDir: string, base: string): Promise<PithyError> {
   const pkg = `${SCOPE}/${capabilityPackageDir(name)}`;
-  if (!(await isInstalled(projectDir, name))) {
+  if (!(await isInstalled(base, name))) {
     // Nothing here says which Worker, so a project with several gets one command per Worker, each with
     // whatever the manifest — the kit's, until the package is installed — says it needs.
     return new NotFoundError({
@@ -129,7 +141,7 @@ async function absenceRefusal(name: string, projectDir: string): Promise<PithyEr
   return new NotFoundError({
     message: `${pkg} is installed and ships no ${capabilityManifestFile(name)}, so there is no capability named "${name}" to wire.`,
     action: `Check the name against ${addListCommand()}. If ${pkg} is meant to be a capability, report the missing ${capabilityManifestFile(name)} to its maintainer.`,
-    detail: `${manifestPath(projectDir, name)} does not exist, but the package directory does`,
+    detail: `${manifestPath(base, name)} does not exist, but the package directory does`,
   });
 }
 
@@ -235,15 +247,32 @@ export interface AvailableManifests {
 export async function composedManifests(projectDir: string, workerDir: string): Promise<AvailableManifests> {
   const root = await availableManifests(projectDir);
   if (resolve(workerDir) === resolve(projectDir)) return root;
-  const worker = await availableManifests(workerDir);
+  return mergeManifests([root, await availableManifests(workerDir)]);
+}
 
-  const byName = new Map(root.manifests.map((manifest) => [manifest.name, manifest]));
-  for (const manifest of worker.manifests) byName.set(manifest.name, manifest);
+/**
+ * Every manifest installed anywhere in the project: the root's `node_modules` and every workspace member's. What
+ * `pithy add --list` marks as installed, since `pithy add` installs into the Worker's own member.
+ */
+export async function projectManifests(projectDir: string): Promise<AvailableManifests> {
+  const members = await workspaceMembers(projectDir);
+  return mergeManifests(await Promise.all(members.map((member) => availableManifests(join(projectDir, member)))));
+}
 
-  const seen = new Set(root.faults.map(manifestFaultKey));
+/** Scans merged by manifest name, a later scan's copy winning, with each fault reported once. */
+function mergeManifests(scans: readonly AvailableManifests[]): AvailableManifests {
+  const byName = new Map<string, CapabilityManifest>();
+  const faults = new Map<string, ManifestFault>();
+  for (const scan of scans) {
+    for (const manifest of scan.manifests) byName.set(manifest.name, manifest);
+    for (const fault of scan.faults) {
+      const key = manifestFaultKey(fault);
+      if (!faults.has(key)) faults.set(key, fault);
+    }
+  }
   return {
     manifests: [...byName.values()].sort((left, right) => left.name.localeCompare(right.name)),
-    faults: [...root.faults, ...worker.faults.filter((fault) => !seen.has(manifestFaultKey(fault)))],
+    faults: [...faults.values()],
   };
 }
 

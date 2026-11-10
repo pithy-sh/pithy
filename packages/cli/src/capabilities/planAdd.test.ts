@@ -14,7 +14,7 @@ import { runAdd } from "./flow";
 import { planAdd } from "./planAdd";
 
 /**
- * **`pithy add --dry-run` writes nothing, installs nothing, and plans what the add then does (#697).**
+ * **`pithy add --dry-run` writes nothing, installs nothing, and plans what the add then does.**
  *
  * The plan is the real add run in a copy of the project, so the first half is about the copy — the project
  * and the dev secrets file are byte-identical afterwards — and the second is about the plan: the files it
@@ -90,10 +90,11 @@ describe("planAdd", () => {
       '+import { auth } from "@pithy-sh/auth/src/index";',
     );
     expect(byPath.get(`apps/${DEFAULT_WORKER}/wrangler.jsonc`)?.diff).toContain('"binding": "DB"');
-    const root = byPath.get("package.json");
-    expect(root?.changes).toEqual(["Runs npm install @pithy-sh/auth here, which also writes the lockfile."]);
-    expect(root?.diff).toContain('+    "@pithy-sh/auth": "^1.2.3"');
-    expect(byPath.get(`apps/${DEFAULT_WORKER}/package.json`)?.diff).toContain('+    "@pithy-sh/auth": "^1.2.3"');
+    // The install runs in the Worker, a workspace member, and the root is not touched.
+    expect(byPath.has("package.json")).toBe(false);
+    const declared = byPath.get(`apps/${DEFAULT_WORKER}/package.json`);
+    expect(declared?.changes).toEqual(["Runs npm install @pithy-sh/auth here, which also writes the lockfile."]);
+    expect(declared?.diff).toContain('+    "@pithy-sh/auth": "^1.2.3"');
     expect(plan.secrets).toEqual([expect.objectContaining({ name: "auth-session-secret", action: "mint" })]);
     expect(plan.notes[0]).toMatch(/pending dev migrations/);
     // The copy's path never reaches the plan.
@@ -151,7 +152,7 @@ describe("planAdd", () => {
     const config = plan.files.find((file) => file.path === `apps/${DEFAULT_WORKER}/pithy.config.ts`)?.diff ?? "";
     expect(config).toContain("+import { secrets }");
     expect(config).toContain("+import { auth }");
-    expect(plan.files.find((file) => file.path === "package.json")?.changes).toEqual([
+    expect(plan.files.find((file) => file.path === `apps/${DEFAULT_WORKER}/package.json`)?.changes).toEqual([
       "Runs npm install @pithy-sh/auth @pithy-sh/secrets here, which also writes the lockfile.",
     ]);
     expect(await snapshotTree(dir)).toEqual(before);
@@ -173,10 +174,9 @@ describe("planAdd", () => {
   });
 
   /**
-   * **A file the add edits may be a link out of the project, and the plan is still the add (#697).** The real
-   * add writes through the adopter's link; the dry run crashed on it with a raw `ENOTDIR` naming its temporary
-   * copy, exit 1 and no `--json` line. It plans the edit at the path the add wrote, says where it lands, and
-   * leaves the file outside alone.
+   * **A file the add edits may be a link out of the project, and the plan is still the add.** The real add
+   * writes through the adopter's link; the dry run must not fail on it with a raw `ENOTDIR` naming its temporary
+   * copy. It plans the edit at the path the add wrote, says where it lands, and leaves the file outside alone.
    */
   describe("a link out of the project", () => {
     let outside: string;
@@ -244,11 +244,11 @@ describe("planAdd", () => {
 
   test("a re-run over a project that already composes it plans no wiring", async () => {
     await install(authManifest);
-    // What the real install leaves at the root, which the stub below does not write.
-    const rootPath = join(dir, "package.json");
-    const root = JSON.parse(await readFile(rootPath, "utf8")) as { dependencies?: Record<string, string> };
-    root.dependencies = { ...root.dependencies, "@pithy-sh/auth": "^1.2.3" };
-    await writeFile(rootPath, `${JSON.stringify(root, null, 2)}\n`);
+    // What the real install leaves in the Worker's package.json, which the stub below does not write.
+    const declaredPath = join(worker, "package.json");
+    const declared = JSON.parse(await readFile(declaredPath, "utf8")) as { dependencies?: Record<string, string> };
+    declared.dependencies = { ...declared.dependencies, "@pithy-sh/auth": "^1.2.3" };
+    await writeFile(declaredPath, `${JSON.stringify(declared, null, 2)}\n`);
     await runAdd({
       ...base(),
       capability: "auth",
@@ -257,6 +257,13 @@ describe("planAdd", () => {
       bootstrap: async () => [],
     });
     const { plan } = await planAdd({ ...base(), capability: "auth" });
-    expect(plan.files.filter((file) => file.path.startsWith("apps/"))).toEqual([]);
+    // The install is planned again, as the real re-run runs it, and nothing is wired.
+    expect(plan.files).toEqual([
+      {
+        path: `apps/${DEFAULT_WORKER}/package.json`,
+        action: "edit",
+        changes: ["Runs npm install @pithy-sh/auth here, which also writes the lockfile."],
+      },
+    ]);
   });
 });

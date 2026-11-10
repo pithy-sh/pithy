@@ -5,7 +5,7 @@ import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/c
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { FEATURE_RESOURCE_KINDS } from "@pithy-sh/core/src/naming/feature";
 import { z } from "zod";
-import { type AddPlan, addPlan, projectAddFacts } from "../capabilities/addCommand";
+import { type AddPlan, addPlan, workerAddFacts } from "../capabilities/addCommand";
 import type { McpClientId } from "../mcp/clients";
 import { establishedPending } from "../migrations/pendingCount";
 import { provisionFixCommand } from "../provision/provisionFix";
@@ -69,7 +69,7 @@ export function missingBindingFix(worker: WorkerDir, binding: { type: string; en
  * ask refuses over them. The flag composes only what is missing, so it is right whether or not anything is.
  */
 export function prerequisitePlan(worker: WorkerDir, requires: string, projectDir?: string): AddPlan {
-  return addPlan({ capability: requires, workers: [worker], factsFor: projectAddFacts(projectDir) });
+  return addPlan({ capability: requires, workers: [worker], factsFor: workerAddFacts(projectDir, worker) });
 }
 
 /** {@link prerequisitePlan}'s `fix`: the one command, when nothing in it is a person's choice. */
@@ -93,7 +93,7 @@ export function capabilityReachPlan(entry: ReachEntry, projectDir?: string): Add
   return addPlan({
     capability: entry.capability,
     workers: [worker],
-    factsFor: projectAddFacts(projectDir),
+    factsFor: workerAddFacts(projectDir, worker),
     ...(entry.settled === undefined
       ? {}
       : { composed: new Set(entry.settled.composed), answered: new Set(entry.settled.answered) }),
@@ -195,6 +195,7 @@ export function healthWithFixes(
   health: ProjectHealth,
   productionEnvironments: readonly string[],
   setUp = true,
+  projectDir?: string,
 ): unknown {
   const none = { fix: null };
   return {
@@ -210,7 +211,7 @@ export function healthWithFixes(
       // What the Worker settles is read for the fix, and is not part of the report.
       unreachable: health.capabilityReach.unreachable.map(({ settled, ...entry }) => ({
         ...entry,
-        fix: capabilityReachFix({ ...entry, settled }),
+        fix: capabilityReachFix({ ...entry, settled }, projectDir),
       })),
       split: health.capabilityReach.split.map((entry) => ({ ...entry, ...none })),
     },
@@ -226,14 +227,14 @@ export function healthWithFixes(
           ...worker.consent,
           purposes: worker.consent.purposes.map((entry) => ({
             ...entry,
-            fix: worker.consent.unrecorded ? prerequisiteFix(name, "consent") : null,
+            fix: worker.consent.unrecorded ? prerequisiteFix(name, "consent", projectDir) : null,
           })),
         },
         prerequisites: {
           ...worker.prerequisites,
           missing: worker.prerequisites.missing.map((entry) => ({
             ...entry,
-            fix: prerequisiteFix(name, entry.requires),
+            fix: prerequisiteFix(name, entry.requires, projectDir),
           })),
         },
         config: {

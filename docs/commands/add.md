@@ -31,9 +31,9 @@ pithy add --list [--json]
 
 One capability, one Worker, in this order.
 
-**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core` and `mcp` inside `@pithy-sh/auth`, so `@pithy-sh/controlplane` and `@pithy-sh/mcp` are packages that have never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`. A cold install can take minutes with nothing to show for it, so it is named as it starts, in the manager's own words: `▸ Running bun add @pithy-sh/auth...`. `--json` prints none of it.
+**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core` and `mcp` inside `@pithy-sh/auth`, so `@pithy-sh/controlplane` and `@pithy-sh/mcp` are packages that have never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. It runs in the Worker's own directory when that Worker is a workspace member with a `package.json` — every scaffolded Worker is — so the dependency is declared in `apps/<worker>/package.json`, sorted, and the root `package.json` is untouched; a Worker that is not a member installs at the project root. A `@pithy-sh/*` package a linked checkout already provides, in the Worker's `node_modules` or the root's, is skipped, and nothing then declares it in a `package.json`. A cold install can take minutes with nothing to show for it, so it is named as it starts, in the manager's own words: `▸ Running bun add @pithy-sh/auth...`. `--json` prints none of it.
 
-**Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated — or, for a capability that shares its package with another, its own file beside it: `mcp`'s is `@pithy-sh/auth/pithy.mcp.manifest.json`. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
+**Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated — or, for a capability that shares its package with another, its own file beside it: `mcp`'s is `@pithy-sh/auth/pithy.mcp.manifest.json`. It is found the way Node resolves it from the Worker: the Worker's own `node_modules` first, then up to the project root, never above it. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
 
 **Resolve what it composes against.** A manifest's `peerCapabilities` are the capabilities this one reads a seam of: `auth` declares `secrets` and `email`, `email` declares `secrets`, and `payments`, `support`, `storage`, `media` and `turnstile` all declare `secrets`. They are not advice. `createBackend` refuses to assemble a capability without them — `Capability "auth" requires the "secrets" capability, which is not composed` — so a Worker missing one does not start at all.
 
@@ -84,7 +84,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **`pithy add mcp` takes a floor.** `mcp` lets your users' agents use the app as them ([AGENT-ACCESS.md §4](../AGENT-ACCESS.md)), and composing it means choosing who may connect one at all. There is no default. `--floor signed-in` admits every signed-in user, `--floor power:<name>` only a caller whose role holds that power, and `--floor entitlement:<name>` only a caller holding that entitlement; they are written as `floor: "signed-in"`, `floor: { power: "<name>" }` and `floor: { entitlement: "<name>" }`. `mcp` requires `auth`, so a Worker that does not compose it is refused naming `pithy add auth`, as any prerequisite is. Its `database` is the one auth's registration names, `DB` when it names none, because the provider's tables live beside auth's. A config that already composes an OAuth provider into auth is refused, naming `oauthProvider()` to remove: `mcp` composes the one its endpoint uses. Its notes name what follows — `pithy ui add` for the consent and connected-applications screens, and `describeRoute({ operation, tool })` to make a route a tool.
 
-**Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present. That install is named as it starts, the same way.
+**Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into the Worker — an install run where the package's own install ran, so they land in `apps/<worker>/package.json` — and the migrate step has to load the config with everything it imports present. That install is named as it starts, the same way.
 
 **Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`. Each database and migration is named as it starts, as `pithy migrate` names them. `--json` prints none of it.
 
@@ -98,11 +98,11 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Which Worker.** `--worker` names it. A single-Worker project needs no ceremony. A project with several never guesses: it prompts a human, and fails `input/required` for anyone else, naming `--worker` and every Worker in `choices` — an agent driving `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` is told what to pass rather than hanging on a question it cannot answer.
 
-**`--dry-run` is the add, made in a copy.** The whole flow above runs — the same prerequisite refusal, the same required options, the same config, binding, entry, seam, test-binding and manifest writes — against a private copy of the project under the system temporary directory, and the plan is what changed there: each file with its diff, so the bytes a person reviews are the bytes the add writes. The copy is gone before the command exits. Four steps are not made, and the plan says what each would do instead: the install names the command it would run, and declares the package in the copy's root `package.json` at `^<installed>` so the Worker's own declaration is the real one; the dev migrations are a note, because which are pending is known only once the wiring is on disk; the dev secrets the add would mint are listed under `secrets`, without a value; and an `--eject` copy is one directory created rather than a diff of every file in the package. No account is reached and nothing is audited.
+**`--dry-run` is the add, made in a copy.** The whole flow above runs — the same prerequisite refusal, the same required options, the same config, binding, entry, seam, test-binding and manifest writes — against a private copy of the project under the system temporary directory, and the plan is what changed there: each file with its diff, so the bytes a person reviews are the bytes the add writes. The copy is gone before the command exits. Four steps are not made, and the plan says what each would do instead: the install names the command it would run, on the `package.json` it would run against — the Worker's own for a workspace member, the root's otherwise — and declares the package there in the copy at `^<installed>`, so the diff is the declaration the real run writes; the dev migrations are a note, because which are pending is known only once the wiring is on disk; the dev secrets the add would mint are listed under `secrets`, without a value; and an `--eject` copy is one directory created rather than a diff of every file in the package. No account is reached and nothing is audited.
 
 The manifest has to be installed, because it is what says what a capability wires and installing it is the one step a plan cannot make in a copy. A capability that is not installed is refused, exit 3, naming the install command.
 
-Idempotent. A second `pithy add auth` changes nothing. Adding the same capability to a second Worker reuses the installed package and writes only that Worker's config and bindings.
+Idempotent. A second `pithy add auth` changes nothing. Adding the same capability to a second Worker runs that Worker's own install, declaring the package in its own `package.json`, and writes its config and bindings.
 
 ## `--json`
 
@@ -124,7 +124,7 @@ $ pithy add --list --json
 | `capabilities[].package` | string | The npm package it ships in. `@pithy-sh/<name>` for all but `controlplane`, which ships inside `@pithy-sh/core`, and `mcp`, which ships inside `@pithy-sh/auth` |
 | `capabilities[].requires` | string[] | The capabilities it requires, which `--with-prerequisites` composes first. Empty when it requires none |
 | `capabilities[].whenToEnable` | string | One-line rationale: why a project would enable this |
-| `capabilities[].installed` | boolean | Whether this project's `node_modules/@pithy-sh` holds a usable manifest for it |
+| `capabilities[].installed` | boolean | Whether a `node_modules/@pithy-sh` in this project — the root's or any workspace member's — holds a usable manifest for it |
 | `manifestFaults` | array | Installed packages shipping a manifest that is present and unusable. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].file` | string | The manifest file within that package: `pithy.manifest.json`, or a companion such as `pithy.mcp.manifest.json` |
@@ -179,7 +179,7 @@ $ pithy add secrets --json
 
 ```
 $ pithy add audit --dry-run --json
-{"command":"add","schemaVersion":2,"dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":[],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -1,3 +1,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"},{"path":"package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
+{"command":"add","schemaVersion":2,"dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -3,3 +3,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
 ```
 
 ## Errors
@@ -293,8 +293,10 @@ $ pithy add auth --json
 ```
 $ pithy add auth --dry-run
 @pithy-sh/auth is not installed, so there is no manifest to plan auth from.
-Install it with bun add @pithy-sh/auth, then run `pithy add auth --worker board --with-prerequisites --dry-run` again.
+Install it with cd apps/board && bun add @pithy-sh/auth, then run `pithy add auth --worker board --with-prerequisites --dry-run` again from the project root.
 ```
+
+The install command names the Worker's directory when the Worker is a workspace member, since that is where the real add installs. Run at the root, it would declare the package there instead.
 
 **A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with ``Run `pithy add <name> --worker <dir> --with-prerequisites` to install it.``, naming the Worker by its `apps/` directory and `--with-prerequisites` when the capability brings any that Worker lacks. In a project with several Workers it names one such command per Worker, joined by "or".
 
@@ -352,10 +354,9 @@ See what an add would change before it changes anything.
 $ pithy add audit --dry-run
 Would wire audit into board.
 Would edit apps/board/package.json.
+  Runs bun add @pithy-sh/audit here, which also writes the lockfile.
 Would edit apps/board/pithy.config.ts.
 Would edit apps/board/wrangler.jsonc.
-Would edit package.json.
-  Runs bun add @pithy-sh/audit here, which also writes the lockfile.
 Then applies board's pending dev migrations to the local database.
 Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store.
 Dry run. Nothing written.

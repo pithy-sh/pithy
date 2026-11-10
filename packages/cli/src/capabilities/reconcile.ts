@@ -53,14 +53,14 @@ import { requiredOptionRefusal } from "./requiredOptions";
  *
  * **Two directories, deliberately distinct.** `workerDir` (`apps/<name>/`) is the *wiring*: the Worker's own
  * `pithy.config.ts` and `wrangler.jsonc` — what a plan reads and an apply writes. `projectDir` (the repo root)
- * is only where **manifests** resolve from, since packages install once into the root
- * `node_modules/@pithy-sh/*` and every Worker shares them.
+ * bounds where **manifests** resolve from: the Worker's own `node_modules`, where `pithy add` installs into a
+ * workspace member, and the root's, which every Worker reaches ({@link composedManifests}).
  *
- * **Installed is not composed.** Because that one install is shared, the manifests at the root are every
- * capability installed *anywhere* in the project — not what this Worker is made of. A plan is therefore scoped
- * to the Worker's own composed set (its `pithy.config.ts`): a capability another Worker added contributes
- * nothing here. Anything else would put a foreign capability's bindings, and its Durable Object class
- * migrations, on a script that never declared them.
+ * **Installed is not composed.** The manifests a Worker reaches include its own member's installs and every
+ * capability in the root's `node_modules`, which every Worker reaches — not only what this Worker is made of. A
+ * plan is therefore scoped to the Worker's own composed set (its `pithy.config.ts`): a capability another Worker
+ * added contributes nothing here. Anything else would put a foreign capability's bindings, and its Durable Object
+ * class migrations, on a script that never declared them.
  */
 
 /** A required binding a capability's manifest declares that a given environment's wrangler stanza lacks. */
@@ -477,8 +477,8 @@ export interface BuildReconcilePlanOptions {
   env: string;
   /**
    * The Worker's composed capabilities (libraries + app) — **the scope of the whole plan**, not just its
-   * migration count. Only a capability named here is reconciled; one installed at the project root for
-   * another Worker contributes nothing. Loaded from this Worker's own `pithy.config.ts` when omitted.
+   * migration count. Only a capability named here is reconciled; one installed for another Worker contributes
+   * nothing. Loaded from this Worker's own `pithy.config.ts` when omitted.
    */
   capabilities?: Capability[];
   /**
@@ -1302,7 +1302,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   }
   for (const manifest of manifests) {
     if (ejected.includes(manifest.name)) continue; // ejected — reported below, never reconciled
-    if (!composed.has(manifest.name)) continue; // installed at the root for another Worker — not this one's
+    if (!composed.has(manifest.name)) continue; // reachable from this Worker, composed by another — not this one's
     perCapability.push({
       name: manifest.name,
       missingBindings: computeMissingBindings(manifest, stanzas, byName.get(manifest.name), honored),

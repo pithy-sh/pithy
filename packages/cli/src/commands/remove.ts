@@ -217,8 +217,8 @@ export default withContract(
           // every linked sibling with it. Say what was left, so the link in node_modules is never a surprise.
           process.stdout.write(`Kept ${result.package} — a linked checkout provides it.\n`);
         } else if (result.keptFor.length > 0) {
-          // The wiring is gone from this Worker, but the package is one shared install — say so plainly,
-          // and name who still holds it, so the leftover dependency is never a surprise.
+          // The wiring is gone from this Worker, but the package is a root declaration other Workers share —
+          // say so plainly, and name who still holds it, so the leftover dependency is never a surprise.
           const holders = result.keptFor.join(", ");
           const verb = result.keptFor.length === 1 ? "still wires it" : "still wire it";
           process.stdout.write(`Kept ${result.package} installed — ${holders} ${verb}.\n`);

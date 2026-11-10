@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { CATALOG } from "../capabilities/catalog";
@@ -25,9 +26,8 @@ import { CATALOG } from "../capabilities/catalog";
  * ```
  *
  * Both sides read identically unless you compare them character by character, and nothing points at
- * `node_modules`. `pithy-sh/dashboard` lost a day to it on the day it moved off a linked checkout onto
- * published `0.1.2` (#477). Every kit package declares these three as `peerDependencies` now, so an
- * installer puts one at the top — but a peer is a request, not a guarantee: a range conflict, a
+ * `node_modules`. Every kit package declares these three as `peerDependencies`, so an installer puts one at
+ * the top — but a peer is a request, not a guarantee: a range conflict, a
  * `--legacy-peer-deps`, a resolution an adopter pinned, or a workspace hoisting differently all
  * reintroduce the second copy. This is a question with a definite answer and a terrible error message,
  * which is exactly what `pithy doctor` is for.
@@ -40,8 +40,9 @@ import { CATALOG } from "../capabilities/catalog";
  * not two copies. It also means this reads no directory: `sourceFiles.test.ts` fails any module that
  * hand-rolls a traversal, and there is nothing here to traverse.
  *
- * The roots are the project itself and every capability package the catalog names, because those are
- * the two sides that have to agree — the adopter's own `import { z } from "zod"` and the kit's.
+ * The roots are every workspace member and every capability package the catalog names installed in one, because
+ * those are the two sides that have to agree — the adopter's own `import { z } from "zod"` and the kit's. `pithy
+ * add` installs a capability in the Worker's own member, where a root-only lookup never finds it.
  */
 
 /** The three whose identity has to be shared. Kept beside `sharedRuntimeDeps.test.ts`, which peers them. */
@@ -71,6 +72,8 @@ export interface SharedRuntimesCheck {
 /** Everything the check reads, injectable so a unit test never needs a real `node_modules`. */
 export interface SharedRuntimesOptions {
   projectDir: string;
+  /** The project's workspace members, relative to it, the root as `.` (`workspaceMembers`). Defaults to the root. */
+  members?: readonly string[];
   /**
    * Seam: where `name` resolves to, asked from `from`, or `null` when it does not resolve there.
    *
@@ -89,7 +92,8 @@ function copyDir(resolved: string, name: string): string {
 /** Node's own resolver, asked from a directory rather than from this module. */
 function nodeResolve(from: string, name: string): string | null {
   try {
-    return createRequire(join(from, "package.json")).resolve(name);
+    // From the real directory: a linked package resolves its own dependencies beside its target, as node loads it.
+    return createRequire(join(realpathSync(from), "package.json")).resolve(name);
   } catch {
     return null;
   }
@@ -104,12 +108,12 @@ function nodeResolve(from: string, name: string): string | null {
 export function checkSharedRuntimes(options: SharedRuntimesOptions): SharedRuntimesCheck {
   const resolve = options.resolveFrom ?? nodeResolve;
 
-  // The project, and every capability package it may have installed. A capability that is absent
+  // Every member, and every capability package it may have installed. A capability that is absent
   // resolves nothing and drops out on its own.
-  const roots = [
-    options.projectDir,
-    ...CATALOG.map((entry) => join(options.projectDir, "node_modules", ...entry.package.split("/"))),
-  ];
+  const roots = (options.members ?? ["."]).flatMap((member) => {
+    const dir = join(options.projectDir, member);
+    return [dir, ...CATALOG.map((entry) => join(dir, "node_modules", ...entry.package.split("/")))];
+  });
 
   const resolutions: SharedRuntimeResolution[] = [];
   for (const name of SHARED_RUNTIMES) {

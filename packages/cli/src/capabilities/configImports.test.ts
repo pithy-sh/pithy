@@ -7,6 +7,7 @@ import {
   exportsName,
   findNamedImport,
   importOrigin,
+  insertImport,
   isCapabilityImport,
   namedReexports,
   withoutBinding,
@@ -278,5 +279,88 @@ describe("namedReexports", () => {
 
   test("a commented-out re-export points nowhere", () => {
     expect(namedReexports('// export { Room } from "./rooms";')).toEqual([]);
+  });
+});
+
+describe("insertImport", () => {
+  const auth = 'import { auth } from "@pithy-sh/auth/src/index";';
+  const insert = (source: string, statement = auth, specifier = "@pithy-sh/auth/src/index") =>
+    insertImport(source, statement, specifier);
+
+  test("lands after the header comment, among the imports, in specifier order", () => {
+    const source = [
+      "// apps/board/pithy.config.ts — what THIS Worker is made of.",
+      "//",
+      "// Every Worker has its own config.",
+      "",
+      'import { defineCapability } from "@pithy-sh/core/src/capability/capability";',
+      'import { secrets } from "@pithy-sh/secrets/src/index";',
+      'import { routes } from "./src/routes";',
+      "",
+      "export default {};",
+      "",
+    ].join("\n");
+    expect(insert(source).split("\n").slice(3, 8)).toEqual([
+      "",
+      auth,
+      'import { defineCapability } from "@pithy-sh/core/src/capability/capability";',
+      'import { secrets } from "@pithy-sh/secrets/src/index";',
+      'import { routes } from "./src/routes";',
+    ]);
+  });
+
+  test("a package sorts after node: built-ins and ahead of relative paths", () => {
+    const source = ['import { join } from "node:path";', 'import { routes } from "./src/routes";', ""].join("\n");
+    expect(insert(source).split("\n").slice(0, 3)).toEqual([
+      'import { join } from "node:path";',
+      auth,
+      'import { routes } from "./src/routes";',
+    ]);
+  });
+
+  test("after the last import when every one sorts ahead of it", () => {
+    const source = ['import { a } from "@pithy-sh/a/src/index";', "", "export default {};", ""].join("\n");
+    expect(insert(source)).toBe(
+      ['import { a } from "@pithy-sh/a/src/index";', auth, "", "export default {};", ""].join("\n"),
+    );
+  });
+
+  test("a multi-line import is stepped over whole", () => {
+    const source = ["import {", "  a,", "  b,", '} from "@pithy-sh/a/src/index";', "export default {};", ""].join("\n");
+    expect(insert(source).split("\n").slice(3, 5)).toEqual(['} from "@pithy-sh/a/src/index";', auth]);
+  });
+
+  test("type and side-effect imports count as imports too", () => {
+    const source = ['import type { A } from "@pithy-sh/a/src/index";', 'import "@pithy-sh/zz/src/side";', ""].join(
+      "\n",
+    );
+    expect(insert(source).split("\n").slice(0, 3)).toEqual([
+      'import type { A } from "@pithy-sh/a/src/index";',
+      auth,
+      'import "@pithy-sh/zz/src/side";',
+    ]);
+  });
+
+  test("a commented-out import is not an anchor", () => {
+    const source = [
+      '// import { z } from "@pithy-sh/z/src/index";',
+      'import { a } from "@pithy-sh/a/src/index";',
+      "",
+    ].join("\n");
+    expect(insert(source).split("\n")).toEqual([
+      '// import { z } from "@pithy-sh/z/src/index";',
+      'import { a } from "@pithy-sh/a/src/index";',
+      auth,
+      "",
+    ]);
+  });
+
+  test("with no imports, after the header comment and ahead of the code", () => {
+    const source = ["/**", " * Header.", " */", "", "export default {};", ""].join("\n");
+    expect(insert(source)).toBe(["/**", " * Header.", " */", "", auth, "", "export default {};", ""].join("\n"));
+  });
+
+  test("a file with no header and no imports takes it on its first line", () => {
+    expect(insert("export default {};\n")).toBe(`${auth}\n\nexport default {};\n`);
   });
 });

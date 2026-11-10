@@ -402,6 +402,17 @@ describe("runUpgrade — fan-out over apps/", () => {
     );
   });
 
+  test("a malformed manifest installed only in a Worker's own node_modules is a fault, read by default", async () => {
+    const pkgDir = join(apiDir, "node_modules", "@pithy-sh", "audit");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, "package.json"), JSON.stringify({ name: "@pithy-sh/audit", version: "1.0.0" }));
+    await writeFile(join(pkgDir, "pithy.manifest.json"), "{ not json");
+
+    const run = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
+
+    expect(run.manifestFaults.map((fault) => fault.package)).toEqual(["@pithy-sh/audit"]);
+  });
+
   test("--worker narrows the fan-out to one worker", async () => {
     const { workers: results } = await runUpgrade({
       account: null,
@@ -548,7 +559,7 @@ describe("runUpgrade — fan-out over apps/", () => {
  *
  * A manifest the schema refuses makes its capability vanish from every plan, so the run reconciles
  * happily around the hole and reports nothing at all. The lines sit above the Workers because the
- * fault belongs to none of them — manifests install once, under the project root.
+ * fault belongs to the package, which is broken for every Worker that resolves it.
  */
 describe("manifest faults", () => {
   const fault = {

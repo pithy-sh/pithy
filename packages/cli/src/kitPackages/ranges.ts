@@ -179,7 +179,7 @@ export type NoCommandReason =
   | "not-declared"
   /** Declared in a shape `--packages` leaves alone. {@link PackageAdvice.declaredAs} names it. */
   | "not-a-registry-range"
-  /** A checkout linked in at the root, which `--packages` leaves alone. */
+  /** A checkout linked in, as every member that declares the package resolves it, which `--packages` leaves alone. */
   | "linked"
   /** `latest` is deprecated, and no move lands on a deprecated version. */
   | "deprecated"
@@ -198,7 +198,10 @@ export interface PackageAdvice {
 
 /** The facts about one package, beyond its declarations, that decide what clears its line. */
 export interface PackageFacts {
-  /** Whether the root's copy is a checkout linked in — what `--packages` judges by `alreadyProvided`. */
+  /**
+   * Whether every member that declares the package resolves it to a checkout linked in — what `--packages` judges by
+   * `alreadyProvided`, from each declaring member's directory.
+   */
   linked: boolean;
   /** Whether the version `latest` names is deprecated. */
   latestDeprecated: boolean;
