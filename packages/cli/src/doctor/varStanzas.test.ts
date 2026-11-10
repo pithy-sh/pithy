@@ -94,6 +94,31 @@ describe("varStanzaFindings", () => {
     ]);
   });
 
+  test("judges a number written as text by the read rule: a plain decimal passes, padded or exponent text does not", () => {
+    const findings = varStanzaFindings(
+      "api",
+      {
+        vars: { READY_AFTER_MINUTES: "15" },
+        env: { staging: { vars: { READY_AFTER_MINUTES: " 15" } }, prod: { vars: { READY_AFTER_MINUTES: "1e3" } } },
+      },
+      declared,
+    );
+    expect(findings).toEqual([
+      expect.objectContaining({
+        kind: "invalid",
+        stanza: "env.staging",
+        value: " 15",
+        problem: expect.stringMatching(/plain decimal/),
+      }),
+      expect.objectContaining({
+        kind: "invalid",
+        stanza: "env.prod",
+        value: "1e3",
+        problem: expect.stringMatching(/plain decimal/),
+      }),
+    ]);
+  });
+
   test("leaves out a var the CLI writes per environment, which a stanza holds only once its command ran", () => {
     const record = JSON.stringify({ index: "dev-index", fields: ["tenant"] });
     const findings = varStanzaFindings("api", {

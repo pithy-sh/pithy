@@ -42,32 +42,83 @@ export interface WorkerVarsDeclaration<V extends Record<string, WorkerVar> = Rec
   read(env: unknown): WorkerVarValues<V>;
 }
 
-/** What {@link parseVar} found. `problem` is `missing` for an absent value, else the schema's own message. */
+/**
+ * What {@link parseVar} found. `problem` is `missing` for an absent value, the plain-decimal rule for text that reads
+ * as a number only another way, else the schema's own message.
+ */
 export type ParsedVar = { ok: true; value: unknown } | { ok: false; problem: string };
 
 const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** The one way to write a number as text: an optional sign, digits, and an optional fraction. */
+const PLAIN_DECIMAL = /^[+-]?\d+(\.\d+)?$/;
+
+/** Why text that would read as some other number is refused. */
+const NOT_PLAIN_DECIMAL =
+  "a number written as text is a plain decimal, like 15, -3 or 1.5, with no padding or exponent";
+
 /**
- * Parse one raw value under its declaration. A string that does not parse is tried once more as JSON, because a
- * `.dev.vars` line carries every value as text while `wrangler.jsonc` carries it typed.
+ * Parse one raw value under its declaration. A `.dev.vars` line carries every value as text while `wrangler.jsonc`
+ * carries it typed, so a string the schema refuses is tried once more decoded: a plain decimal as that number, any
+ * other text as JSON, which is how an object, array or boolean is written. Text that comes out a number only by
+ * another route (` 15`, `1e3`, `0x10`, an empty string under `z.coerce.number()`) is refused whatever the schema
+ * transforms the number into, so a typo falls back to the default instead of reading as a different value. A schema
+ * that takes the text itself and transforms it into a number, like `"5m"` into milliseconds, is its own rule, and its
+ * result stands.
  */
 export function parseVar(entry: WorkerVar, raw: unknown): ParsedVar {
   if (raw === undefined) return { ok: false, problem: "missing" };
+  const loose = typeof raw === "string" && !PLAIN_DECIMAL.test(raw);
   const direct = entry.schema.safeParse(raw);
-  if (direct.success) return { ok: true, value: direct.data };
+  if (direct.success) {
+    return loose && readsAsNumber(entry, direct.data, Number(raw))
+      ? { ok: false, problem: NOT_PLAIN_DECIMAL }
+      : { ok: true, value: direct.data };
+  }
   if (typeof raw === "string") {
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(raw);
-    } catch {
-      decoded = undefined;
-    }
-    if (decoded !== undefined) {
-      const retried = entry.schema.safeParse(decoded);
-      if (retried.success) return { ok: true, value: retried.data };
+    const decoded = loose ? decodeJson(raw) : Number(raw);
+    const retried = isTextValue(decoded, loose) ? entry.schema.safeParse(decoded) : undefined;
+    if (retried?.success) {
+      return loose && typeof decoded === "number"
+        ? { ok: false, problem: NOT_PLAIN_DECIMAL }
+        : { ok: true, value: retried.data };
     }
   }
   return { ok: false, problem: direct.error.issues[0]?.message ?? "invalid" };
+}
+
+/**
+ * Whether the schema read the text as the number `asNumber`: it gives the same value for that number as it gave for
+ * the text. A coercing schema does, whatever it transforms the number into; a schema that also takes strings, like
+ * `z.union([z.number(), z.string()])`, keeps the text and does not.
+ */
+function readsAsNumber(entry: WorkerVar, fromText: unknown, asNumber: number): boolean {
+  const fromNumber = entry.schema.safeParse(asNumber);
+  return fromNumber.success && sameValue(fromText, fromNumber.data);
+}
+
+/** Two parse results compared by value: a `Date` or an object by its JSON form, anything else by identity. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Whether `decoded` is a value text may stand for: the number a plain decimal is, or decoded JSON that is a number
+ * (judged by the plain-decimal rule), an object, an array, a boolean or null. A JSON string is not: text is already one.
+ */
+function isTextValue(decoded: unknown, loose: boolean): boolean {
+  return decoded !== undefined && !(loose && typeof decoded === "string");
+}
+
+/** `text` decoded as JSON, or `undefined` where it is not JSON. */
+function decodeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The value a stanza for `environment` gets: its own where declared, else the default. */
