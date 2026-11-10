@@ -9,13 +9,16 @@
  * never format paths. `setup` creates and wires the worktree (or no-ops if it
  * already exists); `teardown` prunes the registration, removes the directory, and drops the branch.
  *
- * Dependency-free and runtime-agnostic. `pithy feature create/destroy` is the product's
- * version of this, with the port allocator and ephemeral Cloudflare resources on top.
+ * `setup` ends on the same isolated dependency check `pithy feature create` prints, because a worktree under
+ * the main checkout resolves any package its own `node_modules` lacks from the main checkout's.
+ * `pithy feature create/destroy` is the product's version of this, with the port allocator and ephemeral
+ * Cloudflare resources on top.
  */
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { isolatedCheckNotice } from "../packages/cli/src/feature/isolatedCheck.ts";
 
 /** Run git, return trimmed stdout. Throws on a non-zero exit. */
 function git(args: string[], cwd?: string): string {
@@ -98,7 +101,7 @@ function setup(issue: string, slug: string): void {
 
   if (isRegistered(wtPath)) {
     // Nothing to repair: a worktree holds no link into the main checkout, so one that exists is correct.
-    console.log(`Worktree exists. ${wtPath}`);
+    for (const line of setupLines("Worktree exists.", branch, wtPath, root)) console.log(line);
     return;
   }
 
@@ -114,8 +117,20 @@ function setup(issue: string, slug: string): void {
 
   configure(wtPath);
 
-  console.log(`Worktree ready. ${wtPath}`);
-  console.log(`Branch ${branch}.`);
+  for (const line of setupLines("Worktree ready.", branch, wtPath, root)) console.log(line);
+}
+
+/**
+ * What `setup` prints: the worktree, its branch, and the isolated dependency check. The worktree's
+ * `node_modules` holds only what differs from the main checkout's, so the gates pass there on a package a
+ * clean install would not have; the check runs a frozen install in a copy with no checkout above it.
+ */
+export function setupLines(heading: string, branch: string, wtPath: string, root: string): string[] {
+  return [
+    `${heading} ${wtPath}`,
+    `Branch ${branch}.`,
+    ...isolatedCheckNotice({ worktree: wtPath, root, packageManager: "bun" }),
+  ];
 }
 
 /**

@@ -17,6 +17,7 @@ import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
 import { DevConfig } from "../feature/devConfig";
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
+import { isolatedCheckNotice } from "../feature/isolatedCheck";
 import { PortBlock, portsRegistryPath } from "../feature/ports";
 import { OrphanedBlock, pruneFeatureBlocks, prunePlan } from "../feature/prune";
 import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
@@ -25,6 +26,7 @@ import { behindRemote, featureWorktree, mainRepoRoot } from "../feature/worktree
 import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount } from "../project/config";
 import { requireEnvironment } from "../project/environment";
+import { detectPackageManager } from "../project/packageManager";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
 import {
   AUDIT_DESTINATION_ENV,
@@ -52,8 +54,7 @@ const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
  * from the environment's credentials, or null when they are absent.
  *
  * One builder for both, over one set of clients and one confirmed account, so the two halves of a
- * teardown cannot be addressed to two different accounts, and neither can be built without the other
- * (#592).
+ * teardown cannot be addressed to two different accounts, and neither can be built without the other.
  */
 async function buildTeardown(
   account: CloudflareAccountSelection | null,
@@ -64,7 +65,7 @@ async function buildTeardown(
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
-  // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
+  // What vouches for that id travels with it. `find` is find-or-create's first half, and an empty
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmed = { accountId, confirmation: cloudflareAccountConfirmation({ account }) };
   const clients = await cloudflareClients({ accountId, apiToken });
@@ -72,7 +73,7 @@ async function buildTeardown(
   return {
     provisioners,
     scripts: cloudflareWorkerScripts(clients, confirmed),
-    // Every kit host's Workflows, deleted by name (#643). No token: a feature's manager holds none.
+    // Every kit host's Workflows, deleted by name. No token: a feature's manager holds none.
     workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),
     indexes: cloudflareFeatureIndexes({
       projectDir,
@@ -82,7 +83,7 @@ async function buildTeardown(
       project,
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
     }),
-    // Every repo in the feature's own Artifacts namespace, where the feature binds one (#673).
+    // Every repo in the feature's own Artifacts namespace, where the feature binds one.
     repos: cloudflareFeatureRepos(clients),
   };
 }
@@ -137,7 +138,7 @@ async function buildAudit(
  *
  * Refuses on an account mismatch, through the guard each builder resolves with, and refuses when the
  * credentials are missing. Called only when the remote half will run, so `--local-only` reaches neither
- * refusal (#739).
+ * refusal.
  */
 async function remoteHalf(
   projectDir: string,
@@ -149,8 +150,7 @@ async function remoteHalf(
   account: CloudflareAccountSelection | null;
 }> {
   const account = await projectCloudflareAccount(projectDir);
-  // The feature's own indexes are composed from the feature's own configs, for the reason the
-  // capability set is (#660).
+  // The feature's own indexes are composed from the feature's own configs, as its capability set is.
   const teardown = await buildTeardown(account, configDir, project);
 
   // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
@@ -280,20 +280,11 @@ const create = withContract(
             action: "Use lowercase words joined by hyphens, e.g. media-cli.",
           });
         }
-        /*
-        **The issue as every name will carry it, from the first thing composed (#660).**
-
-        `featureResourceName` canonicalises — `f012` and `f12` are one feature since #643, because they
-        would otherwise collide on the rate-limit namespaces every feature shares. Nothing canonicalised
-        the *local* half, so `--issue 012` cut `feature/012-x` and `.worktrees/012-x` while provisioning
-        `replay-f12-x--db-d1`: one feature, two strings, and a teardown that addressed one of them with
-        each half. Canonical here means the branch, the worktree, the registry key and every resource
-        name are composed from one value, and `pithy feature destroy --branch feature/012-x` reaches all
-        of them.
-      */
+        // The branch, the worktree, the registry key and every resource name are composed from this one
+        // canonical value, so `012` and `12` are one feature in every half.
         const issue = canonicalIssue(args.issue);
 
-        // Before a branch or a worktree exists: a slug too long for a name this feature would compose (#643).
+        // Before a branch or a worktree exists: a slug too long for a name this feature would compose.
         // Feature names are never truncated, so the refusal names the longest slug this project takes.
         await assertFeatureSlugFitsProject(projectDir, { issue, slug: args.slug });
 
@@ -307,14 +298,14 @@ const create = withContract(
         });
         // Only when a branch was actually cut from the trunk. An existing worktree is a no-op and an
         // existing branch is *attached* — its base is whatever somebody else cut, months ago — so a
-        // sentence about this trunk would be false on both. `#454` is about false sentences over bases.
+        // sentence about this trunk would be false on both.
         const behind = report.base === null ? null : await behindRemote();
 
         if (args.json) {
           process.stdout.write(`${formatJsonLine({ ...report, behindRemote: behind })}\n`);
           return;
         }
-        // Said, never refused — `#454`. The branch was cut from local `main`, which is usually what somebody
+        // Said, never refused. The branch was cut from local `main`, which is usually what somebody
         // wants and is sometimes deliberate. Being told is what stops it becoming a surprise at merge time.
         if (behind !== null && report.base !== null) {
           process.stdout.write(
@@ -328,6 +319,12 @@ const create = withContract(
           process.stdout.write(`${worker}: ${endpoint.origin}\n`);
         }
         process.stdout.write("Local backend migrated and seeded.\n");
+        const notice = isolatedCheckNotice({
+          worktree: report.worktree,
+          root: await mainRepoRoot(),
+          packageManager: await detectPackageManager(report.worktree),
+        });
+        for (const line of notice) process.stdout.write(`${line}\n`);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -352,9 +349,9 @@ const create = withContract(
  * are not committed) and brings your local backend up to date. Everything it does is idempotent, so running
  * it when nothing is missing simply reports that nothing moved.
  *
- * **Past the ports it is `pithy setup`, less the install (#764).** One implementation of ready: the check,
+ * **Past the ports it is `pithy setup`, less the install.** One implementation of ready: the check,
  * the local secrets, the `dev` migration, what `pithy dev` does before it starts, and a seed into an empty
- * database. So a Worker's `.dev.vars` is generated here exactly as `pithy dev` generates it (#154), from the
+ * database. So a Worker's `.dev.vars` is generated here exactly as `pithy dev` generates it, from the
  * same sources — never reconciled, never repaired, and no flag offers to, because a flag promising to fix one
  * sends someone to the wrong command for a file that is not broken.
  */
@@ -379,7 +376,7 @@ const sync = withContract(
         });
 
         // A freshly-pulled branch has an empty local backend. Everything a clone needs past the ports is
-        // `pithy setup`'s, and runs through it (#764): the check, the local secrets, the migration, every
+        // `pithy setup`'s, and runs through it: the check, the local secrets, the migration, every
         // Worker's `.dev.vars`, and a seed into an empty database. What the feature adds is its port block,
         // reconciled above. No install: the worktree was installed when it was created.
         let data = false;
@@ -387,7 +384,7 @@ const sync = withContract(
         if (!args["skip-data"]) {
           // The account is this worktree's own, never the default credentials file: everything here is
           // local but a media fixture, which reaches Images and Stream — they have no local emulation and
-          // belong to exactly one account. One config load for it (#234).
+          // belong to exactly one account.
           const account = loadProjectCloudflare(await loadProject(projectDir)) ?? null;
           const result = await setupCheckout({ projectDir, install: false, account });
           // Only a dry run stops at the install, and this is neither.
@@ -398,22 +395,13 @@ const sync = withContract(
         }
 
         if (args.json) {
-          // **One field, `data`, because there is one flag (#231).** It used to emit `migrated: data,
-          // seeded: data` — two keys off one boolean, so they can never disagree, so every consumer's
-          // `if (migrated && !seeded)` is a branch that can never fire and can never be tested. Should the
-          // steps ever be split, that dead branch silently becomes live with whatever meaning the split
-          // invents. `migrated` is also already taken: on `pithy upgrade` it means the narrower "the
-          // migration step ran", so `feature sync` spending it on "migrated *and* seeded" was itself a
-          // shared key with two meanings — the defect #231 is about. Two facts that can differ is not on
-          // offer either: both steps throw, so any run that reaches this line ran both or neither.
+          // One field, `data`, because there is one flag: migrate and seed both throw, so a run that
+          // reaches this line ran both or neither. `migrated` is not used for it because `pithy upgrade`
+          // spends that key on the narrower "the migration step ran".
           //
-          // **`added`/`removed` are published as `addedWorkers`/`removedWorkers` (#235).** `removed` is
-          // `boolean` on `pithy alias --remove` and on `pithy dashboard disconnect` — "was it removed?" —
-          // and a `string[]` here, so `if (result.removed)` is true for both and means opposite things.
-          // The collection is the outlier, and naming its contents is what tells the two apart; `added`
-          // comes with it because the pair is read together, and half a qualified pair invites exactly the
-          // misreading the qualification is for. The report keeps its own field names: `SyncReport` is the
-          // reconciler's domain type, and only what leaves through `--json` is a published name.
+          // `added`/`removed` are published as `addedWorkers`/`removedWorkers`: elsewhere `removed` is a
+          // boolean ("was it removed?"), and naming the contents tells the two apart. `SyncReport` keeps
+          // its own field names; only what leaves through `--json` is a published name.
           const { added: addedWorkers, removed: removedWorkers, ...rest } = report;
           process.stdout.write(
             `${formatJsonLine({ command: "feature.sync", ...rest, addedWorkers, removedWorkers, data })}\n`,
@@ -446,7 +434,7 @@ const sync = withContract(
 /**
  * `pithy feature destroy` — teardown. Run from within the worktree, or told which feature with `--branch`.
  *
- * **`--branch` is what makes a merged pull request able to tear its own environment down (#660).** Every
+ * **`--branch` is what makes a merged pull request able to tear its own environment down.** Every
  * other `pithy feature` subcommand infers the feature from the checkout, which is right for a developer
  * and impossible for a runner: on `pull_request: closed` the branch is already deleted and
  * `refs/pull/<n>/head` checks out detached, so there is no branch to read. The pipeline holds the name
@@ -479,45 +467,31 @@ const destroy = withContract(
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
         /*
-        Identity without the Worker configs, and capabilities only if they load — `#454`.
+        Identity without the Worker configs, and capabilities only if they load. The local half frees the
+        port block and prunes the worktree, needs neither, and is most needed when a Worker config will not
+        load — a `feature create` that failed partway leaves exactly that. The remote half cannot run
+        without them, and skipping it silently would leak every D1/KV/R2 while reporting success, so an
+        unloadable config is refused unless `--local-only` says the remote half is not wanted.
 
-        Teardown's local half frees the port block and prunes the worktree, and needs neither. It is also
-        the half most needed when a Worker config will not load: a `feature create` that failed partway
-        leaves exactly that, and `destroy` used to throw on the same config before reaching the teardown —
-        so the command that frees the block was unavailable in the state that produced the leak.
-
-        The remote half genuinely cannot run without them, and skipping it silently is the worst outcome
-        (every D1/KV/R2 leaks while the run reports success). So an unloadable config is refused unless
-        `--local-only` says the remote half is not wanted.
-      */
-        /*
-        `--branch` names the feature; without it the checkout's own branch does, exactly as before (#660).
-
-        The name goes through the parser the inferred path uses, so the two cannot disagree about what a
-        feature is called — and it is refused before the config is opened, let alone before anything is
-        deleted. The **project** still comes from this checkout's `pithy.config.ts` either way, which is
-        what keeps the flag from reaching another project's resources: it names a feature of this project.
+        `--branch` names the feature, or the checkout's own branch does, through one parser, refused before
+        the config is opened. The **project** comes from this checkout's `pithy.config.ts` either way, which
+        keeps the flag from reaching another project's resources.
       */
         const identity = await branchIdentityWithoutWorkers(projectDir, { branch: args.branch });
         /*
-        **Where the feature's own record is (#660).** `--branch` used to correct the name and nothing
-        else: the manifest, the capabilities and the Workers still came from the checkout the command ran
-        in, so teardown deleted by recomputed name against *this branch's* bindings and never read the
-        record of what was actually provisioned. Anything the feature created and the current config no
-        longer names survived a run that printed `Done.`
-
-        The feature's worktree is where both live. When this machine has it, everything is read there.
-        When it does not — the runner, and the whole reason the flag exists — the manifest is
-        unreachable and the report says so; the configs come from this checkout, which is sound exactly
-        when the workflow checked out `refs/pull/<n>/head`. `docs/commands/feature.md` states that rule.
+        The manifest, the capabilities and the Workers are read from the feature's own worktree when this
+        machine has it, so teardown reaches what was actually provisioned. When it does not — a runner —
+        the manifest is unreachable and the report says so; the configs come from this checkout, which is
+        sound exactly when the workflow checked out `refs/pull/<n>/head`. `docs/commands/feature.md` states
+        that rule.
       */
         const record =
           args.branch === undefined
             ? { dir: projectDir, present: true }
             : await featureWorktree({ issue: identity.issue, slug: identity.slug, spelled: identity.spelled });
         const configDir = record.present ? record.dir : projectDir;
-        // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
-        // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
+        // Resolved once, and composed for `feature` — the environment `provision --feature` composed for:
+        // the capabilities name the resources, and the Workers name the scripts. Two
         // resolutions could disagree, and an unstamped one misses a capability a config composes only
         // for deployed environments, leaving its resources and credentials in the account.
         const workerSet = await featureWorkerSet(configDir);
@@ -525,24 +499,17 @@ const destroy = withContract(
         if (isUnknown(capabilities) && !args["local-only"]) {
           throw new ValidationError({
             // The set's own diagnosis, which names the worker and says whether the config is broken or
-            // simply absent. Inventing a sentence here is how "will not load" came to point at a file that
-            // does not exist (#454) — the fault that guard was added to stop reporting.
+            // simply absent; a sentence written here could name a file that does not exist.
             message: "This project's capability set is unknown, so its resources cannot be deleted.",
             action:
               `${capabilities.unknown} Fix it and re-run, or pass --local-only to free this feature's ports ` +
               "and prune its worktree without touching Cloudflare.",
           });
         }
-        /*
-          **`--local-only` resolves no account (#739).** The local half prunes a worktree, deletes a branch
-          and frees a port block, and none of that reaches Cloudflare. Resolving the account anyway, and
-          building the teardown, the store and the audit only to discard them, put the account guard in
-          front of a run that uses no credentials — so a shell holding another account's pair was refused,
-          and told to edit a `pithy.config.ts` that was right. A shell that works on several accounts does
-          so on purpose. The remote half resolves, and refuses on a mismatch, exactly as before.
-        */
+        // `--local-only` resolves no account: the local half never reaches Cloudflare, so a shell holding
+        // another account's credentials is not refused. The remote half resolves, and refuses on a mismatch.
         const remote = args["local-only"] ? null : await remoteHalf(projectDir, configDir, identity.project);
-        // Both seams or neither, whichever way the remote half is skipped (#592).
+        // Both seams or neither, whichever way the remote half is skipped.
         const teardown: RemoteTeardown = remote?.teardown ?? {};
         let report: DestroyReport;
         try {
@@ -553,22 +520,22 @@ const destroy = withContract(
             workers: isUnknown(workerSet) ? [] : workerSet,
             ...(remote?.store ? { store: remote.store } : {}),
             env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
-            // Which worktree is the feature's own, and whether this machine has it (#660).
+            // Which worktree is the feature's own, and whether this machine has it.
             record,
-            // The spelling the branch actually used, for the local half's fallback (#660 review). Every
+            // The spelling the branch actually used, for the local half's fallback. Every
             // name is composed from the canonical issue; only the worktree, the branch and the port key
             // may have been filed under `012`.
             spelled: identity.spelled,
             ...teardown,
             // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
             // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
-            // as *this project composed no trail* — that is the conflation this whole change undoes (#455).
-            // Only the remote half records through it, so `--local-only` builds none (#739).
+            // as *this project composed no trail*. Only the remote half records through it, so
+            // `--local-only` builds none.
             ...(remote ? { audit: await buildAudit(projectDir, capabilities, remote.account) } : {}),
           });
         } catch (error) {
-          // A teardown that failed on the fourth delete has already destroyed three, and until #380 the
-          // record of them died with the throw. What went is written to stdout here, then the same error
+          // A teardown that failed on the fourth delete has already destroyed three. What went is written
+          // to stdout here, then the same error
           // is rethrown for `withErrorReporting` to render on stderr and exit by its kind — both streams and the
           // exit code agreeing that it failed and naming what it destroyed on the way.
           const partial = destroyedBeforeFailure(error);
@@ -580,7 +547,7 @@ const destroy = withContract(
               for (const resource of partial.deleted) process.stdout.write(`Deleted ${resource.name}.\n`);
               // Only after something went. "Teardown stopped there. The rest is still in the account" is
               // true of a partial delete and false before the first one — there is no *rest* when nothing
-              // went, and the error on stderr is the whole story (#660).
+              // went, and the error on stderr is the whole story.
               if (partial.deleted.length > 0) {
                 process.stdout.write(
                   "Teardown stopped there. The rest is still in the account, and in the manifest.\n",
@@ -592,13 +559,9 @@ const destroy = withContract(
         }
 
         if (args.json) {
-          // **`deleted` is published as `deletedResources` (#235).** `pithy vector reset` emits a `deleted`
-          // too, and its is a `string[]` of index names where this one is `{kind,name,id}[]`. Two
-          // collections under one name is the harder half of the collision to notice — both are truthy,
-          // both have a `.length` — so the fix is to say what each holds. This is the record-shaped one,
-          // and `deletedResources` also puts it opposite provisioning's `resources`, which is the
-          // list it undoes. `DestroyReport` keeps `deleted`: it is teardown's own vocabulary, and the
-          // published name is decided here, where the payload is.
+          // `deleted` is published as `deletedResources`: `pithy vector reset` emits a `deleted` that is a
+          // `string[]` of index names, and this one is `{kind,name,id}[]`, opposite provisioning's
+          // `resources`. `DestroyReport` keeps `deleted`; the published name is decided here.
           const { command, deleted: deletedResources, ...rest } = report;
           process.stdout.write(`${formatJsonLine({ command, deletedResources, ...rest })}\n`);
           return;
@@ -607,7 +570,7 @@ const destroy = withContract(
           process.stdout.write(`Deleted ${resource.name}.\n`);
         }
         if (!report.remote) process.stdout.write("Remote teardown skipped. Cloudflare resources were left in place.\n");
-        // **The record it could not consult, named (#660).** The manifest is the only way to reach a
+        // **The record it could not consult, named.** The manifest is the only way to reach a
         // resource whose binding the branch has since dropped, and a runner has no copy of it. A teardown
         // that quietly deletes less than it would have is the failure this command spends a paragraph
         // forbidding, so the narrowing is a sentence rather than a shorter list nobody counted.
@@ -621,10 +584,8 @@ const destroy = withContract(
           process.stdout.write("Deleted by recomputed name alone; anything only it recorded is still there.\n");
         }
         if (report.worktreePruned) process.stdout.write("Worktree pruned.\n");
-        // `branchDeleted` has been in the payload since this command existed and had no sentence, so the
-        // line below was printed over a run that had just deleted a branch (#660).
         if (report.branchDeleted) process.stdout.write(`Branch ${report.branch} deleted.\n`);
-        // **Said, because nothing else would say it (#660).** A runner tearing down a merged feature has no
+        // **Said, because nothing else would say it.** A runner tearing down a merged feature has no
         // worktree, no port block and no branch — all three are machine-local and the machine is a fresh
         // container — so the local half has nothing to do, and a run that printed only what it deleted
         // remotely would leave an operator wondering whether it was skipped or simply silent. Nothing to do
@@ -637,9 +598,9 @@ const destroy = withContract(
   }),
   {
     output: "document",
-    // 2: `deletedResources[].kind` takes `queue`, and the `workflow` and `vectorize` it already emitted (#662).
+    // 2: `deletedResources[].kind` takes `queue`, beside `workflow` and `vectorize`.
     // 3: it takes `artifacts`, one repo in the feature's own Artifacts namespace, and `artifacts-namespace`, that
-    // namespace itself (#673).
+    // namespace itself.
     schemaVersion: 3,
     payload: FeatureDestroyPayload,
     mutates: true,
@@ -649,12 +610,12 @@ const destroy = withContract(
 );
 
 /**
- * `pithy feature prune` — free the port blocks of features whose worktree directory and branch are both gone
- * (#637). Run from the project directory of any checkout of the repository, where `pithy dev` runs.
+ * `pithy feature prune` — free the port blocks of features whose worktree directory and branch are both gone.
+ * Run from the project directory of any checkout of the repository, where `pithy dev` runs.
  *
  * `destroy` frees a feature's block, and has to be run from inside the worktree to know which. A worktree
  * removed any other way — `git worktree prune`, an adopter's own teardown, a directory deleted by hand —
- * leaves nothing to run it from, and the block was held until somebody edited the registry by hand.
+ * leaves nothing to run it from, so its block is freed here.
  *
  * **Not run for you on allocation**, unlike the sweep of dead checkouts. That sweep asks the filesystem one
  * `stat` per root; this asks git several questions and walks every worktree, inside the registry lock, on a
@@ -693,7 +654,7 @@ const prune = withContract(
   }),
   {
     output: "document",
-    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
     schemaVersion: 2,
     payload: FeaturePrunePayload,
     mutates: true,
