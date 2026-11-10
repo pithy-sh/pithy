@@ -3,8 +3,8 @@
 
 /**
  * One named import found in a `pithy.config.ts`. The three commands that write that file — `add`,
- * `remove`, and `eject` — read it through this one shape, so an import one writes is an import the others
- * find and take out.
+ * `remove`, and `eject` — read it through this one answer, so an import one of them writes is one the
+ * others find.
  */
 export interface ConfigImport {
   /** The statement exactly as it appears — leading indentation and trailing `;` included. */
@@ -63,8 +63,8 @@ const EXPORT_CLAUSE = /^[ \t]*export\s*\{([^}]*)\}(?:\s*from\s*(["'])([^"']+)\2)
  * A value declaration exported where it is declared — `export class X {}`, `export const X = …`,
  * `export async function* X() {}`.
  *
- * The third way a name lands on a module: an adopter's own Durable Object written into the entry is already
- * exported, and appending ours beside it would be a duplicate export.
+ * The third way a name lands on a module: an adopter's own Durable Object declared in the entry is already
+ * exported, and a second statement for it would be a duplicate export.
  *
  * `default` is deliberately absent from the alternation. `export default class X {}` puts `default` on
  * the module and nothing else, so wrangler's `class_name` still resolves to nothing. So are `type`,
@@ -84,7 +84,7 @@ const ANY_IMPORT = /^[ \t]*import\s+(?:[^;"'`]*?\s*from\s*)?(["'])([^"']+)\1;?/g
 export type ClauseKind = "import" | "export";
 
 /** A source file's text with everything that only *looks* like code taken out of the way. */
-interface ScannedConfig {
+export interface ScannedConfig {
   /**
    * The source with every comment blanked to spaces — same length, same offsets, same line breaks, so
    * a match here indexes straight back into the original.
@@ -95,17 +95,15 @@ interface ScannedConfig {
 }
 
 /**
- * Blank the comments and mark the literals in a `pithy.config.ts`.
+ * Blank the comments and mark the literals in a TypeScript source the CLI edits — a `pithy.config.ts`, a
+ * Worker entry, `vitest.workers.config.ts` — so a regex over it never matches a commented-out statement.
  *
- * The patterns above are regexes over file text, and text does not know what a comment is: a
- * commented-out `import { auth } from "@pithy-sh/auth/src/index";` must not answer "is this already
- * imported?". A one-character scanner is the bounded answer. **It is not a parser**, and two things it
- * deliberately does not understand: a regex literal (telling `/…/` from division needs the grammar,
- * so an import inside one still reads as code), and `${…}` inside a template literal (treated as more
- * literal, which can only make it blind, never fooled). The real answer is a TypeScript parse, and
- * TS 7 ships no `createSourceFile` to do it with — `catalog.test.ts` records the same constraint.
+ * **It is not a parser**, and two things it deliberately does not understand: a regex literal (telling
+ * `/…/` from division needs the grammar, so an import inside one still reads as code), and `${…}` inside a
+ * template literal (treated as more literal, which can only make it blind, never fooled). TS 7 ships no
+ * `createSourceFile` to parse with.
  */
-function scanConfig(source: string): ScannedConfig {
+export function scanConfig(source: string): ScannedConfig {
   type State = "code" | "line-comment" | "block-comment" | "string" | "template";
   let code = "";
   const inLiteral = new Array<boolean>(source.length).fill(false);
@@ -269,11 +267,8 @@ export function findNamedBinding(source: string, name: string, kind: ClauseKind)
  * from the rest of this file: not "which statement binds this name" but "which statements still point into
  * the package we have just forked". A fork whose entry re-exports the package runs the package's class.
  *
- * **`start` is not decoration.** The pattern is anchored at `^[ \t]*`, so a statement begins at the
- * `export` keyword — and a line reading `// export { X } from "…";` contains that statement as a literal
- * substring. An edit that found its target with `String.replace` repointed the adopter's commented-out
- * copy and left the live export pointing at the package, which is the one outcome repointing exists to
- * prevent. The offset is the anchor: a caller splices at it, exactly as {@link withoutBinding} does.
+ * **Splice at `start`, never `String.replace` the statement**: a commented-out copy such as
+ * `// export { X } from "…";` contains the same text, and a replace edits that copy instead.
  */
 export function namedReexports(source: string): { statement: string; specifier: string; start: number }[] {
   return [...namedClauses(source, NAMED_EXPORT)].map((match) => ({
@@ -292,8 +287,8 @@ export function namedReexports(source: string): { statement: string; specifier: 
  * clause over a local declaration, and a declaration exported in place.
  *
  * **Runtime, not syntax.** `export type { X }` and `export { type X }` are erased by
- * `verbatimModuleSyntax`, so they leave the module carrying nothing and are not this. Same fact
- * `hasDefaultExport` turns on, one keyword over.
+ * `verbatimModuleSyntax`, so they leave the module carrying nothing and are not this. `hasDefaultExport`
+ * turns on the same fact, one keyword over.
  *
  * A scanner, not a parser — {@link scanConfig} says what that costs.
  */
@@ -356,7 +351,7 @@ export function isInside(specifier: string, base: string): boolean {
  * resolves to nothing, or somebody else's module.
  *
  * Deep paths are the capability because an adopter reaching past the barrel is still importing *this
- * capability*, and `add`, `remove` and `eject` have to agree on that.
+ * capability*, and `add`, `remove` and `eject` all read it that way.
  *
  * The bare package is its own verdict because it is **ours and broken**: every capability package
  * exports `./src/*` and nothing else, so `import { auth } from "@pithy-sh/auth"` throws at load

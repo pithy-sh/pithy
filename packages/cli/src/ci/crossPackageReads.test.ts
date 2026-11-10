@@ -85,6 +85,8 @@ const RECORD: Record<string, string> = {
   "scripts/worktree.ts":
     "`ci/worktreeBase.test.ts` runs the script's own `cutBase` against scratch repositories, because which commit a new worktree is cut from is decided there and nowhere else: level, behind, ahead, diverged and no remote each have their own answer. Editing the script must re-run the suite that holds it to all five.",
   "templates/starter": "The tree `pithy init` copies (#148). `project/scaffold.test.ts` reads it whole.",
+  "templates/starter/apps/api":
+    "`project/workersTestEnv.test.ts`, `project/capabilityTestBindings.test.ts` and `capabilities/remove.test.ts` — the `Cloudflare.Env` declaration `pithy add` and `pithy remove` rewrite.",
   "templates/starter/apps/api/package.json":
     "`project/scaffold.test.ts` — the dependencies a scaffolded Worker starts with.",
   "templates/starter/apps/api/tsconfig.json":

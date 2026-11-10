@@ -319,7 +319,7 @@ No worker named "nope".
 Run pithy worker list to see this project's workers. Known: replay-board.
 ```
 
-**A Worker config that will not load.** A `pithy.config.ts` that cannot be imported fails the whole run, naming the file and the import that did not resolve. That is the Worker *set* failing to resolve — the fan-out's input, not one of its contributors, so there is nothing left to report per Worker. A failure while a Worker is being **planned or applied** is the other thing entirely: it costs that Worker its entry (`state` above) and every other Worker still reports.
+**A Worker config that will not load.** A `pithy.config.ts` that cannot be imported fails the whole run. The refusal names the import that did not resolve, or the file and line that would not compile, which may be a module the config imports; TypeScript that Node's type stripping refuses is named with its construct and the rewrite. That is the Worker *set* failing to resolve — the fan-out's input, not one of its contributors, so there is nothing left to report per Worker. A failure while a Worker is being **planned or applied** is the other thing entirely: it costs that Worker its entry (`state` above) and every other Worker still reports.
 
 ```
 $ pithy upgrade

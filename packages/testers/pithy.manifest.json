@@ -14,6 +14,7 @@
       "optional": true
     }
   ],
+  "testBindings": [{ "kind": "d1", "name": "DB" }, { "kind": "unbound", "name": "TESTERS_DAILY" }],
   "peerCapabilities": ["email"],
   "optionalCapabilities": ["auth", "controlplane", "audit", "secrets"],
   "migrationNamespace": "testers",

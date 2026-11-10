@@ -158,6 +158,13 @@ import {
   supportSearchFix,
 } from "../doctor/supportSearchTriggers";
 import {
+  checkTestBindings,
+  describeTestBindings,
+  TEST_BINDINGS_ACTION,
+  type TestBindingsCheck,
+  type TestBindingsWorker,
+} from "../doctor/testBindings";
+import {
   type ComposeWorkerFor,
   checkTurnstileSitekeys,
   describeTurnstileSitekeys,
@@ -396,6 +403,12 @@ export interface DoctorReport {
    * installed`, and a report that turned verbose over it would be the toolchain nagging.
    */
   docsMcp: DocsMcpCheck | null;
+  /**
+   * Whether the project's `vitest.workers.config.ts` provides every test binding a composed capability
+   * declares. `null` outside a project whose Workers resolved, and `could-not-check` when the check threw. A
+   * finding prints in both forms and never fails the exit: a project may test its Workers some other way.
+   */
+  testBindings: TestBindingsCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares, and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -892,6 +905,11 @@ export interface DoctorReportOptions {
    * home, which is why every test builds from `doctorHarness` and never lets the real one run.
    */
   checkDocsMcp?: (projectDir: string) => Promise<DocsMcpCheck>;
+  /** Workers test config seam; defaults to {@link checkTestBindings} over the resolved Workers. Reads files only. */
+  checkTestBindings?: (scope: {
+    projectDir: string;
+    workers: readonly TestBindingsWorker[];
+  }) => Promise<TestBindingsCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -1096,6 +1114,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
   const probeBiomeIncludes = options.checkBiomeIncludes ?? checkBiomeIncludes;
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
+  const probeTestBindings = options.checkTestBindings ?? checkTestBindings;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1755,6 +1774,15 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         )
       : null;
 
+  // The project's Workers test config against what each resolved Worker composes. Files only.
+  const testBindings =
+    inProject && workersResolved
+      ? await probed<TestBindingsCheck>(
+          () => probeTestBindings({ projectDir: options.projectDir, workers: resolvedWorkers }),
+          { state: "could-not-check", missing: [] },
+        )
+      : null;
+
   // One copy of each shared runtime, or several. Cheap — it resolves rather than reading a directory —
   // and it answers a question whose natural symptom is a TypeScript error naming neither the package
   // nor the duplication, which is the kind of thing this command exists to say out loud.
@@ -1812,6 +1840,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     secretBindings,
     settings,
     localDelivery,
+    testBindings,
     sharedRuntimes,
     devSecretsFile,
     devVarsLocal,
@@ -3656,6 +3685,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // A composed capability's test bindings missing from the Workers test config. Printed in both forms.
+  if (report.testBindings?.state === "missing") {
+    blocks.push(
+      [
+        "Workers tests:",
+        ...describeTestBindings(report.testBindings).map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${TEST_BINDINGS_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -3905,6 +3945,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           // takes the id out of a sentence.
           clients: report.docsMcp.clients.map((client) => ({ ...client, fix: docsConnectFix(client.client) })),
           detail: describeDocsMcp(report.docsMcp),
+        }
+      : null,
+    testBindings: report.testBindings
+      ? {
+          state: report.testBindings.state,
+          missing: report.testBindings.missing.map((entry) => ({
+            ...entry,
+            detail: describeTestBindings({ state: "missing", missing: [entry] }).join(" "),
+          })),
+          findings: describeTestBindings(report.testBindings),
         }
       : null,
     selfBinding: report.selfBinding
@@ -4448,6 +4498,23 @@ const DoctorPayload = z
     featureRatelimitIds: Check("Rate-limit ids in the feature range, or `null` outside a project.", {
       state: State("`ok`, `reserved`, `could-not-check`"),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per id in the feature range."),
+    }),
+    testBindings: Check("Test bindings missing from vitest.workers.config.ts, or `null`.", {
+      state: State("`ok`, `missing`, `could-not-check`"),
+      missing: z
+        .array(
+          z
+            .object({
+              capability: z.string().describe("The composed capability."),
+              workers: z.array(z.string().describe("A Worker's name.")).describe("The Workers composing it."),
+              bindings: z.array(z.string().describe("A binding name.")).describe("The bindings the config lacks."),
+              detail: z.string().describe("The sentence."),
+              fix: DoctorFix,
+            })
+            .describe("One capability whose test bindings are missing."),
+        )
+        .describe("One entry per capability."),
+      findings: z.array(z.string().describe("One finding.")).describe("One sentence per capability."),
     }),
     biomeIncludes: Check("Biome exclusions that would skip every file of a checkout, or `null` outside a project.", {
       state: State("`ok`, `unanchored`, `could-not-check`"),

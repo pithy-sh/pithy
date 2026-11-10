@@ -2,6 +2,7 @@
   "name": "mcp",
   "package": "@pithy-sh/auth",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "testBindings": [{ "kind": "d1", "name": "DB" }],
   "peerCapabilities": ["auth"],
   "optionalCapabilities": ["audit"],
   "migrationNamespace": "mcp",

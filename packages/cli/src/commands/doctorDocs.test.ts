@@ -1721,6 +1721,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "upgrade",
     "vector",
     "worker",
+    "workflow",
   ],
   deployedAs: ["add", "ui", "upgrade", "worker"],
   devSecrets: ["doctor", "seed"],
@@ -1739,6 +1740,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "ui",
     "upgrade",
     "worker",
+    "workflow",
   ],
   env: [
     "audit",
@@ -1757,6 +1759,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "token",
     "upgrade",
     "vector",
+    "workflow",
   ],
   // The one environment a run acted for: `dashboard`'s connection, `contract`'s composition.
   environment: ["contract", "dashboard"],
@@ -1797,6 +1800,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "ui",
     "upgrade",
     "worker",
+    "workflow",
   ],
   profile: ["cloudflare", "token"],
   project: ["backup", "doctor", "migrate", "restore", "setup"],
@@ -1847,6 +1851,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "upgrade",
     "vector",
     "worker",
+    "workflow",
   ],
   // Both report an environment's `secrets_store_secrets`: provision says which entries it wrote, doctor
   // says which a declared environment still has no binding for. One subject, two directions.
@@ -1864,7 +1869,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   status: ["dashboard", "token"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
-  worker: ["add", "init", "ui", "upgrade", "worker"],
+  worker: ["add", "init", "ui", "upgrade", "worker", "workflow"],
   workers: ["contract", "deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
   wrote: ["alias", "completion"],
 };

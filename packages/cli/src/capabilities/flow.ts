@@ -11,6 +11,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import type { ProposedName } from "../project/bindingEntries";
+import { writeCapabilityTestBindings } from "../project/capabilityTestBindings";
 import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 import { declareOnWorker, installPackage } from "../project/packageManager";
@@ -660,6 +661,16 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       project: options.project,
       again,
     });
+    // The capability as the Worker's config now builds it, for an optional binding that config may require.
+    const tested = await writeCapabilityTestBindings({
+      projectDir,
+      workerDir,
+      manifest,
+      composed: async () =>
+        allCapabilities(await composeFor(LOCAL_ENVIRONMENT, (load) => load(workerDir, { fresh: true }))).find(
+          (capability) => capability.name === manifest.name,
+        ),
+    });
 
     // Eject before migrating: eject repoints the config import to the local copy and promotes the
     // capability's deps, so the migrate step loads the ejected config with everything it imports present.
@@ -725,6 +736,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       notes: [
         ...prerequisites.notes,
         ...wired,
+        ...tested,
         ...bootstrapped,
         ...(manifest.name === MCP_CAPABILITY ? mcpNotes() : []),
       ],

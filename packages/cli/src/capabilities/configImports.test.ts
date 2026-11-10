@@ -261,7 +261,8 @@ describe("namedReexports", () => {
       'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',
       'export { Room } from "./rooms";',
     ].join("\n");
-    // The offset is what an edit splices at: a comment can hold the live statement verbatim.
+    // The offset is what an edit splices at: a commented-out copy of the line contains the live statement
+    // verbatim, so a search for the text could land on the comment.
     expect(namedReexports(source)).toEqual([
       {
         statement: 'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',

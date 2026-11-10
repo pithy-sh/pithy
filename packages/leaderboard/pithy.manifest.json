@@ -2,6 +2,7 @@
   "name": "leaderboard",
   "package": "@pithy-sh/leaderboard",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "testBindings": [{ "kind": "d1", "name": "DB" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "controlplane", "audit"],
   "migrationNamespace": "leaderboard",

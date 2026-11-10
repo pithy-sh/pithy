@@ -13,6 +13,7 @@ import { withContract } from "../contract/commandContract";
 import { parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
+import { WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
 import { inputForbidden, mayPrompt } from "../terminal/inputMode";
 import { formatDone, withErrorReporting } from "../terminal/output";
 import { buildAudit, targetWorker } from "./add";
@@ -189,6 +190,9 @@ export default withContract(
         }
 
         process.stdout.write(`Removed ${args.capability} from ${target.name}.\n`);
+        if (result.removedTestBindings.length > 0) {
+          process.stdout.write(`Took ${result.removedTestBindings.join(", ")} out of ${WORKERS_TEST_CONFIG}.\n`);
+        }
         for (const host of result.deletedHosts ?? []) {
           process.stdout.write(
             `Deleted ${host.script}, ${target.name}'s own ${args.capability} host in ${host.env}.\n`,
@@ -206,6 +210,8 @@ export default withContract(
           process.stdout.write(`Uninstalled ${result.package}.\n`);
         } else if (result.keptHere) {
           process.stdout.write(`Kept ${result.package} installed — ${target.name} still imports it.\n`);
+        } else if (result.keptForTests) {
+          process.stdout.write(`Kept ${result.package} installed — ${WORKERS_TEST_CONFIG} still imports it.\n`);
         } else if (result.keptLinked) {
           // Nothing declared the package, so there is nothing to uninstall — and npm, asked anyway, prunes
           // every linked sibling with it. Say what was left, so the link in node_modules is never a surprise.

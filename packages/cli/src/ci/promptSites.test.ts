@@ -26,6 +26,7 @@ import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { assertProvisionConfirmed } from "../provision/confirm";
 import { assertResetConfirmed, assertSeedConfirmed } from "../seed/safety";
 import { latchInputMode, mayPrompt } from "../terminal/inputMode";
+import { assertTriggerConfirmed } from "../workflow/confirm";
 import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
 
 /**
@@ -121,6 +122,7 @@ const SITES: Record<string, PromptSite> = {
   },
   "commands/ui.ts": { prompts: ["promptScreens"], kind: "optional", gatedBy: "commands/ui.ts" },
   "commands/vector.ts": { prompts: ["resetPrompt"], kind: "required", gatedBy: "commands/vector.ts" },
+  "commands/workflow.ts": { prompts: ["triggerPrompt"], kind: "required", gatedBy: "commands/workflow.ts" },
   "commands/worker.ts": {
     // `bind`, `unbind` and `rename` ask for a Worker they were not named (#617). No default: a binding has a
     // direction, so forbidden is `input/required`, naming `--from` or `--to`.
@@ -315,6 +317,15 @@ const REQUIRED: readonly {
     handedOff: "resetPrompt",
     run: (interactive) =>
       assertResetConfirmed({ env: "prod", json: false, ...(interactive ? { prompt: async () => "" } : {}) }),
+  },
+  {
+    site: "commands/workflow.ts",
+    prompt: "triggerPrompt",
+    flag: "--confirm",
+    person: true,
+    handedOff: "triggerPrompt",
+    run: (interactive) =>
+      assertTriggerConfirmed({ env: "prod", json: false, ...(interactive ? { prompt: async () => "" } : {}) }),
   },
   {
     site: "commands/remove.ts",

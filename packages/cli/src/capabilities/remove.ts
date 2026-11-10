@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { appliedTestBindings } from "@pithy-sh/core/src/capability/testBinding";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { PRESENCE_ROOM_CLASS, PRESENCE_ROOM_MODULE } from "@pithy-sh/core/src/presence/declaration";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -16,11 +17,14 @@ import { type InstallRunner, uninstallPackage } from "../project/packageManager"
 import { readOptionalFile } from "../project/readOptionalFile";
 import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
+import { removeTestBindings, WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
+import { removeEnvBindings } from "../project/workersTestEnv";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { CAPABILITY_SCOPE, capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
 import { exportsName, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
 import { EJECT_DIR, ejectImportPath, ejectSpecifierFromDir, isEjected } from "./eject";
 import { durableObjectExports, withoutDurableObjectExports } from "./entryExports";
+import { composedManifests } from "./manifests";
 import { type DeletedOwnHost, deleteOwnHosts, type OwnHostDeletion, ownHostNames } from "./ownHostRemoval";
 import { locateRegistration } from "./reconcile";
 
@@ -308,14 +312,67 @@ async function siblingWorkersWhere(
   workerDir: string,
   test: (source: string) => boolean,
 ): Promise<string[]> {
+  return (await siblingConfigs(projectDir, workerDir)).filter(({ source }) => test(source)).map(({ name }) => name);
+}
+
+/** Every Worker other than `workerDir`, with its `pithy.config.ts` as text: empty when it cannot be read. */
+async function siblingConfigs(projectDir: string, workerDir: string): Promise<{ name: string; source: string }[]> {
   const workers = await discoverWorkers(projectDir).catch(() => []);
-  const matching: string[] = [];
+  const configs: { name: string; source: string }[] = [];
   for (const worker of workers) {
     if (resolve(worker.dir) === resolve(workerDir)) continue;
-    const source = await readFile(join(worker.dir, "pithy.config.ts"), "utf8").catch(() => "");
-    if (test(source)) matching.push(worker.name);
+    configs.push({
+      name: worker.name,
+      source: await readFile(join(worker.dir, "pithy.config.ts"), "utf8").catch(() => ""),
+    });
   }
-  return matching;
+  return configs;
+}
+
+/**
+ * Take `capability`'s test bindings out of the project's Workers test config and this Worker's `Cloudflare.Env`
+ * declaration: the ones that applied to `composed`, the capability as this Worker built it. The declaration keeps a
+ * binding another capability this Worker keeps applies. The Workers test config is shared by every Worker, so a binding stays while another
+ * composition declares it: a capability this Worker keeps (`others`), by the test bindings that apply to it, or
+ * one a sibling Worker registers, by every test binding it declares, since a sibling's config is read as text and
+ * cannot say which optional ones it requires. A sibling registering `capability` itself keeps all of them. The
+ * declarations are read from the installed manifests.
+ */
+async function removeOwnTestBindings(
+  projectDir: string,
+  workerDir: string,
+  capability: string,
+  others: readonly Capability[],
+  composed: Capability | undefined,
+): Promise<string[]> {
+  const { manifests } = await composedManifests(projectDir, workerDir);
+  const target = manifests.find((manifest) => manifest.name === capability);
+  if (target === undefined) return [];
+  const applied = appliedTestBindings(target, composed);
+  const keptHere = new Set(
+    others.flatMap((other) => {
+      const manifest = manifests.find((candidate) => candidate.name === other.name);
+      return manifest === undefined ? [] : appliedTestBindings(manifest, other).map((binding) => binding.name);
+    }),
+  );
+  await removeEnvBindings(
+    workerDir,
+    applied.filter((binding) => !keptHere.has(binding.name)),
+  );
+  const siblings = await siblingConfigs(projectDir, workerDir);
+  const registeredBySibling = (name: string) =>
+    siblings.some(({ source }) => locateRegistration(source, name) !== null);
+  if (registeredBySibling(capability)) return [];
+  const kept = new Set([
+    ...keptHere,
+    ...manifests
+      .filter(({ name }) => name !== capability && registeredBySibling(name))
+      .flatMap((manifest) => manifest.testBindings.map((binding) => binding.name)),
+  ]);
+  return removeTestBindings(
+    projectDir,
+    applied.filter((binding) => !kept.has(binding.name)),
+  );
 }
 
 /** Whether the capability's tables outlive it — true unless a `--drop` reversed every migration. */
@@ -371,6 +428,18 @@ export interface RemoveSteps {
    * nothing the capability's host binds.
    */
   deleteOwnHosts: (capability: Capability) => Promise<DeletedOwnHost[]>;
+  /**
+   * Take the capability's test bindings out of the project-root Workers test config, keeping each one another
+   * composition still declares; `others` is what the target Worker keeps and `composed` the capability as it built
+   * it (default: the installed manifests and a scan of `apps/*`). Resolves the names taken out.
+   */
+  removeTestBindings: (
+    capability: string,
+    others: readonly Capability[],
+    composed: Capability | undefined,
+  ) => Promise<string[]>;
+  /** Whether the project-root Workers test config imports `pkg` (default: a read of that file as text). */
+  testConfigImports: (pkg: string) => Promise<boolean>;
 }
 
 /** The account half of {@link OwnHostDeletion}: resolved only when the Worker has a host of its own to delete. */
@@ -456,6 +525,10 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     uninstallsAtRoot: async (pkg) => (await uninstallDirFor(projectDir, workerDir, pkg)) === projectDir,
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
     workersRegistering: (capability) => workersRegistering(projectDir, workerDir, capability),
+    removeTestBindings: (capability, others, composed) =>
+      removeOwnTestBindings(projectDir, workerDir, capability, others, composed),
+    testConfigImports: async (pkg) =>
+      importsPackage((await readOptionalFile(join(projectDir, WORKERS_TEST_CONFIG))) ?? "", pkg),
     deleteOwnHosts: async (capability) => {
       const hosts = options.ownHosts;
       if (hosts === undefined) return [];
@@ -516,6 +589,10 @@ export interface RemoveResult {
   keptLinked?: boolean;
   /** True when the package stayed because this Worker still imports it for another capability it ships. */
   keptHere?: boolean;
+  /** True when the package stayed because the project-root Workers test config still imports it. */
+  keptForTests?: boolean;
+  /** The test bindings taken out of the project-root Workers test config. */
+  removedTestBindings: string[];
   /** True when the capability's D1 tables were left in place (no `--drop`). */
   tablesRemain: boolean;
   /** True when a `--drop` confirmation was declined — nothing was changed. */
@@ -561,6 +638,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
       present: false,
       ejected: false,
       removedBindings: [],
+      removedTestBindings: [],
       keptFor: [],
       tablesRemain: false,
     };
@@ -631,6 +709,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
         present: true,
         ejected,
         removedBindings: [],
+        removedTestBindings: [],
         keptFor: [],
         tablesRemain: true,
         aborted: true,
@@ -657,16 +736,20 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   const others = capabilities.filter((c) => c.name !== capability);
   const removedBindings = target ? await removeFromWrangler(workerDir, target, others) : [];
   if (target) await removeFromEntry(workerDir, capability, target, others);
+  const removedTestBindings = await steps.removeTestBindings(capability, others, target);
 
   let packageManager: string | undefined;
   let keptLinked = false;
   // `mcp` ships inside `@pithy-sh/auth`: unwiring it leaves this Worker importing the package for `auth`.
   const keptHere = !ejected && importsPackage(await readFile(join(workerDir, "pithy.config.ts"), "utf8"), pkg);
+  // The Workers test config loads for every Workers test in the project, so a package it still imports stays.
+  const keptForTests = !ejected && !keptHere && keptFor.length === 0 && (await steps.testConfigImports(pkg));
   if (ejected) {
     await steps.deleteSource(join(workerDir, EJECT_DIR, capability));
   } else if (
     installed &&
     !keptHere &&
+    !keptForTests &&
     !isSharedCapabilityPackage(pkg) &&
     (keptFor.length === 0 || !(await steps.uninstallsAtRoot(pkg)))
   ) {
@@ -699,6 +782,8 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
       keptFor,
       keptLinked,
       keptHere,
+      keptForTests,
+      removedTestBindings,
       deletedHosts: deletedHosts.map((host) => host.script),
     },
   });
@@ -711,9 +796,11 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
     packageManager,
     dropped,
     removedBindings,
+    removedTestBindings,
     keptFor,
     keptLinked,
     keptHere,
+    keptForTests,
     tablesRemain: tablesRemain(target, dropped),
     deletedHosts,
   };
