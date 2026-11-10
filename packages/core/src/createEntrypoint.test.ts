@@ -36,7 +36,7 @@ describe("createEntrypoint", () => {
   });
 
   /**
-   * **Under `pithy dev`, a service binding reaches its target's pinned port (#617).** The binding is required, so
+   * **Under `pithy dev`, a service binding reaches its target's pinned port.** The binding is required, so
    * `validateBindings` has to see it — which it does, because the stand-in is in the env before the app runs.
    */
   test("under dev, a published service binding is in env and reaches the local target", async () => {
@@ -106,7 +106,15 @@ describe("createEntrypoint", () => {
 /** A Workflow binding that records every instance it was asked to start. */
 function fakeWorkflow() {
   const started: unknown[] = [];
-  return { started, create: async (options?: { params?: unknown }) => void started.push(options?.params) };
+  const ids: Array<string | undefined> = [];
+  return {
+    started,
+    ids,
+    create: async (options?: { id?: string; params?: unknown }) => {
+      started.push(options?.params);
+      ids.push(options?.id);
+    },
+  };
 }
 
 const NoParams = z.object({}).describe("A scheduled job takes no caller input.");
@@ -296,10 +304,93 @@ describe("createEntrypoint scheduled", () => {
     await expect(entry.scheduled?.({ cron: "0 3 * * *" }, { EMAIL_SCHEDULER: healthy }, ctx)).resolves.toBeUndefined();
     expect(healthy.started).toEqual([{}]);
   });
+
+  /** A capability with one daily job that names each instance by the UTC day it was scheduled for. */
+  function dailyStats() {
+    return defineCapability({
+      name: "stats",
+      requiredBindings: [],
+      workflows: {
+        collect: {
+          binding: "STATS_COLLECT",
+          params: NoParams,
+          className: "StatsCollectWorkflow",
+          schedule: "0 1 * * *",
+          instanceId: ({ firedAt, cron }) => `collect-${firedAt.toISOString().slice(0, 10)}-${cron === "0 1 * * *"}`,
+        },
+      },
+    });
+  }
+
+  test("a job with instanceId starts under the id it names from the scheduled time and the cron", async () => {
+    const binding = fakeWorkflow();
+    const entry = createEntrypoint({ capabilities: [dailyStats()] });
+    const scheduledTime = Date.parse("2026-11-09T01:00:00.000Z");
+    await entry.scheduled?.({ cron: "0 1 * * *", scheduledTime }, { STATS_COLLECT: binding }, ctx);
+    await entry.scheduled?.(
+      { cron: "0 1 * * *", scheduledTime: scheduledTime + 86_400_000 },
+      { STATS_COLLECT: binding },
+      ctx,
+    );
+    expect(binding.ids).toEqual(["collect-2026-11-09-true", "collect-2026-11-10-true"]);
+  });
+
+  test("an event with no scheduled time names the instance for now", async () => {
+    const binding = fakeWorkflow();
+    const entry = createEntrypoint({ capabilities: [dailyStats()] });
+    const day = () => `collect-${new Date().toISOString().slice(0, 10)}-true`;
+    const before = day();
+    await entry.scheduled?.({ cron: "0 1 * * *" }, { STATS_COLLECT: binding }, ctx);
+    expect([before, day()]).toContain(binding.ids[0]);
+  });
+
+  test("a second fire for a taken id resolves, logs it as already started, and the job runs once", async () => {
+    const lines: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((line: unknown) => void lines.push(String(line)));
+    const ids: string[] = [];
+    const binding = {
+      create: async (options?: { id?: string }) => {
+        if (options?.id && ids.includes(options.id)) throw new Error(`instance.already_exists: ${options.id}`);
+        if (options?.id) ids.push(options.id);
+      },
+      get: async (id: string) => {
+        if (!ids.includes(id)) throw new Error("instance.not_found");
+        return { id };
+      },
+    };
+    const entry = createEntrypoint({ capabilities: [dailyStats()] });
+    const event = { cron: "0 1 * * *", scheduledTime: Date.parse("2026-11-09T01:00:00.000Z") };
+    try {
+      await entry.scheduled?.(event, { STATS_COLLECT: binding }, ctx);
+      await expect(entry.scheduled?.(event, { STATS_COLLECT: binding }, ctx)).resolves.toBeUndefined();
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(ids).toEqual(["collect-2026-11-09-true"]);
+    const started = lines.filter((line) => line.includes("workflow already started"));
+    expect(started).toHaveLength(1);
+    expect(started[0]).toContain("collect-2026-11-09-true");
+    expect(started[0]).toContain("stats/collect");
+  });
+
+  test("a job without instanceId is started with no id", async () => {
+    const binding = fakeWorkflow();
+    const cap = defineCapability({
+      name: "storage",
+      requiredBindings: [],
+      workflows: { sweep: { binding: "STORAGE_SWEEP", params: NoParams, className: "S", schedule: "0 3 * * *" } },
+    });
+    await createEntrypoint({ capabilities: [cap] }).scheduled?.(
+      { cron: "0 3 * * *", scheduledTime: Date.now() },
+      { STORAGE_SWEEP: binding },
+      ctx,
+    );
+    expect(binding.ids).toEqual([undefined]);
+  });
 });
 
 /**
- * **The seam a capability refuses a deployment at — and the reason it is not `compose` (#500).**
+ * **The seam a capability refuses a deployment at — and the reason it is not `compose`.**
  *
  * `createBackend` is assembled by tooling as well as by Workers: `pithy ui` builds the app to read its
  * route tree, and the CLI runs every `compose` hook to read what a capability reports. `createEntrypoint`
