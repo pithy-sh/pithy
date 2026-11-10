@@ -36,7 +36,7 @@ describe("installedBeside", () => {
 
   // Bun's isolated linker, on disk: the root links `email` into its store, and email's own dependency sits
   // beside email's real directory and nowhere on the root's chain. The resolver walks from the real path.
-  // Walked from the link as given, `stripe` was reported absent and the adopter told to install it.
+  // Walked from the link as given, `stripe` would read as absent and the adopter be told to install it.
   test("a symlinked importer is walked from where it really is, as the resolver walked it", () => {
     const store = join(root, "node_modules", ".bun", "@pithy-sh+email@1.0.0", "node_modules");
     mkdirSync(join(store, "@pithy-sh", "email", "src"), { recursive: true });
@@ -68,7 +68,7 @@ describe("entryBeside", () => {
   const referrer = join(root, "apps", "api", "pithy.config.ts");
 
   // The two Bun 1.4.2 cannot tell apart, read from disk: the kit's own packages declare no bare entry, and
-  // an unbuilt package declares one it does not carry (#709).
+  // an unbuilt package declares one it does not carry.
   test("reads the entry an installed package declares, or that it declares none", () => {
     expect(declaredEntry(entryBeside("@pithy-sh/core", referrer)?.manifest)).toBeNull();
     expect(declaredEntry(entryBeside("unbuilt", referrer)?.manifest)).toBe("dist/index.js");

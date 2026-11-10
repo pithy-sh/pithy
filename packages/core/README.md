@@ -1,6 +1,6 @@
 # @pithy-sh/core
 
-The contract every Pithy capability composes through, and the seams they share: `defineCapability` and `createBackend`, the `PithyError` family, the D1 and KV codecs, the `AuthContext`, translator, audit and entitlement seams, the control-plane seam, and presence rooms.
+The contract every Pithy capability composes through, and the seams they share: `defineCapability` and `createBackend`, the `PithyError` family, the D1 and KV codecs, the `AuthContext`, translator, audit and entitlement seams, the control-plane seam, and presence rooms. Its `@pithy-sh/core/testing` subpath holds test helpers: `createGate` stops a Workflow step at a chosen point, so two runs can be tested interleaving ([`docs/WORKFLOW-TESTING.md`](../../docs/WORKFLOW-TESTING.md)).
 
 **Documentation: [pithy.sh/docs](https://pithy.sh/docs).** The control-plane seam is [`docs/CONTROL-PLANE.md`](../../docs/CONTROL-PLANE.md); sockets are [`docs/SOCKETS.md`](../../docs/SOCKETS.md).
 

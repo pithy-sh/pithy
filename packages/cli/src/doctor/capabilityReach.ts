@@ -11,30 +11,20 @@ import { packageDirFrom, packageInstalledFrom } from "../project/kitResolve";
 import { workerDirName } from "../project/workerIdentity";
 
 /**
- * **Whether a capability the project composes is one the CLI can actually reach (#533).**
+ * **Whether a capability the project composes is one the CLI can actually reach.**
  *
  * A Worker's `pithy.config.ts` is imported by absolute path, so its own `import` statements resolve from
- * the file that wrote them — `apps/<name>/`. Every `pithy <capability> …` command resolves the *same*
- * package through `kitResolve(projectDir, …)`. Those were two different questions for as long as
- * `kitResolve` walked the project root alone, and a project could pass the first and fail the second:
- * install a capability under `apps/api/node_modules` alone — which is what "capabilities are per Worker"
- * invites, and what a package manager that does not hoist produces on its own — and the composition was
- * perfect while every command that reached into it refused.
- *
- * That refusal is the sentence #533 was reported about: *"The payments capability is not installed. Run
- * `pithy add payments`."* Both halves are wrong, and the action is the worse one, because `pithy add`
- * rewrites a hand-built `pithy.config.ts` to work around a resolution that is not broken. **The two
- * questions are now one:** `kitResolve` looks along the root's chain and then in each Worker's own
- * `node_modules`, so a per-Worker install is reached rather than reported, and this section is left with
- * the case no lookup can fix — a capability the project composes and has not installed anywhere.
+ * `apps/<name>/`. Every `pithy <capability> …` command resolves the *same* package through
+ * `kitResolve(projectDir, …)`, which looks along the root's chain and then in each Worker's own
+ * `node_modules`, so a per-Worker install is reached. What no lookup can fix is a capability the project
+ * composes and has not installed anywhere, and that is what this section reports.
  *
  * ## Why that case still earns a section
  *
  * Because nothing else says it until a command fails, one command at a time, and because the sentence a
  * failing command produces is about that command rather than about the project. `loadFailure.ts`'s last
- * branch ends ``Run `pithy doctor` to check what the project resolves``, and until this section doctor
- * could not: it read manifests out of `node_modules/@pithy-sh` and never once asked whether the composed
- * set and the installed set were the same set. A composed capability that is installed nowhere also
+ * branch ends ``Run `pithy doctor` to check what the project resolves``, and this is the section that
+ * answers it. A composed capability that is installed nowhere also
  * *looks like health* everywhere else in the report — it contributes no manifest to the root scan, so no
  * binding of its is checked and no config option of its is read.
  *
@@ -46,7 +36,7 @@ import { workerDirName } from "../project/workerIdentity";
  * and a table of them here would be a second copy of every loader's import list, kept true by a gate,
  * restating what the loaders already say. The package is where the answer stops being per command.
  *
- * ## The same walk answers a second question: do the Workers agree on the version (#539)
+ * ## The same walk answers a second question: do the Workers agree on the version
  *
  * Capabilities are per Worker, so a capability can be installed hoisted at the project root **or** under
  * `apps/<name>/node_modules` — and with no root copy, two Workers can hold their own copies at two
@@ -55,8 +45,8 @@ import { workerDirName } from "../project/workerIdentity";
  * manifest and then loads and deploys **admin's** package. Silently, and at exit 0.
  *
  * That state should not exist — a project's Workers should never be out of sync on a capability — but it
- * is reachable, nothing refuses it, and until this nothing reported it. It is the same walk with one more
- * question asked of each Worker: which copy would *you* load, and what version does it declare.
+ * is reachable and nothing refuses it. It is the same walk with one more question asked of each Worker:
+ * which copy would *you* load, and what version does it declare.
  *
  * **The version is read from the resolved package's own `package.json`**, never from a range in a
  * manifest or a `dependencies` entry. A range is what somebody asked for; the file on disk is what would
@@ -68,7 +58,7 @@ import { workerDirName } from "../project/workerIdentity";
  * than as where the copies sit.
  *
  * **It reports and it does not fail `ok`.** {@link CapabilityReachHealth.unreachable} fails the exit
- * because every `pithy <capability>` command for it refuses today. Skew refuses nothing, and a hard fail
+ * because every `pithy <capability>` command for it refuses. Skew refuses nothing, and a hard fail
  * would redden `doctor` for a project legitimately mid-upgrade with one Worker bumped ahead of another —
  * a red on a state somebody is in the middle of leaving. `bindingScope.ts`'s `dev` stanza is the same
  * asymmetry one section over: reported, explained, and green.
@@ -108,13 +98,13 @@ export interface UnreachableCapability {
   /**
    * What the first of {@link UnreachableCapability.workers} already settles, read from its config when the check ran:
    * the capabilities it composes, and which of this one's required options its registration states. The `pithy add`
-   * a line names for it runs over both, so neither is named as missing or as a choice (#711). Read for that line,
+   * a line names for it runs over both, so neither is named as missing or as a choice. Read for that line,
    * never reported; absent where nothing was read.
    */
   settled?: { readonly composed: readonly string[]; readonly answered: readonly string[] };
 }
 
-/** One composed capability whose composing Workers do not all resolve the same version of it (#539). */
+/** One composed capability whose composing Workers do not all resolve the same version of it. */
 export interface SplitCapability {
   /** The capability, as `pithy <capability>` names it. */
   capability: string;
@@ -136,7 +126,7 @@ export interface CapabilityReachHealth {
    *
    * **It fails the exit**, and it is established from this project's own files alone: its composition
    * against its own `node_modules`. Nothing about an account is inferred and no network is touched. Every
-   * `pithy <capability>` command for it refuses today, so a green CI over it is CI agreeing that a
+   * `pithy <capability>` command for it refuses, so a green CI over it is CI agreeing that a
    * command nobody can run is fine. `pithy upgrade` cannot clear it either — it writes bindings and config
    * keys, and this is an install.
    */
@@ -148,7 +138,7 @@ export interface CapabilityReachHealth {
   /**
    * Every composed capability whose Workers resolve two or more versions of it, in report order.
    *
-   * **It does not fail `ok`** — see the `#539` section above. Nothing refuses a project in this state, and
+   * **It does not fail `ok`** — see the version-agreement section above. Nothing refuses a project in this state, and
    * a project mid-upgrade is meant to be able to pass through it.
    */
   split: SplitCapability[];
@@ -189,9 +179,9 @@ function composedCapabilities(workers: readonly ComposedWorker[]): Map<string, C
  * The version the copy `base` would load declares, or `null` where nothing there declares one.
  *
  * {@link packageDirFrom} rather than a resolver, on the same rule the rest of this family follows: a walk
- * asks the filesystem a question with one answer, so Node and Bun cannot differ about it, and every
- * `@pithy-sh/*` package exports `./src/*` alone — so `require.resolve("@pithy-sh/payments")` throws on an
- * install that is perfectly healthy.
+ * asks the filesystem a question with one answer, so Node and Bun cannot differ about it, and no
+ * `@pithy-sh/*` package declares a root (`"."`) export — so `require.resolve("@pithy-sh/payments")` throws
+ * on an install that is perfectly healthy.
  *
  * `null` covers three states that are one fact — nothing installed, a `package.json` that will not parse,
  * and one carrying no `version` — because each is *this copy cannot be named*, and a caller that must not
@@ -282,7 +272,7 @@ export async function capabilityReachHealth(
     });
   }
 
-  // `split` is deliberately not counted. See the `#539` section above: nothing refuses this state, and a
+  // `split` is deliberately not counted. See the version-agreement section above: nothing refuses this state, and a
   // red on it is a red on a project in the middle of leaving it.
   return { ok: unreachable.length === 0, reachable, unreachable, split };
 }

@@ -22,6 +22,10 @@
     "./src/*": {
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {
