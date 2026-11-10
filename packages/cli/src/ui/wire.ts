@@ -78,11 +78,9 @@ export async function readAssets(workerDir: string): Promise<{ runWorkerFirst: s
  *
  * Idempotent: re-running rewrites the same derived list. That is exactly what `pithy ui sync` is.
  *
- * **The allowlist arrives derived; this function does not compose anything.** It used to take the config
- * and call {@link deriveWorkerFirst} itself, which put the step that can fail — assembling every
- * capability's routes, in every environment — *inside* the writer, and therefore after `pithy ui add`
- * had already written its whole template (#259). The derivation is the caller's now, so a composition
- * that throws throws before a byte is written.
+ * **The allowlist arrives derived; this function does not compose anything.** The caller runs
+ * {@link deriveWorkerFirst}, the step that can fail, so a composition that throws throws before `pithy ui add`
+ * writes a byte.
  */
 export async function wireAssets(workerDir: string, patterns: readonly string[]): Promise<AssetsChange> {
   const document = (await readWranglerConfig(workerDir)) as { assets?: AssetsStanza };
@@ -196,9 +194,9 @@ function mergeMissing(target: Record<string, string>, incoming: Record<string, s
  * Two ways that happens, and both end in the same 404 on the adopter's *next* install — long after
  * `pithy ui add` said Done.
  *
- * **The project already provides it.** A `@pithy-sh/*` package linked in from a checkout resolves from
- * the project root either way, so omitting the line costs nothing and the build still finds it. Same
- * predicate `pithy add` skips its install on ({@link alreadyProvided}).
+ * **The project already provides it.** A `@pithy-sh/*` package linked in from a checkout, at the Worker or the
+ * root, resolves from the Worker either way, so omitting the line costs nothing and the build still finds it.
+ * Same predicate `pithy add` skips its install on ({@link alreadyProvided}).
  *
  * **There is no such version yet.** A stub declares a `null` range for a package the registry cannot
  * serve at all — every `@pithy-sh/*` one, until the scope publishes. That case is the checkout case
@@ -208,12 +206,13 @@ function mergeMissing(target: Record<string, string>, incoming: Record<string, s
  */
 async function withoutProvided(
   projectDir: string,
+  workerDir: string,
   packages: Record<string, string | null>,
 ): Promise<Record<string, string>> {
   const kept: Record<string, string> = {};
   for (const [name, range] of Object.entries(packages)) {
     if (range === null) continue;
-    if (await alreadyProvided(projectDir, name)) continue;
+    if (await alreadyProvided(projectDir, name, workerDir)) continue;
     kept[name] = range;
   }
   return kept;
@@ -237,17 +236,14 @@ export interface PackageChange {
  * exception is the `dev` script when it still holds Pithy's own scaffolded `wrangler dev` — see
  * {@link REPLACEABLE_DEV_SCRIPT}.
  *
- * `projectDir` is the root, not the worker: it is where the packages resolve from, and a `@pithy-sh/*`
- * one that already does gets no range written for it — see {@link withoutProvided}.
+ * `projectDir` bounds where the packages resolve from, the Worker's own `node_modules` up to the root, and a
+ * `@pithy-sh/*` one that already resolves gets no range written for it — see {@link withoutProvided}.
  */
 export async function wirePackage(projectDir: string, workerDir: string, stub: UiStub): Promise<PackageChange> {
   const path = join(workerDir, "package.json");
-  // One `try` used to wrap the read and the parse and answer both with *pithy worker add creates one*
-  // (#217). That command refuses on a worker that already exists, so a `package.json` holding a stray
-  // comma sent the adopter to a door that was already shut — and an `EACCES` sent them there too. Three
-  // failures, three answers: absence is the only one `pithy worker add` addresses, `readOptionalFile`
-  // owns the errno that is not absence, and the parse gets its own. `requireRecord` closes the fourth:
-  // `[]` parses, and the merge below would have hung `dependencies` off an array and written it back.
+  // Three failures, three answers: absence is the only one `pithy worker add` addresses (it refuses on a
+  // worker that exists), `readOptionalFile` owns the errno that is not absence, and the parse gets its own.
+  // `requireRecord` closes the fourth: `[]` parses, and the merge below would hang `dependencies` off an array.
   const raw = await readOptionalFile(path);
   if (raw === null) {
     throw new NotFoundError({
@@ -272,8 +268,11 @@ export async function wirePackage(projectDir: string, workerDir: string, stub: U
   pkg.devDependencies ??= {};
   pkg.scripts ??= {};
 
-  const dependencies = mergeMissing(pkg.dependencies, await withoutProvided(projectDir, stub.dependencies));
-  const devDependencies = mergeMissing(pkg.devDependencies, await withoutProvided(projectDir, stub.devDependencies));
+  const dependencies = mergeMissing(pkg.dependencies, await withoutProvided(projectDir, workerDir, stub.dependencies));
+  const devDependencies = mergeMissing(
+    pkg.devDependencies,
+    await withoutProvided(projectDir, workerDir, stub.devDependencies),
+  );
 
   if (pkg.scripts.dev === REPLACEABLE_DEV_SCRIPT) delete pkg.scripts.dev;
   const scripts = mergeMissing(pkg.scripts, stub.scripts);

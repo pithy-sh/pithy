@@ -1585,7 +1585,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     if (gates.length === 0) continue;
     emitLine(`${worker.name}: routes gate on an entitlement, but no capability resolves one — they will deny.`);
     for (const gate of gates) emitLine(dim(`  ${gate}`));
-    emitLine(dim(`  ${providerExample(workerDirName(worker))}`));
+    emitLine(dim(`  ${providerExample(workerDirName(worker), projectDir)}`));
   }
 
   // Secrets are seeded before anything spawns, for the same reason the `.dev.vars` link is wired before

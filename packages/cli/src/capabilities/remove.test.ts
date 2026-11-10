@@ -459,6 +459,7 @@ describe("removeCapability", () => {
         calls.deleteSource.push(d);
       },
       packageInstalled: over.packageInstalled ?? (async () => true),
+      uninstallsAtRoot: over.uninstallsAtRoot ?? (async () => true),
       workersUsingPackage: async (pkg) => {
         calls.workersUsingPackage.push(pkg);
         return over.workersUsingPackage ? over.workersUsingPackage(pkg) : [];
@@ -677,9 +678,8 @@ describe("removeCapability", () => {
   });
 
   test("keeps the shared package when a sibling worker still wires it", async () => {
-    // The package is one install at the project root, shared by every Worker. Unwiring one Worker must
-    // not uninstall it while another still imports it — that breaks the sibling's pithy.config.ts and
-    // every command that loads it.
+    // A root declaration is shared by every Worker. Unwiring one Worker must not uninstall it while another
+    // still imports it — that breaks the sibling's pithy.config.ts and every command that loads it.
     await fixture();
     const { s, calls } = steps({
       loadCapabilities: async () => [cap("turnstile")],
@@ -694,6 +694,21 @@ describe("removeCapability", () => {
     expect(result.packageManager).toBeUndefined();
     // The target worker is still unwired — only the shared package survives.
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).not.toContain("turnstile()");
+  });
+
+  test("uninstalls a workspace member's own declaration even while a sibling worker imports the package", async () => {
+    await fixture();
+    const { s, calls } = steps({
+      loadCapabilities: async () => [cap("turnstile")],
+      workersUsingPackage: async () => ["web"],
+      uninstallsAtRoot: async () => false,
+    });
+
+    const result = await removeCapability({ workerDir: worker, capability: "turnstile", steps: s });
+
+    expect(calls.uninstall).toEqual(["@pithy-sh/turnstile"]);
+    expect(result.packageManager).toBe("bun");
+    expect(result.keptFor).toEqual(["web"]);
   });
 
   test("refuses --drop while a sibling worker still wires the capability — its tables are shared", async () => {

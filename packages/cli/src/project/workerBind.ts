@@ -9,7 +9,7 @@ import { ConflictError, NotFoundError, PithyError, ValidationError } from "@pith
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
-import { addAction, addPlan, projectAddFacts } from "../capabilities/addCommand";
+import { addAction, addPlan, workerAddFacts } from "../capabilities/addCommand";
 import { HOST_WORKERS, hostWorkerFor } from "../capabilities/hostRegistry";
 import { writeFileAtomic } from "./atomic";
 import { composeFor } from "./composeFor";
@@ -238,7 +238,7 @@ export function resolveBindTarget(
         addPlan({
           capability: to,
           workers: [workerDirOf(from)],
-          factsFor: projectAddFacts(projectDir),
+          factsFor: workerAddFacts(projectDir, workerDirOf(from)),
           composed: new Set(from.capabilities),
         }),
         (add) => `Run ${add} first.`,

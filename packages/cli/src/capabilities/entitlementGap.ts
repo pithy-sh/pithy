@@ -6,7 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { gateCallSites } from "@pithy-sh/core/src/entitlement/gateScan";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
-import { addAction, addPlan, projectAddFacts } from "./addCommand";
+import { addAction, addPlan, workerAddFacts } from "./addCommand";
 
 /**
  * The entitlement composition check — the CLI half of the entitlement seam.
@@ -41,11 +41,10 @@ function isWorkerSource(name: string): boolean {
  *
  * The traversal is `ci/sourceFiles.ts` — the one walk in this repository, which skips dependencies, build
  * output and dotted directories, never descends a symlink, and treats a directory it cannot list and a file
- * that vanished between the listing and the read as skipped rather than fatal. This is the one of the five
- * private walks #202 found that was not a test: it runs inside `pithy doctor` and `pithy dev`, against a
- * directory the adopter is editing while it runs, so a throw here is a command that fails on a file the
- * adopter had just moved. Synchronous, like the walk it now shares; the signature stays async because the
- * scan it feeds is the caller's contract.
+ * that vanished between the listing and the read as skipped rather than fatal. It runs inside `pithy doctor`
+ * and `pithy dev`, against a directory the adopter is editing while it runs, so a throw here would be a
+ * command that fails on a file the adopter had just moved. The walk is synchronous; the signature stays async
+ * because the scan it feeds is the caller's contract.
  */
 export async function entitlementGates(workerDir: string): Promise<string[]> {
   const sources: Record<string, string> = {};
@@ -73,12 +72,12 @@ export async function findEntitlementGap(workerDir: string, capabilities: readon
 
 /**
  * **The provider an entitlement gate needs, as an example** — `payments`, composed into this Worker with every
- * option it cannot default named as the choice it is (#711): `billingSubject` is the adopter's, so the line names
+ * option it cannot default named as the choice it is: `billingSubject` is the adopter's, so the line names
  * one command per value and none of them is a `fix`. Which capability resolves an entitlement is the adopter's
  * decision too, which is why it is an example. One builder for `pithy doctor`'s report, its `--json` failure and
  * `pithy dev`'s notice, so the three cannot disagree. A whole sentence, period included.
  */
 export function providerExample(worker: WorkerDir, projectDir?: string): string {
-  const plan = addPlan({ capability: "payments", workers: [worker], factsFor: projectAddFacts(projectDir) });
+  const plan = addPlan({ capability: "payments", workers: [worker], factsFor: workerAddFacts(projectDir, worker) });
   return addAction(plan, (add) => `Compose a provider, such as ${add}.`);
 }

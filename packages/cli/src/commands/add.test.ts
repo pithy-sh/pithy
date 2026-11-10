@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -330,6 +330,21 @@ describe("pithy add --json conforms to its published payload", () => {
     expect(row("mcp")).toContain("Requires auth.");
     expect(row("audit")).not.toBe("");
     expect(row("audit")).not.toContain("Requires");
+  });
+
+  test("--list marks a capability installed in a Worker's own node_modules as installed", async () => {
+    await project();
+    const pkg = join(dir, "apps", "api", "node_modules", "@pithy-sh", "secrets");
+    await mkdir(pkg, { recursive: true });
+    await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@pithy-sh/secrets", version: "0.6.8" }));
+    await writeFile(
+      join(pkg, "pithy.manifest.json"),
+      JSON.stringify({ name: "secrets", package: "@pithy-sh/secrets", requiredBindings: [], configOptions: [] }),
+    );
+    const payload = JSON.parse((await runCaptured("add", ["--list", "--json"])).join("")) as {
+      capabilities: { name: string; installed: boolean }[];
+    };
+    expect(payload.capabilities.find((entry) => entry.name === "secrets")?.installed).toBe(true);
   });
 
   test("an add, ejected, with a shared database and a proposed KV title", async () => {

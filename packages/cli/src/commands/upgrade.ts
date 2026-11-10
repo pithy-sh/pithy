@@ -17,7 +17,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError } from "@pithy-sh/core/src/error/terminal";
 import { defineCommand } from "citty";
 import { z } from "zod";
-import { availableManifests, ManifestFault } from "../capabilities/manifests";
+import { ManifestFault, projectManifests } from "../capabilities/manifests";
 import {
   applyReconcilePlan,
   buildReconcilePlan,
@@ -79,7 +79,7 @@ export interface UpgradeWorker {
 
 /** Options for {@link runUpgrade} — every filesystem and migration dependency is injectable for tests. */
 export interface UpgradeRunOptions {
-  /** The project root — the parent of `apps/`, and where the capability manifests resolve from. */
+  /** The project root — the parent of `apps/`, and the bound of every `node_modules` a manifest resolves from. */
   projectDir: string;
   /** The environment the pending-migration count (and any `--migrate` run) targets. */
   env: string;
@@ -116,7 +116,7 @@ export interface UpgradeRunOptions {
   productionEnvironments?: readonly string[];
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
-  /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
+  /** Test seam: substitute the manifest scan. Defaults to {@link projectManifests}, the root's and every member's. */
   readManifests?: (projectDir: string) => Promise<{ faults: ManifestFault[] }>;
   /**
    * `--packages`: move every `@pithy-sh/*` dependency to the newest version its range admits — or, with
@@ -197,8 +197,9 @@ export type UpgradeWorkerResult =
 /**
  * What one `pithy upgrade` run produced: a result per Worker, and the manifests it could not read.
  *
- * The faults are project-wide, not per Worker — manifests install once under the root's
- * `node_modules/@pithy-sh` and every Worker shares them — so they are reported once, above the Workers.
+ * The faults are project-wide, not per Worker — the root's `node_modules/@pithy-sh` and every workspace member's
+ * are read, and a broken package is broken for every Worker that resolves it — so they are reported once, above
+ * the Workers.
  * A manifest the schema refused is in no plan, so nothing else would report it.
  */
 export interface UpgradeRun {
@@ -389,7 +390,7 @@ export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: 
 /** The reconcile, every Worker in scope: the whole of `pithy upgrade` without `--packages`. */
 async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun> {
   const resolve = options.resolveWorkers ?? ((scope) => resolveWorkersFor(options.env, scope));
-  const scan = options.readManifests ?? availableManifests;
+  const scan = options.readManifests ?? projectManifests;
   const { faults } = await scan(options.projectDir);
   const workers = await resolve({
     projectDir: options.projectDir,

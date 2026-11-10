@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { availableManifests, composedManifests, loadManifest } from "./manifests";
+import { availableManifests, composedManifests, loadManifest, projectManifests } from "./manifests";
 
 /** Drop a `pithy.manifest.json` into `<dir>/node_modules/@pithy-sh/<name>`. */
 async function installManifest(dir: string, name: string, manifest: Record<string, unknown>): Promise<void> {
@@ -337,6 +337,24 @@ describe("availableManifests tells a missing manifest from a broken one", () => 
 
     const { manifests, faults } = await availableManifests(dir);
     expect(manifests.map((m) => m.name)).toEqual(["auth"]);
+    expect(faults.map((fault) => fault.package)).toEqual(["@pithy-sh/audit"]);
+  });
+});
+
+describe("projectManifests", () => {
+  test("reads the root and every workspace member, naming a broken package once", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));
+    for (const worker of ["board", "admin"]) {
+      const workerDir = join(dir, "apps", worker);
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "package.json"), "{}");
+      await mkdir(join(workerDir, "node_modules", "@pithy-sh", "audit"), { recursive: true });
+      await writeFile(join(workerDir, "node_modules", "@pithy-sh", "audit", "pithy.manifest.json"), "{ not json");
+    }
+    await installManifest(join(dir, "apps", "board"), "auth", authManifest);
+
+    const { manifests, faults } = await projectManifests(dir);
+    expect(manifests.map((manifest) => manifest.name)).toEqual(["auth"]);
     expect(faults.map((fault) => fault.package)).toEqual(["@pithy-sh/audit"]);
   });
 });

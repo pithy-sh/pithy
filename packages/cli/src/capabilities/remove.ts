@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -11,7 +11,8 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { appendDeletedClassMigration, type WranglerStanza } from "../project/bindingEntries";
-import { uninstallPackage } from "../project/packageManager";
+import { installedPackageBase, uninstallDirFor } from "../project/installedPackage";
+import { type InstallRunner, uninstallPackage } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
@@ -284,10 +285,10 @@ export function importsPackage(source: string, pkg: string): boolean {
 }
 
 /**
- * The sibling Workers that still import `pkg`. The capability package is installed **once at the project
- * root** and shared by every Worker (`capabilities/flow.ts`), so it may only be uninstalled when no other
- * Worker composes it — otherwise that Worker's `pithy.config.ts` stops loading and every command that
- * reads it fails project-wide. The target Worker is excluded: it is the one being unwired.
+ * The sibling Workers that still import `pkg`. A capability package declared at the project root is reached by
+ * every Worker, so it is only uninstalled when no other Worker composes it — otherwise that Worker's
+ * `pithy.config.ts` could stop loading and every command that reads it fail project-wide. The target Worker is
+ * excluded: it is the one being unwired.
  *
  * Configs are read as text, never imported: this runs mid-removal, and executing a config to answer
  * "is the package still needed?" would be both slower and fragile.
@@ -315,16 +316,6 @@ async function siblingWorkersWhere(
     if (test(source)) matching.push(worker.name);
   }
   return matching;
-}
-
-/** True if a path exists. */
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Whether the capability's tables outlive it — true unless a `--drop` reversed every migration. */
@@ -355,11 +346,17 @@ export interface RemoveSteps {
    * same gate: a plain recursive delete follows a link at `apps` outside the project.
    */
   deleteSource: (dir: string) => Promise<void>;
-  /** Whether `@pithy-sh/<cap>` is installed (default: a `node_modules` stat). */
+  /** Whether `@pithy-sh/<cap>` is installed where the Worker resolves it (default: {@link installedPackageBase}). */
   packageInstalled: (pkg: string) => Promise<boolean>;
   /**
-   * The **other** Workers that still import the package, by name — the guard on uninstalling a
-   * project-wide dependency (default: a scan of `apps/*`). Empty means the package is free to go.
+   * Whether the uninstall runs at the project root (default: {@link uninstallDirFor} answers the root): the root is
+   * where the package is declared, or the Worker is no workspace member. Only a root declaration is shared with
+   * sibling Workers; removing a member's own declaration leaves every sibling's standing.
+   */
+  uninstallsAtRoot: (pkg: string) => Promise<boolean>;
+  /**
+   * The **other** Workers that still import the package, by name — the guard on uninstalling a root
+   * declaration, and on `--drop` (default: a scan of `apps/*`). Empty means the package is free to go.
    */
   workersUsingPackage: (pkg: string) => Promise<string[]>;
   /**
@@ -381,12 +378,14 @@ export type OwnHostAccess = Pick<OwnHostDeletion, "account" | "workers" | "workf
 
 /** What {@link defaultRemoveSteps} needs: the two directories a removal spans, and the wired set. */
 export interface DefaultRemoveStepsOptions {
-  /** The project root — where the lockfile and `node_modules` live. Packages are a project dependency. */
+  /** The project root — where the lockfile lives, and the bound of every `node_modules` lookup. */
   projectDir: string;
   /** The target Worker's directory — its `wrangler.jsonc` names the D1 a `--drop` reverses. */
   workerDir: string;
   /** Every capability wired into the target Worker. */
   loadCapabilities: () => Promise<Capability[]>;
+  /** The spawner the uninstall runs (tests inject a stub); defaults to the real package manager. */
+  run?: InstallRunner;
   /**
    * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`,
    * never `resolveProjectName`) and handed over as a plain string. A `--drop` reverses migrations and
@@ -422,10 +421,10 @@ export interface DefaultRemoveStepsOptions {
 }
 
 /**
- * Real side effects for a live `pithy remove`. The split is deliberate: **wiring is per-Worker**
- * (the tables dropped are the target Worker's D1, resolved from its own `wrangler.jsonc`) while the
- * **package is project-wide** (one workspace dependency, installed and uninstalled at the root) — which
- * is exactly why the uninstall is gated on {@link RemoveSteps.workersUsingPackage}.
+ * Real side effects for a live `pithy remove`. **Wiring is per-Worker** (the tables dropped are the target
+ * Worker's D1, resolved from its own `wrangler.jsonc`), and the uninstall runs where the package is declared:
+ * the Worker's own member first, then the root. Only a root declaration is shared with
+ * siblings, so only a root uninstall is gated on {@link RemoveSteps.workersUsingPackage}.
  */
 export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSteps {
   const { projectDir, workerDir } = options;
@@ -445,14 +444,16 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
         account: options.account,
         ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
       }),
-    uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
+    uninstall: (pkg) =>
+      uninstallPackage({ projectDir, workerDir, pkg, ...(options.run !== undefined ? { run: options.run } : {}) }),
     // Gated. This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of
     // names — handed to a recursive delete. A symlink at any of them carried the delete onto whatever
     // the link pointed at, outside the project, with nothing to recover afterwards. `removeScaffoldPath`
     // refuses a link at every component and refuses a path that resolves outside `projectDir`, then does
     // the `rm` itself, so the gate cannot be skipped by editing this line.
     deleteSource: (dir) => removeScaffoldPath(projectDir, dir),
-    packageInstalled: (pkg) => exists(join(projectDir, "node_modules", pkg)),
+    packageInstalled: async (pkg) => (await installedPackageBase(projectDir, workerDir, pkg)) !== null,
+    uninstallsAtRoot: async (pkg) => (await uninstallDirFor(projectDir, workerDir, pkg)) === projectDir,
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
     workersRegistering: (capability) => workersRegistering(projectDir, workerDir, capability),
     deleteOwnHosts: async (capability) => {
@@ -502,8 +503,9 @@ export interface RemoveResult {
   dropped?: DatabaseRun[];
   removedBindings: string[];
   /**
-   * The other Workers that still compose the capability, so the shared package was **kept** installed.
-   * Empty when nothing else needs it — the case where `packageManager` names the uninstall that ran.
+   * The other Workers that still import the package. At a root install the shared package was **kept** for
+   * them; a Worker that is a workspace member uninstalls its own declaration regardless. Empty when nothing
+   * else needs it.
    */
   keptFor: string[];
   /**
@@ -530,9 +532,10 @@ export interface RemoveResult {
  * (ejected). Never destroys data unless `drop` is set. Idempotent: an absent capability is a no-op.
  * Refuses when another capability wired into the same Worker depends on this one.
  *
- * The package is the one project-wide part of a removal, so it is uninstalled only when **no Worker
- * still imports it**, this one included. Other Workers holding it come back in {@link RemoveResult.keptFor};
- * this Worker holding it for another capability the package ships sets {@link RemoveResult.keptHere}.
+ * The package is uninstalled where it is declared: the Worker's own `package.json` when it is a workspace member
+ * that declares it, the root's otherwise. A root declaration is shared, so it goes only when **no Worker still imports it**; other
+ * Workers holding it come back in {@link RemoveResult.keptFor}. Either way, this Worker holding it for another
+ * capability the package ships keeps it and sets {@link RemoveResult.keptHere}.
  */
 export async function removeCapability(options: RemoveCapabilityOptions): Promise<RemoveResult> {
   const { workerDir, capability, steps } = options;
@@ -661,10 +664,15 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   const keptHere = !ejected && importsPackage(await readFile(join(workerDir, "pithy.config.ts"), "utf8"), pkg);
   if (ejected) {
     await steps.deleteSource(join(workerDir, EJECT_DIR, capability));
-  } else if (installed && keptFor.length === 0 && !keptHere && !isSharedCapabilityPackage(pkg)) {
-    // One install at the root, shared by every Worker. Uninstalling it while a sibling Worker still
-    // imports it would break that Worker's pithy.config.ts — and every command that loads it. So the
-    // wiring goes and the package stays, which a later `pithy remove` from the last Worker cleans up.
+  } else if (
+    installed &&
+    !keptHere &&
+    !isSharedCapabilityPackage(pkg) &&
+    (keptFor.length === 0 || !(await steps.uninstallsAtRoot(pkg)))
+  ) {
+    // A root declaration a sibling Worker still imports is the copy that Worker resolves: uninstalling it would
+    // break its pithy.config.ts, and every command that loads it. A member's own declaration is its alone, and
+    // the package manager keeps the package for any sibling that declares it too.
     //
     // A shared package is never uninstalled at all. `controlplane` lives in `@pithy-sh/core`, which is
     // every capability's dependency and the runtime the app is built on: removing the seam unwires it,

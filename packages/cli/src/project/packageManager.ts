@@ -9,6 +9,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { execCommand } from "../platform/command";
 import { startStep } from "../terminal/progress";
 import { writeFileAtomic } from "./atomic";
+import { installDirFor, installedPackageBase, resolutionChain, uninstallDirFor } from "./installedPackage";
 import { readOptionalFile } from "./readOptionalFile";
 
 /** The package managers a Pithy adopter might use. Adoption is never gated behind Bun. */
@@ -39,7 +40,7 @@ async function exists(path: string): Promise<boolean> {
 /**
  * The project's lockfile and the manager it belongs to, or `null` when there is none — the most specific
  * first, by {@link LOCKFILES}. `pithy setup` reads the file's name as well as the manager, because it says
- * which file it installs against (#764).
+ * which file it installs against.
  */
 export async function detectLockfile(projectDir: string): Promise<{ lockfile: string; pm: PackageManager } | null> {
   for (const [lockfile, pm] of LOCKFILES) {
@@ -95,82 +96,82 @@ export function execArgs(pm: PackageManager, bin: string, args: string[]): { com
 const PITHY_SCOPE = "@pithy-sh/";
 
 /**
- * Whether `projectDir/node_modules/<pkg>` is a **checkout linked in** rather than something a registry
- * install put there.
+ * Whether the copy of `pkg` that code in `fromDir` resolves is a **checkout linked in** rather than something a
+ * registry install put there.
  *
  * Two conditions, and both are load-bearing.
  *
- * *At the project root, and only there.* Node's own lookup walks `node_modules` up every ancestor to
- * `/`; this deliberately does not. The rest of the CLI never walks — `loadManifest` reads
- * `projectDir/node_modules/@pithy-sh/<pkg>` and nothing above it — so an ancestor hit made `pithy add`
- * skip the install and then report the capability as not installed, telling the adopter to run the
- * command that had just declined to run. And walking is a way in: `/tmp` and `$HOME` are ancestors
- * anyone can leave a `node_modules` in, `pithy add` wires the resolved package into `pithy.config.ts`,
- * and `pithy migrate` imports that config. Bounded, a planted copy is shadowed by a real install again.
+ * *Found the way the rest of the CLI finds a package* ({@link installedPackageBase}): the Worker's own
+ * `node_modules`, then each parent's, up to the project root and never above it. `/tmp` and `$HOME` are
+ * ancestors anyone can leave a `node_modules` in, `pithy add` wires the resolved package into `pithy.config.ts`,
+ * and `pithy migrate` imports that config.
  *
- * *Resolving out of `node_modules`.* A registry install is a real directory under `node_modules` — bun
- * hoists transitive dependencies there too, and the scope depends on itself (`auth` pulls `email`,
- * `secrets`, `turnstile`). Treating a hoisted copy as provided meant `pithy add email` after
- * `pithy add auth` declared nothing, and `pithy remove auth` then pruned it out from under a config that
- * still imported it. A link that lands *outside* `node_modules` is the thing that has no version to
- * write: a workspace member, a `bun link`, a `file:` dependency. pnpm's store is inside `node_modules`,
- * so its symlinks read as the registry installs they are.
+ * *Resolving out of every `node_modules` on that walk.* A registry install lands inside one: a real directory —
+ * bun hoists transitive dependencies to the top as real directories, and the scope depends on itself (`auth`
+ * pulls `email`, `secrets`, `turnstile`) — or a link into a store under the root's `node_modules`, which is where
+ * pnpm's `.pnpm` and Bun's isolated `.bun` keep a member's dependencies. A hoisted copy treated as provided would
+ * leave `pithy add email` after `pithy add auth` declaring nothing, for `pithy remove auth` to prune out from under
+ * a config that still imports it. A link that lands *outside* all of them is the thing that has no version to
+ * write: a workspace member, a `bun link`, a `file:` dependency.
  *
  * The manifest is read rather than the directory stat'ed, because a stat answers the wrong question. The
  * checkout a link points at can be gone, and an `@pithy-sh` folder can be left behind empty by a
  * half-finished remove. Reading `package.json` and checking the name it declares is what "importable"
  * actually means.
  */
-async function linkedFromCheckout(projectDir: string, pkg: string): Promise<boolean> {
-  const modules = join(projectDir, "node_modules");
-  const at = join(modules, ...pkg.split("/"));
+async function linkedFromCheckout(projectDir: string, fromDir: string, pkg: string): Promise<boolean> {
+  const base = await installedPackageBase(projectDir, fromDir, pkg);
+  if (base === null) return false;
+  const at = join(base, "node_modules", ...pkg.split("/"));
   let resolved: string;
-  let root: string;
+  let stores: string[];
   try {
     const raw = await readFile(join(at, "package.json"), "utf8");
     if ((JSON.parse(raw) as { name?: unknown }).name !== pkg) return false;
-    // Both sides through `realpath`, or a `node_modules` reached by a symlinked path — a macOS tmpdir,
+    // Every side through `realpath`, or a `node_modules` reached by a symlinked path — a macOS tmpdir,
     // a symlinked home — would read as outside itself and call every install a checkout.
-    [resolved, root] = await Promise.all([realpath(at), realpath(modules)]);
+    resolved = await realpath(at);
+    stores = await Promise.all(
+      resolutionChain(projectDir, base).map((dir) => realpath(join(dir, "node_modules")).catch(() => null)),
+    ).then((dirs) => dirs.filter((dir): dir is string => dir !== null));
   } catch {
     // Missing, dangling, unreadable, or unparsable. None of them is a resolution.
     return false;
   }
-  return relative(root, resolved).startsWith("..");
+  return stores.every((store) => relative(store, resolved).startsWith(".."));
 }
 
 /**
- * Whether a `@pithy-sh/*` package is already provided by the project, so nothing should reach for the
- * registry on its behalf — neither an install nor a version range written into a `package.json`.
+ * Whether a `@pithy-sh/*` package is already provided by the project, as code in `fromDir` resolves it (the
+ * root by default), so nothing should reach for the registry on its behalf — neither an install nor a version
+ * range written into a `package.json`.
  *
- * Nothing under `@pithy-sh/*` is published yet, so a project working against a local checkout links the
- * packages in and every registry reference 404s: `pithy add secrets` failed on `bun add`, and
- * `pithy ui add react` succeeded while writing a `"@pithy-sh/vite": "^0.0.0"` that broke the *next*
- * install. One predicate, both call sites, no flag to remember. Once the packages publish it goes quiet:
- * an installed copy is a real directory with a real version, so the normal path runs and declares it.
+ * A project working against a local checkout links the packages in, and a registry reference to a version
+ * only the checkout has 404s: `bun add` fails, and a range like `"@pithy-sh/vite": "^0.0.0"` breaks the
+ * *next* install. One predicate, both call sites, no flag to remember. An installed copy is a real
+ * directory with a real version, so the normal path runs and declares it.
  *
  * The scope is part of the rule, not incidental. `react` linked into the project says only that someone
  * is developing against a fork — its range is still correct and must still be written.
  */
-export async function alreadyProvided(projectDir: string, pkg: string): Promise<boolean> {
-  return pkg.startsWith(PITHY_SCOPE) && (await linkedFromCheckout(projectDir, pkg));
+export async function alreadyProvided(projectDir: string, pkg: string, fromDir: string = projectDir): Promise<boolean> {
+  return pkg.startsWith(PITHY_SCOPE) && (await linkedFromCheckout(projectDir, fromDir, pkg));
 }
 
 /** Spawn a package manager. Injectable so the flow is testable without a real install. */
 export type InstallRunner = (command: string, args: string[], cwd: string) => Promise<void>;
 
 /**
- * **Run the package manager, captured, under a step naming the command line (#593).**
+ * **Run the package manager, captured, under a step naming the command line.**
  *
  * The one place the CLI starts `bun add`, `npm uninstall`, `<pm> install`. Its output is collected, never
  * streamed, which is right for a log and leaves nothing on the terminal while a cold install runs for
  * minutes — so it says `▸ Running bun add @pithy-sh/auth...` before the child exists. Outside a narrated
  * span, and under `--json`, that is silent.
  *
- * It was three spawns: this module's, `pithy worker add`'s bare install and `pithy feature create`'s. Each
- * ran silent, and `ci/narration.test.ts` saw none of them because it looked for `runWrangler(` by name.
- * One primitive raises the step once, so a fourth caller cannot forget it. It throws the child's own error;
- * what a failure means is the caller's sentence to write.
+ * `pithy add`, `pithy worker add` and `pithy feature create` all spawn through it, so the step is raised
+ * once and no caller can forget it. It throws the child's own error; what a failure means is the caller's
+ * sentence to write.
  */
 export const runPackageManager: InstallRunner = async (command, args, cwd) => {
   startStep(`Running ${[command, ...args].join(" ")}`);
@@ -184,15 +185,20 @@ const spawnInstall: InstallRunner = async (command, args, cwd) => {
     throw new InternalError({
       message: `${command} ${args.join(" ")} failed.`,
       action: `Install the package by hand: ${command} ${args.join(" ")}.`,
-      // The installer's captured output, without its color: a `--json` error line carries it (#697).
+      // The installer's captured output, without its color: a `--json` error line carries it.
       detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
     });
   }
 };
 
 export interface InstallPackageOptions {
-  /** The project root — where the lockfile lives and the install runs. */
+  /** The project root — where the lockfile lives, and where the install runs when no Worker owns it. */
   projectDir: string;
+  /**
+   * The Worker the package is for. When it is a workspace member, the install runs in its directory, so the
+   * dependency is declared in its `package.json` and not the root's ({@link installDirFor}).
+   */
+  workerDir?: string;
   /** The package to install, e.g. `@pithy-sh/auth`. */
   pkg: string;
   /** Override the spawner (tests inject a stub); defaults to the real install. */
@@ -200,27 +206,32 @@ export interface InstallPackageOptions {
 }
 
 /**
- * Install a package with the project's detected package manager. Returns the project's manager, so
- * `pithy add` can report it. The adopter's PM is always used — Bun stays a dev-only signal, never a
- * requirement of adoption. The manager is detected whether or not an install runs: it is a fact about
- * the project, not a record of a spawn, and the caller only ever renders it as "run `<pm> install`".
+ * Install a package with the project's detected package manager, in the Worker that composes it when that Worker
+ * is a workspace member and at the root otherwise. Returns the project's manager, so `pithy add` can report it.
+ * The adopter's PM is always used — Bun stays a dev-only signal, never a requirement of adoption. The manager is
+ * detected whether or not an install runs: it is a fact about the project, not a record of a spawn, and the
+ * caller only ever renders it as "run `<pm> install`".
  *
  * A package a linked checkout already provides is skipped ({@link alreadyProvided}), and the trade is
- * deliberate: nothing then declares it in a `package.json`. That is the point. The only range there is
- * to write names a version no registry has, and writing it breaks the adopter's next install — the
- * failure `pithy ui add` used to plant on a command days away. A checkout is already outside the
- * lockfile's world; the moment the scope publishes, the copy is a real directory and this stops firing.
+ * deliberate: nothing then declares it in a `package.json`. The only range there is to write names a version no
+ * registry has, and writing it breaks the adopter's next install. A checkout is already outside the lockfile's
+ * world; the moment the scope publishes, the copy is a real directory and this stops firing.
  */
 export async function installPackage(options: InstallPackageOptions): Promise<{ packageManager: PackageManager }> {
-  const packageManager = await detectPackageManager(options.projectDir);
-  if (await alreadyProvided(options.projectDir, options.pkg)) return { packageManager };
-  await (options.run ?? spawnInstall)(packageManager, installArgs(packageManager, options.pkg), options.projectDir);
+  const { projectDir, pkg } = options;
+  const packageManager = await detectPackageManager(projectDir);
+  const workerDir = options.workerDir ?? projectDir;
+  if (await alreadyProvided(projectDir, pkg, workerDir)) return { packageManager };
+  const cwd = await installDirFor(projectDir, workerDir);
+  await (options.run ?? spawnInstall)(packageManager, installArgs(packageManager, pkg), cwd);
   return { packageManager };
 }
 
 export interface UninstallPackageOptions {
-  /** The project root — where the lockfile lives and the uninstall runs. */
+  /** The project root — where the lockfile lives, and where the uninstall runs when no Worker owns it. */
   projectDir: string;
+  /** The Worker the package was installed for: the uninstall runs where it is declared, the Worker's member first. */
+  workerDir?: string;
   /** The package to uninstall, e.g. `@pithy-sh/auth`. */
   pkg: string;
   /** Override the spawner (tests inject a stub); defaults to the real uninstall. */
@@ -241,131 +252,122 @@ export interface UninstallOutcome {
  * always used.
  *
  * A package a linked checkout provides is **not** uninstalled ({@link alreadyProvided}), exactly as the
- * install skips it, and the asymmetry was the bug: nothing declared the package, so there is no
- * declaration for a remove to take out — but every manager is asked anyway, and npm answers by pruning
- * the *whole* linked scope as extraneous. One `pithy remove auth` unlinked `secrets` and `core` out from
- * under the same worker's config, which still imports them. `detectPackageManager` returns npm for a
- * project with no lockfile, so that is the default path here, not an edge.
- *
- * The alternative was to make the caller check first. It is the same predicate the install already owns,
- * and a guard every call site must remember is a guard one of them forgets.
+ * install skips it: nothing declared the package, so there is no declaration for a remove to take out, and
+ * npm, asked anyway, prunes the *whole* linked scope as extraneous — `secrets` and `core` out from under a
+ * config that still imports them. `detectPackageManager` returns npm for a project with no lockfile, so that
+ * is the default path here, not an edge. The predicate lives here rather than at each call site, so no
+ * caller can forget it.
  */
 export async function uninstallPackage(options: UninstallPackageOptions): Promise<UninstallOutcome> {
-  const packageManager = await detectPackageManager(options.projectDir);
-  if (await alreadyProvided(options.projectDir, options.pkg)) return { packageManager, uninstalled: false };
-  await (options.run ?? spawnInstall)(packageManager, uninstallArgs(packageManager, options.pkg), options.projectDir);
+  const { projectDir, pkg } = options;
+  const packageManager = await detectPackageManager(projectDir);
+  const workerDir = options.workerDir ?? projectDir;
+  if (await alreadyProvided(projectDir, pkg, workerDir)) return { packageManager, uninstalled: false };
+  const cwd = await uninstallDirFor(projectDir, workerDir, pkg);
+  await (options.run ?? spawnInstall)(packageManager, uninstallArgs(packageManager, pkg), cwd);
   return { packageManager, uninstalled: true };
 }
 
 /**
- * Add several packages at once with the project's detected package manager — one install invocation.
- * Used by `--eject` to promote a forked capability's runtime dependencies (`better-auth`, `zod`, …)
- * into the project so the local copy builds without the `@pithy-sh/*` package. A no-op when the list
- * is empty. Returns which manager ran.
+ * Add several packages at once with the project's detected package manager — one install invocation, in
+ * `workerDir` when it is a workspace member and at the root otherwise ({@link installDirFor}). Used by
+ * `--eject` to promote a forked capability's runtime dependencies (`better-auth`, `zod`, …) into the Worker
+ * that holds the copy, so it builds without the `@pithy-sh/*` package. A no-op when the list is empty.
+ * Returns which manager ran.
  */
 export async function promoteDependencies(
   projectDir: string,
   packages: string[],
   runner?: InstallRunner,
+  workerDir: string = projectDir,
 ): Promise<{ packageManager: PackageManager }> {
   const packageManager = await detectPackageManager(projectDir);
   if (packages.length > 0) {
-    await (runner ?? spawnInstall)(packageManager, installArgs(packageManager, packages), projectDir);
+    const cwd = await installDirFor(projectDir, workerDir);
+    await (runner ?? spawnInstall)(packageManager, installArgs(packageManager, packages), cwd);
   }
   return { packageManager };
 }
 
 /**
- * Declare `pkg` in the Worker's own `package.json`, at the range the project root resolved it to.
+ * Declare `pkg`, and what it requires its consumer to provide, in the Worker's own `package.json`, sorted.
  *
- * ## Why a capability is declared twice
- *
- * The install runs at the root, because that is where the lockfile is and where every one of the CLI's
- * nine manifest-discovery sites looks. But `pithy add <cap> --worker <w>` writes its import into
- * `apps/<w>/pithy.config.ts`, so `apps/<w>` is what actually depends on the capability — and until
- * #480 nothing said so. The Worker's manifest, which the scaffold's own comments describe as what this
- * Worker is made of, listed `@pithy-sh/core` and nothing else however many capabilities it composed.
- *
- * That is not only tidiness. The composed config is per-Worker by design: two Workers are meant to
- * compose different sets, and a single root dependency list cannot express that — neither Worker's
- * manifest says what it is. And under a package manager that does not hoist, a capability declared only
- * at the root is not linked beside the Worker at all.
- *
- * `pithy ui add` has always written into `apps/<worker>/package.json`, which is the precedent this
- * follows rather than a new idea.
+ * `apps/<w>/pithy.config.ts` is what imports the capability, so `apps/<w>` is what depends on it: two Workers are
+ * meant to compose different sets, and only each Worker's own manifest can say what it is made of. Under a
+ * package manager that does not hoist, a dependency declared anywhere else is not linked beside the Worker at all.
  *
  * ## The range is read back, never invented
  *
- * Whatever the install just wrote at the root is what the Worker gets, so the two cannot disagree and
- * this file never has to know how a manager spells a range. A package the root does not declare — the
- * linked-checkout case {@link installPackage} documents, where nothing is written anywhere — is left
- * alone here too, for the same reason: the only range available names a version no registry has.
+ * The Worker's own range when the install wrote one there ({@link installPackage} runs in a workspace member),
+ * else the root's when it ran at the root. Whatever the install just wrote is what the Worker gets, so this file
+ * never has to know how a manager spells a range. A package neither declares — the linked-checkout case
+ * {@link installPackage} documents — is left alone here too: the only range available names a version no
+ * registry has.
  *
- * Merge, never replace: a range the adopter already chose survives untouched.
+ * Merge, never replace: a range the adopter already chose survives untouched. What is written is written in name
+ * order, the order every package manager writes.
  *
  * ## The capability's required peers come with it
  *
- * `zod`, `kysely` and `hono` are `peerDependencies` of every capability, because a second copy of any
- * of them is a second *type* and the compiler will not say so (#477). A peer is a requirement on the
- * consumer, though, and something has to satisfy it — **npm installs a peer at the top; bun, for a
- * workspace member, does not.** 0.1.3 shipped with that half missing: a scaffolded Worker declared its
- * capabilities and nothing declared their peers, so `zod` and `kysely` were linked nowhere and
- * `@pithy-sh/core` could not load inside the project at all.
+ * `zod`, `kysely` and `hono` are `peerDependencies` of every capability, because a second copy of any of them is
+ * a second *type* and the compiler will not say so. A peer is a requirement on the consumer, and something has to
+ * satisfy it — **npm installs a peer at the top; bun, for a workspace member, does not.** Without the Worker
+ * declaring them, `zod` and `kysely` are linked nowhere and `@pithy-sh/core` cannot load from `apps/<w>`
+ * (`ERR_MODULE_NOT_FOUND: Cannot find package '@pithy-sh/core'`).
  *
- * Measured, on published 0.1.3, from `apps/board`:
- * `ERR_MODULE_NOT_FOUND: Cannot find package '@pithy-sh/core'`.
- *
- * So whoever declares a kit package on a Worker also declares what that package requires the Worker to
- * provide. **Read from the installed package rather than listed here**, because a list is a second copy
- * of a fact the manifest already states and would be one release behind the first capability to need
- * something new.
+ * So whoever declares a kit package on a Worker also declares what that package requires the Worker to provide.
+ * **Read from the package as the Worker resolves it rather than listed here**, because a list is a second copy of
+ * a fact the manifest already states and would be one release behind the first capability to need something new.
  *
  * **One kind is skipped, and `optional` is the whole of the rule.**
  *
  * - **An optional peer.** `@pithy-sh/payments` and `@pithy-sh/i18n` declare `react`, used only by their
- *   `client/` and `react/` modules — an adopter reaches those by importing them, and a server
- *   composition never does. `peerDependenciesMeta` says so, and installing React into a Worker to
- *   satisfy a module it will never load is a worse answer than the resolution failure it prevents.
+ *   `client/` and `react/` modules — an adopter reaches those by importing them, and a server composition never
+ *   does. `peerDependenciesMeta` says so, and installing React into a Worker to satisfy a module it will never
+ *   load is a worse answer than the resolution failure it prevents.
  *   **A kit sibling is the same skip, arrived at from the other side.** `@pithy-sh/support` peers
- *   `@pithy-sh/auth`, which is a *prerequisite*: the CLI refuses a composition missing one and names the
- *   command that fixes it, and once composed it is declared by its own `pithy add`. Declaring it here as
- *   well would write a range for a package this Worker may compose later, on its own terms. Every kit
- *   peer of that shape carries `peerDependenciesMeta.optional`, so saying `optional` says both.
+ *   `@pithy-sh/auth`, which is a *prerequisite*: the CLI refuses a composition missing one and names the command
+ *   that fixes it, and once composed it is declared by its own `pithy add`. Every kit peer of that shape carries
+ *   `peerDependenciesMeta.optional`, so saying `optional` says both.
  *
- * **What is no longer skipped is the kit scope, and that was the half #542 was missing.** This filter
- * read `!name.startsWith(PITHY_SCOPE) && …optional !== true`, which was two rules for one fact — and it
- * was true only while every kit peer happened to be optional. `@pithy-sh/core` is now a **required** peer
- * of every capability, and `@pithy-sh/secrets`, `@pithy-sh/email`, `@pithy-sh/storage`,
- * `@pithy-sh/turnstile` and `@pithy-sh/cloudflare` are required peers of the capabilities that read them
- * — because a second copy of `core` is a second `Capability` type, and a second copy of `secrets` is a
- * second module-level `config` that `configureSharedSecrets` never wrote to (a 500 on every secret read).
- * A scope filter would have dropped exactly those from the Worker that composes them, which is 0.1.3's
- * `ERR_MODULE_NOT_FOUND` again with a kit package in the message instead of `zod`.
+ * **The kit scope is not skipped.** `@pithy-sh/core` is a **required** peer of every capability, and
+ * `@pithy-sh/secrets`, `@pithy-sh/email`, `@pithy-sh/storage`, `@pithy-sh/turnstile` and `@pithy-sh/cloudflare`
+ * are required peers of the capabilities that read them — because a second copy of `core` is a second
+ * `Capability` type, and a second copy of `secrets` is a second module-level `config` that
+ * `configureSharedSecrets` never wrote to. A scope filter would drop exactly those from the Worker that composes
+ * them.
  */
 export async function declareOnWorker(projectDir: string, workerDir: string, pkg: string): Promise<string[]> {
-  const rootRaw = await readOptionalFile(join(projectDir, "package.json"));
-  if (rootRaw === null) return [];
-  const root = JSON.parse(rootRaw) as { dependencies?: Record<string, string> };
-  const range = root.dependencies?.[pkg];
-  if (range === undefined) return [];
-
   const path = join(workerDir, "package.json");
   const workerRaw = await readOptionalFile(path);
   if (workerRaw === null) return [];
   const worker = JSON.parse(workerRaw) as { dependencies?: Record<string, string> };
 
-  const wanted: Record<string, string> = { [pkg]: range, ...(await requiredPeers(projectDir, pkg)) };
+  const range = worker.dependencies?.[pkg] ?? (await rootRange(projectDir, pkg));
+  if (range === undefined) return [];
+
+  const wanted: Record<string, string> = { [pkg]: range, ...(await requiredPeers(projectDir, workerDir, pkg)) };
   const added = Object.entries(wanted).filter(([name]) => worker.dependencies?.[name] === undefined);
   if (added.length === 0) return [];
 
-  worker.dependencies = { ...(worker.dependencies ?? {}), ...Object.fromEntries(added) };
+  const merged = { ...(worker.dependencies ?? {}), ...Object.fromEntries(added) };
+  worker.dependencies = Object.fromEntries(Object.entries(merged).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   await writeFileAtomic(path, `${JSON.stringify(worker, null, 2)}\n`);
   return added.map(([name]) => name);
 }
 
-/** What `pkg`, as installed, requires its consumer to provide — optional peers excluded, kit or not. */
-async function requiredPeers(projectDir: string, pkg: string): Promise<Record<string, string>> {
-  const raw = await readOptionalFile(join(projectDir, "node_modules", ...pkg.split("/"), "package.json"));
+/** The range the root `package.json` declares `pkg` at, or `undefined`. */
+async function rootRange(projectDir: string, pkg: string): Promise<string | undefined> {
+  const raw = await readOptionalFile(join(projectDir, "package.json"));
+  if (raw === null) return undefined;
+  return (JSON.parse(raw) as { dependencies?: Record<string, string> }).dependencies?.[pkg];
+}
+
+/** What `pkg`, as the Worker resolves it, requires its consumer to provide — optional peers excluded, kit or not. */
+async function requiredPeers(projectDir: string, workerDir: string, pkg: string): Promise<Record<string, string>> {
+  const base = await installedPackageBase(projectDir, workerDir, pkg);
+  if (base === null) return {};
+  const raw = await readOptionalFile(join(base, "node_modules", ...pkg.split("/"), "package.json"));
   if (raw === null) return {};
   const manifest = JSON.parse(raw) as {
     peerDependencies?: Record<string, string>;

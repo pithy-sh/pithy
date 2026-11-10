@@ -120,6 +120,7 @@ function workerFailures(
   directory: WorkerDir,
   checks: WorkerChecks & { ok: boolean },
   setUp: boolean,
+  projectDir: string | undefined,
 ): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
   const add = (detail: string, fix: Command | null) =>
@@ -129,7 +130,7 @@ function workerFailures(
   for (const entry of checks.prerequisites.missing) {
     add(
       `${entry.capability} requires ${entry.requires}, so this Worker will not boot`,
-      prerequisiteFix(directory, entry.requires),
+      prerequisiteFix(directory, entry.requires, projectDir),
     );
   }
   for (const drift of checks.config.drift) {
@@ -171,7 +172,7 @@ function workerFailures(
     add("its source would not scan for entitlement gates, so none was checked", null);
   } else if (gap.gates.length > 0) {
     add(
-      `routes gate on an entitlement nothing composed resolves: ${gap.gates.join(", ")}. ${providerExample(directory)}`,
+      `routes gate on an entitlement nothing composed resolves: ${gap.gates.join(", ")}. ${providerExample(directory, projectDir)}`,
       null,
     );
   }
@@ -204,7 +205,7 @@ function devMigrationFailures(worker: string, checks: WorkerChecks, setUp: boole
 }
 
 /** The project health block's failures: the project-wide checks, then each Worker's. */
-function healthFailures(health: ProjectHealth, setUp: boolean): DoctorFailure[] {
+function healthFailures(health: ProjectHealth, setUp: boolean, projectDir: string | undefined): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
   const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: sentence(detail), fix });
@@ -217,7 +218,7 @@ function healthFailures(health: ProjectHealth, setUp: boolean): DoctorFailure[] 
   for (const entry of health.capabilityReach.unreachable) {
     add(
       `${entry.capability} is composed by ${entry.workers.join(", ")}, and ${entry.package} is not installed`,
-      capabilityReachFix(entry),
+      capabilityReachFix(entry, projectDir),
     );
   }
   // Repointing is `pithy provision`, and repointing before the rows are carried across empties the binding.
@@ -248,7 +249,7 @@ function healthFailures(health: ProjectHealth, setUp: boolean): DoctorFailure[] 
       add(`${worker.worker} could not be checked: its pithy.config.ts or wrangler.jsonc would not read`, null);
       continue;
     }
-    failures.push(...workerFailures(worker.worker, worker.directory, worker, setUp));
+    failures.push(...workerFailures(worker.worker, worker.directory, worker, setUp, projectDir));
   }
   if (!health.ok && failures.length === 0)
     add(`project health failed. Run ${pithyCommand("doctor")} for the lines`, null);
@@ -462,6 +463,6 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   }
 
   if (report.project && !report.project.health.ok)
-    failures.push(...healthFailures(report.project.health, report.checkoutSetUp !== false));
+    failures.push(...healthFailures(report.project.health, report.checkoutSetUp !== false, report.project.dir));
   return failures;
 }

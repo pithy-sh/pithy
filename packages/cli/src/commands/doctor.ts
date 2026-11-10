@@ -172,6 +172,7 @@ import {
   type WorkerNameCheck,
 } from "../doctor/workerName";
 import { devConfigPath } from "../feature/devConfig";
+import { linkedWhereDeclared } from "../kitPackages/plan";
 import {
   crossesBreakingBoundary,
   type DeclaredSpec,
@@ -191,7 +192,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck, originDriftFix } from "../project/domains";
 import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
-import { alreadyProvided, detectPackageManager } from "../project/packageManager";
+import { detectPackageManager } from "../project/packageManager";
 import type { ResolvedWorker } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck, workflowDriftFix } from "../project/workflows";
 import { workspaceMembers } from "../project/workspaceMembers";
@@ -318,6 +319,8 @@ export interface CapabilityStatus {
 export interface ProjectStatus {
   capabilities: CapabilityStatus[];
   health: ProjectHealth;
+  /** The project root, whose `apps/<worker>` each named `pithy add` reads its capability's manifest from. */
+  dir?: string;
 }
 
 /** The complete doctor report — the structured source both the text and `--json` renderers project from. */
@@ -984,8 +987,8 @@ export interface DoctorReportOptions {
    * settings probe it takes the composition rather than a directory, so nothing here re-enumerates
    * `apps/` and `--worker <name>` narrows it the same way.
    */
-  /** Shared-runtime seam; defaults to {@link checkSharedRuntimes} over the project directory. */
-  checkSharedRuntimes?: (projectDir: string) => SharedRuntimesCheck;
+  /** Shared-runtime seam; defaults to {@link checkSharedRuntimes} over every workspace member. */
+  checkSharedRuntimes?: (projectDir: string) => SharedRuntimesCheck | Promise<SharedRuntimesCheck>;
   checkLocalDelivery?: (options: {
     projectDir: string;
     workers: readonly ResolvedWorker[];
@@ -1277,17 +1280,17 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     const installedCaps = await listCapabilities(options.projectDir);
     const packageSpecs = await (options.declaredSpecs ?? declaredSpecs)(options.projectDir);
     const packageManager = await detectPackageManager(options.projectDir);
-    // The advice for one outdated package, from the facts `--packages` itself decides by.
-    const adviceFor = async (name: string, latest: LatestInfo): Promise<PackageAdvice> =>
-      packageCommand(
-        packageSpecs.filter((spec) => spec.name === name),
-        latest.version,
-        {
-          linked: await alreadyProvided(options.projectDir, name),
-          latestDeprecated: latest.deprecated,
-          packageManager,
-        },
-      );
+    // The advice for one outdated package, from the facts `--packages` itself decides by: linked when every
+    // declaration of it is, since `--packages` still moves any declaration that is not.
+    const adviceFor = async (name: string, latest: LatestInfo): Promise<PackageAdvice> => {
+      const specs = packageSpecs.filter((spec) => spec.name === name);
+      const linked = await Promise.all(specs.map((spec) => linkedWhereDeclared(options.projectDir, spec)));
+      return packageCommand(specs, latest.version, {
+        linked: linked.length > 0 && linked.every(Boolean),
+        latestDeprecated: latest.deprecated,
+        packageManager,
+      });
+    };
     const capabilities: CapabilityStatus[] = [];
     for (const cap of installedCaps) {
       const unscoped = cap.name.replace("@pithy-sh/", "");
@@ -1382,7 +1385,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       readLedger: options.readLedger,
       readCapabilityReach: options.readCapabilityReach,
     });
-    project = { capabilities, health };
+    project = { capabilities, health, dir: options.projectDir };
   } catch (error) {
     if (error instanceof PithyError && !inProject && error.payload.code === "core/not_found") {
       project = null; // outside a Pithy project — omit the Project* lines entirely
@@ -1758,9 +1761,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const sharedRuntimes = inProject
     ? await probed<SharedRuntimesCheck | null>(
         async () =>
-          (options.checkSharedRuntimes ?? ((dir: string) => checkSharedRuntimes({ projectDir: dir })))(
-            options.projectDir,
-          ),
+          (
+            options.checkSharedRuntimes ??
+            (async (dir: string) => checkSharedRuntimes({ projectDir: dir, members: await workspaceMembers(dir) }))
+          )(options.projectDir),
         null,
       )
     : null;
@@ -2169,6 +2173,7 @@ function workerHealthLines(
   worker: WorkerDir,
   productionEnvironments: readonly string[],
   setUp = true,
+  projectDir?: string,
 ): string[] {
   const lines: string[] = [];
 
@@ -2182,7 +2187,7 @@ function workerHealthLines(
       lines.push(
         healthLine(
           index === 0 ? "prereqs" : "",
-          `${entry.capability} requires ${entry.requires} — ${addAction(prerequisitePlan(worker, entry.requires), (add) => `run: ${add}`)}`,
+          `${entry.capability} requires ${entry.requires} — ${addAction(prerequisitePlan(worker, entry.requires, projectDir), (add) => `run: ${add}`)}`,
         ),
       );
     });
@@ -2251,7 +2256,7 @@ function workerHealthLines(
     lines.push(healthLine("entitlements", "couldn't be checked — this worker's source would not scan"));
   } else {
     // Report-only: `pithy upgrade` cannot pick a capability for the adopter, so the line names the fix.
-    lines.push(healthLine("entitlements", `gated routes, no provider. ${providerExample(worker)}`));
+    lines.push(healthLine("entitlements", `gated routes, no provider. ${providerExample(worker, projectDir)}`));
     for (const gate of health.entitlements.gap.gates) lines.push(`${HEALTH_CONT}${gate}`);
   }
 
@@ -2364,7 +2369,7 @@ function hasScopeNotes(worker: WorkerChecks): boolean {
  * to work around an install. The fix is an install, so the line names the two shapes an install can take
  * and leaves the package manager to the adopter.
  */
-function capabilityReachLines(reach: CapabilityReachHealth): string[] {
+function capabilityReachLines(reach: CapabilityReachHealth, projectDir?: string): string[] {
   const lines: string[] = [];
   for (const entry of reach.unreachable) {
     lines.push(`${HEALTH_INDENT}${entry.capability} is composed, and ${entry.package} is not installed`);
@@ -2373,7 +2378,7 @@ function capabilityReachLines(reach: CapabilityReachHealth): string[] {
     lines.push(`${HEALTH_INDENT}  every command that reaches into it refuses, and every check below skips it.`);
     // The command names the first Worker composing it. A capability composed by no Worker names none,
     // and gets no line rather than a command with a placeholder in it.
-    const plan = capabilityReachPlan(entry);
+    const plan = capabilityReachPlan(entry, projectDir);
     if (plan !== null) lines.push(`${HEALTH_INDENT}  ${addAction(plan, (add) => `Run: ${add}`)}`);
   }
   for (const entry of reach.split) {
@@ -2791,7 +2796,12 @@ function upgradeFirstLines(entry: { repointable: boolean; package: string }): st
   ].map((line) => `${HEALTH_INDENT}  ${line}`);
 }
 
-function healthBlock(health: ProjectHealth, productionEnvironments: readonly string[], setUp = true): string {
+function healthBlock(
+  health: ProjectHealth,
+  productionEnvironments: readonly string[],
+  setUp = true,
+  projectDir?: string,
+): string {
   const lines = ["Project health:"];
   // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
   // whose manifest could not be read contributes no drift to any check below it, so a project full of
@@ -2813,7 +2823,7 @@ function healthBlock(health: ProjectHealth, productionEnvironments: readonly str
   // fail it — the same shape `shared:` has below, where a `dev` stanza is reported and green.
   if (!health.capabilityReach.ok || health.capabilityReach.split.length > 0) {
     lines.push("  capabilities:");
-    lines.push(...capabilityReachLines(health.capabilityReach));
+    lines.push(...capabilityReachLines(health.capabilityReach, projectDir));
   }
   // Beside the manifest hole and for the same reason: it belongs to the project rather than to a Worker,
   // and it explains a disagreement that only exists *between* two of the blocks below.
@@ -2842,7 +2852,7 @@ function healthBlock(health: ProjectHealth, productionEnvironments: readonly str
       continue;
     }
     lines.push(`  ${worker.worker}:`);
-    lines.push(...workerHealthLines(worker, worker.directory, productionEnvironments, setUp));
+    lines.push(...workerHealthLines(worker, worker.directory, productionEnvironments, setUp, projectDir));
   }
   return lines.join("\n");
 }
@@ -3559,7 +3569,14 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     // and a project whose every check passes is exactly the project they are about — gating the block on
     // `ok` alone would print their output on every report except the ones they are for.
     if (!report.project.health.ok || projectHasGreenFindings(report.project.health)) {
-      blocks.push(healthBlock(report.project.health, report.productionEnvironments, report.checkoutSetUp !== false));
+      blocks.push(
+        healthBlock(
+          report.project.health,
+          report.productionEnvironments,
+          report.checkoutSetUp !== false,
+          report.project.dir,
+        ),
+      );
     }
   } else {
     blocks.push(`Project: no pithy.config.ts here — run \`${pithyCommand("init")}\`, or change to a project directory`);
@@ -3809,6 +3826,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
               report.project.health,
               report.productionEnvironments,
               report.checkoutSetUp !== false,
+              report.project.dir,
             ),
           }
         : null,

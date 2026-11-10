@@ -23,7 +23,7 @@ import {
   type RunAddOptions,
   runAdd,
 } from "../capabilities/flow";
-import { availableManifests, ManifestFault } from "../capabilities/manifests";
+import { ManifestFault, projectManifests } from "../capabilities/manifests";
 import { optionForm } from "../capabilities/optionForms";
 import { type AddPlan, planAdd } from "../capabilities/planAdd";
 import { requiredOptionRefusal } from "../capabilities/requiredOptions";
@@ -149,7 +149,7 @@ export function targetWorker(environment: string, options: TargetWorkerOptions):
  * listing. Reported rather than refused: one broken package must not cost the adopter the other entries.
  */
 async function listCapabilities(projectDir: string, json: boolean): Promise<void> {
-  const { manifests, faults } = await availableManifests(projectDir);
+  const { manifests, faults } = await projectManifests(projectDir);
   const listing = buildCatalogListing(new Set(manifests.map((manifest) => manifest.name)));
   if (json) {
     process.stdout.write(`${formatJsonLine({ command: "add", capabilities: listing, manifestFaults: faults })}\n`);

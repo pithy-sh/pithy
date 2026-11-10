@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Caller,
@@ -13,6 +13,7 @@ import {
   type WorkerDir,
 } from "@pithy-sh/core/src/cli/command";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { resolutionChain } from "../project/installedPackage";
 import { workerDirName } from "../project/workerIdentity";
 import { configuredWorkerDirs } from "../project/workers";
 import { withFix } from "../terminal/exitClass";
@@ -23,7 +24,7 @@ import { prerequisiteClosure } from "./prerequisiteClosure";
 import { isRegistered } from "./registration";
 
 /**
- * **Every `pithy add` a line names, built from what the capability declares (#711).**
+ * **Every `pithy add` a line names, built from what the capability declares.**
  *
  * `pithy add` is the one command whose runnable spelling depends on a manifest, not only on the tree: a
  * capability with prerequisites is refused without `--with-prerequisites`, and one with an option it states no
@@ -64,7 +65,7 @@ export interface AddRun {
 }
 
 /**
- * **A run of `pithy add`, as its own context (#711)**: the one input every line naming it again is built from — its
+ * **A run of `pithy add`, as its own context**: the one input every line naming it again is built from — its
  * flags, its `--set`, and `answered`, the options its Worker's config already states, which a rerun settles rather
  * than naming a `--set` that could contradict the config. `flow.ts` builds it once per run, from the run's options.
  */
@@ -103,7 +104,7 @@ function callerFlags(caller: Caller<"add"> | undefined): AddFlags {
 
 /**
  * **The caller's flags a step on the way carries** — an add of something the capability needs, named before it.
- * A dry run's every step is a dry run, and a caller that asked for JSON reads JSON from each (#711). `--eject` and
+ * A dry run's every step is a dry run, and a caller that asked for JSON reads JSON from each. `--eject` and
  * `--force` were asked of the capability, not of what it needs, and its `--set` answered the capability's options.
  */
 function stepFlags(caller: Caller<"add"> | undefined): AddFlags {
@@ -134,7 +135,7 @@ export interface AddRequest {
    */
   answered?: ReadonlySet<string> | undefined;
   /**
-   * **The caller's own run (#711)**, when the line names it or a step on its way: the only source of the flags and
+   * **The caller's own run**, when the line names it or a step on its way: the only source of the flags and
    * `--set` a line carries. For the caller's own capability, every flag, every `--set` and every option its config
    * answers; for another — a prerequisite named first — only `--dry-run` and `--json`, the run's mode.
    */
@@ -212,7 +213,7 @@ export function addPlan(request: AddRequest): AddPlan {
     if (peer !== undefined && peer.requiredOptions.length > 0) {
       const first = addPlan({ ...request, capability: name, answered: undefined });
       // That add composes `name` and what `name` brings, and nothing else: a prerequisite outside it is still
-      // missing, and the command after it still needs --with-prerequisites to compose it (#711).
+      // missing, and the command after it still needs --with-prerequisites to compose it.
       const brought = prerequisitesOf({ ...request, capability: name }, peer);
       const then = addPlan({ ...request, composed: new Set([...(request.composed ?? []), name, ...brought]) });
       const firstWords = addAction(first, (add) => `Compose it first with ${add}`);
@@ -271,15 +272,54 @@ export function withAddFix<E extends PithyError>(error: E, plan: AddPlan): E {
   return plan.fix === undefined ? error : withFix(error, plan.fix);
 }
 
-/** A capability's facts: the project's installed manifest, when there is one, then the kit's. */
-export function projectAddFacts(projectDir: string | undefined): (name: string) => AddFacts | undefined {
-  return (name) => (projectDir === undefined ? undefined : installedAddFacts(projectDir, name)) ?? kitAddFacts(name);
+/**
+ * A capability's facts: the installed manifest code in `fromDir` resolves (the Worker's own `node_modules`, then
+ * up to the project root), when there is one, then the kit's. `fromDir` defaults to the root.
+ */
+export function projectAddFacts(
+  projectDir: string | undefined,
+  fromDir: string | undefined = projectDir,
+): (name: string) => AddFacts | undefined {
+  return (name) =>
+    (projectDir === undefined ? undefined : installedAddFacts(projectDir, fromDir ?? projectDir, name)) ??
+    kitAddFacts(name);
 }
 
-/** The installed manifest's facts, read synchronously: a classifier building a sentence in a `catch` cannot await. */
-function installedAddFacts(projectDir: string, name: string): AddFacts | undefined {
+/**
+ * {@link projectAddFacts} as code in the Worker `apps/<worker>` resolves them — what `pithy add --worker <worker>`
+ * reads. No `worker` reads from the root.
+ */
+export function workerAddFacts(
+  projectDir: string | undefined,
+  worker: WorkerDir | undefined,
+): (name: string) => AddFacts | undefined {
+  return projectAddFacts(
+    projectDir,
+    projectDir === undefined || worker === undefined ? projectDir : join(projectDir, "apps", worker),
+  );
+}
+
+/**
+ * The installed manifest's facts, read synchronously: a classifier building a sentence in a `catch` cannot await.
+ * The nearest directory holding the manifest file is the one code in `fromDir` resolves, as Node's resolver
+ * decides it by existence; a manifest there that will not read or parse yields no facts rather than a farther copy.
+ */
+function installedAddFacts(projectDir: string, fromDir: string, name: string): AddFacts | undefined {
+  const path = resolutionChain(projectDir, fromDir)
+    .map((base) => installedManifestPath(base, name))
+    .find((candidate) => existsSync(candidate));
+  if (path === undefined) return undefined;
   try {
-    const raw = JSON.parse(readFileSync(installedManifestPath(projectDir, name), "utf8")) as Partial<AddFacts> & {
+    return manifestAddFacts(name, readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The facts one manifest's text states, or `undefined` when it does not parse. */
+function manifestAddFacts(name: string, text: string): AddFacts | undefined {
+  try {
+    const raw = JSON.parse(text) as Partial<AddFacts> & {
       configOptions?: {
         key: string;
         default?: unknown;
@@ -311,9 +351,9 @@ export function composedBy(workerDir: string, names: readonly string[]): Set<str
 }
 
 /**
- * **The Workers a line offers an add into, when it names none (#711)**: the ones already composing
- * `alongside`, when any does, and every configured Worker only when none does. `pithy add secrets --worker x`
- * offered for a Worker that composes nothing of secrets composed secrets into an unrelated Worker.
+ * **The Workers a line offers an add into, when it names none**: the ones already composing `alongside`, when
+ * any does, and every configured Worker only when none does, so a line never composes a capability into an
+ * unrelated Worker.
  */
 export function offeredWorkers(projectDir: string, alongside?: string): WorkerDir[] {
   const dirs = configuredWorkerDirs(projectDir);
@@ -324,14 +364,11 @@ export function offeredWorkers(projectDir: string, alongside?: string): WorkerDi
 /**
  * **The `pithy add secrets` a line names** — the command that records `SECRETS_STORE_ID`, since its bootstrap
  * resolves the account's store on every run. Offered for the Workers that compose secrets already, or every
- * Worker when none does.
+ * Worker when none does, with the facts the first of them resolves.
  */
 export function addSecretsPlan(projectDir: string): AddPlan {
-  return addPlan({
-    capability: "secrets",
-    workers: offeredWorkers(projectDir, "secrets"),
-    factsFor: projectAddFacts(projectDir),
-  });
+  const workers = offeredWorkers(projectDir, "secrets");
+  return addPlan({ capability: "secrets", workers, factsFor: workerAddFacts(projectDir, workers[0]) });
 }
 
 /** Where the run a refusal inside `pithy add` sends its caller back to acts. */
@@ -343,16 +380,15 @@ export interface AddWhere {
 }
 
 /**
- * **The caller's own `pithy add`, again (#711)**, as a sentence names it: built from the caller's context and nothing
+ * **The caller's own `pithy add`, again**, as a sentence names it: built from the caller's context and nothing
  * else — its capability on the same Worker, every option it settled, every option its Worker's config already
- * answers, and every flag it was given — so the rerun asks for nothing the first run did not. A rerun that dropped
- * the run's `--set` was refused for the option the first run had answered; one that ignored the config named a
- * choice the config had already made.
+ * answers, and every flag it was given — so the rerun asks for nothing the first run did not, and names no
+ * choice the config already made.
  */
 export function addAgain(caller: Caller<"add">, where: AddWhere): string {
   const capability = callerCapability(caller) ?? "";
   const { workerDir, projectDir } = where;
-  const factsFor = projectAddFacts(projectDir);
+  const factsFor = projectAddFacts(projectDir, workerDir);
   const plan = addPlan({
     capability,
     workers: [workerDirName({ dir: workerDir })],

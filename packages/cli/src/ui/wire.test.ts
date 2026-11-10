@@ -269,6 +269,20 @@ describe("wire", () => {
     expect(change.devDependencies).toContain("@vitejs/plugin-react");
   });
 
+  test("wirePackage writes no registry range for a @pithy-sh package a checkout links into the Worker", async () => {
+    const workerDir = await scaffoldWorker();
+    const checkout = join(dir, "checkout", "vite");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/vite" }));
+    await mkdir(join(workerDir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(workerDir, "node_modules", "@pithy-sh", "vite"), "dir");
+
+    const change = await wirePackage(dir, workerDir, reactStub);
+
+    expect(change.devDependencies).not.toContain("@pithy-sh/vite");
+    expect(change.devDependencies).toContain("@vitejs/plugin-react");
+  });
+
   test("wirePackage writes the @pithy-sh range when the project has no checkout linked in", async () => {
     // The published world, and the hoisted-transitive one: a real directory in `node_modules` is a
     // registry install with a version, so the range is correct and the worker must declare it. Omitting

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { capabilityReachPlan, prerequisitePlan } from "../doctor/findingFixes";
 import { fixOf } from "../terminal/exitClass";
 import {
   addAction,
@@ -20,10 +21,11 @@ import {
   projectAddFacts,
   withAddFix,
 } from "./addCommand";
+import { providerExample } from "./entitlementGap";
 import type { AddFacts } from "./kitAddFacts";
 
 /**
- * **Every `pithy add` a line names, built from what the capability declares (#711).** Each command here runs as
+ * **Every `pithy add` a line names, built from what the capability declares.** Each command here runs as
  * written: the Worker is named, prerequisites come with the flag that composes them, and an option the kit cannot
  * default is the reader's choice — named as one command per value, and never a `fix`.
  */
@@ -72,7 +74,7 @@ describe("addPlan", () => {
     expect(plan.fix).toBeUndefined();
   });
 
-  // #412: the kit never picks a billing model. Each value is its own command, and none is a `fix`.
+  // The kit never picks a billing model. Each value is its own command, and none is a `fix`.
   test("names a required option's every value as the reader's choice, never a fix", () => {
     const plan = addPlan({ capability: "payments", workers: [api], factsFor });
     expect(plan.commands).toEqual([
@@ -105,7 +107,7 @@ describe("addPlan", () => {
     expect(plan.fix).toBe("pithy add payments --worker api --with-prerequisites --set billingSubject=user");
   });
 
-  // #711: `pithy add` skips an option the Worker's config already states, so a line about a Worker that answered it
+  // `pithy add` skips an option the Worker's config already states, so a line about a Worker that answered it
   // names the add that runs, with no choice left in it — and passes no `--set` that could contradict the config.
   test("an option the Worker's config already answers is settled, and no --set is named for it", () => {
     const plan = addPlan({ capability: "tariff", workers: [api], factsFor, answered: new Set(["k"]) });
@@ -134,7 +136,7 @@ describe("addPlan", () => {
   });
 
   // The command after the prerequisite's own add composes only that prerequisite and what it brings: another the
-  // Worker still lacks is still missing, and the run after it is refused without --with-prerequisites (#711).
+  // Worker still lacks is still missing, and the run after it is refused without --with-prerequisites.
   test("the command after a prerequisite's own add still carries --with-prerequisites for the rest", () => {
     const plan = addPlan({ capability: "shop", workers: [api], factsFor });
     expect(plan.decide).toContain(
@@ -148,9 +150,9 @@ describe("addPlan", () => {
     expect(plan.decide).toContain("Then run `pithy add depot --worker api`.");
   });
 
-  // #711: a dry run's every step stays a dry run. The command composing the prerequisite first dropped the caller's
-  // flags, so an agent that asked only to see the plan was told to run a real add, which installs and migrates.
-  // `--eject` and `--force` were asked of the capability, not of what it needs; the output mode is the caller's.
+  // A dry run's every step stays a dry run: an agent that asked only to see the plan is never told to run a real
+  // add, which installs and migrates. `--eject` and `--force` were asked of the capability, not of what it needs;
+  // the output mode is the caller's.
   test("the prerequisite's own add keeps a dry run's --dry-run and the caller's --json, and nothing else", () => {
     const plan = addPlan({
       capability: "depot",
@@ -230,8 +232,8 @@ describe("composedBy", () => {
 });
 
 /**
- * **A remedy offering one command per Worker offers only the right ones (#711).** `pithy add secrets --worker x`
- * offered for a Worker that composes nothing of secrets composed secrets into an unrelated Worker.
+ * **A remedy offering one command per Worker offers only the right ones**, never an add into a Worker that
+ * composes nothing of the capability.
  */
 describe("offeredWorkers and addSecretsPlan", () => {
   test("offer only the Workers composing the capability, when any does", async () => {
@@ -250,7 +252,7 @@ describe("offeredWorkers and addSecretsPlan", () => {
   });
 });
 
-/** The caller's own run, again, with every option it settled and every flag it was given (#711). */
+/** The caller's own run, again, with every option it settled and every flag it was given. */
 describe("addAgain", () => {
   test("carries the run's --set and flags, so the rerun is asked nothing the first run was not", async () => {
     const at = await app("api", ["secrets"]);
@@ -260,8 +262,8 @@ describe("addAgain", () => {
     );
   });
 
-  // #711: an option the Worker's config already answers is settled in the rerun. It named one command per billing
-  // model — one contradicting the config — for a caller that passed no --set because the config had answered it.
+  // An option the Worker's config already answers is settled in the rerun: no command per billing model, none of
+  // them contradicting the config, for a caller that passed no --set because the config answered it.
   test("settles an option the Worker's config answers, so the rerun names no choice", async () => {
     const at = await app("api", ["secrets"]);
     const caller = addCallerOf({ capability: "payments", json: true }, ["billingSubject"]);
@@ -304,5 +306,66 @@ describe("projectAddFacts", () => {
     });
     expect(projectAddFacts(dir)("payments")?.requiredOptions.map((option) => option.key)).toEqual(["billingSubject"]);
     expect(projectAddFacts(undefined)("nope")).toBeUndefined();
+  });
+
+  test("reads the manifest the Worker resolves: its own node_modules before the root's", async () => {
+    const write = async (base: string, key: string) => {
+      const manifestDir = join(base, "node_modules", "@pithy-sh", "email");
+      await mkdir(manifestDir, { recursive: true });
+      await writeFile(
+        join(manifestDir, "pithy.manifest.json"),
+        JSON.stringify({ name: "email", configOptions: [{ key }] }),
+      );
+    };
+    const worker = join(dir, "apps", "board");
+    await write(dir, "rootOption");
+    await write(worker, "workerOption");
+
+    const keys = (fromDir?: string) =>
+      projectAddFacts(dir, fromDir)("email")?.requiredOptions.map((option) => option.key);
+    expect(keys(worker)).toEqual(["workerOption"]);
+    expect(keys()).toEqual(["rootOption"]);
+    expect(keys(join(dir, "apps", "admin"))).toEqual(["rootOption"]);
+  });
+});
+
+/**
+ * **A line naming `pithy add` for a Worker reads the manifest that Worker resolves**, as the add it names does — a
+ * capability installed only in `apps/<w>/node_modules` states its prerequisites and required options there.
+ */
+describe("the add a line names, for a capability installed only in the Worker", () => {
+  /** Install `name` under `apps/api/node_modules` alone, with one required option that has one choice. */
+  async function installedInApi(name: string, extra: Record<string, unknown> = {}): Promise<void> {
+    const at = await app("api");
+    const manifestDir = join(at, "node_modules", "@pithy-sh", name);
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      join(manifestDir, "pithy.manifest.json"),
+      JSON.stringify({ name, configOptions: [{ key: "region", choices: ["eu"] }], ...extra }),
+    );
+  }
+
+  test("providerExample", async () => {
+    await installedInApi("payments");
+    expect(providerExample(api, dir)).toBe(
+      "Compose a provider, such as `pithy add payments --worker api --set region=eu`.",
+    );
+  });
+
+  test("prerequisitePlan", async () => {
+    await installedInApi("consent");
+    expect(prerequisitePlan(api, "consent", dir).commands).toEqual(["pithy add consent --worker api --set region=eu"]);
+  });
+
+  test("capabilityReachPlan", async () => {
+    await installedInApi("vector");
+    expect(capabilityReachPlan({ capability: "vector", workers: [api] }, dir)?.commands).toEqual([
+      "pithy add vector --worker api --set region=eu",
+    ]);
+  });
+
+  test("addSecretsPlan", async () => {
+    await installedInApi("secrets", { peerCapabilities: [] });
+    expect(addSecretsPlan(dir).commands).toEqual(["pithy add secrets --worker api --set region=eu"]);
   });
 });

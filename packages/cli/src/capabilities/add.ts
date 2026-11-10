@@ -29,7 +29,7 @@ import { readOwnership } from "../project/workerManifest";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { addAgain, addCallerOf } from "./addCommand";
 import { optionValue } from "./configConstants";
-import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
+import { capabilityImportSpecifier, findNamedImport, importOrigin, insertImport } from "./configImports";
 import { type ResolvedSeam, seamNote, seamsFor, writeSeamModule } from "./configSeams";
 import { ejectImportPath } from "./eject";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
@@ -255,10 +255,10 @@ function seamImport(
   capability: string,
   path: string,
   rerun: string,
-): string | undefined {
+): { statement: string; specifier: string } | undefined {
   const { binding, specifier, module } = CONFIG_SEAMS[seam.seam];
   const existing = findNamedImport(source, binding);
-  if (existing === undefined) return renderCapabilityImport(binding, specifier);
+  if (existing === undefined) return { statement: renderCapabilityImport(binding, specifier), specifier };
   if (existing.specifier === specifier) return undefined;
   throw new ConflictError({
     message: `${path} already imports ${binding} from "${existing.specifier}".`,
@@ -300,11 +300,10 @@ async function updateConfig(options: AddCapabilityOptions): Promise<ResolvedSeam
   // The seams this run's chosen values ask for — none on a re-run, which writes nothing at all. See this
   // function's header for why they ride with the registration rather than with the run.
   const seams = alreadyRegistered ? [] : seamsFor(manifest, configValues ?? {});
-  // Ahead of the capability's own import so the two land in the order a reader expects, and ahead of the
-  // write so a seam whose binding is taken leaves the file untouched rather than half-wired.
+  // Ahead of the write, so a seam whose binding is taken leaves the file untouched rather than half-wired.
   for (const seam of seams) {
-    const statement = seamImport(source, seam, manifest.name, path, rerun);
-    if (statement !== undefined) source = `${statement}\n${source}`;
+    const added = seamImport(source, seam, manifest.name, path, rerun);
+    if (added !== undefined) source = insertImport(source, added.statement, added.specifier);
   }
 
   // Idempotency on the import is keyed on the *binding*, then checked against where it comes from.
@@ -318,7 +317,8 @@ async function updateConfig(options: AddCapabilityOptions): Promise<ResolvedSeam
   const existing = findNamedImport(source, manifest.name);
   const origin = existing && importOrigin(existing.specifier, manifest.package, ejectImportPath(manifest.name));
   if (existing === undefined) {
-    source = `${renderCapabilityImport(manifest.name, capabilityImportSpecifier(manifest.package))}\n${source}`;
+    const specifier = capabilityImportSpecifier(manifest.package);
+    source = insertImport(source, renderCapabilityImport(manifest.name, specifier), specifier);
   } else if (origin === "foreign") {
     throw new ConflictError({
       message: `${path} already imports ${manifest.name} from "${existing.specifier}".`,
