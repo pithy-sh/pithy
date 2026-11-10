@@ -1,10 +1,11 @@
 // Your project's lint safeguards, as one Oxlint JS plugin. `.oxlintrc.json` loads it and turns each rule on for
 // the files it covers.
 //
-// Six rules, each matching what the GritQL rule of the same name matches for a Biome project, with the same
+// Seven rules, each matching what the GritQL rule of the same name matches for a Biome project, with the same
 // message: `no-console` and `no-process-io` keep Worker logs queryable, `no-raw-request-input` and
 // `no-bare-zvalidator` keep every route's request contract declared, `no-raw-use-effect` keeps effects in hooks
-// named for what they sync with, and `no-z-config` keeps a locale inside its request.
+// named for what they sync with, `no-z-config` keeps a locale inside its request, and `no-unerasable-syntax` keeps
+// each config and each Worker's own `.ts` source loadable by Node's type stripping.
 //
 // Oxlint's JS plugin API is alpha and outside semver. None of these rules needs type information, which it does not
 // support.
@@ -25,6 +26,8 @@ const MESSAGES = {
     "A raw effect. Load data with useRead, run a call with useAction, navigate on an answer by rendering <Redirect>. An effect that syncs with something outside React goes in a hook named for it, in its own file, excluded in biome.jsonc.",
   "no-z-config":
     "z.config sets Zod's error map globally, and a Worker isolate outlives the request. A locale written there renders the NEXT request's validation failure in the LAST request's language. Pass the map per parse instead: Schema.parse(value, { error }).",
+  "no-unerasable-syntax":
+    "Node's type stripping refuses this (a namespace once it holds a value; this rule refuses every namespace), and the CLI loads pithy.config.ts and every module it imports that way. Use an object as const for an enum, plain exports for a namespace, a field assigned in the constructor for a parameter property, an import statement for import =, export default for export =, and value as T for <T>value.",
 };
 
 /** Whether `inner` starts where `outer` does, so it is not wrapped in parentheses inside it. */
@@ -89,6 +92,12 @@ function memberRule(name, matches) {
 
 const EFFECTS = ["useEffect", "useLayoutEffect"];
 
+/** Whether `node` is ambient: itself `declare`d, or inside a `declare` block. Ambient code erases whole. */
+function ambient(node) {
+  for (let at = node; at; at = at.parent) if (at.declare) return true;
+  return false;
+}
+
 export default {
   meta: { name: "pithy" },
   rules: {
@@ -121,5 +130,23 @@ export default {
       "no-z-config",
       (node) => node.property.name === "config" && named(node.object, ["z", "zod"]),
     ),
+    "no-unerasable-syntax": rule("no-unerasable-syntax", (report) => ({
+      TSEnumDeclaration(node) {
+        if (!ambient(node)) report(node);
+      },
+      TSModuleDeclaration(node) {
+        if (node.kind !== "global" && node.id.type !== "Literal" && !ambient(node)) report(node);
+      },
+      TSImportEqualsDeclaration(node) {
+        if (node.importKind !== "type" && !ambient(node)) report(node);
+      },
+      TSExportAssignment(node) {
+        if (!ambient(node)) report(node);
+      },
+      TSTypeAssertion(node) {
+        if (!ambient(node)) report(node);
+      },
+      TSParameterProperty: report,
+    })),
   },
 };
