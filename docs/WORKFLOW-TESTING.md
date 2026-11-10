@@ -14,7 +14,7 @@ Three things. `pithy add` writes a capability's test bindings; a Workflow of you
 
 ## Driving an instance
 
-`introspectWorkflowInstance` from `cloudflare:test` watches one instance by id. Open it before you create the instance, dispose it with `await using`, and wait on its status rather than on a timer.
+`introspectWorkflowInstance` from `cloudflare:test` watches one instance by id. Open it before you create the instance, dispose it with `await using`, and wait on its status rather than on a timer. Disposing it deletes the instance, so scope it to the whole test: an instance id is free again the moment its introspector is disposed.
 
 ```ts
 import { env, introspectWorkflowInstance } from "cloudflare:test";
@@ -24,6 +24,19 @@ await env.COLLECT.create({ id: "run-1", params: {} });
 await instance.waitForStatus("complete");
 expect(await instance.getOutput()).toEqual({ written: 3 });
 ```
+
+## Testing a duplicate instance id
+
+A `create` under an id that already has an instance is refused with `instance.already_exists`. To test that refusal, hold the first instance's introspector until the end of the test and make the second `create` inside its scope.
+
+```ts
+await using instance = await introspectWorkflowInstance(env.COLLECT, "run-1");
+await env.COLLECT.create({ id: "run-1", params: {} });
+await instance.waitForStatus("complete");
+await expect(env.COLLECT.create({ id: "run-1", params: {} })).rejects.toThrow(/already exists/);
+```
+
+Dispose the introspector first, in a helper or an inner block, and the second `create` succeeds: disposal deleted the instance, so there is no duplicate to refuse. A test written that way fails for a reason that has nothing to do with the code under test, and a check that a duplicate is accepted passes without proving anything.
 
 ## Holding a step: `createGate`
 

@@ -186,6 +186,17 @@ export function importedSpecifiers(source: string): string[] {
   return [...namedClauses(source, NAMED_IMPORT)].map((match) => match[3] ?? "");
 }
 
+/**
+ * The specifier of every static import in a source — named, default, namespace, type-only or side-effect — in source
+ * order. A commented-out statement, one inside a string or template literal, and a dynamic `import()` are not one.
+ */
+export function staticImportSpecifiers(source: string): string[] {
+  const scanned = scanConfig(source);
+  return [...scanned.code.matchAll(ANY_IMPORT)]
+    .filter((match) => !scanned.inLiteral[match.index + match[0].search(/\S/)])
+    .map((match) => match[2] ?? "");
+}
+
 /** One comma-separated name in an import clause, and where it sits in the source. */
 interface ClauseSegment {
   /** The segment verbatim, padding and all — `" auth "` in `{ a, auth }`. */

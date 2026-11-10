@@ -137,6 +137,7 @@ const OPEN_SUBTREES = [
   "doctor: $.project|0.health.bindingScope.split[]",
   "doctor: $.project|0.health.workers[]|0.bindings.declinedBindings|0.declines[]",
   "doctor: $.project|0.health.workers[]|0.migrations.environments[]",
+  "doctor: $.rootImports|0",
   "doctor: $.secretBindings|0",
   "doctor: $.secretBindings|0.missing[]",
   "doctor: $.secretRotations|0",

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import {
@@ -17,6 +18,7 @@ import {
   packageManagerFromUserAgent,
   promoteDependencies,
   runPackageManager,
+  syncLockfile,
   uninstallArgs,
   uninstallPackage,
 } from "./packageManager";
@@ -212,6 +214,36 @@ describe("promoteDependencies", () => {
       ran = true;
     });
     expect(ran).toBe(false);
+  });
+});
+
+describe("syncLockfile", () => {
+  test("runs the project's manager's install at the root", async () => {
+    await writeFile(join(dir, "bun.lock"), "{}\n");
+    const calls: { command: string; args: string[]; cwd: string }[] = [];
+    await syncLockfile(dir, async (command, args, cwd) => {
+      calls.push({ command, args, cwd });
+    });
+    expect(calls).toEqual([{ command: "bun", args: ["install"], cwd: dir }]);
+  });
+
+  test("runs nothing in a project with no lockfile", async () => {
+    let ran = false;
+    await syncLockfile(dir, async () => {
+      ran = true;
+    });
+    expect(ran).toBe(false);
+  });
+
+  test("a failed install names the command to run by hand", async () => {
+    await writeFile(join(dir, "pnpm-lock.yaml"), "");
+    const failure = await syncLockfile(dir, async () => {
+      throw new Error("ETARGET");
+    }).catch((error: unknown) => error);
+    expect((failure as InternalError).payload).toMatchObject({
+      message: "pnpm install failed.",
+      action: "Install the package by hand: pnpm install.",
+    });
   });
 });
 

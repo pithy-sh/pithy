@@ -396,7 +396,6 @@
     "packages/cli/src/commands/env.test.ts": 8,
     "packages/cli/src/commands/env.ts": 4,
     "packages/cli/src/commands/environmentSkipExit.test.ts": 18,
-    "packages/cli/src/commands/feature.ts": 41,
     "packages/cli/src/commands/featureJson.test.ts": 1,
     "packages/cli/src/commands/mcp.test.ts": 1,
     "packages/cli/src/commands/mcp.ts": 1,

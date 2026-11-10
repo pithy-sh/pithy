@@ -31,6 +31,8 @@ import { type AddResult, addRunCaller, type RunAddOptions, runAdd } from "./flow
  *   disk, so the plan says the step runs rather than guessing its list;
  * - **the bootstrap** mints nothing. {@link planBootstrapAdd} reads what it would mint;
  * - **the eject's dependency install** spawns nothing, and is named beside the install;
+ * - **the root install** that brings the lockfile in step with a root `devDependency` a test binding's import
+ *   needs spawns nothing, and is named on the root `package.json`;
  * - **the audit** records nothing.
  *
  * **The manifest has to be installed.** It is what says what a capability wires, and installing it is the
@@ -120,6 +122,7 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   const promoted: string[] = [];
   const secrets: PlanSecret[] = [];
   const steps = new Set<string>();
+  let syncsRoot = false;
 
   const { result, files, notes } = await inShadow(projectDir, async (shadow) => {
     const added = await runAdd({
@@ -143,6 +146,9 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
           await declareIn(shadow.at(installDir), version, pkg);
         }
         return { packageManager };
+      },
+      sync: async () => {
+        syncsRoot = true;
       },
       migrate: async () => {
         steps.add(`Then applies ${worker}'s pending dev migrations to the local database.`);
@@ -179,6 +185,13 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   const installManifest = toPosix(relative(projectDir, join(installDir, "package.json")));
   if (installs.length > 0) {
     planned = withChange(planned, installManifest, `Runs ${install(installs)} here, which also writes the lockfile.`);
+  }
+  if (syncsRoot) {
+    planned = withChange(
+      planned,
+      "package.json",
+      `Runs ${packageManager} install here, which also writes the lockfile.`,
+    );
   }
   if (promoted.length > 0) {
     planned = withChange(planned, installManifest, `Runs ${install(promoted)} here, for the ejected copy.`);
