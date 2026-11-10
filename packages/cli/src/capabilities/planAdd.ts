@@ -24,16 +24,25 @@ import { type AddResult, addRunCaller, type RunAddOptions, runAdd } from "./flow
  * project, and the plan is what it changed there. Only the steps that would reach past the project are
  * swapped for ones that say what they would do:
  *
- * - **the install** spawns nothing. It names the command it would run, and declares the package in the
- *   copy's `package.json` where the install would run — the Worker's, when it is a workspace member — so the
- *   declaration that follows reads the same range the real run reads;
+ * - **the install** spawns nothing. It declares the package at `^<installed>` in the copy's `package.json` where
+ *   the install would run — the Worker's, when it is a workspace member — so the declaration that follows reads the
+ *   same range the real run reads, and names the command on that file when it changes the declaration there. A
+ *   package already declared at that range is no edit, but the real install still runs and names no version, so
+ *   a release newer than the installed one moves the declaration and the lockfile: the plan names that step and
+ *   its condition rather than an edit with no diff, since a dry run reads no registry;
  * - **the migrate** opens no database. Which migrations are pending is known only once the wiring is on
  *   disk, so the plan says the step runs rather than guessing its list;
  * - **the bootstrap** mints nothing. {@link planBootstrapAdd} reads what it would mint;
- * - **the eject's dependency install** spawns nothing, and is named beside the install;
+ * - **the eject's dependency install** spawns nothing, and is named beside the install when it would change a
+ *   declaration there ({@link redeclares});
  * - **the root install** that brings the lockfile in step with a root `devDependency` a test binding's import
  *   needs spawns nothing, and is named on the root `package.json`;
  * - **the audit** records nothing.
+ *
+ * **A plan names only the files the add would change.** A step whose run would leave a file as it is plans no
+ * edit, so a re-run over a Worker that already composes the capability plans none, and says so through the
+ * result's `alreadyWired`. The install is the one step whose outcome turns on the registry, so it is named as a
+ * step with the condition under which it edits.
  *
  * **The manifest has to be installed.** It is what says what a capability wires, and installing it is the
  * one step a plan cannot make in a copy. It is found the way the real run finds it, from the Worker's
@@ -47,18 +56,32 @@ export type AddPlan = AddResult & { plan: Plan };
 const toPosix = (path: string) => path.split(sep).join("/");
 
 /**
- * Declare `pkg` in the `package.json` under `dir` in the copy at `^<installed>`, the range an install writes, in
- * name order — so the declaration that reads it back is planned from the same answer the real run reads.
+ * Whether installing `specs`, each `<name>@<range>`, would change `declared`: an install writes the range it was
+ * given, so a dependency already declared at that range is left as it is, and any other is an edit.
  */
-async function declareIn(dir: string, version: string, pkg: string): Promise<void> {
+export function redeclares(declared: Readonly<Record<string, string>>, specs: readonly string[]): boolean {
+  return specs.some((spec) => {
+    const at = spec.lastIndexOf("@");
+    return declared[spec.slice(0, at)] !== spec.slice(at + 1);
+  });
+}
+
+/**
+ * Declare `pkg` in the `package.json` under `dir` in the copy at `^<installed>`, the range an install writes, in
+ * name order — so the declaration that reads it back is planned from the same answer the real run reads. Returns
+ * whether the file changed: an install of a package already declared there at that range leaves it as it is, and
+ * one declared at any other range is rewritten to it.
+ */
+async function declareIn(dir: string, version: string, pkg: string): Promise<boolean> {
   const path = join(dir, "package.json");
   const raw = await readOptionalFile(path);
-  if (raw === null) return;
+  if (raw === null) return false;
   const doc = JSON.parse(raw) as { dependencies?: Record<string, string> };
-  if (doc.dependencies?.[pkg] !== undefined) return;
+  if (doc.dependencies?.[pkg] === `^${version}`) return false;
   const dependencies = { ...(doc.dependencies ?? {}), [pkg]: `^${version}` };
   doc.dependencies = Object.fromEntries(Object.entries(dependencies).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   await writeFile(path, `${JSON.stringify(doc, null, 2)}\n`);
+  return true;
 }
 
 /**
@@ -123,6 +146,8 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   const secrets: PlanSecret[] = [];
   const steps = new Set<string>();
   let syncsRoot = false;
+  const install = (packages: string[]) => [packageManager, ...installArgs(packageManager, packages)].join(" ");
+  const installManifest = toPosix(relative(projectDir, join(installDir, "package.json")));
 
   const { result, files, notes } = await inShadow(projectDir, async (shadow) => {
     const added = await runAdd({
@@ -141,9 +166,13 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
             toPosix(relative(projectDir, installDir)),
           );
         }
-        if (!(await alreadyProvided(projectDir, pkg, workerDir))) {
+        if (await alreadyProvided(projectDir, pkg, workerDir)) return { packageManager };
+        if (await declareIn(shadow.at(installDir), version, pkg)) {
           installs.push(pkg);
-          await declareIn(shadow.at(installDir), version, pkg);
+        } else {
+          steps.add(
+            `Runs ${install([pkg])} for ${installManifest}. It leaves that file and the lockfile as they are while ${version} is the newest release of ${pkg}, and moves both to a newer one if it is out.`,
+          );
         }
         return { packageManager };
       },
@@ -158,7 +187,10 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
         ejectCapability({
           ...eject,
           promoteDeps: async (_dir, dependencies) => {
-            promoted.push(...dependencies);
+            const raw = await readOptionalFile(join(installDir, "package.json"));
+            const declared =
+              raw === null ? {} : ((JSON.parse(raw) as { dependencies?: Record<string, string> }).dependencies ?? {});
+            if (redeclares(declared, dependencies)) promoted.push(...dependencies);
           },
         }),
       bootstrap: async ({ manifest, worker: named }) => {
@@ -181,8 +213,6 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   if (result.eject) {
     planned = collapseEject(planned, toPosix(relative(projectDir, join(workerDir, result.eject.path))), result.package);
   }
-  const install = (packages: string[]) => [packageManager, ...installArgs(packageManager, packages)].join(" ");
-  const installManifest = toPosix(relative(projectDir, join(installDir, "package.json")));
   if (installs.length > 0) {
     planned = withChange(planned, installManifest, `Runs ${install(installs)} here, which also writes the lockfile.`);
   }

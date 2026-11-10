@@ -345,6 +345,11 @@ export interface AddResult extends WorkerIdentity {
   capability: string;
   package: string;
   packageManager: string;
+  /**
+   * Whether the Worker's `pithy.config.ts` registered the capability before this run. A run that finds it there
+   * wires nothing new: what it writes, if anything, is a binding or a declaration the config has since lost.
+   */
+  alreadyWired: boolean;
   databases: DatabaseRun[];
   /**
    * The KV namespace titles to create, `<project>-<env>-<binding>`, one per environment that gained the
@@ -604,6 +609,8 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     await declare({ projectDir, workerDir, pkg });
 
     const manifest = await loadManifest(capability, projectDir, workerDir);
+    // Read before a byte of the wiring is written, so a run that writes it is not mistaken for one that found it.
+    const alreadyWired = composedBy(workerDir, [manifest.name]).has(manifest.name);
 
     // Before a byte of this capability's wiring is written: what it composes against, and whether this
     // Worker has it. Refusing here leaves an installed package and nothing else, never a config half-wired
@@ -731,6 +738,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       ...workerIdentity({ name: worker, dir: workerDir }),
       package: manifest.package,
       packageManager,
+      alreadyWired,
       // One run, not four. The closing migrate re-reads the config and migrates everything this Worker
       // now composes, prerequisites included, so merging each nested run's databases would report the
       // same migrations several times over.

@@ -11,7 +11,7 @@ import { Plan } from "../plan/plan";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { snapshotTree } from "../test-utils/treeSnapshot";
 import { runAdd } from "./flow";
-import { planAdd } from "./planAdd";
+import { planAdd, redeclares } from "./planAdd";
 
 /**
  * **`pithy add --dry-run` writes nothing, installs nothing, and plans what the add then does.**
@@ -65,6 +65,22 @@ async function install(manifest: CapabilityManifest, version = "1.2.3"): Promise
 }
 
 const base = () => ({ account: null, projectDir: dir, workerDir: worker, project: "acme" });
+
+describe("redeclares", () => {
+  test("an install of a range already declared changes nothing", () => {
+    expect(redeclares({ hono: "^4.0.0", "@scope/kit": "^1.0.0" }, ["hono@^4.0.0", "@scope/kit@^1.0.0"])).toBe(false);
+  });
+
+  test("a dependency not declared, or declared at another range, is a change", () => {
+    expect(redeclares({ hono: "^4.0.0" }, ["hono@^4.0.0", "zod@^4.0.0"])).toBe(true);
+    expect(redeclares({ hono: "^4.13.2" }, ["hono@^4.0.0"])).toBe(true);
+    expect(redeclares({}, ["@scope/kit@^1.0.0"])).toBe(true);
+  });
+
+  test("nothing to install changes nothing", () => {
+    expect(redeclares({}, [])).toBe(false);
+  });
+});
 
 describe("planAdd", () => {
   test("writes nothing — not the project, not the dev secrets file — and the plan parses as the one shape", async () => {
@@ -173,6 +189,28 @@ describe("planAdd", () => {
     expect(await snapshotTree(dir)).toEqual(before);
   });
 
+  test("--eject names the dependency install only when it would change the Worker's declarations", async () => {
+    await install(authManifest);
+    const pkgJson = join(dir, "node_modules", "@pithy-sh", "auth", "package.json");
+    await writeFile(
+      pkgJson,
+      JSON.stringify({ name: "@pithy-sh/auth", version: "1.2.3", dependencies: { "left-pad": "^1.3.0" } }),
+    );
+    const declaredPath = join(worker, "package.json");
+    const doc = JSON.parse(await readFile(declaredPath, "utf8")) as { dependencies?: Record<string, string> };
+    const promotion = "Runs npm install left-pad@^1.3.0 here, for the ejected copy.";
+    const changesOf = async () =>
+      (await planAdd({ ...base(), capability: "auth", eject: true })).plan.files.find(
+        (file) => file.path === `apps/${DEFAULT_WORKER}/package.json`,
+      )?.changes ?? [];
+
+    expect(await changesOf()).toContain(promotion);
+
+    doc.dependencies = { ...doc.dependencies, "@pithy-sh/auth": "^1.2.3", "left-pad": "^1.3.0" };
+    await writeFile(declaredPath, `${JSON.stringify(doc, null, 2)}\n`);
+    expect(await changesOf()).not.toContain(promotion);
+  });
+
   /**
    * **A file the add edits may be a link out of the project, and the plan is still the add.** The real add
    * writes through the adopter's link; the dry run must not fail on it with a raw `ENOTDIR` naming its temporary
@@ -242,28 +280,128 @@ describe("planAdd", () => {
     });
   });
 
-  test("a re-run over a project that already composes it plans no wiring", async () => {
-    await install(authManifest);
-    // What the real install leaves in the Worker's package.json, which the stub below does not write.
-    const declaredPath = join(worker, "package.json");
-    const declared = JSON.parse(await readFile(declaredPath, "utf8")) as { dependencies?: Record<string, string> };
-    declared.dependencies = { ...declared.dependencies, "@pithy-sh/auth": "^1.2.3" };
-    await writeFile(declaredPath, `${JSON.stringify(declared, null, 2)}\n`);
-    await runAdd({
-      ...base(),
-      capability: "auth",
-      install: async () => ({ packageManager: "npm" }),
-      migrate: async () => [],
-      bootstrap: async () => [],
+  /**
+   * **A plan lists only the edits that change a file, and says when the capability is already wired.** Each case
+   * plans, then runs the real add over the same project, and holds the two to one answer per file: the plan names
+   * exactly the files the real run leaves different. The install stub writes what `npm install` writes, the
+   * declaration at `^<installed>` when it is absent and nothing when it is there.
+   */
+  describe("against the real run", () => {
+    const declaredPath = () => join(worker, "package.json");
+
+    /** What a real install of `pkg` leaves in the Worker's package.json. */
+    async function declare(pkg: string): Promise<void> {
+      const doc = JSON.parse(await readFile(declaredPath(), "utf8")) as { dependencies?: Record<string, string> };
+      if (doc.dependencies?.[pkg] !== undefined) return;
+      doc.dependencies = { ...doc.dependencies, [pkg]: "^1.2.3" };
+      await writeFile(declaredPath(), `${JSON.stringify(doc, null, 2)}\n`);
+    }
+
+    const realAdd = () =>
+      runAdd({
+        ...base(),
+        capability: "auth",
+        install: async ({ pkg }) => {
+          await declare(pkg);
+          return { packageManager: "npm" };
+        },
+        migrate: async () => [],
+        bootstrap: async () => [],
+      });
+
+    /** The paths the real add changed, against a snapshot taken before it. */
+    async function changedBy(run: () => Promise<unknown>): Promise<string[]> {
+      const before = await snapshotTree(dir);
+      await run();
+      const after = await snapshotTree(dir);
+      return [...new Set([...before.keys(), ...after.keys()])]
+        .filter((path) => before.get(path) !== after.get(path))
+        .sort();
+    }
+
+    test("a fresh add: not already wired, and the plan's files are the files the real add changes", async () => {
+      await install(authManifest);
+      const planned = await planAdd({ ...base(), capability: "auth" });
+      expect(planned.alreadyWired).toBe(false);
+      const changed = await changedBy(realAdd);
+      expect(changed.length).toBeGreaterThan(0);
+      expect(planned.plan.files.map((file) => file.path).sort()).toEqual(changed);
     });
-    const { plan } = await planAdd({ ...base(), capability: "auth" });
-    // The install is planned again, as the real re-run runs it, and nothing is wired.
-    expect(plan.files).toEqual([
-      {
-        path: `apps/${DEFAULT_WORKER}/package.json`,
-        action: "edit",
-        changes: ["Runs npm install @pithy-sh/auth here, which also writes the lockfile."],
-      },
-    ]);
+
+    test("a Worker already composing it: said so, no file planned, and the real run changes none", async () => {
+      await install(authManifest);
+      await realAdd();
+      const planned = await planAdd({ ...base(), capability: "auth" });
+      expect(planned.alreadyWired).toBe(true);
+      // The install still runs for real, and leaves the declaration as it found it, so it is not an edit.
+      expect(planned.plan.files).toEqual([]);
+      expect(await changedBy(realAdd)).toEqual([]);
+    });
+
+    test("already wired with one binding gone: exactly that edit, and the real run makes exactly it", async () => {
+      await install(authManifest);
+      await realAdd();
+      const wrangler = join(worker, "wrangler.jsonc");
+      const full = await readFile(wrangler, "utf8");
+      const pared = full.replace(/"d1_databases":\s*\[[\s\S]*?\],?/, "");
+      expect(pared).not.toBe(full);
+      await writeFile(wrangler, pared);
+
+      const planned = await planAdd({ ...base(), capability: "auth" });
+      expect(planned.alreadyWired).toBe(true);
+      expect(planned.plan.files.map((file) => file.path)).toEqual([`apps/${DEFAULT_WORKER}/wrangler.jsonc`]);
+      expect(await changedBy(realAdd)).toEqual([`apps/${DEFAULT_WORKER}/wrangler.jsonc`]);
+    });
+
+    test("already wired, declared at another range: the install is planned, as the real install rewrites it", async () => {
+      await install(authManifest);
+      await realAdd();
+      const doc = JSON.parse(await readFile(declaredPath(), "utf8")) as { dependencies: Record<string, string> };
+      doc.dependencies["@pithy-sh/auth"] = "^1.0.0";
+      await writeFile(declaredPath(), `${JSON.stringify(doc, null, 2)}\n`);
+
+      const planned = await planAdd({ ...base(), capability: "auth" });
+      expect(planned.alreadyWired).toBe(true);
+      expect(planned.plan.files.map(({ path, changes }) => ({ path, changes }))).toEqual([
+        {
+          path: `apps/${DEFAULT_WORKER}/package.json`,
+          changes: ["Runs npm install @pithy-sh/auth here, which also writes the lockfile."],
+        },
+      ]);
+    });
+
+    test("already wired at ^<installed>: the install still runs, so the plan names it and what a newer release changes", async () => {
+      await install(authManifest);
+      await realAdd();
+
+      const planned = await planAdd({ ...base(), capability: "auth" });
+      expect(planned.plan.files).toEqual([]);
+      const path = `apps/${DEFAULT_WORKER}/package.json`;
+      expect(planned.plan.notes[0]).toBe(
+        `Runs npm install @pithy-sh/auth for ${path}. It leaves that file and the lockfile as they are while 1.2.3 is the newest release of @pithy-sh/auth, and moves both to a newer one if it is out.`,
+      );
+
+      // A release out since the last install: the real install, which names no version, moves the declaration.
+      const bumped = () =>
+        runAdd({
+          ...base(),
+          capability: "auth",
+          install: async ({ pkg }) => {
+            const doc = JSON.parse(await readFile(declaredPath(), "utf8")) as { dependencies: Record<string, string> };
+            doc.dependencies[pkg] = "^1.2.4";
+            await writeFile(declaredPath(), `${JSON.stringify(doc, null, 2)}\n`);
+            return { packageManager: "npm" };
+          },
+          migrate: async () => [],
+          bootstrap: async () => [],
+        });
+      expect(await changedBy(bumped)).toEqual([path]);
+    });
+
+    test("the real run reports it the same way", async () => {
+      await install(authManifest);
+      expect((await realAdd()).alreadyWired).toBe(false);
+      expect((await realAdd()).alreadyWired).toBe(true);
+    });
   });
 });
