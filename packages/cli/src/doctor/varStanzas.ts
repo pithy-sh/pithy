@@ -25,8 +25,9 @@ import { readWranglerConfig } from "../project/wrangler";
  * command that writes them, because the top level's is dev's address or dev's provisioning record.
  *
  * A stanza with no `vars` block at all is `environmentInheritance.ts`'s finding, and not repeated here. A var only an
- * environment sets is that environment's own. Report only: it prints, and never fails the exit. Files only, but for
- * the Worker's `pithy.config.ts`, which is loaded for its declaration; one that will not load declares nothing.
+ * environment sets is that environment's own. A finding about a declared var fails the exit ({@link varStanzaGates});
+ * one about an undeclared var prints and never does. Files only, but for the Worker's `pithy.config.ts`, which is
+ * loaded for its declaration; one that will not load declares nothing.
  */
 
 /** One var one stanza lacks, or holds a value for that its declaration refuses. */
@@ -187,6 +188,14 @@ export async function checkVarStanzas(projectDir: string, options: VarStanzasOpt
   }
   if (findings.length > 0) return { state: "faulty", findings };
   return { state: unreadable ? "could-not-check" : "ok", findings: [] };
+}
+
+/**
+ * Whether a finding fails `pithy doctor`'s exit: every finding about a declared var, since the declaration says what
+ * each stanza must hold. An undeclared var a stanza drops prints only, because nothing says what its value should be.
+ */
+export function varStanzaGates(finding: VarStanzaFinding): boolean {
+  return finding.kind !== "missing" || finding.declared;
 }
 
 /** Where a finding is, as the sentence names it. */

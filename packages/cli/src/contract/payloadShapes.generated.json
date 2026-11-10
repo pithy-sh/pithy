@@ -761,7 +761,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 7,
+      "schemaVersion": 8,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -1270,7 +1270,7 @@
         "$.node": "string",
         "$.failures": "array",
         "$.failures[]": "object",
-        "$.failures[].check": "\"biomeIncludes\" | \"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
+        "$.failures[].check": "\"biomeIncludes\" | \"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"varStanzas\" | \"workerNames\" | \"workflows\"",
         "$.failures[].detail": "string",
         "$.failures[].fix": "null | string"
       }

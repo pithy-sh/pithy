@@ -42,9 +42,16 @@ describe("the Worker vars: block", () => {
     expect(text).toContain("env.<name>.vars replaces the top-level block");
   });
 
-  test("prints in the terse report and never gates the exit", async () => {
+  test("prints in the terse report, and a declared var a stanza drops fails the exit", async () => {
     const report = await buildDoctorReport(healthyOptions({ checkVarStanzas: async () => finding }));
     expect(renderDoctorText(report, "/home/u")).toContain("Worker vars:");
+    expect(doctorExitCode(report)).toBe(1);
+  });
+
+  test("an undeclared var a stanza drops prints in the terse report and does not gate the exit", async () => {
+    const undeclared: VarStanzasCheck = { state: "faulty", findings: finding.findings.slice(0, 1) };
+    const report = await buildDoctorReport(healthyOptions({ checkVarStanzas: async () => undeclared }));
+    expect(renderDoctorText(report, "/home/u")).toContain(UNDECLARED);
     expect(doctorExitCode(report)).toBe(0);
   });
 

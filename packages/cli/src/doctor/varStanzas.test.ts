@@ -8,7 +8,13 @@ import { defineVars } from "@pithy-sh/core/src/worker/vars";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { WorkerConfig } from "../project/config";
-import { checkVarStanzas, describeVarStanzas, VAR_STANZAS_ACTION, varStanzaFindings } from "./varStanzas";
+import {
+  checkVarStanzas,
+  describeVarStanzas,
+  VAR_STANZAS_ACTION,
+  varStanzaFindings,
+  varStanzaGates,
+} from "./varStanzas";
 
 const VARS = defineVars({
   READY_AFTER_MINUTES: {
@@ -259,5 +265,19 @@ describe("describeVarStanzas", () => {
     expect(describeVarStanzas({ state: "could-not-check", findings: [] })).toEqual([
       "Could not compare the vars each Worker's stanzas set.",
     ]);
+  });
+});
+
+describe("varStanzaGates", () => {
+  const base = { worker: "api", stanza: "env.prod", name: "READY_AFTER_MINUTES" };
+
+  test("a declared var a stanza lacks, refuses, or holds at the top level's value in place of its own gates", () => {
+    expect(varStanzaGates({ ...base, kind: "missing", declared: true, line: "x" })).toBe(true);
+    expect(varStanzaGates({ ...base, kind: "invalid", value: "soon", problem: "p" })).toBe(true);
+    expect(varStanzaGates({ ...base, kind: "copied", value: 15, line: "x" })).toBe(true);
+  });
+
+  test("an undeclared var a stanza lacks reports only: nothing declares what it should be", () => {
+    expect(varStanzaGates({ ...base, kind: "missing", declared: false, line: "x" })).toBe(false);
   });
 });
