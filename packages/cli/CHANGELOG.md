@@ -1,5 +1,25 @@
 # @pithy-sh/cli
 
+## 0.27.0
+
+### Minor Changes
+
+- [#1013](https://github.com/pithy-sh/pithy/pull/1013) [`6889209`](https://github.com/pithy-sh/pithy/commit/6889209c48ef9df9e1511432fe1b070d98f57af7) Thanks [@kingmesal](https://github.com/kingmesal)! - A number var written as text must be a plain decimal; padded and exponent forms fall back to the default instead of parsing.
+
+### Patch Changes
+
+- [#1012](https://github.com/pithy-sh/pithy/pull/1012) [`35a4dea`](https://github.com/pithy-sh/pithy/commit/35a4deaf8d6807359a3ab31cc3c030dc14738e20) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add --dry-run` says when a capability is already wired, and plans only the edits it would make.
+
+- [#1014](https://github.com/pithy-sh/pithy/pull/1014) [`88e79b3`](https://github.com/pithy-sh/pithy/commit/88e79b3c6fbae851a3733f5464a9173185f3a2ac) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` fails when a Worker's environment drops a var it declares, so CI catches it.
+
+- [#1011](https://github.com/pithy-sh/pithy/pull/1011) [`5dcfb90`](https://github.com/pithy-sh/pithy/commit/5dcfb908cbf666389d60c9bb09cec4a4c4d05c17) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy worker sync` asks you to export a Workflow class only when main does not export it.
+- Updated dependencies [[`6889209`](https://github.com/pithy-sh/pithy/commit/6889209c48ef9df9e1511432fe1b070d98f57af7), [`197657e`](https://github.com/pithy-sh/pithy/commit/197657e0bf1f60f656291c6f03e70991bcc90838)]:
+  - @pithy-sh/core@0.23.0
+  - @pithy-sh/cloudflare@0.10.6
+  - @pithy-sh/email@0.10.6
+  - @pithy-sh/secrets@0.6.11
+  - @pithy-sh/turnstile@0.8.7
+
 ## 0.26.0
 
 ### Minor Changes

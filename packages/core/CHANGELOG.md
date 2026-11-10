@@ -1,5 +1,13 @@
 # @pithy-sh/core
 
+## 0.23.0
+
+### Minor Changes
+
+- [#1013](https://github.com/pithy-sh/pithy/pull/1013) [`6889209`](https://github.com/pithy-sh/pithy/commit/6889209c48ef9df9e1511432fe1b070d98f57af7) Thanks [@kingmesal](https://github.com/kingmesal)! - A number var written as text must be a plain decimal; padded and exponent forms fall back to the default instead of parsing.
+
+- [#1015](https://github.com/pithy-sh/pithy/pull/1015) [`197657e`](https://github.com/pithy-sh/pithy/commit/197657e0bf1f60f656291c6f03e70991bcc90838) Thanks [@kingmesal](https://github.com/kingmesal)! - `VARS.read` tells you which vars fell back to their default, and why.
+
 ## 0.22.0
 
 ### Minor Changes

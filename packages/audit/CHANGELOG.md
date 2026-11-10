@@ -1,5 +1,13 @@
 # @pithy-sh/audit
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies [[`6889209`](https://github.com/pithy-sh/pithy/commit/6889209c48ef9df9e1511432fe1b070d98f57af7), [`197657e`](https://github.com/pithy-sh/pithy/commit/197657e0bf1f60f656291c6f03e70991bcc90838)]:
+  - @pithy-sh/core@0.23.0
+  - @pithy-sh/secrets@0.6.11
+
 ## 0.9.5
 
 ### Patch Changes
