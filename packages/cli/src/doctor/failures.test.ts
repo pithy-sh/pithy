@@ -18,7 +18,7 @@ import { formatJsonLine } from "../terminal/output";
 import { cleanPlanFor, doctorHarness, ledgerStubPer, planStub, workerSet } from "../test-utils/doctorHarness";
 import { contractAt, expectConforms } from "../test-utils/payloadContract";
 import { dirOf } from "../test-utils/workerDir";
-import { type DoctorFailure, DoctorFailures, doctorFailures } from "./failures";
+import { DOCTOR_GATES, DoctorCheck, type DoctorFailure, DoctorFailures, doctorFailures } from "./failures";
 import type { ProjectHealth } from "./health";
 
 /**
@@ -412,6 +412,88 @@ describe("each gating check is one entry, with its fix", () => {
     const failures = failuresOf(await healthyWith(overrides));
     expect(failures.map((failure) => ({ check: failure.check, fix: failure.fix }))).toEqual([{ check, fix: null }]);
     expect(failures[0]?.detail).toMatch(/\.$/);
+  });
+
+  test("a declared var a stanza drops, refuses or holds as the top level's copy gates; an undeclared one does not", async () => {
+    const report = await healthyWith({
+      checkVarStanzas: async () => ({
+        state: "faulty",
+        findings: [
+          { worker: "stats", kind: "missing", stanza: "env.prod", name: "FEED", declared: false, line: '"FEED": "x"' },
+          {
+            worker: "stats",
+            kind: "missing",
+            stanza: "env.staging",
+            name: "READY_AFTER_MINUTES",
+            declared: true,
+            line: '"READY_AFTER_MINUTES": 15',
+          },
+          {
+            worker: "stats",
+            kind: "invalid",
+            stanza: "env.prod",
+            name: "READY_AFTER_MINUTES",
+            value: "soon",
+            problem: "Invalid input: expected number, received string",
+          },
+          {
+            worker: "stats",
+            kind: "copied",
+            stanza: "env.prod",
+            name: "READY_AFTER_MINUTES",
+            value: 15,
+            line: '"READY_AFTER_MINUTES": 30',
+          },
+        ],
+      }),
+    });
+    expect(failuresOf(report)).toEqual([
+      {
+        check: "varStanzas",
+        detail:
+          'stats: env.staging.vars has no READY_AFTER_MINUTES, which the Worker declares. Add "READY_AFTER_MINUTES": 15, or run pithy worker sync --worker stats.',
+        fix: "pithy worker sync --worker stats",
+      },
+      {
+        check: "varStanzas",
+        detail:
+          'stats: env.prod.vars sets READY_AFTER_MINUTES to "soon", which its declaration refuses: Invalid input: expected number, received string. Set a value it takes in wrangler.jsonc.',
+        fix: null,
+      },
+      {
+        check: "varStanzas",
+        detail:
+          'stats: env.prod.vars sets READY_AFTER_MINUTES to 15, the top level\'s value, where the Worker declares its own for prod. Set "READY_AFTER_MINUTES": 30, or run pithy worker sync --worker stats.',
+        fix: "pithy worker sync --worker stats",
+      },
+    ]);
+  });
+
+  test("a declared var the top-level vars lacks gates with the same sync", async () => {
+    const report = await healthyWith({
+      checkVarStanzas: async () => ({
+        state: "faulty",
+        findings: [
+          { worker: "api", kind: "missing", stanza: "vars", name: "READY_AFTER_MINUTES", declared: true, line: "x" },
+        ],
+      }),
+    });
+    expect(checksAndFixes(failuresOf(report))).toEqual([
+      { check: "varStanzas", fix: "pithy worker sync --worker api" },
+    ]);
+  });
+
+  test("an undeclared var a stanza drops is reported, and the exit stays 0", async () => {
+    const report = await healthyWith({
+      checkVarStanzas: async () => ({
+        state: "faulty",
+        findings: [
+          { worker: "api", kind: "missing", stanza: "env.prod", name: "FEED", declared: false, line: '"FEED": "x"' },
+        ],
+      }),
+    });
+    expect(failuresOf(report)).toEqual([]);
+    expect(renderDoctorText(report)).toContain("api: env.prod.vars has no FEED, which the top level sets.");
   });
 
   test("a config that would not load is the one failure, and no command fixes it", async () => {
@@ -1011,6 +1093,7 @@ describe("every finding in every block carries fix", () => {
         state: "faulty",
         findings: [
           { worker: "api", kind: "missing", stanza: "env.prod", name: "FEED", declared: false, line: '"FEED": "x"' },
+          { worker: "api", kind: "missing", stanza: "env.prod", name: "LIMIT", declared: true, line: '"LIMIT": 5' },
         ],
       }),
       checkServiceBindings: async () => ({
@@ -1305,9 +1388,28 @@ describe("every finding in every block carries fix", () => {
       "origins.drift",
       "workflows.drift",
       "supportSearchTriggers.environments",
+      "varStanzas.vars",
     ]) {
       for (const { fix } of at(payload, path) as { fix: string | null }[]) expect(failed.has(fix), path).toBe(true);
     }
+  });
+});
+
+describe("every block of the report gates, or says why it reports only", () => {
+  test("each key of the report is named, with the check it gates under or the reason it does not", async () => {
+    expect(Object.keys(DOCTOR_GATES).sort()).toEqual(Object.keys(await healthyWith()).sort());
+  });
+
+  test("every check the exit can name is gated by a block, and every reason is a sentence", () => {
+    const gates = Object.values(DOCTOR_GATES);
+    const gated = new Set(gates.flatMap((gate) => ("gates" in gate ? [gate.gates] : [])));
+    expect([...gated].sort()).toEqual([...DoctorCheck.options].sort());
+    const reasons = gates.flatMap((gate) => ("reportsOnly" in gate ? [gate.reportsOnly] : []));
+    expect(reasons.filter((reason) => !/^[A-Z`].*\.$/.test(reason))).toEqual([]);
+  });
+
+  test("the Worker vars block gates", () => {
+    expect(DOCTOR_GATES.varStanzas).toEqual({ gates: "varStanzas" });
   });
 });
 

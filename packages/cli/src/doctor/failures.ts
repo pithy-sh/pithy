@@ -22,6 +22,7 @@ import {
   missingBindingFix,
   prerequisiteFix,
   upgradeFix,
+  varStanzaFix,
 } from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeHostBinding } from "./hostBindings";
@@ -31,6 +32,7 @@ import { describeSelfBinding } from "./selfBinding";
 import { serviceBindingDetail, serviceBindingFix } from "./serviceBindings";
 import { describeSettingsFinding } from "./settings";
 import { describeSupportSearchTriggers, supportSearchFix } from "./supportSearchTriggers";
+import { describeVarStanzas, varStanzaGates } from "./varStanzas";
 import { describeReservedWorkerName, describeWorkerName } from "./workerName";
 
 /**
@@ -78,6 +80,7 @@ export const DoctorCheck = z
     "hostBindings",
     "featureRatelimitIds",
     "biomeIncludes",
+    "varStanzas",
     "environments",
     "environmentConfigs",
     "origins",
@@ -367,6 +370,18 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     for (const finding of report.biomeIncludes.findings) add("biomeIncludes", finding, null);
   }
 
+  // A var a Worker's own `pithy.config.ts` declares, which a stanza of its own `wrangler.jsonc` drops, holds at a
+  // value the declaration refuses, or holds at the top level's value where the declaration gives that environment
+  // its own. `env.<name>.vars` replaces the top level, so the deploy silently runs on the default. An undeclared
+  // var a stanza drops reports only: nothing says what its value should be.
+  // `pithy worker sync` writes the first and rewrites the last; a refused value is the adopter's, which sync keeps.
+  for (const finding of report.varStanzas?.findings ?? []) {
+    if (!varStanzaGates(finding)) continue;
+    const [line = finding.name] = describeVarStanzas({ state: "faulty", findings: [finding] });
+    const remedy = finding.kind === "invalid" ? " Set a value it takes in wrangler.jsonc." : "";
+    add("varStanzas", `${line}${remedy}`, varStanzaFix(finding));
+  }
+
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc contradict each
   // other about which environments this project has. Nothing about the account is inferred — an orphan is
   // established by ids the checkout already commits — and `could-not-check` establishes nothing, so only
@@ -466,3 +481,88 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     failures.push(...healthFailures(report.project.health, report.checkoutSetUp !== false, report.project.dir));
   return failures;
 }
+
+/** Whether a report block can fail the exit: the check it gates under, or why it only reports. */
+export type DoctorGate = { gates: DoctorCheck } | { reportsOnly: string };
+
+const NOT_A_CHECK = { reportsOnly: "A fact about this machine or this run, which nothing in the project establishes." };
+const UPGRADE_STATE =
+  "Every project that predates the shape it asks for is in this state, and an upgrade that turns a green doctor red is a surprise, not a diagnosis.";
+
+/**
+ * **Every key of the report, and whether it can fail the exit.** A block that finds a fault in the project's own
+ * files gates under its {@link DoctorCheck}, with a branch in {@link doctorFailures}; one that does not says why here.
+ * The type holds every key of {@link DoctorReport} to an entry, and `failures.test.ts` holds the keys a built report
+ * carries to these, so a new block that neither gates nor says why fails both.
+ */
+export const DOCTOR_GATES: { readonly [K in keyof DoctorReport]-?: DoctorGate } = {
+  cli: NOT_A_CHECK,
+  shell: NOT_A_CHECK,
+  alias: NOT_A_CHECK,
+  configDir: NOT_A_CHECK,
+  stateFile: NOT_A_CHECK,
+  notifierEnabled: NOT_A_CHECK,
+  notifierDisabledBy: NOT_A_CHECK,
+  os: NOT_A_CHECK,
+  runtime: NOT_A_CHECK,
+  node: NOT_A_CHECK,
+  offline: NOT_A_CHECK,
+  productionEnvironments: {
+    reportsOnly: "Read to decide whether a provisioning fix stops at a person's `--confirm` phrase. It is not a check.",
+  },
+  checkoutSetUp: { reportsOnly: "Read to decide which command a local finding names. It is not a check." },
+  project: { gates: "project" },
+  projectLoadError: { gates: "project" },
+  cloudflare: { gates: "cloudflare" },
+  projectName: { gates: "projectName" },
+  workerNames: { gates: "workerNames" },
+  selfBinding: { gates: "selfBinding" },
+  serviceBindings: { gates: "serviceBindings" },
+  hostBindings: { gates: "hostBindings" },
+  featureRatelimitIds: { gates: "featureRatelimitIds" },
+  biomeIncludes: { gates: "biomeIncludes" },
+  varStanzas: { gates: "varStanzas" },
+  environments: { gates: "environments" },
+  environmentConfigs: { gates: "environmentConfigs" },
+  origins: { gates: "origins" },
+  workflows: { gates: "workflows" },
+  supportSearchTriggers: { gates: "supportSearchTriggers" },
+  devPreferences: { gates: "devPreferences" },
+  settings: { gates: "settings" },
+  secretRotations: { gates: "secretRotations" },
+  declaredNames: {
+    reportsOnly: "A hand-chosen resource name may be the one the adopter meant, until they say which.",
+  },
+  docsMcp: { reportsOnly: "An AI client nobody connected is a choice nobody has made yet, not a fault." },
+  testBindings: { reportsOnly: "A project may test its Workers some other way than the Workers test config." },
+  rootImports: {
+    reportsOnly:
+      "Where the install hoists, the import resolves and the tests pass; where it does not, the Workers tests that import it fail on their own.",
+  },
+  duplicateCapabilities: {
+    reportsOnly: "Both declarations install and resolve, so the drift between them has not happened yet.",
+  },
+  environmentInheritance: { reportsOnly: UPGRADE_STATE },
+  turnstileSitekeys: { reportsOnly: UPGRADE_STATE },
+  devSecrets: { reportsOnly: UPGRADE_STATE },
+  devVars: { reportsOnly: UPGRADE_STATE },
+  secretBindings: {
+    reportsOnly: "A secret no environment binds yet is a secrets provision not yet run, not a contradiction.",
+  },
+  secretTables: { reportsOnly: "A row behind the newest key is a rotation that has not reached it yet." },
+  paymentsAllowances: { reportsOnly: "An unrestricted subject is a legitimate grant, kept visible, not wrong." },
+  auditSinks: { reportsOnly: "A sink's unset token is an unbound secret, which reports and gates nothing." },
+  retention: {
+    reportsOnly: "A refused retention block is the deploy's own refusal, and a legal hold is a decision, not a fault.",
+  },
+  extensions: { reportsOnly: "An extension an adopter plugged in is a choice, not drift." },
+  portsRegistry: { reportsOnly: "Where this machine keeps its dev ports: a location, not a fault." },
+  devSecretsFile: { reportsOnly: "Where this project's dev secrets file is: a location, not a fault." },
+  devVarsLocal: {
+    reportsOnly: "A dev-only key and one that shadows a registry secret are both legitimate, and neither is hidden.",
+  },
+  localDelivery: { reportsOnly: "The delivery simulator is a legitimate choice, and an offline machine has no other." },
+  sharedRuntimes: {
+    reportsOnly: "A second copy of a runtime is the install's state, not a fault in the project's files.",
+  },
+};
