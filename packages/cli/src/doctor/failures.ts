@@ -77,6 +77,7 @@ export const DoctorCheck = z
     "serviceBindings",
     "hostBindings",
     "featureRatelimitIds",
+    "biomeIncludes",
     "environments",
     "environmentConfigs",
     "origins",
@@ -357,6 +358,12 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // The id is the adopter's to choose below the range, so no command is named.
   if (report.featureRatelimitIds?.state === "reserved") {
     for (const finding of report.featureRatelimitIds.findings) add("featureRatelimitIds", finding, null);
+  }
+
+  // A Biome exclusion that skips every file of a checkout, established by the project's own config. The
+  // remedy is an edit to that line.
+  if (report.biomeIncludes?.state === "unanchored") {
+    for (const finding of report.biomeIncludes.findings) add("biomeIncludes", finding, null);
   }
 
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc contradict each

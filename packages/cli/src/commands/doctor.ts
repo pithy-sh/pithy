@@ -40,6 +40,7 @@ import {
   describeAuditSinks,
 } from "../doctor/auditSinks";
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
+import { BIOME_INCLUDES_ACTION, type BiomeIncludesCheck, checkBiomeIncludes } from "../doctor/biomeIncludes";
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { ConsentHealth, ConsentPurposeFinding } from "../doctor/consent";
@@ -379,6 +380,12 @@ export interface DoctorReport {
    * readable project. **It fails the exit**: `provision` and `deploy` refuse the same stanza.
    */
   featureRatelimitIds: FeatureRatelimitIdsCheck | null;
+  /**
+   * Whether the project's Biome config excludes `.worktrees`, `dist` or `.wrangler` with a pattern Biome also matches
+   * above the project, which excludes every file of a checkout under that directory, a feature worktree among them.
+   * `null` outside a readable project. **It fails the exit.**
+   */
+  biomeIncludes: BiomeIncludesCheck | null;
   /**
    * Which AI clients detected on this machine cannot read the Pithy documentation. `null` outside a
    * readable project. **It never fails the exit, and it is not a term in the terse predicate**: an
@@ -875,6 +882,8 @@ export interface DoctorReportOptions {
   checkHostBindings?: (projectDir: string) => Promise<HostBindingsCheck>;
   /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
   checkFeatureRatelimitIds?: (projectDir: string) => Promise<FeatureRatelimitIdsCheck>;
+  /** Biome `files.includes` seam; defaults to {@link checkBiomeIncludes}. Reads files only. */
+  checkBiomeIncludes?: (projectDir: string) => Promise<BiomeIncludesCheck>;
   /**
    * AI client seam; defaults to {@link checkDocsMcp}. Reads files only — but files in the operator's own
    * home, which is why every test builds from `doctorHarness` and never lets the real one run.
@@ -1082,6 +1091,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     options.checkServiceBindings ?? ((projectDir: string) => checkServiceBindings({ projectDir }));
   const probeHostBindings = options.checkHostBindings ?? ((projectDir: string) => checkHostBindings({ projectDir }));
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
+  const probeBiomeIncludes = options.checkBiomeIncludes ?? checkBiomeIncludes;
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
@@ -1454,6 +1464,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         findings: [],
       })
     : null;
+  // The project's Biome config, held to excluding its directories inside the project and nothing above it. Files only.
+  const biomeIncludes = inProject
+    ? await probed<BiomeIncludesCheck>(() => probeBiomeIncludes(options.projectDir), {
+        state: "could-not-check",
+        findings: [],
+      })
+    : null;
   // Which AI clients on this machine could be reading the docs and are not. Files only, and only
   // files that are already there — a diagnostic never creates one.
   const docsMcp = inProject
@@ -1767,6 +1784,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     serviceBindings,
     hostBindings,
     featureRatelimitIds,
+    biomeIncludes,
     docsMcp,
     environments,
     environmentInheritance,
@@ -3291,6 +3309,8 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Worth a red CI: the jobs of a Worker bound to the wrong host never run, and nothing at runtime says so.
   const hostBindingsOk = !report.hostBindings || report.hostBindings.stale.length === 0;
   const featureRatelimitIdsOk = report.featureRatelimitIds?.state !== "reserved";
+  // Worth a red CI: the main checkout lints clean, and every worktree's lint fails with an error naming no pattern.
+  const biomeIncludesOk = report.biomeIncludes?.state !== "unanchored";
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
@@ -3391,6 +3411,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     serviceBindingsOk &&
     hostBindingsOk &&
     featureRatelimitIdsOk &&
+    biomeIncludesOk &&
     environmentsOk &&
     environmentInheritanceOk &&
     turnstileSitekeysOk &&
@@ -3591,6 +3612,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
         "Rate limiters:",
         ...report.featureRatelimitIds.findings.map((finding) => `${HEALTH_INDENT}${finding}`),
         `${HEALTH_INDENT}${FEATURE_RATELIMIT_IDS_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
+  // A Biome exclusion that takes every file of a checkout with it. The block is the finding.
+  if (report.biomeIncludes?.state === "unanchored") {
+    blocks.push(
+      [
+        "Biome:",
+        ...report.biomeIncludes.findings.map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${BIOME_INCLUDES_ACTION}`,
       ].join("\n"),
     );
   }
@@ -3843,6 +3875,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // consumer that an empty `missing` is a project with the binding rather than one that never asked.
     featureRatelimitIds: report.featureRatelimitIds
       ? { state: report.featureRatelimitIds.state, findings: report.featureRatelimitIds.findings }
+      : null,
+    biomeIncludes: report.biomeIncludes
+      ? { state: report.biomeIncludes.state, findings: report.biomeIncludes.findings }
       : null,
     docsMcp: report.docsMcp
       ? {
@@ -4396,6 +4431,12 @@ const DoctorPayload = z
       state: State("`ok`, `reserved`, `could-not-check`"),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per id in the feature range."),
     }),
+    biomeIncludes: Check("Biome exclusions that would skip every file of a checkout, or `null` outside a project.", {
+      state: State("`ok`, `unanchored`, `could-not-check`"),
+      findings: z
+        .array(z.string().describe("One finding."))
+        .describe("One sentence per unanchored directory exclusion, naming the file and the lines to write."),
+    }),
     docsMcp: Check("AI clients the docs server is not connected to, or `null` outside a project.", {
       state: State("`ok`, `unconnected`, `could-not-check`"),
       findings: z
@@ -4638,7 +4679,9 @@ export default withContract(
     // 5: `failures[].check` takes `secretRotations`, where a field-key version still live at the next rotation fails
     //    the exit.
     // 6: `failures[].check` takes `hostBindings`, where a Workflow binding into the wrong kit host fails the exit.
-    schemaVersion: 6,
+    // 7: `biomeIncludes`, and `failures[].check` takes it, where a Biome exclusion that skips every file of a checkout
+    //    fails the exit.
+    schemaVersion: 7,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

@@ -4,13 +4,20 @@
 import { randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { access, copyFile, lstat, readdir, rm } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
-import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
+import {
+  causeMessage,
+  type FailurePosition,
+  failurePosition,
+  prop,
+  rootCause,
+  safeReason,
+} from "@pithy-sh/core/src/error/cause";
 import {
   fromZodError,
   InternalError,
@@ -25,6 +32,7 @@ import { PrivacyClassName } from "@pithy-sh/core/src/privacy/classes";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
 import { entryBeside, installedBeside } from "./kitResolve";
+import { importedFile, nodeCompileFailure } from "./nodeCompileFailure";
 import { registerTypeScriptResolution } from "./typescriptResolve";
 import { discoverWorkers } from "./workers";
 
@@ -74,8 +82,7 @@ export interface ProjectConfig {
   /**
    * Every deployed environment this project has, e.g. `["staging", "prod"]` — the **second** segment of
    * every Cloudflare name it composes, and the other half of the budget `name` is already governed by.
-   * Optional; absent means {@link DEFAULT_ENVIRONMENTS}, which is what the scaffold hardcoded before this
-   * setting existed.
+   * Optional; absent means {@link DEFAULT_ENVIRONMENTS}.
    *
    * Typed `unknown` for the same reason {@link ProjectConfig.cloudflare} is: this file is the adopter's own
    * TypeScript, `loadProject` imports it live, and duck-typing is the only other gate on it — so an
@@ -98,7 +105,7 @@ export interface ProjectConfig {
    */
   cloudflare?: unknown;
   /**
-   * **Does one of this project's own Workers administer this project?** (#616)
+   * **Does one of this project's own Workers administer this project?**
    *
    * A Worker cannot fetch its own hostname: the subrequest loops back through the edge into the Worker it
    * came from and hangs until Cloudflare answers 522, on a route that answers in a second and a half from
@@ -118,7 +125,7 @@ export interface ProjectConfig {
    */
   administersItself?: unknown;
   /**
-   * **Which privacy classes this project handles** (#132) — `{ classes: ["pii", "phi"] }`, validated by
+   * **Which privacy classes this project handles** — `{ classes: ["pii", "phi"] }`, validated by
    * {@link loadProjectPrivacy}. Root rather than per-Worker for the reason `seed.productionEnvironments` is: a
    * project's compliance posture is not a thing one Worker gets to have and another does not.
    *
@@ -127,14 +134,13 @@ export interface ProjectConfig {
    * badly configured. What the declaration does is close `console` (`pithy deploy` refuses while
    * `suspicious/noConsole` is off), and turn on the reporting that sets declared beside observed.
    *
-   * Typed `unknown` for the reason {@link ProjectConfig.environments} is. Absent means nothing is declared, and
-   * the project behaves exactly as it did before the key existed.
+   * Typed `unknown` for the reason {@link ProjectConfig.environments} is. Absent means nothing is declared.
    */
   privacy?: unknown;
 }
 
 /**
- * The root config's `privacy` block (#132). Strict, because a misspelled `clases` that parsed to "nothing
+ * The root config's `privacy` block. Strict, because a misspelled `clases` that parsed to "nothing
  * declared" would silently open the console gate the declaration exists to close.
  */
 export const ProjectPrivacy = z
@@ -167,12 +173,11 @@ export function loadProjectPrivacy(config: ProjectConfig): string[] {
 }
 
 /**
- * The root config's `cloudflare` block: **which Cloudflare account this project belongs to** (#206).
+ * The root config's `cloudflare` block: **which Cloudflare account this project belongs to**.
  *
- * `<config>/cloudflare.json` is account-scoped, on the reasoning that one account holds many projects
- * (#182). That reasoning is right and incomplete: it assumes one account per *machine*. A developer
- * working across two companies has two, and without this block every project on the machine reads the
- * same file — so switching accounts means editing that file in place and every project silently follows.
+ * `<config>/cloudflare.json` is account-scoped, and one machine may hold credentials for more than one account.
+ * Without this block every project on the machine reads the same file, so switching accounts means editing that
+ * file in place and every project follows.
  *
  * **Strict, because a dropped key here is the whole failure mode.** A misspelled `accountid` that parsed
  * to "no pin" would leave the project with exactly the silent, unverified resolution the pin exists to
@@ -181,7 +186,7 @@ export function loadProjectPrivacy(config: ProjectConfig): string[] {
 export const ProjectCloudflare = z
   .strictObject({
     accountName: CloudflareAccountName.optional().describe(
-      "Selects <config>/cloudflare.<name>.json. Absent selects cloudflare.json, exactly as before.",
+      "Selects <config>/cloudflare.<name>.json. Absent selects cloudflare.json.",
     ),
     accountId: z
       .string()
@@ -224,17 +229,11 @@ export function loadProjectCloudflare(config: ProjectConfig): ProjectCloudflare 
 
 /**
  * Read and validate the root config's `environments` declaration — **the project's environment set, in
- * one place, for every command that iterates environments** (#241).
- *
- * Before this, nothing said. The set existed only as `env.<name>` stanzas in each Worker's
- * `wrangler.jsonc` — per Worker, so two Workers could disagree with nobody reconciling them — while
- * `ManagedEnvironment` held a closed enum of two and `seed.productionEnvironments` invited a project to
- * name a third. An adopter adding `env.live` got a working `pithy migrate --env live` and a
- * `pithy secrets provision` that skipped it in silence.
+ * one place, for every command that iterates environments**. A Worker's `env.<name>` stanzas in
+ * `wrangler.jsonc` are per Worker and can disagree; this is the one set every command reads.
  *
  * Absent is not an error: it is the ordinary state of a project that runs staging and prod, and it answers
- * {@link DEFAULT_ENVIRONMENTS} — the pair the scaffold hardcoded — so nothing about an existing project
- * changes until it says otherwise.
+ * {@link DEFAULT_ENVIRONMENTS}.
  *
  * **Validated on every load, not at the first provision.** An environment name reaches Cloudflare resource
  * names verbatim and a provisioned project cannot be renamed, so the one place that can still say no is
@@ -255,7 +254,7 @@ export function loadProjectEnvironments(config: ProjectConfig): DeclaredEnvironm
 }
 
 /**
- * Read and validate the root config's `administersItself` declaration (#616).
+ * Read and validate the root config's `administersItself` declaration.
  *
  * Absent is no, which is what every project that has never thought about it means. A value that is not a
  * boolean is refused rather than coerced: `"no"` is truthy, `0` is falsy, and either reading is a binding
@@ -321,7 +320,7 @@ export interface WorkerConfig {
    * A capability marks a binding `optional` when its own code has a path for the binding's absence.
    * Naming one here says this Worker takes that path deliberately: `pithy upgrade` leaves it out of
    * `wrangler.jsonc`, and `pithy doctor` reports it as declined rather than missing — so a stanza
-   * deleted by hand stays deleted instead of returning on the next upgrade (#440).
+   * deleted by hand stays deleted instead of returning on the next upgrade.
    *
    * **The capability's own config is the first place to look.** Turning a feature off is a better
    * answer than declining its binding, because the capability then declares nothing and there is
@@ -336,10 +335,9 @@ export interface WorkerConfig {
   /**
    * Generated binding values this Worker keeps as they are, each mapped to the reason it keeps them.
    *
-   * The neighboring declaration to {@link WorkerConfig.declinedBindings}, for the neighboring case
-   * (#499): a binding this Worker *has*, whose generated value the kit has since changed its mind about.
-   * A rate limiter's `namespace_id` is the known one — written once at `pithy add`, never revisited, and
-   * a project scaffolded before the derivation landed keeps the positional id it was given.
+   * The neighboring declaration to {@link WorkerConfig.declinedBindings}, for the neighboring case: a
+   * binding this Worker *has*, whose generated value the kit would now write differently. A rate limiter's
+   * `namespace_id` is the known one — written once at `pithy add` and never revisited.
    *
    * `pithy doctor` reports that difference so it stops being invisible. Nothing rewrites it: the number
    * may be the one the adopter meant, and a `namespace_id` is a live budget's identity. Naming the
@@ -367,8 +365,7 @@ const ReasonLine = z
 /**
  * The reason a Worker gives for declining an optional binding.
  *
- * **Required, and that is the feature.** A silent omission is what existed before #440 and is
- * indistinguishable from having forgotten; `pithy doctor` prints this back on every run, so the next
+ * **Required, and that is the feature.** A silent omission is indistinguishable from having forgotten; `pithy doctor` prints this back on every run, so the next
  * person reads why rather than guessing whether the absence was a choice. Single-line and bounded
  * because it lands in a fixed-width terminal report beside the binding it explains.
  */
@@ -460,7 +457,7 @@ export function readDeclinedBindings(config: WorkerConfig): DeclinedBindingsRead
 /**
  * The reason a Worker gives for keeping a generated binding value the kit would now write differently.
  *
- * Required, on {@link DeclineReason}'s rule and for {@link DeclineReason}'s reason (#499): a value that
+ * Required, on {@link DeclineReason}'s rule and for {@link DeclineReason}'s reason: a value that
  * merely differs is indistinguishable from one nobody has looked at, which is the whole finding this
  * dismisses. The sentence is what turns the difference into a decision, and `pithy doctor` prints it back.
  */
@@ -542,8 +539,7 @@ function readReasonRecord(
 function firstDomainFault(error: z.ZodError): string {
   const issue = error.issues[0];
   if (!issue) return ".";
-  // A top-level issue — `domains` given as an array, say — has no path, and `join` on it rendered the
-  // separator with nothing in front of it: "not valid: — Invalid input".
+  // A top-level issue — `domains` given as an array, say — has no path, so it gets no field and no separator.
   const field = issue.path.join(".");
   return field === "" ? `: ${issue.message}` : `: ${field} — ${issue.message}`;
 }
@@ -558,15 +554,11 @@ function firstDomainFault(error: z.ZodError): string {
  *
  * Absent is not an error; it is the ordinary state of a project that has not wired a domain yet.
  *
- * **No reader catches this, and that is the decision (#665).** An invalid domain is a config error: the
- * adopter said what they meant, the kit will not take it, and nothing downstream can be generated from
- * it. So every command that reads the declaration stops and names the field, and
- * `packages/cli/src/ci/hostnameRule.test.ts` is the gate that keeps it that way.
- *
- * Softer answers were tried and each one lied. Falling back to the route resolved an address the adopter
- * never declared. Reporting it as a drift finding and carrying on had to say something about every
- * *other* environment, because `WorkerDomains` parses whole — and every version of that sentence was
- * false for an environment whose own block was fine. A refusal is the only answer that is true.
+ * **No reader catches this.** An invalid domain is a config error: the adopter said what they meant, the kit
+ * will not take it, and nothing downstream can be generated from it. So every command that reads the
+ * declaration stops and names the field, and `packages/cli/src/ci/hostnameRule.test.ts` is the gate that keeps
+ * it that way. A fallback to the route would resolve an address the adopter never declared, and `WorkerDomains`
+ * parses whole, so no environment can be read past a fault in another.
  *
  * **What a reader may still forgive is the config not importing at all.** That is a different fact —
  * *nobody could ask*, usually because dependencies are not installed — and it has its own, better error
@@ -577,14 +569,9 @@ export function loadWorkerDomains(config: WorkerConfig): WorkerDomains | undefin
   const parsed = WorkerDomains.safeParse(config.domains);
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
-      // **The field's own sentence, in `message`, because that is the only place a person reads it.**
-      // `renderTerminal` prints `message` and `action` and nothing else; `issues` reaches `--json` alone.
-      // So a refusal whose reason was *internationalized domains are not supported* used to render as
-      // "not valid" over an action line about bare hostnames — which is the sentence `#665` exists to
-      // stop being shown, since the hostname it is shown for **is** a bare hostname.
+      // The field's own sentence goes in `message`: `renderTerminal` prints `message` and `action` and nothing
+      // else, and `issues` reaches `--json` alone.
       message: `This Worker's \`domains\` declaration is not valid${firstDomainFault(parsed.error)}`,
-      // No longer "— bare hostnames". It is true of one of the three rules and misleading for the other
-      // two, and the message above now names whichever one was broken.
       action: "Fix `domains` in the Worker's pithy.config.ts. Each entry is `{ pattern, zone }`.",
       detail: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n"),
     });
@@ -601,26 +588,29 @@ function isProjectConfig(value: unknown): value is ProjectConfig {
 }
 
 /**
- * Why a `pithy.config.ts` would not import. Four causes fixed four different ways, plus the honest fifth:
- * the classifier does not recognize this one and will not invent a remedy for it.
+ * Why a `pithy.config.ts` would not import. Five causes fixed five different ways, plus `unknown`: the
+ * classifier does not recognize that one and will not invent a remedy for it.
  */
-export type ConfigLoadFailureKind = "unresolved-import" | "package-load" | "parse-error" | "threw-on-load" | "unknown";
+export type ConfigLoadFailureKind =
+  | "unresolved-import"
+  | "package-load"
+  | "strip-only"
+  | "parse-error"
+  | "threw-on-load"
+  | "unknown";
 
 /** A classified config-load failure: what went wrong, and the one sentence that fits it. */
 export interface ConfigLoadFailure {
-  /** Which of the five causes this is. */
+  /** Which cause this is. */
   kind: ConfigLoadFailureKind;
   /** The `action` line for the refusal — chosen from the failure, never asserted over it. */
   action: string;
 }
 
 /**
- * The message, de-colored, for this classifier's own pattern tests — never for output.
- *
- * What may be *said* is core's {@link safeReason}, and only core's: the filter that decides whether a
- * runtime's string is fit to show lived here, in the capability loaders, and in the vite plugin, in three
- * near-verbatim copies, and the hole #223 found in it had to be closed in all three (#228). What stays
- * here is the policy — which causes this classifier recognizes, and what it says about each.
+ * The message, de-colored, for this classifier's own pattern tests — never for output. What may be *said* is
+ * core's {@link safeReason}, and only core's; what stays here is which causes this classifier recognizes and
+ * what it says about each.
  */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
@@ -636,32 +626,27 @@ function isParseError(cause: unknown): boolean {
 }
 
 /**
- * Choose the refusal's `action` **from** the failure rather than asserting one over it (#207).
- *
- * A `pithy.config.ts` that will not import used to get one sentence whatever went wrong: *install the
- * project's dependencies, then check the config for errors*. For a missing dependency that is right. For
- * a stray brace it is confidently wrong, and being confidently wrong is worse than saying nothing —
- * an adopter runs `bun install`, nothing changes, and the parser's own message, which would have told
- * them, was captured into `detail` and discarded one frame up. That is #172 recurring: a config that
- * would not load naming the wrong cause, diagnosed wrong twice before anyone traced the import edge.
- *
- * So each cause gets the sentence that fits it, and the fourth gets none:
+ * Choose the refusal's `action` **from** the failure rather than asserting one over it. The parser's own
+ * message goes into `detail`, which the renderer never prints, so the cause an adopter can act on has to reach
+ * `action` here, and a remedy that does not fit the cause is followed and fixes nothing.
  *
  * - **unresolved-import** — core's `unresolvedImport` names the import and whose it is, and says to install
- *   only where installing helps. This surface keeps no rule of its own about imports (#709).
+ *   only where installing helps. This surface keeps no rule of its own about imports.
  * - **package-load** — core's `packageLoadFailure`: a file inside an installed package threw as it loaded —
  *   a `"type"` its code contradicts, or code that does not parse. That package is named, never the config.
- * - **parse-error** — the parser's reason and position. It says installing will not help, because the
- *   adopter has read the opposite for as long as this refusal has existed.
- * - **threw-on-load** — the config's own error, which is neither of the above.
+ * - **strip-only** — Node's type stripping refused TypeScript that does not erase, in the config or a module it
+ *   imports. The file, the line, the construct and its rewrite are named.
+ * - **parse-error** — the parser's reason and position, and the file when it is not the config. It says
+ *   installing will not help.
+ * - **threw-on-load** — the config's own error, which is none of the above.
  * - **unknown** — no remedy. A wrong action is worse than no action, because it is followed.
  *
- * Exported because the runtime that ships (`bin` runs on Bun, whose `ResolveMessage`/`BuildMessage` are
- * their own shapes) is not the runtime the suite runs on. Tested directly, it is tested for both.
+ * Exported and tested directly against each runtime's shapes: Node's, which the CLI runs on, and Bun's
+ * `ResolveMessage`/`BuildMessage`, which the suite cannot produce.
  *
- * @param wrapped whatever the `try` caught, wrapper and all. {@link rootCause} opens it first — see #223:
- *   Bun wraps two or more build diagnostics in an `AggregateError`, and a stray brace cascades, so the
- *   wrapped shape is the *common* one. #207 fixed the bare case and this one classified worse than it.
+ * @param wrapped whatever the `try` caught, wrapper and all. {@link rootCause} opens it first: Bun wraps two or
+ *   more build diagnostics in an `AggregateError`, and a stray brace cascades, so the wrapped shape is the
+ *   common one.
  * @param configFile the config that was imported. A parser's position is quoted only when it is in this
  *   file or its fresh copy: Bun gives one in whatever file did not parse, which may be one the config imports.
  */
@@ -673,7 +658,7 @@ export function classifyConfigLoadFailure(
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
 
-  // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
+  // Which import, whose, and what to do: core's, for all three surfaces that refuse a module.
   const unresolved = unresolvedImport(cause, {
     installed: installedBeside,
     entry: entryBeside,
@@ -682,20 +667,29 @@ export function classifyConfigLoadFailure(
   });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
 
-  // A package's own file that would not load is the package's, before it can read as the config's (#709).
+  // A package's own file that would not load is the package's, before it can read as the config's.
   const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/cli" });
   if (foreign !== undefined) return { kind: "package-load", action: foreign.remedy };
 
+  const compile = nodeCompileFailure(cause, {
+    relativeTo,
+    isConfig: configFile === undefined ? undefined : (file) => isConfigFile(file, configFile),
+  });
+  if (compile !== undefined) return compile;
+
   if (isParseError(cause)) {
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is
-    // not quoted, and a position is never invented. That filter is core's, once rather than here and in two
-    // other classifiers that each had to be found and patched (#228).
+    // not quoted, and a position is never invented.
     const reason = safeReason(cause);
-    const at = failurePosition(cause, configFile === undefined ? undefined : (file) => isConfigFile(file, configFile));
+    const imported = importedPosition(cause, configFile);
+    const at =
+      imported ??
+      failurePosition(cause, configFile === undefined ? undefined : (file) => isConfigFile(file, configFile));
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
+    const subject = imported === undefined ? "The config" : importedFile(imported.file, relativeTo);
     return {
       kind: "parse-error",
-      action: `The config does not parse${reason ? `: ${reason}` : ""}.${where} Fix the file — installing dependencies will not help.`,
+      action: `${subject} does not parse${reason ? `: ${reason}` : ""}.${where} ${imported === undefined ? "Fix the file" : "Fix that file"} — installing dependencies will not help.`,
     };
   }
 
@@ -720,26 +714,21 @@ export function classifyConfigLoadFailure(
  * A module cache keyed on the path is correct almost everywhere and wrong in exactly one place: a command
  * that edits a `pithy.config.ts` and then has to read the result. `pithy add` is that command — it
  * resolves the target Worker (importing its config) before wiring, and its closing migrate imports the
- * config again to build the registry. The second import returned the *pre-wiring* module, so the registry
- * never contained the capability that had just been added and `add` applied none of its migrations while
- * reporting a clean run. `pithy add auth` left a Worker that booted and answered 500 on every auth route,
- * because the tables were not there (#273).
+ * config again to build the registry, which must hold the capability just added.
  *
- * **A different file is the bust that holds everywhere.** Re-measured on Bun 1.4.2 (#709): a `?t=…` query on the file URL now busts it, and the same file reached by a differently-spelled path still does not. A query is one runtime's behavior and has changed once already; a new file is new to every module cache. So this imports a copy, beside the original — where the config's own relative imports and `import.meta.dirname` still resolve to the same directory — and removes it. Dot-prefixed and uniquely named, so two concurrent runs cannot collide.
+ * **A different file is the bust that holds everywhere.** A query on the file URL is one runtime's behavior; a new file is new to every module cache. So this imports a copy, beside the original — where the config's own relative imports and `import.meta.dirname` still resolve to the same directory — and removes it. Dot-prefixed and uniquely named, so two concurrent runs cannot collide.
  *
  * ## It writes into the adopter's source tree, so it cleans up three ways
  *
  * A read-only command that leaves files behind is worse than one that is slow, and `pithy doctor` and
- * `pithy secrets ls` both reach this now — once per Worker per declared environment (#541). So: the `finally`
+ * `pithy secrets ls` both reach this — once per Worker per declared environment. So: the `finally`
  * removes the copy on the ordinary path; {@link forgetOnExit} removes what is still open on `SIGINT`,
  * `SIGTERM` and `exit`, which is Ctrl-C and every throw that reaches the top; and {@link sweepStaleCopies}
  * deletes any left by a run that was killed outright, before the next copy lands beside them. A `kill -9`
  * is the only survivor, and the next command heals it.
  *
- * **A tree that cannot be written says so.** `copyFile` on a read-only checkout used to fail into whatever
- * the caller's catch did with it — for the applicability sweep, a permissive answer and three more doomed
- * copies. The refusal names the directory and the command that needs it, so the failure is a sentence rather
- * than a feature quietly doing nothing.
+ * **A tree that cannot be written says so.** A `copyFile` that fails is refused as {@link FreshCopyRefused},
+ * naming the directory and the command that needs it, rather than left to whatever the caller's catch does.
  */
 async function importFreshCopy(path: string): Promise<{ default?: unknown }> {
   const directory = dirname(path);
@@ -764,8 +753,24 @@ async function importFreshCopy(path: string): Promise<{ default?: unknown }> {
 }
 
 /**
+ * The file, line and column of Bun's parse diagnostic when they are in a module the config imports: an absolute
+ * `position.file` that is neither the config nor its fresh copy. `undefined` for the config's own position, a
+ * relative or missing file, or no `configFile` to tell the two apart.
+ */
+function importedPosition(
+  cause: unknown,
+  configFile: string | undefined,
+): (FailurePosition & { file: string }) | undefined {
+  if (configFile === undefined) return undefined;
+  const file = prop(prop(cause, "position"), "file");
+  if (typeof file !== "string" || !isAbsolute(file) || isConfigFile(file, configFile)) return undefined;
+  const at = failurePosition(cause);
+  return at === undefined ? undefined : { ...at, file };
+}
+
+/**
  * Whether `file` is the config at `configFile`, or a fresh copy of it, which is imported in its place — so a
- * position in either is the config's own, and a position in any other file is not (#709).
+ * position in either is the config's own, and a position in any other file is not.
  */
 function isConfigFile(file: string, configFile: string): boolean {
   const at = resolve(file);
@@ -884,12 +889,11 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
     // Not a fact about the file. A tree that cannot be written refuses every config in it identically, and
     // classifying it as *this config would not import* would send the adopter to a file that is fine.
     if (cause instanceof FreshCopyRefused) throw cause;
-    // The file is present but would not import. Which of the three ways it failed decides what to tell
-    // the adopter — see {@link classifyConfigLoadFailure}. The raw cause still goes to `detail` and stops
-    // there: the CLI renderer prints `message` and `action` only, and the HTTP codec strips `detail`.
-    // That boundary is unchanged. What changed is that the part of the cause an adopter can act on now
-    // reaches them through `action`, in a form that carries no path, no source line, and no stack.
-    // The config's own directory, so a resolved absolute path is shown the way it was written.
+    // The file is present but would not import. How it failed decides what to tell the adopter — see
+    // {@link classifyConfigLoadFailure}. The raw cause goes to `detail` and stops there: the CLI renderer
+    // prints `message` and `action` only, and the HTTP codec strips `detail`. What an adopter can act on
+    // reaches `action` with no absolute path, no source line and no stack: a file is shown from the config's
+    // own directory, the way an import from the config would write it.
     const { kind, action } = classifyConfigLoadFailure(cause, dirname(path), path);
     throw new InternalError({
       message: `Could not load ${path}.`,
@@ -916,7 +920,7 @@ const evaluations = new Map<string, string | undefined>();
  * `ENVIRONMENT` while it is evaluated — `originFor(compositionEnvironment(), DOMAINS)` is scaffolded into
  * every one. The module cache is keyed on the path, so the second import of a config hands back the first
  * evaluation whatever `ENVIRONMENT` says now. A composition for staging that finds the cache holding an
- * evaluation for no environment has to re-read the file; one that finds staging's can take it (#595).
+ * evaluation for no environment has to re-read the file; one that finds staging's can take it.
  */
 export function cachedEvaluation(workerDir: string): { environment: string | undefined } | undefined {
   const path = resolve(join(workerDir, "pithy.config.ts"));
@@ -982,8 +986,8 @@ export async function loadProject(projectDir: string, options?: LoadWorkerConfig
   }
   // Validated on every load, so a name that would not survive `CloudflareAccountName` refuses the
   // command that read the config rather than whichever later call happened to build a path out of it.
-  // The value is *returned*, never published: an ambient account is what made six call sites resolve
-  // credentials before anything had established which account they were for.
+  // The value is *returned*, never published: an ambient account would let a call site resolve credentials
+  // before anything had established which account they were for.
   loadProjectCloudflare(value);
   // Same rule, same reason: an environment name reaches Cloudflare resource names verbatim, and a
   // provisioned project cannot be renamed — so a declaration that would not survive the naming rule
@@ -992,7 +996,7 @@ export async function loadProject(projectDir: string, options?: LoadWorkerConfig
   // And once more, for the same reason one level smaller: a declaration that decides what goes into every
   // generated stanza must refuse the command that read it, not the provision that half-wrote a config.
   administersItself(value);
-  // And the privacy declaration (#132): a misspelled block must refuse here, not read as "nothing declared"
+  // And the privacy declaration: a misspelled block must refuse here, not read as "nothing declared"
   // and open the console gate it exists to close.
   loadProjectPrivacy(value);
   return value;
@@ -1054,7 +1058,7 @@ export async function resolveProjectName(config: ProjectConfig, projectDir: stri
  */
 export function requireProjectName(config: ProjectConfig): string {
   if (!config.name) {
-    // The call is right and the project is missing its name: a precondition, exit 3 (#697). An edit fixes it.
+    // The call is right and the project is missing its name: a precondition, exit 3. An edit fixes it.
     throw new PreconditionFailedError({
       message: "pithy.config.ts has no `name`.",
       action: `Set \`name\` in pithy.config.ts. Every feature resource name — and the ability of ${commandName("feature destroy")} to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.`,

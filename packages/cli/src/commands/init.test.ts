@@ -619,7 +619,7 @@ describe("the linter", () => {
     await expect(readFile(join(target, "plugins", "no-console.grit"), "utf8")).rejects.toThrow();
   });
 
-  test("no flag is Biome, with all six Grit rules", async () => {
+  test("no flag is Biome, with every Grit rule", async () => {
     const target = join(dir, "biome");
     const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]);
     expect(JSON.parse(written.join(""))).toMatchObject({ lint: "biome" });
