@@ -77,7 +77,7 @@ describe("loadWorkerConfig", () => {
     const error = await caught(loadWorkerConfig(join(dir, "pithy.config.ts")));
     expect(error.payload.code).toBe("core/not_found");
     expect(error.payload.message).toContain("pithy.config.ts");
-    // No `pithy ui add` to run: it needs a Worker and a framework the plugin cannot name (#711).
+    // No `pithy ui add` to run: it needs a Worker and a framework the plugin cannot name.
     expect(error.payload.action).toContain("pithy({ configFile })");
   });
 
@@ -103,12 +103,9 @@ describe("loadWorkerConfig", () => {
 });
 
 /**
- * The refusal for a config that will not load names its cause, or names nothing (#217).
- *
- * The CLI's own loader was fixed in #207; this one built the same `Could not load ${configFile}.` with
- * the same defect — *Fix the config, then run pithy dev again. Run bun install if a `@pithy-sh/*` import
- * did not resolve* — a sentence that hedges by naming both remedies, leads with the wrong one for the
- * commoner failure, and drops the only thing that would have settled it: the reason.
+ * The refusal for a config that will not load names its cause, or names nothing. A sentence that hedges by
+ * naming two remedies leads with the wrong one for one of the causes, and drops the only thing that would settle
+ * it: the reason.
  *
  * The classifier is exported so it is tested against the shapes each runtime throws. `pithy dev` runs
  * this plugin under **Bun**, and `runnerImport` throws Vite's own shapes on top. The classifier reads
@@ -132,7 +129,7 @@ describe("classifyWorkerConfigFailure", () => {
   });
 
   /**
-   * **The importer, when the failing import is not the config's own (#480, #489).**
+   * **The importer, when the failing import is not the config's own.**
    *
    * The fixture above is the ordinary case: the config's own import, so the referrer is the config and
    * there is nothing to add. This is the other one — `@pithy-sh/email` resolved, and *its* import of core
@@ -158,7 +155,7 @@ describe("classifyWorkerConfigFailure", () => {
   });
 
   /**
-   * **Three causes, three remedies (#489), on the shapes this loader actually sees.** Installing helps
+   * **Three causes, three remedies, on the shapes this loader actually sees.** Installing helps
    * only when a package is absent. The adopter's own missing file, a builtin the runtime does not have,
    * and a package's own missing file are each answered by something an install cannot do.
    */
@@ -345,7 +342,8 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).not.toContain("/home/a");
   });
 
-  // #709: a line and column in another file, quoted as the config's, sends the adopter to the wrong place.
+  // A line and column in another file, quoted as the config's, sends the adopter to the wrong place, so that file
+  // is named with them.
   test("a position in another file is never quoted as the config's", () => {
     const at = (file: string) => ({
       name: "BuildMessage",
@@ -354,8 +352,65 @@ describe("classifyWorkerConfigFailure", () => {
     });
     const config = "/home/a/apps/api/pithy.config.ts";
     const other = classifyWorkerConfigFailure(at("/home/a/apps/api/src/helpers.ts"), "/home/a/apps/api", config);
-    expect(other.action).not.toMatch(/Line \d/);
-    expect(classifyWorkerConfigFailure(at(config), "/home/a/apps/api", config).action).toContain("Line 1, column 18");
+    expect(other.kind).toBe("parse-error");
+    expect(other.action).toBe(
+      "./src/helpers.ts, which the config imports, does not parse: Unexpected ;. Line 1, column 18. Fix that file — installing dependencies will not help.",
+    );
+    expect(classifyWorkerConfigFailure(at(config), "/home/a/apps/api", config).action).toBe(
+      "The config does not parse: Unexpected ;. Line 1, column 18. Fix the file — installing dependencies will not help.",
+    );
+    // A file named by a relative path is not guessed at.
+    expect(classifyWorkerConfigFailure(at("src/helpers.ts"), "/home/a/apps/api", config).action).toBe(
+      "The config does not parse: Unexpected ;. Fix the file — installing dependencies will not help.",
+    );
+  });
+
+  test("the real loader names a module the config imports that does not parse, and its line, not the config", async () => {
+    const dir = await workerDir({
+      "pithy.config.ts": 'import { a } from "./src/tar";\nexport default { capabilities: [], a };\n',
+    });
+    await mkdir(join(dir, "src"));
+    await writeFile(join(dir, "src", "tar.ts"), "// first line\nexport const a = 1 +;\n", "utf8");
+
+    const error = await caught(loadWorkerConfig(join(dir, "pithy.config.ts")));
+    expect(error.payload.detail).toMatch(/^parse-error: /);
+    expect(error.payload.action).toMatch(/^\.\/src\/tar\.ts, which the config imports, does not parse/);
+    expect(error.payload.action).toContain("Line 2, column");
+    expect(error.payload.action).toContain("Fix that file — installing dependencies will not help.");
+    expect(error.payload.action).not.toContain(dir);
+  });
+
+  test("the real loader still quotes the config's own parse position as the config's", async () => {
+    const dir = await workerDir({ "pithy.config.ts": "// first line\nexport default { capabilities: [1 +] };\n" });
+    const error = await caught(loadWorkerConfig(join(dir, "pithy.config.ts")));
+    expect(error.payload.action).toMatch(/^The config does not parse/);
+    expect(error.payload.action).toContain("Line 2, column");
+    expect(error.payload.action).not.toContain(dir);
+  });
+
+  test("a runner error that names another file by id never lends that file's position to the config", () => {
+    const config = "/home/a/apps/api/pithy.config.ts";
+    const cause = Object.assign(
+      new Error(
+        "Transform failed with 1 error:\n\n[PARSE_ERROR] Unexpected token\n  ╭─[ ../../home/a/apps/api/src/bad.ts:2:19 ]",
+      ),
+      { plugin: "vite:oxc", id: "/home/a/apps/api/src/bad.ts" },
+    );
+    expect(classifyWorkerConfigFailure(cause, "/home/a/apps/api", config).action).toBe(
+      "./src/bad.ts, which the config imports, does not parse. Line 2, column 19. Fix that file — installing dependencies will not help.",
+    );
+    // On Bun the runner also sets `loc`, whose file is the module and whose line is one of Vite's own bundle.
+    const located = Object.assign(new Error("Transform failed\n  ╭─[ ../src/bad.ts:2:19 ]"), {
+      loc: { file: "/home/a/apps/api/src/bad.ts", line: 7208, column: 23 },
+    });
+    expect(classifyWorkerConfigFailure(located, "/home/a/apps/api", config).action).toBe(
+      "./src/bad.ts, which the config imports, does not parse. Line 2, column 19. Fix that file — installing dependencies will not help.",
+    );
+    // The runner naming the config itself keeps the config's position.
+    const own = Object.assign(new Error("Transform failed\n  ╭─[ ../pithy.config.ts:4:2 ]"), { id: config });
+    expect(classifyWorkerConfigFailure(own, "/home/a/apps/api", config).action).toBe(
+      "The config does not parse. Line 4, column 2. Fix the file — installing dependencies will not help.",
+    );
   });
 
   test("a config that throws on load gets its own reason, and neither other remedy", () => {

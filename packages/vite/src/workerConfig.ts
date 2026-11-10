@@ -3,10 +3,17 @@
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { commandName } from "@pithy-sh/core/src/cli/command";
-import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
+import {
+  causeMessage,
+  type FailurePosition,
+  failurePosition,
+  prop,
+  rootCause,
+  safeReason,
+} from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import {
   nodeModulesProbe,
@@ -30,34 +37,31 @@ export interface LoadedWorkerConfig {
 }
 
 /**
- * Why a `pithy.config.ts` would not load — and therefore what may be said about it (#217).
+ * Why a `pithy.config.ts` would not load — and therefore what may be said about it.
  *
- * This loader built the same refusal the CLI's did, with the same defect. #207 fixed the CLI's
- * (`packages/cli/src/project/config.ts`, `classifyConfigLoadFailure`); this file could not import that
- * fix, because `@pithy-sh/vite` depends on `@pithy-sh/core` and must not depend on the CLI. So it is
- * restated here, with the same rule behind it: **a `catch` reachable by more than one underlying failure
- * may not name a single specific remedy.** Classify, or hedge. The convention is in `docs/CONVENTIONS.md`.
+ * The CLI refuses a config that will not load with `classifyConfigLoadFailure` in
+ * `packages/cli/src/project/config.ts`. This plugin depends on `@pithy-sh/core` and must not depend on the CLI,
+ * so the policy is restated here, with the same rule behind it: **a `catch` reachable by more than one underlying
+ * failure may not name a single specific remedy.** Classify, or hedge. The convention is in `docs/CONVENTIONS.md`.
  *
- * What the copies *cannot* be allowed to disagree about is anything that is not a sentence. Two kinds of
- * that were found, one issue apart, and both live in `@pithy-sh/core` — the one package this plugin
- * already depends on. What a runtime does to an error on its way out is the first: `rootCause` and
- * `prop`, facts no copy can derive and every copy got wrong (#223). Whether one of
- * its strings is safe to show is the second: `safeReason`, `failurePosition` and `causeMessage`, because a
- * path or a stack frame is a property of the string and not of the surface quoting it — three
- * near-verbatim copies of that filter meant the hole #223 found in it had to be closed three times (#228).
- * An import that did not resolve is the third: which kind, whose, and what to do are `unresolvedImport`'s,
- * because three surfaces deciding it kept giving three different remedies (#709). A file inside an
- * installed package that throws as it loads is the fourth, `packageLoadFailure`'s, for the same reason.
+ * What the copies *cannot* be allowed to disagree about is anything that is not a sentence, and all of it lives
+ * in `@pithy-sh/core`, the one package this plugin depends on. What a runtime does to an error on its way out is
+ * the first: `rootCause` and `prop`, facts no copy can derive. Whether one of its strings is safe to show is the
+ * second: `safeReason`, `failurePosition` and `causeMessage`, because a path or a stack frame is a property of the
+ * string and not of the surface quoting it, and a gap in that filter must close in one place. An import that did
+ * not resolve is the third: which kind, whose, and what to do are `unresolvedImport`'s, so every surface gives one
+ * remedy for one cause. A file inside an installed package that throws as it loads is the fourth,
+ * `packageLoadFailure`'s, for the same reason.
  *
- * What stays restated here is the rest of the policy: a parse error and the config's own throw. This
- * plugin still cannot import the CLI's.
+ * What stays restated here is the rest of the policy: a parse error, which file it is in, and the config's own
+ * throw. Node's type stripping is not one of them: Vite's runner transforms the config's TypeScript itself.
  */
 export type WorkerConfigFailureKind =
   /** An import in the config does not resolve. Which cause it was decides whether installing helps. */
   | "unresolved-import"
   /** A file inside an installed package would not load: its `"type"` contradicts its code, or it does not parse. */
   | "package-load"
-  /** The file does not parse. Installing will not help, and the adopter has read the opposite for years. */
+  /** The config, or a module it imports, does not parse. Installing will not help. */
   | "parse-error"
   /** The config loaded far enough to throw its own error. Neither of the above. */
   | "threw-on-load"
@@ -79,7 +83,7 @@ export interface WorkerConfigFailure {
  * refusals and never could, which is why the sentences below are restated here — but the *filter* those
  * sentences pass a string through is not a sentence. Whether a string carries an absolute path or half a
  * parser's ANSI box is a property of the string, so it is decided in `@pithy-sh/core`, the one package
- * this plugin depends on, and the suppression #223 had to write three times is written once (#228).
+ * this plugin depends on, and written once.
  */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
@@ -97,14 +101,14 @@ function isParseError(cause: unknown): boolean {
 /**
  * Whether a package is installed where the importing file would look — core's walk over `node:fs`, the
  * same one the CLI passes, so a deep import of an absent package is told to install and one of an
- * installed package without that path is not (#709). This plugin runs on Node, never in a Worker.
+ * installed package without that path is not. This plugin runs on Node, never in a Worker.
  */
 const installed = nodeModulesProbe({ exists: existsSync, realpath: realpathSync });
 
 /**
  * What an installed package's bare name resolves to, from its own `package.json`: core's read, the same the
  * CLI passes. Vite's runner says *Failed to resolve entry* for a package that declares no entry and for one
- * whose declared entry is not on disk, and names no importer for either (#709).
+ * whose declared entry is not on disk, and names no importer for either.
  */
 const entry = packageEntryProbe({
   exists: existsSync,
@@ -113,13 +117,13 @@ const entry = packageEntryProbe({
 });
 
 /**
- * Choose the refusal's `action` **from** the failure rather than asserting one over it (#217).
+ * Choose the refusal's `action` **from** the failure rather than asserting one over it.
  *
  * An unresolved import is core's {@link unresolvedImport}: the same sentence the CLI gives for the same
- * cause, naming the package the import is written in when it is not the config (#480, #489), and an
- * install only where an install can help (#709). `relativeTo` is the config's directory, so an adopter's
- * own missing file is shown as the import they wrote and never as an absolute path. A parser's position is
- * quoted only when it is in `configFile`, never when it is in a file the config imports.
+ * cause, naming the package the import is written in when it is not the config, and an
+ * install only where an install can help. `relativeTo` is the config's directory, so an adopter's
+ * own missing file is shown as the import they wrote and never as an absolute path. A parser's position in
+ * `configFile` is the config's; one in a file the config imports is quoted with that file named, the same way.
  */
 export function classifyWorkerConfigFailure(
   wrapped: unknown,
@@ -128,27 +132,28 @@ export function classifyWorkerConfigFailure(
 ): WorkerConfigFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
-  // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
+  // Which import, whose, and what to do: core's, for all three surfaces that refuse a module.
   const unresolved = unresolvedImport(cause, { installed, entry, relativeTo, loader: "@pithy-sh/vite" });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
 
-  // A package's own file that would not load is the package's, before it can read as the config's (#709).
+  // A package's own file that would not load is the package's, before it can read as the config's.
   const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/vite" });
   if (foreign !== undefined) return { kind: "package-load", action: foreign.remedy };
 
   if (isParseError(cause)) {
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is
-    // not quoted, and a position is never invented. That filter is core's, once (#228).
+    // not quoted, and a position is never invented. That filter is core's, once.
     const reason = safeReason(cause);
-    // A position in a file the config imports is not the config's, and is never quoted as if it were (#709).
-    const at = failurePosition(
-      cause,
-      configFile === undefined ? undefined : (file) => resolve(file) === resolve(configFile),
-    );
+    // A position in a file the config imports is not the config's: it is quoted with that file named, or not at all.
+    const file = diagnosticFile(cause);
+    const elsewhere = configFile !== undefined && file !== undefined && resolve(file) !== resolve(configFile);
+    const imported = elsewhere ? importedPosition(cause, file, relativeTo) : undefined;
+    const at = elsewhere ? imported : failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
+    const subject = imported === undefined ? "The config" : `${imported.shown}, which the config imports,`;
     return {
       kind: "parse-error",
-      action: `The config does not parse${reason ? `: ${reason}` : ""}.${where} Fix the file — installing dependencies will not help.`,
+      action: `${subject} does not parse${reason ? `: ${reason}` : ""}.${where} ${imported === undefined ? "Fix the file" : "Fix that file"} — installing dependencies will not help.`,
     };
   }
 
@@ -164,6 +169,36 @@ export function classifyWorkerConfigFailure(
   }
 
   return { kind: "unknown", action: "Check pithy.config.ts. Run the file directly to see how it fails." };
+}
+
+/**
+ * The file a parse diagnostic names: Bun's `position.file`, else the `id` Vite's runner sets to the module whose
+ * transform failed, else that runner's `loc.file`. Only the file is read from `loc`: on Bun the runner's own
+ * `loc.line` is a line of Vite's bundle, not of the module.
+ */
+function diagnosticFile(cause: unknown): string | undefined {
+  for (const file of [prop(prop(cause, "position"), "file"), prop(cause, "id"), prop(prop(cause, "loc"), "file")]) {
+    if (typeof file === "string" && file.length > 0) return file;
+  }
+  return undefined;
+}
+
+/**
+ * The line and column of a parse diagnostic in `file`, a module the config imports, with that module's path from
+ * the config's directory, written as an import from the config would write it. `undefined` for a relative `file`,
+ * which is not guessed at, or a diagnostic with no position.
+ */
+function importedPosition(
+  cause: unknown,
+  file: string,
+  relativeTo: string | undefined,
+): (FailurePosition & { shown: string }) | undefined {
+  if (!isAbsolute(file)) return undefined;
+  const at = failurePosition(cause);
+  if (at === undefined) return undefined;
+  if (relativeTo === undefined) return { ...at, shown: basename(file) };
+  const path = relative(relativeTo, file).split("\\").join("/");
+  return { ...at, shown: path.startsWith("../") ? path : `./${path}` };
 }
 
 function isCapability(value: unknown): value is Capability {
@@ -185,7 +220,7 @@ export async function loadWorkerConfig(configFile: string): Promise<LoadedWorker
   } catch {
     throw new NotFoundError({
       message: `No pithy.config.ts at ${configFile}.`,
-      // No command here (#711): `pithy ui add` acts on one Worker and takes a framework, and a plugin that has
+      // No command here: `pithy ui add` acts on one Worker and takes a framework, and a plugin that has
       // lost its config cannot say which of either. Pointing the plugin is the remedy that always applies.
       action: `Point the plugin at the Worker's pithy.config.ts with pithy({ configFile }). A front end scaffolded by ${commandName("ui add")} is pointed at it already.`,
     });

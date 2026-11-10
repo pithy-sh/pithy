@@ -83,8 +83,11 @@ function useLatest<T>(value: T): { current: T } {
 
 /** A refusal carried as a thrown failure through `useRead` and `useAction`, so the last answer survives it. */
 class Refused extends Error {
-  constructor(readonly failure: PaymentsFailure) {
+  readonly failure: PaymentsFailure;
+
+  constructor(failure: PaymentsFailure) {
     super(failure.message);
+    this.failure = failure;
   }
 }
 

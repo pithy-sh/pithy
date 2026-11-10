@@ -7,8 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export class ReadTimeout extends Error {
   override readonly name = "ReadTimeout";
 
-  constructor(readonly deadline: number) {
+  readonly deadline: number;
+
+  constructor(deadline: number) {
     super(`No answer within ${deadline} ms.`);
+    this.deadline = deadline;
   }
 }
 

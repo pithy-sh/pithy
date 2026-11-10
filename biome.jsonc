@@ -117,6 +117,20 @@
         // The spinner's interval timer.
         "!**/packages/cli/src/dev/tui/useSpinnerClock.ts"
       ]
+    },
+    // `no-unerasable-syntax.grit` refuses what Node's type stripping refuses: an enum, a namespace, a constructor
+    // parameter property, `import =`, `export =`, an angle-bracket type assertion. The kit's runtime source is held to the rule its starter holds an adopter's Worker to, and
+    // so is every `.ts` file the kit copies into an adopter's Worker. A test and a `.d.ts` are outside it.
+    {
+      "path": "templates/starter/plugins/no-unerasable-syntax.grit",
+      "includes": [
+        "**/packages/*/src/**/*.ts",
+        "**/packages/*/templates/**/*.ts",
+        "**/templates/starter/apps/*/src/**/*.ts",
+        "**/templates/starter/**/pithy.config.ts",
+        "!**/*.test.ts",
+        "!**/*.d.ts"
+      ]
     }
   ],
   "formatter": {

@@ -77,16 +77,11 @@ describe("loadProject", () => {
 });
 
 /**
- * #207: a config that will not load must say **why**. Before this, a stray brace and an uninstalled
- * dependency produced byte-identical output — `Could not load <path>.` plus "Install the project's
- * dependencies (e.g. bun install), then check the config for errors." — because the real cause went
- * into `detail`, which the CLI renderer never prints. `bun install` is confidently wrong for a syntax
- * error, and an adopter follows it.
- *
- * #172 was the same defect: a config that would not load named the wrong cause, and the diagnosis was
- * wrong twice before someone traced the import edge.
+ * A config that will not load says **why**, in `action`: the CLI renderer prints `message` and `action` and never
+ * `detail`, so a cause left in `detail` reaches nobody. A stray brace and an uninstalled dependency get different
+ * remedies, because `bun install` is wrong for a syntax error and an adopter follows whatever `action` says.
  */
-describe("a config that will not load names its own cause (#207)", () => {
+describe("a config that will not load names its own cause", () => {
   /** The payload from loading a root config with this source. */
   async function refusal(source: string): Promise<{ message: string; action?: string; detail?: string }> {
     // A fresh directory per case: `importConfig` imports live, and a module-cache hit would answer with
@@ -159,9 +154,8 @@ describe("a config that will not load names its own cause (#207)", () => {
  * runtime that adopters use is otherwise the one runtime the suite could not reach.
  */
 describe("classifyConfigLoadFailure", () => {
-  // Plain objects, never `new Error(...)`. Bun 1.3's ResolveMessage and BuildMessage were not `instanceof
-  // Error`, and fixtures built on `Error` passed while the shipping runtime lost the parser's sentence
-  // (#207). Bun 1.4 made them Errors; the classifier still reads fields, so these carry the fields alone.
+  // Plain objects, never `new Error(...)`: the classifier reads fields and never asks `instanceof Error`, so these
+  // carry the fields alone, and a fixture cannot pass only because it is an `Error`.
   test("Bun's ResolveMessage, read by its fields: the specifier is still named, the referrer path is not", () => {
     const cause = {
       name: "ResolveMessage",
@@ -181,15 +175,15 @@ describe("classifyConfigLoadFailure", () => {
   });
 
   /**
-   * **Bun 1.4.2 says `Cannot find package 'pkg'` for `pkg/src/x` whether `pkg` is absent or only the path
-   * is (#709).** The field is the same in both, so the classifier asks the filesystem, from the file the
+   * **Bun says `Cannot find package 'pkg'` for `pkg/src/x` whether `pkg` is absent or only the path is.** The
+   * field is the same in both, so the classifier asks the filesystem, from the file the
    * import was written in. Staged in the OS temp directory, because a tree under this repository walks up
    * into the workspace's own `node_modules`, where every kit package is installed.
    */
   describe("a deep import on Bun 1.4.2: absent package, or missing path", () => {
     let outside: string;
     beforeEach(async () => {
-      outside = await mkdtemp(join(tmpdir(), "pithy-709-"));
+      outside = await mkdtemp(join(tmpdir(), "pithy-deep-import-"));
     });
     afterEach(async () => {
       await rm(outside, { recursive: true, force: true });
@@ -216,7 +210,7 @@ describe("classifyConfigLoadFailure", () => {
       expect(action).not.toContain(outside);
     });
 
-    // #480: `@pithy-sh/email` is installed and its own `@pithy-sh/core` is not linked beside it.
+    // `@pithy-sh/email` is installed and its own `@pithy-sh/core` is not linked beside it.
     test("a kit package whose own dependency is missing: install, and the importer is named", async () => {
       const email = join(outside, "node_modules", "@pithy-sh", "email");
       await mkdir(join(email, "src"), { recursive: true });
@@ -301,8 +295,8 @@ describe("classifyConfigLoadFailure", () => {
     expect(action).not.toMatch(/\bbun install\b/i);
   });
 
-  // #709: Bun puts the file a position is in beside it. A line and column in another file, quoted as the
-  // config's, sends the adopter to a place in their config that is fine.
+  // Bun puts the file a position is in beside it. A line and column in another file, quoted as the config's,
+  // sends the adopter to a place in their config that is fine, so that file is named with them.
   test("a position Bun gives in another file is never quoted as the config's", () => {
     const at = (file: string) => ({
       name: "BuildMessage",
@@ -310,8 +304,11 @@ describe("classifyConfigLoadFailure", () => {
       position: { file, line: 1, column: 18, lineText: "export const x = ;" },
     });
     const config = "/home/a/pithy.config.ts";
-    expect(classifyConfigLoadFailure(at("/home/a/src/helpers.ts"), "/home/a", config).action).not.toMatch(/Line \d/);
-    expect(classifyConfigLoadFailure(at(config), "/home/a", config).action).toContain("Line 1, column 18");
+    const imported = classifyConfigLoadFailure(at("/home/a/src/helpers.ts"), "/home/a", config).action;
+    expect(imported).not.toContain("The config");
+    expect(imported).toMatch(/^\.\/src\/helpers\.ts, which the config imports, does not parse: .*Line 1, column 18\./);
+    expect(imported).not.toContain("/home/a");
+    expect(classifyConfigLoadFailure(at(config), "/home/a", config).action).toMatch(/^The config .*Line 1, column 18/);
     // A fresh read imports a copy beside the config, and the copy's position is the config's own.
     const copy = "/home/a/.pithy.reload.0b6f1c52-5a1e-4c4e-9d7e-2f0f3d6b8a10.ts";
     expect(classifyConfigLoadFailure(at(copy), "/home/a", config).action).toContain("Line 1, column 18");
@@ -338,28 +335,26 @@ describe("classifyConfigLoadFailure", () => {
 });
 
 /**
- * **Two syntax errors used to classify worse than one (#223).**
+ * **Two syntax errors classify as well as one.**
  *
- * #207 fixed the rarer shape. Bun hands `import()` one build diagnostic bare and **two or more inside an
- * `AggregateError`** — and a stray brace cascades, so two-or-more is what a broken config actually looks
- * like. The wrapper's `Object.keys` is empty and its message is `N errors building "<absolute path>"`,
- * which matches no classifier test, so a parse error fell through to "the config threw while loading" and
- * the adopter was told to run the file rather than where the file is broken.
+ * Bun hands `import()` one build diagnostic bare and **two or more inside an `AggregateError`** — and a stray
+ * brace cascades, so two-or-more is what a broken config actually looks like. The wrapper's `Object.keys` is
+ * empty and its message is `N errors building "<absolute path>"`, which matches no classifier test, so the
+ * classifier opens the wrapper first; read as it stands, a parse error would fall through to "the config threw
+ * while loading".
  *
- * The fixture below is **not** a synthetic one-liner. It is the shape Bun 1.4.2 really throws for a
- * `pithy.config.ts` missing one closing brace — four diagnostics, positions and all — captured verbatim,
- * because #207 survived its own Bun testing by repro'ing with a single deliberate typo. 1.3.14 threw the
- * same four; what changed in 1.4 is the class and the second import, and the live block below holds both.
+ * The fixture below is **not** a synthetic one-liner. It is the shape Bun really throws for a `pithy.config.ts`
+ * missing one closing brace — four diagnostics, positions and all — captured verbatim, because a single deliberate
+ * typo produces the bare shape and tests nothing here. The live block below checks the shape against Bun.
  */
-describe("Bun wraps two or more build diagnostics, and a cascade is the common case (#223)", () => {
+describe("Bun wraps two or more build diagnostics, and a cascade is the common case", () => {
   /** The real path Bun quoted, kept absolute: it is exactly what must not reach `action`. */
   const FILE = "/home/a/scratch/two/pithy.config.ts";
 
   /**
-   * Verbatim from Bun 1.4.2 importing a config whose `const seed = {` is never closed. Plain objects
-   * carrying Bun's fields, never `new Error(...)`: the classifier reads fields, and a fixture that only
-   * works because it is an `Error` is the trap #207 shipped. Four diagnostics, because one missing brace
-   * produces four.
+   * Verbatim from Bun importing a config whose `const seed = {` is never closed. Plain objects carrying Bun's
+   * fields, never `new Error(...)`: the classifier reads fields, and a fixture must not pass only because it is an
+   * `Error`. Four diagnostics, because one missing brace produces four.
    */
   const CASCADE = {
     name: "AggregateError",
@@ -421,7 +416,7 @@ describe("Bun wraps two or more build diagnostics, and a cascade is the common c
     expect(action).not.toContain("Line 6");
   });
 
-  test("the wrapper leaks nothing #207 kept out — no path, no source line, no count, no newline", () => {
+  test("the wrapper leaks nothing a bare diagnostic keeps out — no path, no source line, no count, no newline", () => {
     const { action } = classifyConfigLoadFailure(CASCADE);
     expect(action).not.toContain(FILE);
     expect(action).not.toContain("/home/a");
@@ -462,25 +457,20 @@ describe("Bun wraps two or more build diagnostics, and a cascade is the common c
 /**
  * **The wrapper shape, asserted against Bun itself.**
  *
- * Everything above is a fixture, and a fixture is a claim about a runtime that the fixture cannot check.
- * That is precisely how #223 happened: #207's suite was green while the shipping runtime disagreed with
- * it. So this spawns the runtime that ships — `bin` runs on Bun — imports a genuinely broken config, and
- * asserts what actually comes back.
+ * Everything above is a fixture, and a fixture is a claim about a runtime that the fixture cannot check: a suite
+ * can be green while the shipping runtime disagrees with it. So this spawns the runtime that ships — `bin` runs on
+ * Bun — imports a genuinely broken config, and asserts what actually comes back.
  *
- * It is written to fail **loudly** in both directions. If a future Bun stops wrapping, the cascade case
- * fails here rather than silently reverting `classifyConfigLoadFailure` to today's bug; if Bun starts
- * wrapping the single-diagnostic case too, that fails here as well. Either way the fact in core's
- * `rootCause` is revisited by whoever changes Bun, not discovered by an adopter with a stray brace.
- *
- * That is not hypothetical. Moving from 1.3.14 to 1.4.2 failed three of these (#709): `BuildMessage`
- * became an `Error`, and a second import stopped losing its diagnostics. Each assertion below is what
- * 1.4.2 does.
+ * It is written to fail **loudly** in both directions. If a future Bun stops wrapping, the cascade case fails
+ * here; if Bun starts wrapping the single-diagnostic case too, that fails here as well. Either way the fact in
+ * core's `rootCause` is revisited by whoever changes Bun, not discovered by an adopter with a stray brace. A Bun
+ * upgrade that changes the class of `BuildMessage`, or what a second import keeps, fails here too.
  *
  * vitest runs these on Node, so `bun` is spawned. Every job in CI installs it (`oven-sh/setup-bun`), and
  * the repo mandates it for everything in dev, so a missing `bun` is a broken environment and this says so
  * rather than skipping.
  */
-describe("Bun's real wrapper shape, from Bun (#223)", () => {
+describe("Bun's real wrapper shape, from Bun", () => {
   /** One missing `}`. Nothing else is wrong with this file — and it produces four diagnostics. */
   const CASCADING = [
     "const seed = {",
@@ -495,7 +485,7 @@ describe("Bun's real wrapper shape, from Bun (#223)", () => {
     "",
   ].join("\n");
 
-  /** One diagnostic, and only one — the shape #207 repro'd with. */
+  /** One diagnostic, and only one — the bare shape. */
   const SINGLE = 'export default {{ name: "acme" };\n';
 
   /** One thrown value, read through the same `prop`/`rootCause` the classifier uses. */
@@ -594,7 +584,7 @@ describe("Bun's real wrapper shape, from Bun (#223)", () => {
   test("rootCause reaches the first BuildMessage, and its position survives", async () => {
     const { root } = await shapeFromBun(CASCADING);
     expect(root.name).toBe("BuildMessage");
-    // An Error since 1.4; on 1.3 it was not, which is the trap #207 shipped. The reader never asks.
+    // An Error, though the classifier never asks.
     expect(root.isError).toBe(true);
     expect(root.message).toBe('Expected identifier but found ";"');
     expect(root.line).toBe(4);
@@ -612,9 +602,8 @@ describe("Bun's real wrapper shape, from Bun (#223)", () => {
 
   /**
    * `pithy doctor` loads the root config twice by design — `projectCloudflareAccount` resolves the account
-   * before the report is built (#206) — so the second import is the one an adopter reads. On 1.3 it came
-   * back emptied and the refusal could name no position (#223). If a future Bun empties it again, this
-   * fails, and the special case 1.3 needed comes back with a reason.
+   * before the report is built — so the second import is the one an adopter reads, and its refusal names a
+   * position only if Bun keeps the diagnostics. If a future Bun empties them, this fails.
    */
   test("a second import of the same broken file keeps its diagnostics — the doctor path's real shape", async () => {
     const { first, second, secondRoot } = await shapeFromBun(CASCADING);
@@ -695,11 +684,10 @@ describe("loadWorkerConfig", () => {
  * **A fresh read writes into the adopter's Worker directory, so it has to clean up after itself.**
  *
  * Busting the module cache needs a different file, and a different file beside the original is the only
- * one whose relative imports still resolve — so `pithy add` has always written one here. What changed is
- * who reaches it: `pithy doctor` and `pithy secrets ls` re-read every Worker's config once per declared
- * environment now (#541), and both are commands that wrote nothing to the project before that. A stray
- * `.pithy.reload.*.ts` in `apps/<name>/` after a Ctrl-C is somebody's `git status`, and on a checkout that
- * cannot be written at all the feature was paying for copies it could never make and saying nothing.
+ * one whose relative imports still resolve. `pithy add` reads one here, and so do `pithy doctor` and
+ * `pithy secrets ls`, once per Worker per declared environment, though neither otherwise writes to the project.
+ * A stray `.pithy.reload.*.ts` in `apps/<name>/` after a Ctrl-C is somebody's `git status`, and a checkout that
+ * cannot be written at all is refused by name rather than left to fail silently.
  */
 describe("a fresh read", () => {
   const COPY = /^\.pithy\.reload\..*\.ts$/;
@@ -823,9 +811,9 @@ describe("requireProjectName", () => {
   });
 
   test("refuses a name the deploy-time namer would reject, so no command half-provisions under it", () => {
-    // `1password-clone` used to sail through here: D1, KV, and R2 were created for real, `pithy migrate`
-    // ran, and only then did the first host-worker deploy throw `core/internal`. It fails on the first
-    // command instead, as a 400 the adopter can act on.
+    // `1password-clone` must fail on the first command, as a 400 the adopter can act on. Accepted here, it would
+    // create D1, KV and R2 for real and run `pithy migrate` before the first host-worker deploy threw
+    // `core/internal`.
     const error = ((): unknown => {
       try {
         requireProjectName({ name: "1password-clone" });
@@ -841,7 +829,7 @@ describe("requireProjectName", () => {
 });
 
 /**
- * The `cloudflare` block: which account this project belongs to (#206). It is the one setting here that
+ * The `cloudflare` block: which account this project belongs to. It is the one setting here that
  * reaches outside the checkout — `accountName` becomes a file name in the config directory — so it is
  * validated on load rather than trusted off the import, exactly as `domains` is.
  */
@@ -899,8 +887,8 @@ describe("the project's cloudflare block", () => {
 });
 
 /**
- * The project's environment declaration (#241) — the setting that ends three parts of the CLI holding
- * three different opinions about which environments a project has.
+ * The project's environment declaration — the one answer every part of the CLI reads for which environments a
+ * project has.
  */
 describe("the project's environments declaration", () => {
   async function project(source: string): Promise<string> {
@@ -939,7 +927,7 @@ describe("the project's environments declaration", () => {
 });
 
 /**
- * The self-administration declaration (#616) — the project saying that one of its own Workers is the
+ * The self-administration declaration — the project saying that one of its own Workers is the
  * control plane it calls. Provisioning writes a `SELF` service binding into every stanza it generates for
  * such a project, because a Worker cannot fetch its own hostname.
  */
@@ -979,35 +967,31 @@ describe("the project's self-administration declaration", () => {
 
 /**
  * **The gate on the filter: no module outside `@pithy-sh/core` decides whether a cause's message is safe
- * to show (#228).**
+ * to show.**
  *
  * `safeReason` is the control that stops a parser diagnostic — a multi-line ANSI box quoting an absolute
  * path and the adopter's own source line — from landing in a `PithyError`'s `action`, which the CLI
- * renderer prints and the HTTP codec does not strip. It existed three times: here, in
- * `capabilities/loadFailure.ts`, and in `@pithy-sh/vite`'s `workerConfig.ts`, near-verbatim.
+ * renderer prints and the HTTP codec does not strip. Three surfaces need it: this classifier,
+ * `capabilities/loadFailure.ts`, and `@pithy-sh/vite`'s `workerConfig.ts`.
  *
- * **A security control in triplicate is one fix away from being a security control in duplicate**, and
- * that is not a hypothetical. #223 found that testing *content* let Bun's build-failure wrapper through —
- * `2 errors building "app/config:12:5.ts"` has no leading slash, so it passed the absolute-path check and
- * dragged a fabricated `Line 12, column 5` out of the file name with it — and closing it meant editing
- * three files, correctly, by someone who knew all three were there. The fourth copy is the one nobody
- * tells.
+ * **A security control in triplicate is one fix away from being a security control in duplicate.** A gap in
+ * the filter — `2 errors building "app/config:12:5.ts"` has no leading slash, so it passes an absolute-path
+ * check and drags a fabricated `Line 12, column 5` out of the file name with it — has to be closed in one place,
+ * and a copy nobody knows about is the one that stays open.
  *
- * So the copies are gone and this is what keeps them gone. It lives in the CLI because the CLI is where
+ * So there is one copy, and this keeps it that way. It lives in the CLI because the CLI is where
  * the repository-wide tripwires live and where the walk they share (`ci/sourceFiles.ts`) is, and beside
  * the classifier that held the first copy.
  *
  * **What it asks is the decidable question**, in `atomic.test.ts`'s sense: not "does this module mean to
  * filter a message", which is intent and is exactly what an evader controls, but **does this module
  * declare a message-safety filter of its own** — a declaration named for the safety of a reason or a
- * message, or its own recognizer for an absolute path, which is the one constant no copy of this filter
- * managed to do without. Both are what the three copies were, and both are what a fourth would have to
- * write.
+ * message, or its own recognizer for an absolute path, which no copy of this filter can do without.
  *
  * It deliberately does **not** flag de-coloring. `dev/logging.ts` strips ANSI to render a dev-server log
  * and is right to; stripping escapes is formatting, not a decision about what an adopter may be told.
  */
-describe("the gate on the filter (#228)", () => {
+describe("the gate on the filter", () => {
   /** `packages/cli/src/project` → the repository. Asserted below, so a moved file fails loudly. */
   const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 
@@ -1019,7 +1003,7 @@ describe("the gate on the filter (#228)", () => {
     ],
     [
       "packages/core/src/error/unresolved.ts",
-      "The unresolved-import classifier, beside it in core. It reads paths to decide the kind, and decides what of one may be shown — never an absolute path or a `file:` URL — for all three surfaces at once (#709). It recognizes a path for the same reason `safeReason` does, and it is the one place that may.",
+      "The unresolved-import classifier, beside it in core. It reads paths to decide the kind, and decides what of one may be shown — never an absolute path or a `file:` URL — for all three surfaces at once. It recognizes a path for the same reason `safeReason` does, and it is the one place that may.",
     ],
   ]);
 
@@ -1070,7 +1054,7 @@ describe("the gate on the filter (#228)", () => {
   });
 
   test("the gate bites: a fourth copy of the filter is named, wherever it is planted", () => {
-    // Verbatim from `project/config.ts` before this issue — the copy that is now core's, planted back.
+    // A copy of core's filter, as a classifier module would write its own.
     const planted = [
       "const ABSOLUTE_PATH = /(^|[\\s'\"(])(\\/|~\\/|[A-Za-z]:[\\\\/])/;",
       "function safeReason(cause: unknown): string | undefined {",
@@ -1097,10 +1081,9 @@ describe("the gate on the filter (#228)", () => {
 describe("loadWorkerDomains refuses with the rule it broke", () => {
   /**
    * **The sentence a person reads, pinned.** `renderTerminal` prints `message` and `action` and nothing
-   * else, so the per-rule reason has to be in `message` — it was in `issues`, which only `--json` carries,
-   * and the throw path printed a generic headline over an action line about bare hostnames. For an
-   * internationalized domain that is the one sentence `#665` exists to stop showing, because the hostname
-   * it is shown for **is** a bare hostname.
+   * else, so the per-rule reason has to be in `message`, not only in `issues`, which only `--json` carries. A
+   * generic headline over an action line about bare hostnames is wrong for an internationalized domain, because
+   * the hostname it would be shown for **is** a bare hostname.
    */
   const refusal = (domains: unknown): { message: string; action: string } => {
     try {
@@ -1118,7 +1101,7 @@ describe("loadWorkerDomains refuses with the rule it broke", () => {
     expect(message).toContain("prod.pattern");
     expect(message).toContain("Internationalized domains are not supported");
     expect(message).toContain("Cloudflare Workers");
-    // The regression this pins: the action used to say this, and it is false of the hostname shown for.
+    // A sentence about bare hostnames is false of the hostname shown here.
     expect(action).not.toContain("bare hostname");
   });
 
