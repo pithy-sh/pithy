@@ -13,8 +13,9 @@ import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { appendDeletedClassMigration, type WranglerStanza } from "../project/bindingEntries";
 import { installedPackageBase, uninstallDirFor } from "../project/installedPackage";
-import { type InstallRunner, uninstallPackage } from "../project/packageManager";
+import { type InstallRunner, syncLockfile, uninstallPackage } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
+import type { LockfileSync } from "../project/rootConfigImports";
 import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { removeTestBindings, WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
@@ -344,6 +345,7 @@ async function removeOwnTestBindings(
   capability: string,
   others: readonly Capability[],
   composed: Capability | undefined,
+  sync: LockfileSync,
 ): Promise<string[]> {
   const { manifests } = await composedManifests(projectDir, workerDir);
   const target = manifests.find((manifest) => manifest.name === capability);
@@ -372,6 +374,7 @@ async function removeOwnTestBindings(
   return removeTestBindings(
     projectDir,
     applied.filter((binding) => !kept.has(binding.name)),
+    sync,
   );
 }
 
@@ -431,7 +434,8 @@ export interface RemoveSteps {
   /**
    * Take the capability's test bindings out of the project-root Workers test config, keeping each one another
    * composition still declares; `others` is what the target Worker keeps and `composed` the capability as it built
-   * it (default: the installed manifests and a scan of `apps/*`). Resolves the names taken out.
+   * it (default: the installed manifests and a scan of `apps/*`). A root `devDependency` only those bindings
+   * imported goes with them. Resolves the names taken out.
    */
   removeTestBindings: (
     capability: string,
@@ -453,7 +457,10 @@ export interface DefaultRemoveStepsOptions {
   workerDir: string;
   /** Every capability wired into the target Worker. */
   loadCapabilities: () => Promise<Capability[]>;
-  /** The spawner the uninstall runs (tests inject a stub); defaults to the real package manager. */
+  /**
+   * The spawner the uninstall, and the root install after a root `devDependency` is taken out, run (tests inject a
+   * stub); defaults to the real package manager.
+   */
   run?: InstallRunner;
   /**
    * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`,
@@ -526,7 +533,9 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
     workersUsingPackage: (pkg) => workersUsingPackage(projectDir, workerDir, pkg),
     workersRegistering: (capability) => workersRegistering(projectDir, workerDir, capability),
     removeTestBindings: (capability, others, composed) =>
-      removeOwnTestBindings(projectDir, workerDir, capability, others, composed),
+      removeOwnTestBindings(projectDir, workerDir, capability, others, composed, (root) =>
+        syncLockfile(root, options.run),
+      ),
     testConfigImports: async (pkg) =>
       importsPackage((await readOptionalFile(join(projectDir, WORKERS_TEST_CONFIG))) ?? "", pkg),
     deleteOwnHosts: async (capability) => {

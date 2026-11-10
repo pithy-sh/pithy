@@ -10,6 +10,7 @@ import {
   insertImport,
   isCapabilityImport,
   namedReexports,
+  staticImportSpecifiers,
   withoutBinding,
 } from "./configImports";
 
@@ -362,5 +363,39 @@ describe("insertImport", () => {
 
   test("a file with no header and no imports takes it on its first line", () => {
     expect(insert("export default {};\n")).toBe(`${auth}\n\nexport default {};\n`);
+  });
+});
+
+describe("staticImportSpecifiers", () => {
+  test("every static import's specifier, in source order, whatever its clause", () => {
+    const source = [
+      'import { cloudflareTest } from "@cloudflare/vitest-plugin";',
+      'import type { Env } from "./env";',
+      'import * as path from "node:path";',
+      'import defaults from "vitest/config";',
+      'import "./setup";',
+      "",
+    ].join("\n");
+    expect(staticImportSpecifiers(source)).toEqual([
+      "@cloudflare/vitest-plugin",
+      "./env",
+      "node:path",
+      "vitest/config",
+      "./setup",
+    ]);
+  });
+
+  test("skips a commented-out import, an import inside a string, and a dynamic import", () => {
+    const source = [
+      '// import { a } from "commented";',
+      "/* import { b } from 'blocked'; */",
+      "const text = `",
+      'import { c } from "templated";',
+      "`;",
+      'const lazy = await import("dynamic");',
+      'import { d } from "real";',
+      "",
+    ].join("\n");
+    expect(staticImportSpecifiers(source)).toEqual(["real"]);
   });
 });
