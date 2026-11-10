@@ -10,7 +10,7 @@ import { ValidationError } from "../error/pithyError";
  * Declared once, in the Worker's `pithy.config.ts` (or on a capability, for a var it reads). `pithy worker sync`
  * writes each into the top-level `vars` and every `env.<name>.vars` of the Worker's `wrangler.jsonc`, `pithy doctor`
  * names a stanza that drops one, and {@link WorkerVarsDeclaration.read} hands the running Worker each value typed,
- * with the default in place of one that is missing or does not parse.
+ * with the default in place of one that is missing or does not parse, and tells its `onFallback` which those were.
  *
  * No `cloudflare:` import and no Node builtin: the CLI imports a declaration to write and check it.
  */
@@ -32,19 +32,42 @@ export type WorkerVarValues<V extends Record<string, WorkerVar>> = {
   [K in keyof V]: z.output<V[K]["schema"]>;
 };
 
+/**
+ * A var {@link WorkerVarsDeclaration.read} gave its default: its name, the raw value `env` held (`undefined` where it
+ * held none), and why. `problem` is what {@link parseVar} says; `issues` are the schema's own, or the plain-decimal
+ * rule as one `custom` issue for text a number schema would read as a finite number only another way, and none for a
+ * missing var.
+ */
+export interface VarFallback<Name extends string = string> {
+  readonly name: Name;
+  readonly raw: unknown;
+  readonly reason: "missing" | "invalid";
+  readonly problem: string;
+  readonly issues: readonly z.core.$ZodIssue[];
+}
+
+/** How {@link WorkerVarsDeclaration.read} reports. */
+export interface VarReadOptions<Name extends string = string> {
+  /**
+   * Called once per var that fell back, in declaration order, on every read: a read of an `env` already read reports
+   * its fallbacks again. The values read are the same with it or without it.
+   */
+  readonly onFallback?: (fallback: VarFallback<Name>) => void;
+}
+
 /** What {@link defineVars} returns: the declaration, and the reader for it. */
 export interface WorkerVarsDeclaration<V extends Record<string, WorkerVar> = Record<string, WorkerVar>> {
   /** Marks a value as built by {@link defineVars}, for the CLI that reads it off a loaded config. */
   readonly kind: "pithy.worker-vars";
   /** Each var, by name. */
   readonly vars: Readonly<V>;
-  /** Every var parsed out of `env`, the default in place of one missing or invalid. */
-  read(env: unknown): WorkerVarValues<V>;
+  /** Every var parsed out of `env`, the default in place of one missing or invalid, each such var told to `onFallback`. */
+  read(env: unknown, options?: VarReadOptions<keyof V & string>): WorkerVarValues<V>;
 }
 
 /**
  * What {@link parseVar} found. `problem` is `missing` for an absent value, the plain-decimal rule for text that reads
- * as a number only another way, else the schema's own message.
+ * as a finite number only another way under a schema that takes a number, else the schema's own message.
  */
 export type ParsedVar = { ok: true; value: unknown } | { ok: false; problem: string };
 
@@ -61,30 +84,61 @@ const NOT_PLAIN_DECIMAL =
  * Parse one raw value under its declaration. A `.dev.vars` line carries every value as text while `wrangler.jsonc`
  * carries it typed, so a string the schema refuses is tried once more decoded: a plain decimal as that number, any
  * other text as JSON, which is how an object, array or boolean is written. Text that comes out a number only by
- * another route (` 15`, `1e3`, `0x10`, an empty string under `z.coerce.number()`) is refused whatever the schema
- * transforms the number into, so a typo falls back to the default instead of reading as a different value. A schema
- * that takes the text itself and transforms it into a number, like `"5m"` into milliseconds, is its own rule, and its
- * result stands.
+ * another route (` 15`, `1e3`, `0x10`, `.5`, an empty string), under `z.number()` or `z.coerce.number()` alike, is
+ * refused with the plain-decimal rule whatever the schema transforms the number into, so a typo falls back to the
+ * default instead of reading as a different value. A schema that takes the text itself and transforms it into a
+ * number, like `"5m"` into milliseconds, is its own rule, and its result stands.
  */
 export function parseVar(entry: WorkerVar, raw: unknown): ParsedVar {
-  if (raw === undefined) return { ok: false, problem: "missing" };
+  const parsed = parseVarIssues(entry, raw);
+  return parsed.ok ? parsed : { ok: false, problem: parsed.problem };
+}
+
+/** {@link parseVar}, with the issues behind a refusal. */
+function parseVarIssues(
+  entry: WorkerVar,
+  raw: unknown,
+): { ok: true; value: unknown } | { ok: false; problem: string; issues: readonly z.core.$ZodIssue[] } {
+  if (raw === undefined) return { ok: false, problem: "missing", issues: [] };
+  const notPlainDecimal = () => ({
+    ok: false as const,
+    problem: NOT_PLAIN_DECIMAL,
+    issues: [{ code: "custom" as const, message: NOT_PLAIN_DECIMAL, path: [], input: raw }],
+  });
   const loose = typeof raw === "string" && !PLAIN_DECIMAL.test(raw);
   const direct = entry.schema.safeParse(raw);
   if (direct.success) {
     return loose && readsAsNumber(entry, direct.data, Number(raw))
-      ? { ok: false, problem: NOT_PLAIN_DECIMAL }
+      ? notPlainDecimal()
       : { ok: true, value: direct.data };
   }
   if (typeof raw === "string") {
     const decoded = loose ? decodeJson(raw) : Number(raw);
     const retried = isTextValue(decoded, loose) ? entry.schema.safeParse(decoded) : undefined;
     if (retried?.success) {
-      return loose && typeof decoded === "number"
-        ? { ok: false, problem: NOT_PLAIN_DECIMAL }
-        : { ok: true, value: retried.data };
+      return loose && typeof decoded === "number" ? notPlainDecimal() : { ok: true, value: retried.data };
+    }
+    if (loose && refusesTextFor("number", direct.error.issues) && Number.isFinite(Number(raw))) {
+      return notPlainDecimal();
+    }
+    if (retried !== undefined && !(loose && typeof decoded === "number") && refusesText(direct.error.issues)) {
+      return { ok: false, problem: retried.error.issues[0]?.message ?? "invalid", issues: retried.error.issues };
     }
   }
-  return { ok: false, problem: direct.error.issues[0]?.message ?? "invalid" };
+  return { ok: false, problem: direct.error.issues[0]?.message ?? "invalid", issues: direct.error.issues };
+}
+
+/**
+ * Whether a schema refused text for being text: its only issue is a type mismatch on the value itself. Only then does
+ * the decoded value's refusal say more; a schema that takes text keeps its own refusal of it.
+ */
+function refusesText(issues: readonly z.core.$ZodIssue[]): boolean {
+  return issues.length === 1 && issues[0]?.code === "invalid_type" && issues[0].path.length === 0;
+}
+
+/** Whether a schema refused text for being text where it expects `expected`, as `z.number()` refuses `"0x10"`. */
+function refusesTextFor(expected: string, issues: readonly z.core.$ZodIssue[]): boolean {
+  return refusesText(issues) && issues[0]?.code === "invalid_type" && issues[0].expected === expected;
 }
 
 /**
@@ -172,22 +226,34 @@ export function defineVars<const V extends Record<string, z.ZodType>>(
     defaults[name] = (parseVar(entry, entry.default) as { ok: true; value: unknown }).value;
   }
 
-  const cache = new WeakMap<object, WorkerVarValues<{ [K in keyof V]: WorkerVar<V[K]> }>>();
+  type Read = { values: WorkerVarValues<{ [K in keyof V]: WorkerVar<V[K]> }>; fallbacks: VarFallback[] };
+  const cache = new WeakMap<object, Read>();
   return {
     kind: "pithy.worker-vars",
     vars: vars as { [K in keyof V]: WorkerVar<V[K]> },
-    read(env) {
+    read(env, options) {
       const subject = typeof env === "object" && env !== null ? (env as Record<string, unknown>) : {};
-      const known = cache.get(subject);
-      if (known !== undefined) return known;
-      const values: Record<string, unknown> = {};
-      for (const [name, entry] of Object.entries(entries)) {
-        const parsed = parseVar(entry, Object.hasOwn(subject, name) ? subject[name] : undefined);
-        values[name] = parsed.ok ? parsed.value : defaults[name];
+      let known = cache.get(subject);
+      if (known === undefined) {
+        const values: Record<string, unknown> = {};
+        const fallbacks: VarFallback[] = [];
+        for (const [name, entry] of Object.entries(entries)) {
+          const raw = Object.hasOwn(subject, name) ? subject[name] : undefined;
+          const parsed = parseVarIssues(entry, raw);
+          if (parsed.ok) {
+            values[name] = parsed.value;
+            continue;
+          }
+          values[name] = defaults[name];
+          const reason = raw === undefined ? "missing" : "invalid";
+          fallbacks.push({ name, raw, reason, problem: parsed.problem, issues: parsed.issues });
+        }
+        known = { values: values as Read["values"], fallbacks };
+        cache.set(subject, known);
       }
-      const typed = values as WorkerVarValues<{ [K in keyof V]: WorkerVar<V[K]> }>;
-      cache.set(subject, typed);
-      return typed;
+      const onFallback = options?.onFallback as ((fallback: VarFallback) => void) | undefined;
+      if (onFallback !== undefined) for (const fallback of known.fallbacks) onFallback(fallback);
+      return known.values;
     },
   };
 }
