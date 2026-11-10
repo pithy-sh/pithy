@@ -107,6 +107,10 @@ describe("read", () => {
     expect(flags.read({ FLAGS: '{"beta":true}' })).toEqual({ FLAGS: { beta: true } });
   });
 
+  it("falls back to the default on a number written as exponent text", () => {
+    expect(VARS.read({ READY_AFTER_MINUTES: "1e3" }).READY_AFTER_MINUTES).toBe(15);
+  });
+
   it("treats an env that is not an object as one holding nothing", () => {
     expect(VARS.read(undefined)).toEqual({ READY_AFTER_MINUTES: 15, MODE: "live" });
   });
@@ -121,6 +125,142 @@ describe("parseVar", () => {
 
   it("says a missing value is missing", () => {
     expect(parseVar(VARS.vars.MODE, undefined)).toEqual({ ok: false, problem: "missing" });
+  });
+
+  const NUMBERS = defineVars({
+    STRICT: { description: "A plain number.", schema: z.number(), default: 1 },
+    COERCED: { description: "A coerced number.", schema: z.coerce.number(), default: 1 },
+  });
+
+  it.each(["STRICT", "COERCED"] as const)("parses a plain decimal written as text under a %s number schema", (name) => {
+    const entry = NUMBERS.vars[name];
+    expect(parseVar(entry, "15")).toEqual({ ok: true, value: 15 });
+    expect(parseVar(entry, "-3")).toEqual({ ok: true, value: -3 });
+    expect(parseVar(entry, "+3")).toEqual({ ok: true, value: 3 });
+    expect(parseVar(entry, "1.5")).toEqual({ ok: true, value: 1.5 });
+  });
+
+  it.each(["STRICT", "COERCED"] as const)(
+    "refuses padded, exponent, hex and empty text under a %s number schema",
+    (name) => {
+      for (const text of [" 15", "15 ", "1e1", "1E3", "0x10", "", "1.", ".5", "Infinity", "1_000"]) {
+        expect(parseVar(NUMBERS.vars[name], text).ok, JSON.stringify(text)).toBe(false);
+      }
+      expect(parseVar(NUMBERS.vars[name], "1e1")).toEqual({
+        ok: false,
+        problem: expect.stringMatching(/plain decimal/),
+      });
+      expect(parseVar(NUMBERS.vars[name], " 15")).toEqual({
+        ok: false,
+        problem: expect.stringMatching(/plain decimal/),
+      });
+    },
+  );
+
+  it("parses a number wrangler.jsonc stores as a JSON number, exponent and all", () => {
+    expect(parseVar(NUMBERS.vars.STRICT, 15)).toEqual({ ok: true, value: 15 });
+    expect(parseVar(NUMBERS.vars.STRICT, 1e3)).toEqual({ ok: true, value: 1000 });
+  });
+
+  it("decodes object, array and boolean vars from their JSON text", () => {
+    const json = defineVars({
+      OBJECT: { description: "An object.", schema: z.object({ beta: z.boolean() }), default: { beta: false } },
+      LIST: { description: "A list.", schema: z.array(z.number()), default: [] },
+      ON: { description: "A switch.", schema: z.boolean(), default: false },
+    });
+    expect(parseVar(json.vars.OBJECT, '{"beta":true}')).toEqual({ ok: true, value: { beta: true } });
+    expect(parseVar(json.vars.LIST, "[1e1, 2]")).toEqual({ ok: true, value: [10, 2] });
+    expect(parseVar(json.vars.ON, "true")).toEqual({ ok: true, value: true });
+  });
+
+  it("leaves text a string schema takes as it is", () => {
+    const text = defineVars({ LABEL: { description: "A label.", schema: z.string(), default: "x" } });
+    expect(parseVar(text.vars.LABEL, "1e1")).toEqual({ ok: true, value: "1e1" });
+  });
+
+  it("takes the text a string schema transforms into a number", () => {
+    const toMs = (text: string) => Number.parseInt(text, 10) * 60_000;
+    const durations = defineVars({
+      TIMEOUT: {
+        description: "How long a request waits.",
+        schema: z
+          .string()
+          .regex(/^\d+m$/)
+          .transform(toMs),
+        default: "5m",
+        environments: { prod: "10m" },
+      },
+    });
+    expect(parseVar(durations.vars.TIMEOUT, "10m")).toEqual({ ok: true, value: 600_000 });
+    expect(durations.read({ TIMEOUT: "2m" }).TIMEOUT).toBe(120_000);
+    expect(durations.read({}).TIMEOUT).toBe(300_000);
+  });
+
+  it("holds a coerced number to the plain-decimal rule when a transform follows it", () => {
+    const scaled = defineVars({
+      SCALED: {
+        description: "A small number, scaled.",
+        schema: z.coerce
+          .number()
+          .max(10)
+          .transform((n) => n * 100),
+        default: 1,
+      },
+    });
+    expect(parseVar(scaled.vars.SCALED, "5")).toEqual({ ok: true, value: 500 });
+    expect(parseVar(scaled.vars.SCALED, " 5")).toEqual({ ok: false, problem: expect.stringMatching(/plain decimal/) });
+  });
+
+  it("decodes a boolean or object var whose schema transforms it into a number", () => {
+    const transformed = defineVars({
+      FLAG: { description: "A switch, as 0 or 1.", schema: z.boolean().transform((b) => (b ? 1 : 0)), default: false },
+      RATE: {
+        description: "Requests a minute.",
+        schema: z.object({ perMin: z.number() }).transform((o) => o.perMin),
+        default: { perMin: 60 },
+      },
+    });
+    expect(parseVar(transformed.vars.FLAG, "true")).toEqual({ ok: true, value: 1 });
+    expect(parseVar(transformed.vars.RATE, '{"perMin":120}')).toEqual({ ok: true, value: 120 });
+    expect(transformed.read({ RATE: '{"perMin":120}' }).RATE).toBe(120);
+  });
+
+  it("holds a number schema to the plain-decimal rule when a transform makes something else of it", () => {
+    const transformed = defineVars({
+      LABEL: { description: "A number, as text.", schema: z.number().transform((n) => String(n)), default: 1 },
+      EXPIRES_AT: { description: "When it expires.", schema: z.number().transform((ms) => new Date(ms)), default: 0 },
+    });
+    const refused = { ok: false, problem: expect.stringMatching(/plain decimal/) };
+    expect(parseVar(transformed.vars.LABEL, "1e3")).toEqual(refused);
+    expect(parseVar(transformed.vars.LABEL, " 15")).toEqual(refused);
+    expect(parseVar(transformed.vars.LABEL, "15")).toEqual({ ok: true, value: "15" });
+    expect(parseVar(transformed.vars.EXPIRES_AT, "1e12")).toEqual(refused);
+    expect(transformed.read({ EXPIRES_AT: "1e12" }).EXPIRES_AT).toEqual(new Date(0));
+  });
+
+  it("holds a coerced number to the plain-decimal rule whatever a transform makes of it", () => {
+    const coerced = defineVars({
+      LABEL: { description: "A number, as text.", schema: z.coerce.number().transform((n) => String(n)), default: "1" },
+      AT: { description: "When.", schema: z.coerce.number().transform((ms) => new Date(ms)), default: 0 },
+    });
+    const refused = { ok: false, problem: expect.stringMatching(/plain decimal/) };
+    expect(parseVar(coerced.vars.LABEL, "1e3")).toEqual(refused);
+    expect(parseVar(coerced.vars.LABEL, " 15")).toEqual(refused);
+    expect(parseVar(coerced.vars.LABEL, "")).toEqual(refused);
+    expect(parseVar(coerced.vars.LABEL, "15")).toEqual({ ok: true, value: "15" });
+    expect(parseVar(coerced.vars.AT, "1e12")).toEqual(refused);
+  });
+
+  it("takes exponent text as text under a schema that reads it as a string", () => {
+    const either = defineVars({
+      CODE: { description: "A number or a code.", schema: z.union([z.number(), z.string()]), default: 0 },
+    });
+    expect(parseVar(either.vars.CODE, "1e3")).toEqual({ ok: true, value: "1e3" });
+  });
+
+  it("refuses a quoted number decoded from JSON text", () => {
+    const coerced = defineVars({ N: { description: "A number.", schema: z.coerce.number(), default: 1 } });
+    expect(parseVar(coerced.vars.N, '"15"').ok).toBe(false);
   });
 });
 
