@@ -27,6 +27,15 @@
       "classModule": "@pithy-sh/core/src/presence/durableObject"
     }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "unbound", "name": "PRESENCE_ROOMS" },
+    { "kind": "r2", "name": "SUPPORT_BUCKET" },
+    { "kind": "unbound", "name": "SUPPORT_CLASSIFY" },
+    { "kind": "unbound", "name": "SUPPORT_REPROCESS" },
+    { "kind": "unbound", "name": "SUPPORT_VECTORIZE" },
+    { "kind": "unbound", "name": "AI" }
+  ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["controlplane", "email", "auth", "payments", "audit", "storage"],
   "migrationNamespace": "support",

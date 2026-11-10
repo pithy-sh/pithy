@@ -156,6 +156,7 @@ const OPEN_SUBTREES = [
   "doctor: $.sharedRuntimes|0.copies",
   "doctor: $.supportSearchTriggers|0",
   "doctor: $.supportSearchTriggers|0.environments[]",
+  "doctor: $.testBindings|0",
   "doctor: $.turnstileSitekeys|0",
   "doctor: $.turnstileSitekeys|0.stranded[]",
   "doctor: $.turnstileSitekeys|0.unrendered[]",

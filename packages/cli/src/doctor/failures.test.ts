@@ -971,6 +971,12 @@ describe("every finding in every block carries fix", () => {
         findings: ["Cursor, nothing in /home/u/.cursor/mcp.json — pithy docs connect --client cursor"],
         clients: [{ client: "cursor", label: "Cursor", paths: ["/home/u/.cursor/mcp.json"] }],
       }),
+      checkTestBindings: async () => ({
+        state: "missing",
+        missing: [
+          { capability: "secrets", workers: ["api"], bindings: ["SECRETS"], fix: "pithy add secrets --worker api" },
+        ],
+      }),
       checkServiceBindings: async () => ({
         state: "faulty",
         faults: [{ kind: "missing-target", worker: "api", binding: "APP_Z", target: "app-z", path: null }],

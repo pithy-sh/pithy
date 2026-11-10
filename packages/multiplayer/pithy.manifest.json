@@ -10,6 +10,7 @@
     },
     { "type": "d1", "name": "DB" }
   ],
+  "testBindings": [{ "kind": "unbound", "name": "SESSIONS" }, { "kind": "d1", "name": "DB" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "leaderboard", "ledger", "rating"],
   "migrationNamespace": "multiplayer",

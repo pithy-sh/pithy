@@ -2,6 +2,10 @@
   "name": "auth",
   "package": "@pithy-sh/auth",
   "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "ratelimit", "name": "AUTH_RATE_LIMITER" }],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "ratelimit", "name": "AUTH_RATE_LIMITER", "limit": 100, "period": 60 }
+  ],
   "peerCapabilities": ["secrets", "email"],
   "optionalCapabilities": ["turnstile", "audit"],
   "migrationNamespace": "auth",

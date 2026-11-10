@@ -30,6 +30,7 @@ vi.mock("../capabilities/remove", async (importOriginal) => ({
       present: false,
       ejected: false,
       removedBindings: [],
+      removedTestBindings: [],
       keptFor: [],
       tablesRemain: false,
       ...seen.result,
@@ -232,6 +233,19 @@ describe("remove --drop composes for the environment it drops", () => {
     const uninstalled = await run({ capability: "mcp" });
     expect(uninstalled).toContain("Uninstalled @pithy-sh/auth.");
     expect(`${kept}${uninstalled}`).not.toContain("@pithy-sh/mcp");
+  });
+
+  test("names the test bindings it took out, and a package the Workers test config still imports", async () => {
+    seen.result = {
+      capability: "secrets",
+      package: "@pithy-sh/secrets",
+      present: true,
+      removedTestBindings: ["SECRETS", "SECRETS_ENCRYPTION_KEYS"],
+      keptForTests: true,
+    };
+    const out = await run({ capability: "secrets" });
+    expect(out).toContain("Took SECRETS, SECRETS_ENCRYPTION_KEYS out of vitest.workers.config.ts.");
+    expect(out).toContain("Kept @pithy-sh/secrets installed — vitest.workers.config.ts still imports it.");
   });
 
   /**

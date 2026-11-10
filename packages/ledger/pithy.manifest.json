@@ -2,6 +2,7 @@
   "name": "ledger",
   "package": "@pithy-sh/ledger",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "testBindings": [{ "kind": "d1", "name": "DB" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "controlplane", "audit"],
   "migrationNamespace": "ledger",

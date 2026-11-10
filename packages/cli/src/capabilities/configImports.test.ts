@@ -192,7 +192,7 @@ describe("withoutBinding", () => {
 
 /**
  * **Is that name on this module at runtime?** — the question `pithy add` asks a Worker entry before
- * writing a Durable Object's export into it (#428), because a second statement exporting a name the
+ * writing a Durable Object's export into it, because a second statement exporting a name the
  * module already carries is a duplicate export the build refuses.
  *
  * Three spellings put a name on a module and two only look like it. The scanner draws the line, so a
@@ -260,9 +260,8 @@ describe("namedReexports", () => {
       'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',
       'export { Room } from "./rooms";',
     ].join("\n");
-    // The offset is what an edit splices at. Found by searching for the statement instead, a caller
-    // repointed the adopter's commented-out copy of a line — a comment contains the live statement
-    // verbatim — and left the export that runs pointing at the package (#428).
+    // The offset is what an edit splices at: a commented-out copy of the line contains the live statement
+    // verbatim, so a search for the text could land on the comment.
     expect(namedReexports(source)).toEqual([
       {
         statement: 'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',
