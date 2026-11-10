@@ -1,5 +1,15 @@
 # @pithy-sh/auth
 
+## 0.15.2
+
+### Patch Changes
+
+- Updated dependencies [[`f981136`](https://github.com/pithy-sh/pithy/commit/f98113667b52e62adb3c87fb9afc0da20dc00719), [`684b598`](https://github.com/pithy-sh/pithy/commit/684b5988cf7f067907ca917b0aa3a160201b19cd), [`358f6c4`](https://github.com/pithy-sh/pithy/commit/358f6c425d916a3976a6dd909f930d2bbd17ec88)]:
+  - @pithy-sh/core@0.22.0
+  - @pithy-sh/email@0.10.5
+  - @pithy-sh/secrets@0.6.10
+  - @pithy-sh/turnstile@0.8.6
+
 ## 0.15.1
 
 ### Patch Changes

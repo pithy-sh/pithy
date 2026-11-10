@@ -1,5 +1,27 @@
 # @pithy-sh/cli
 
+## 0.26.0
+
+### Minor Changes
+
+- [#1005](https://github.com/pithy-sh/pithy/pull/1005) [`684b598`](https://github.com/pithy-sh/pithy/commit/684b5988cf7f067907ca917b0aa3a160201b19cd) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker declares its own vars in `pithy.config.ts`, `pithy worker sync` writes them into every environment, and `pithy doctor` names a stanza that drops one.
+
+### Patch Changes
+
+- [#1001](https://github.com/pithy-sh/pithy/pull/1001) [`93ad9a2`](https://github.com/pithy-sh/pithy/commit/93ad9a2fb2a4060c110bd118440723ee08d94b99) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` declares the packages its test bindings import at the root, so the Workers tests run after a clean install.
+
+- [#1002](https://github.com/pithy-sh/pithy/pull/1002) [`ab95bb4`](https://github.com/pithy-sh/pithy/commit/ab95bb4af1510aea50a823918b864e630dba1812) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy upgrade --packages` says when it held a release back, and which command takes it.
+
+- [#1004](https://github.com/pithy-sh/pithy/pull/1004) [`f981136`](https://github.com/pithy-sh/pithy/commit/f98113667b52e62adb3c87fb9afc0da20dc00719) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy worker sync --dry-run` shows what it would write, and doctor flags a capability declared twice.
+
+- [#1000](https://github.com/pithy-sh/pithy/pull/1000) [`65ed79c`](https://github.com/pithy-sh/pithy/commit/65ed79ced4cc5ed92db76896c31e1ec47bbfc5f2) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy feature create` warns that a worktree resolves packages from the main checkout, and the testing docs cover Workflow instance ids.
+- Updated dependencies [[`f981136`](https://github.com/pithy-sh/pithy/commit/f98113667b52e62adb3c87fb9afc0da20dc00719), [`684b598`](https://github.com/pithy-sh/pithy/commit/684b5988cf7f067907ca917b0aa3a160201b19cd), [`358f6c4`](https://github.com/pithy-sh/pithy/commit/358f6c425d916a3976a6dd909f930d2bbd17ec88)]:
+  - @pithy-sh/core@0.22.0
+  - @pithy-sh/cloudflare@0.10.5
+  - @pithy-sh/email@0.10.5
+  - @pithy-sh/secrets@0.6.10
+  - @pithy-sh/turnstile@0.8.6
+
 ## 0.25.0
 
 ### Minor Changes

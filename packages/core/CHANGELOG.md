@@ -1,5 +1,17 @@
 # @pithy-sh/core
 
+## 0.22.0
+
+### Minor Changes
+
+- [#1005](https://github.com/pithy-sh/pithy/pull/1005) [`684b598`](https://github.com/pithy-sh/pithy/commit/684b5988cf7f067907ca917b0aa3a160201b19cd) Thanks [@kingmesal](https://github.com/kingmesal)! - A Worker declares its own vars in `pithy.config.ts`, `pithy worker sync` writes them into every environment, and `pithy doctor` names a stanza that drops one.
+
+- [#999](https://github.com/pithy-sh/pithy/pull/999) [`358f6c4`](https://github.com/pithy-sh/pithy/commit/358f6c425d916a3976a6dd909f930d2bbd17ec88) Thanks [@kingmesal](https://github.com/kingmesal)! - A test helper holds a Workflow step at a point, so two runs can be tested interleaving.
+
+### Patch Changes
+
+- [#1004](https://github.com/pithy-sh/pithy/pull/1004) [`f981136`](https://github.com/pithy-sh/pithy/commit/f98113667b52e62adb3c87fb9afc0da20dc00719) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy worker sync --dry-run` shows what it would write, and doctor flags a capability declared twice.
+
 ## 0.21.0
 
 ### Minor Changes
