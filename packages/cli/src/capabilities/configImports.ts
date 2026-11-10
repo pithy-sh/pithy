@@ -319,6 +319,20 @@ export function exportsName(source: string, name: string): boolean {
   return false;
 }
 
+/** `export * from "…"` — every value name of another module, none of them spelled here. */
+const STAR_EXPORT = /^[ \t]*export\s*\*\s*from\s*["']/gm;
+
+/**
+ * Whether the module re-exports every name of another module with `export * from "…"`.
+ *
+ * {@link exportsName} reads names, and a star re-export spells none, so where this is true a name it does not
+ * find may still be on the module. `export * as ns` puts one name there, and `export type *` puts nothing.
+ */
+export function reexportsAll(source: string): boolean {
+  for (const _ of namedClauses(source, STAR_EXPORT)) return true;
+  return false;
+}
+
 /**
  * The module specifier a capability's factory is imported from — the package's `src/index` barrel.
  *

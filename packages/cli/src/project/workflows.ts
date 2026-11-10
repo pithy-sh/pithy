@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { relative } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type Command, commandName, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { exportsName, reexportsAll } from "../capabilities/configImports";
 import { isSourceEnvironment } from "../provision/featureConfig";
 import { withFix } from "../terminal/exitClass";
 import {
@@ -17,57 +19,40 @@ import {
 } from "./appWorkflows";
 import { composeFor } from "./composeFor";
 import { loadProject, loadProjectEnvironments, requireProjectName } from "./config";
+import { readOptionalFile } from "./readOptionalFile";
 import { workerDirName } from "./workerIdentity";
 import { discoverWorkers } from "./workers";
-import { readOptionalWranglerConfig } from "./wrangler";
+import { readOptionalWranglerConfig, workerEntryPath } from "./wrangler";
 
 /**
  * **What the app capability declares is what the environment's stanza binds.**
  *
- * That is the whole invariant, and until #267 nothing asked it. `reconcileAppWorkflows` derives the
- * `workflows` table and `triggers.crons` from the `app` capability's `workflows` map and writes them into
- * `wrangler.jsonc`; its only caller is `pithy worker sync`; and no check anywhere read the two halves back.
- * The same structure as #264 one file over — a declaration in `pithy.config.ts`, a fact in
- * `wrangler.jsonc`, one writer, no reader — and the same ending: an adopter who declares a job and never
- * runs `sync` gets a green `pithy doctor`, a green `pithy deploy`, and a Worker that ships with no
- * `workflows` entry and no `triggers.crons`.
+ * `reconcileAppWorkflows` derives the `workflows` table and `triggers.crons` from the `app` capability's `workflows`
+ * map and writes them into `wrangler.jsonc`, and `pithy worker sync` is its only caller. This file reads the two
+ * halves back, for `pithy doctor` and the deploy gate, because a job declared and never synced deploys with no
+ * `workflows` entry and no `triggers.crons`:
  *
- * What that costs is worth naming, because two of the three failures are loud and the third is not:
- *
- * - **The cron never fires.** Nothing is wrong anywhere. No request fails, no log line appears, no probe
- *   goes red. The job simply does not run, and the first sign of it is whatever the job existed to
- *   prevent. This is the failure this reader exists for.
- * - **`c.var.workflows.trigger("board/digest", …)` cannot reach a binding wrangler never wrote.** Loud,
- *   at least: `createBackend` derives a `workflow` binding spec from every registered job, so a
- *   non-`optional` one that is absent fails `validateBindings` on the Worker's first request.
- * - **A binding that carries another environment's name** — the shape a copy-pasted stanza produces —
- *   starts instances of a Workflow deployed for somewhere else.
+ * - **The cron never fires.** No request fails, no log line appears, no probe goes red. This is the failure this
+ *   reader exists for.
+ * - **`c.var.workflows.trigger("board/digest", …)` cannot reach a binding wrangler never wrote.** Loud: `createBackend`
+ *   derives a `workflow` binding spec from every registered job, so a non-`optional` one that is absent fails
+ *   `validateBindings` on the Worker's first request.
+ * - **A binding that carries another environment's name** starts instances of a Workflow deployed for somewhere else.
  *
  * ## The question is asked once, of the whole table
  *
- * Not "is every declared job bound?" plus "is every bound job declared?" plus "is every cron declared?".
- * Those are three ways for one comparison to come out, and a gate written as a list of them is a gate
- * that will one day be missing the fourth — which is exactly how #264 shipped, asking what `workers_dev`
- * was set to instead of what serves the host. So the declaration is reduced to the table it implies
- * (through {@link planAppWorkflows}, the same function the writer plans with, so the two cannot disagree
- * about what "declared" means), the stanza's own app-owned table is read back beside it (through
- * {@link appOwnedWorkflows}, the same rule the writer replaces by), and the two are compared whole. A
- * missing binding, a stale binding, a stale cron and a wrong name are all one fault with one remedy,
- * and so is anything else that can make the two differ.
- *
- * Order is deliberately not part of it. Cloudflare reads a table, the array's order carries no meaning,
- * and a fault against a hand-ordered stanza that binds exactly the right things would be noise.
+ * The declaration is reduced to the table it implies through {@link planAppWorkflows}, the function the writer plans
+ * with, and the stanza's app-owned table is read back through {@link appOwnedWorkflows}, the rule the writer replaces
+ * by. The two are compared whole, so a missing binding, a stale binding, a stale cron and a wrong name are one fault
+ * with one remedy, and so is any other way the two can differ. Order is not part of it: Cloudflare reads a table.
  *
  * ## What it does not claim
  *
- * A Worker whose `pithy.config.ts` will not import (dependencies not installed, most often) makes no
- * claim at all — the #264 rule, for the same reason: "this declares no jobs" is a negative finding, and a
- * config nobody could open is precisely the one that might have declared some. A Worker with no `app`
- * capability makes none either: there is no declaration to compare against, and `pithy worker sync`
- * writes nothing for it, so a fault there would name a command that cannot answer it.
+ * A Worker whose `pithy.config.ts` will not import makes no claim: "this declares no jobs" is a negative finding, and
+ * a config nobody could open may have declared some. A Worker with no `app` capability makes none either, since
+ * `pithy worker sync` writes nothing for it.
  *
- * Files only, offline, no account call — the standard `originDrift` and `unprovisionedBindings` are held
- * to, and the reason this can gate a deploy without costing it a round trip.
+ * Files only, offline, no account call, so this can gate a deploy without a round trip.
  */
 
 /** Which of the two ways a declaration and a stanza fail to be the same thing. Two remedies. */
@@ -134,7 +119,7 @@ function canonical(plan: AppWorkflowPlan): string {
 /**
  * What one environment's stanza binds for this Worker's own script — the right-hand side of the comparison.
  *
- * Without what the adopter wrote for a library's jobs they host (#622): an entry under one of those bindings, and
+ * Without what the adopter wrote for a library's jobs they host: an entry under one of those bindings, and
  * a cron that is one of those schedules and not also the app's. Both are theirs, and neither is the app's to declare.
  */
 function boundBy(
@@ -155,9 +140,9 @@ function boundBy(
  * Worker with no `app` block declares nothing *at all* — and in both, the honest output is silence
  * rather than a fault naming a command that would report, correctly and uselessly, that it wrote nothing.
  *
- * **Composed for the environment it is compared in (#586).** An app may declare a job or a schedule for one
- * environment alone, so each stanza is compared with its own environment's declaration. The loader without
- * the primitive took the module cache, which holds whichever environment this process composed last.
+ * **Composed for the environment it is compared in.** An app may declare a job or a schedule for one environment
+ * alone, so each stanza is compared with its own environment's declaration, never with whichever environment the
+ * module cache holds.
  */
 async function workerApp(
   workerDir: string,
@@ -169,6 +154,82 @@ async function workerApp(
   } catch {
     return undefined;
   }
+}
+
+/** What one Worker's app capability declares for one environment, or why no stanza can be written for it. */
+type WorkflowDeclaration =
+  | { state: "declared"; plan: AppWorkflowPlan; capabilities: readonly Capability[] }
+  | { state: "unwritable"; reason: string };
+
+/**
+ * One Worker's declaration for one environment, composed for that environment — the resolution
+ * {@link workflowDrift} compares stanzas against and {@link workflowExports} reads classes from.
+ * `undefined` when there is no declaration to read.
+ *
+ * A job `planAppWorkflows` cannot name is returned as `unwritable` rather than thrown, so one bad job reports
+ * itself instead of taking every other Worker's answer down with it.
+ */
+async function declaredWorkflows(
+  workerDir: string,
+  project: string,
+  env: string,
+): Promise<WorkflowDeclaration | undefined> {
+  const composed = await workerApp(workerDir, env);
+  if (!composed) return undefined;
+  try {
+    return {
+      state: "declared",
+      plan: planAppWorkflows(composed.app, { project, env }),
+      capabilities: composed.capabilities,
+    };
+  } catch (error) {
+    return { state: "unwritable", reason: messageOf(error) };
+  }
+}
+
+/** Whether a Worker's main module exports every Workflow class its app declares. */
+export type WorkflowExports =
+  /** Every declared class is exported, or none is declared. */
+  | { state: "exported" }
+  /** main was read, and `missing` holds each declared class it does not export, in declaration order. */
+  | { state: "missing"; main: string; missing: string[] }
+  /** main could not be read, or reads in a way that cannot establish a class is absent. `reason` says which. */
+  | { state: "unreadable"; reason: string };
+
+/**
+ * The declared Workflow classes the Worker's main module does not export.
+ *
+ * Cloudflare resolves an app Workflow's `class_name` against the module `main` names, so a class missing there is
+ * a deploy wrangler refuses. The classes come from {@link declaredWorkflows}, each environment composed for
+ * itself, which is the same declaration `checkWorkflows` and `assertWorkflowsBound` compare stanzas against.
+ *
+ * Absence is only claimed of a module that was read: no `main`, a file that will not open, and an
+ * `export * from` the scanner cannot see through are each `unreadable`, never a list of every class.
+ */
+export async function workflowExports(
+  workerDir: string,
+  project: string,
+  environments: readonly string[],
+): Promise<WorkflowExports> {
+  const classes = new Set<string>();
+  for (const env of environments) {
+    const declaration = await declaredWorkflows(workerDir, project, env);
+    if (declaration?.state !== "declared") continue;
+    for (const entry of declaration.plan.workflows) classes.add(entry.class_name);
+  }
+  if (classes.size === 0) return { state: "exported" };
+
+  const entry = await workerEntryPath(workerDir).catch(() => null);
+  if (entry === null) return { state: "unreadable", reason: "wrangler.jsonc names no main module" };
+  const shown = relative(workerDir, entry).split("\\").join("/");
+  const source = await readOptionalFile(entry).catch(() => null);
+  if (source === null) return { state: "unreadable", reason: `${shown} could not be read` };
+
+  const missing = [...classes].filter((className) => !exportsName(source, className));
+  if (missing.length > 0 && reexportsAll(source)) {
+    return { state: "unreadable", reason: `${shown} re-exports with export *, which this check does not follow` };
+  }
+  return missing.length === 0 ? { state: "exported" } : { state: "missing", main: shown, missing };
 }
 
 /**
@@ -191,26 +252,21 @@ export async function workflowDrift(
     if (!config) continue;
     const worker = workerDirName(target);
     for (const env of environments) {
-      const composed = await workerApp(target.dir, env);
-      if (!composed) continue;
-      let declared: AppWorkflowPlan;
-      try {
-        declared = planAppWorkflows(composed.app, { project, env });
-      } catch (error) {
-        // Reported, never rethrown. `planAppWorkflows` refuses a job it cannot name, and a check that
-        // let that escape would take doctor's whole block down to a `catch` and say nothing at all —
-        // which is the failure mode this file exists to remove, reintroduced one level up.
+      const declaration = await declaredWorkflows(target.dir, project, env);
+      if (!declaration) continue;
+      if (declaration.state === "unwritable") {
         drift.push({
           worker,
           env,
           fault: "unwritable-declaration",
           declared: NOTHING,
           bound: NOTHING,
-          reason: messageOf(error),
+          reason: declaration.reason,
         });
         continue;
       }
-      const bound = boundBy(config.env?.[env], adopterHostedJobs(composed.capabilities), declared);
+      const declared = declaration.plan;
+      const bound = boundBy(config.env?.[env], adopterHostedJobs(declaration.capabilities), declared);
       if (canonical(declared) !== canonical(bound)) {
         drift.push({ worker, env, fault: "unsynced-stanza", declared, bound });
       }
@@ -236,7 +292,7 @@ function summarize(plan: AppWorkflowPlan): string {
  * carries more than the declaration.
  */
 export function describeWorkflowDrift(drift: WorkflowDrift): string {
-  // The command the `fix` carries, from the same builder (#711), or none where no command writes it.
+  // The command the `fix` carries, from the same builder, or none where no command writes it.
   const sync = workflowSync(drift);
   if (sync === null) {
     return `${drift.worker} declares a job nothing can bind in ${drift.env}: ${drift.reason} Fix workflows in the Worker's pithy.config.ts — ${commandName("worker sync")} would refuse it the same way.`;
@@ -245,7 +301,7 @@ export function describeWorkflowDrift(drift: WorkflowDrift): string {
 }
 
 /**
- * The command that rights `drift`, or `null` when none can — `pithy doctor --json`'s `fix` (#697), on the branch
+ * The command that rights `drift`, or `null` when none can — `pithy doctor --json`'s `fix`, on the branch
  * {@link describeWorkflowDrift} takes: `pithy worker sync` writes an unsynced stanza, and a declaration it
  * cannot reduce is the config's to fix.
  */
@@ -292,7 +348,7 @@ export async function assertWorkflowsBound(projectDir: string, env: string): Pro
   if (drift.length === 0) return;
   const first = drift[0] as WorkflowDrift;
   // As `assertOriginsDeclared` beside it: a precondition, exit 3, with doctor's own `fix` when one command
-  // rights all of it (#697).
+  // rights all of it.
   const refusal = new PreconditionFailedError({
     message: `${env} does not bind what it declares: ${drift.map((entry) => entry.worker).join(", ")}.`,
     action: drift.map(describeWorkflowDrift).join(" "),

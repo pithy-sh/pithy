@@ -10,6 +10,7 @@ import {
   insertImport,
   isCapabilityImport,
   namedReexports,
+  reexportsAll,
   staticImportSpecifiers,
   withoutBinding,
 } from "./configImports";
@@ -397,5 +398,29 @@ describe("staticImportSpecifiers", () => {
       "",
     ].join("\n");
     expect(staticImportSpecifiers(source)).toEqual(["real"]);
+  });
+});
+
+/** A star re-export may put any name on the module, so a scanner reading names cannot say one is absent. */
+describe("reexportsAll", () => {
+  test("a star re-export is one", () => {
+    expect(reexportsAll('export * from "./workflows";')).toBe(true);
+  });
+
+  test("a namespace re-export puts one name on the module, not every name", () => {
+    expect(reexportsAll('export * as workflows from "./workflows";')).toBe(false);
+  });
+
+  test("a type-only star re-export is erased before it reaches the bundle", () => {
+    expect(reexportsAll('export type * from "./types";')).toBe(false);
+  });
+
+  test("a commented-out or quoted one is not", () => {
+    expect(reexportsAll('// export * from "./workflows";')).toBe(false);
+    expect(reexportsAll('const text = `\nexport * from "./workflows";`;')).toBe(false);
+  });
+
+  test("named exports alone are not", () => {
+    expect(reexportsAll('export { Session } from "./session";\nexport class Room {}')).toBe(false);
   });
 });
