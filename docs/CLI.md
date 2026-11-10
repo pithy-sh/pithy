@@ -869,6 +869,24 @@ import { VARS } from "./vars";
 const { READY_AFTER_MINUTES } = VARS.read(env); // number
 ```
 
+**A var that fell back is reported in the same read.** `VARS.read(env, { onFallback })` calls `onFallback` once for each var given its default, in declaration order, with a `VarFallback`: `name`, the `raw` value `env` held (`undefined` when it held none), `reason` (`missing` or `invalid`), `problem`, the one-line reason `parseVar` gives, and `issues`, the schema's own Zod issues (none for a missing var, and the plain-decimal rule as one `custom` issue, with that rule as its `problem`, for text a number schema would read as a number written another way). The values returned are the same with it or without it, so nothing parses a var a second time to find out. A read of an `env` already read returns the values parsed the first time and calls `onFallback` again for the same vars, so a Worker that warns once per isolate keeps its own record of what it warned about:
+
+```ts
+import type { VarFallback } from "@pithy-sh/core/src/worker/vars";
+import { VARS } from "./vars";
+
+const warned = new Set<string>();
+
+function warnOnce({ name, raw, reason, problem }: VarFallback) {
+  const key = `${name}=${String(raw)}`;
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(`${name} ${reason}: ${problem}. Using the default.`);
+}
+
+const { READY_AFTER_MINUTES } = VARS.read(env, { onFallback: warnOnce });
+```
+
 **A value that arrives as text**, the way a `.dev.vars` line does, is tried as it is first. A number written as text is a plain decimal: an optional sign, digits, and an optional fraction. `15`, `-3`, `+3` and `1.5` parse; ` 15`, `15 `, `1e3`, `0x10`, `1.`, `.5` and an empty value do not, under `z.number()` or `z.coerce.number()` alike, and whatever a transform makes of the number, so a `.dev.vars` line `READY_AFTER_MINUTES=1e3` falls back to the default 15. `pithy worker sync` and `pithy doctor` judge `wrangler.jsonc` stanzas by the same rule, so `"READY_AFTER_MINUTES": "1e3"` held there as a string is named invalid and kept as it is; neither reads `.dev.vars`. An object, array or boolean var is written as its JSON (`{"beta":true}`, `[1,2]`, `true`), and its text is decoded as JSON when the schema refuses it as it is, a schema that transforms the decoded value into a number included. A schema that takes the text itself, such as `z.string().regex(/^\d+m$/).transform(toMs)` for `5m`, is held to its own rule. A number `wrangler.jsonc` stores as a JSON number parses as written.
 
 **A capability declares the vars it reads the same way**, as the `vars` option of its `defineCapability` call, built with `defineVars`. That is the `Capability` object the CLI loads, not `pithy.manifest.json`: a `vars` key in the manifest file is never read. They are written into every stanza of every Worker composing it, beside the Worker's own. A name two sources declare — the Worker and a capability, or two capabilities — is refused by `pithy worker sync` before anything is written, naming both.

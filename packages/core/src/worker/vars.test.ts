@@ -4,7 +4,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 import { ValidationError } from "../error/pithyError";
-import { defineVars, isWorkerVars, parseVar, varValueFor } from "./vars";
+import { defineVars, isWorkerVars, parseVar, type VarFallback, varValueFor } from "./vars";
 
 const VARS = defineVars({
   READY_AFTER_MINUTES: {
@@ -113,6 +113,130 @@ describe("read", () => {
 
   it("treats an env that is not an object as one holding nothing", () => {
     expect(VARS.read(undefined)).toEqual({ READY_AFTER_MINUTES: 15, MODE: "live" });
+  });
+
+  it("tells onFallback, in the same read, which vars fell back and why", () => {
+    const LIMITS = defineVars({
+      READY_AFTER_MINUTES: VARS.vars.READY_AFTER_MINUTES,
+      MODE: VARS.vars.MODE,
+      REGION: { description: "Where to read from.", schema: z.string(), default: "eu" },
+    });
+    const fallbacks: VarFallback[] = [];
+    const vars = LIMITS.read({ MODE: "paused", REGION: "us" }, { onFallback: (fallback) => fallbacks.push(fallback) });
+    expect(vars).toEqual({ READY_AFTER_MINUTES: 15, MODE: "live", REGION: "us" });
+    expect(fallbacks).toEqual([
+      { name: "READY_AFTER_MINUTES", raw: undefined, reason: "missing", problem: "missing", issues: [] },
+      {
+        name: "MODE",
+        raw: "paused",
+        reason: "invalid",
+        problem: expect.stringMatching(/live/),
+        issues: [expect.objectContaining({ code: "invalid_value", path: [] })],
+      },
+    ]);
+  });
+
+  it("gives the plain-decimal rule as the issue for a number written another way", () => {
+    const fallbacks: VarFallback[] = [];
+    VARS.read({ READY_AFTER_MINUTES: "1e3", MODE: "live" }, { onFallback: (fallback) => fallbacks.push(fallback) });
+    expect(fallbacks).toEqual([
+      {
+        name: "READY_AFTER_MINUTES",
+        raw: "1e3",
+        reason: "invalid",
+        problem: expect.stringMatching(/plain decimal/),
+        issues: [{ code: "custom", message: expect.stringMatching(/plain decimal/), path: [], input: "1e3" }],
+      },
+    ]);
+  });
+
+  it.each(["STRICT", "COERCED"] as const)(
+    "gives the plain-decimal rule as the issue for every other way of writing a number under a %s number schema",
+    (name) => {
+      const NUMBER = defineVars({
+        STRICT: { description: "A plain number.", schema: z.number(), default: 1 },
+        COERCED: { description: "A coerced number.", schema: z.coerce.number(), default: 1 },
+      });
+      for (const text of [" 15", "15 ", "1e3", "0x10", "1.", ".5", ""]) {
+        const fallbacks: VarFallback[] = [];
+        NUMBER.read({ [name]: text }, { onFallback: (fallback) => fallbacks.push(fallback) });
+        expect(
+          fallbacks.find((fallback) => fallback.name === name),
+          JSON.stringify(text),
+        ).toEqual({
+          name,
+          raw: text,
+          reason: "invalid",
+          problem: expect.stringMatching(/plain decimal/),
+          issues: [{ code: "custom", message: expect.stringMatching(/plain decimal/), path: [], input: text }],
+        });
+      }
+    },
+  );
+
+  it("gives the plain-decimal rule for a number written another way that the schema would also refuse as a number", () => {
+    const AT_LEAST = defineVars({ N: { description: "How many.", schema: z.number().min(5), default: 5 } });
+    expect(parseVar(AT_LEAST.vars.N, "0x2")).toEqual({ ok: false, problem: expect.stringMatching(/plain decimal/) });
+    expect(parseVar(AT_LEAST.vars.N, "1e0")).toEqual({ ok: false, problem: expect.stringMatching(/plain decimal/) });
+  });
+
+  it("keeps the schema's own issue for text that is no number at all, or under a schema that takes no number", () => {
+    const OTHER = defineVars({
+      N: { description: "How many.", schema: z.number(), default: 5 },
+      ON: { description: "A switch.", schema: z.boolean(), default: false },
+    });
+    for (const text of ["soon", "Infinity", "1_000"]) {
+      expect(parseVar(OTHER.vars.N, text), text).toEqual({
+        ok: false,
+        problem: expect.stringMatching(/expected number/),
+      });
+    }
+    expect(parseVar(OTHER.vars.ON, "0x10")).toEqual({ ok: false, problem: expect.stringMatching(/expected boolean/) });
+    expect(parseVar(OTHER.vars.ON, "1e3")).toEqual({ ok: false, problem: expect.stringMatching(/expected boolean/) });
+  });
+
+  it("gives the schema's issue for text that decodes to a value the schema refuses", () => {
+    const COUNTS = defineVars({
+      N: { description: "How many.", schema: z.number().int().min(5), default: 5 },
+      FLAGS: { description: "Which flags.", schema: z.object({ beta: z.boolean() }), default: { beta: false } },
+    });
+    const fallbacks: VarFallback[] = [];
+    COUNTS.read({ N: "3", FLAGS: '{"beta":1}' }, { onFallback: (fallback) => fallbacks.push(fallback) });
+    expect(fallbacks).toEqual([
+      expect.objectContaining({
+        name: "N",
+        reason: "invalid",
+        problem: expect.stringMatching(/>=\s*5/),
+        issues: [expect.objectContaining({ code: "too_small" })],
+      }),
+      expect.objectContaining({
+        name: "FLAGS",
+        reason: "invalid",
+        issues: [expect.objectContaining({ code: "invalid_type", path: ["beta"] })],
+      }),
+    ]);
+  });
+
+  it("calls onFallback on every read of the same env, the values still read once", () => {
+    const env = { READY_AFTER_MINUTES: "soon", MODE: "live" };
+    const names: string[] = [];
+    const first = VARS.read(env, { onFallback: ({ name }) => names.push(name) });
+    const second = VARS.read(env, { onFallback: ({ name }) => names.push(name) });
+    expect(second).toBe(first);
+    expect(names).toEqual(["READY_AFTER_MINUTES", "READY_AFTER_MINUTES"]);
+  });
+
+  it("calls no onFallback when every var parses", () => {
+    const names: string[] = [];
+    VARS.read({ READY_AFTER_MINUTES: 20, MODE: "replay" }, { onFallback: ({ name }) => names.push(name) });
+    expect(names).toEqual([]);
+  });
+
+  it("names each fallback by the declaration's own var names", () => {
+    VARS.read(
+      {},
+      { onFallback: (fallback) => expectTypeOf(fallback.name).toEqualTypeOf<"READY_AFTER_MINUTES" | "MODE">() },
+    );
   });
 });
 
@@ -256,6 +380,48 @@ describe("parseVar", () => {
       CODE: { description: "A number or a code.", schema: z.union([z.number(), z.string()]), default: 0 },
     });
     expect(parseVar(either.vars.CODE, "1e3")).toEqual({ ok: true, value: "1e3" });
+  });
+
+  it("names the refinement a number decoded from text fails", () => {
+    const bounded = defineVars({ N: { description: "How many.", schema: z.number().min(5), default: 5 } });
+    expect(parseVar(bounded.vars.N, "3")).toEqual({ ok: false, problem: expect.stringMatching(/>=\s*5/) });
+  });
+
+  it("names a string schema's own refusal of text that would decode to another type", () => {
+    const toMs = (text: string) => Number.parseInt(text, 10) * 60_000;
+    const text = defineVars({
+      DURATION: {
+        description: "How long.",
+        schema: z
+          .string()
+          .regex(/^\d+m$/)
+          .transform(toMs),
+        default: "5m",
+      },
+      LONG: { description: "At least five characters.", schema: z.string().min(5), default: "hello" },
+      API_BASE: { description: "Where the API lives.", schema: z.url(), default: "https://api.example.com" },
+    });
+    const notTyped = (result: ReturnType<typeof parseVar>) => {
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem).not.toMatch(/expected string, received/);
+    };
+    notTyped(parseVar(text.vars.DURATION, "15"));
+    notTyped(parseVar(text.vars.LONG, "3"));
+    notTyped(parseVar(text.vars.LONG, "1e3"));
+    notTyped(parseVar(text.vars.LONG, "true"));
+    notTyped(parseVar(text.vars.API_BASE, "true"));
+    notTyped(parseVar(text.vars.API_BASE, "123"));
+    notTyped(parseVar(text.vars.API_BASE, "1e3"));
+    expect(parseVar(text.vars.LONG, "3")).toEqual({ ok: false, problem: expect.stringMatching(/>=\s*5/) });
+    const fallbacks: VarFallback[] = [];
+    text.read(
+      { DURATION: "15", LONG: "hello", API_BASE: "true" },
+      { onFallback: (fallback) => fallbacks.push(fallback) },
+    );
+    expect(fallbacks).toEqual([
+      expect.objectContaining({ name: "DURATION", issues: [expect.objectContaining({ code: "invalid_format" })] }),
+      expect.objectContaining({ name: "API_BASE", issues: [expect.objectContaining({ code: "invalid_format" })] }),
+    ]);
   });
 
   it("refuses a quoted number decoded from JSON text", () => {
