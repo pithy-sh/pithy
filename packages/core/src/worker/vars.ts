@@ -85,9 +85,9 @@ const NOT_PLAIN_DECIMAL =
  * carries it typed, so a string the schema refuses is tried once more decoded: a plain decimal as that number, any
  * other text as JSON, which is how an object, array or boolean is written. Text that comes out a number only by
  * another route (` 15`, `1e3`, `0x10`, `.5`, an empty string), under `z.number()` or `z.coerce.number()` alike, is
- * refused with the plain-decimal rule whatever the schema transforms the number into, so a typo falls back to the default instead of reading as a different value. A schema
- * that takes the text itself and transforms it into a number, like `"5m"` into milliseconds, is its own rule, and its
- * result stands.
+ * refused with the plain-decimal rule whatever the schema transforms the number into, so a typo falls back to the
+ * default instead of reading as a different value. A schema that takes the text itself and transforms it into a
+ * number, like `"5m"` into milliseconds, is its own rule, and its result stands.
  */
 export function parseVar(entry: WorkerVar, raw: unknown): ParsedVar {
   const parsed = parseVarIssues(entry, raw);
