@@ -390,7 +390,7 @@ describe("renderDoctorText", () => {
         "  api:",
         "    prereqs      every composed capability has its peers ✓",
         "    config       parses against every capability schema ✓",
-        "    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc",
+        "    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc — run `pithy worker sync --worker api --env staging`",
         "                 env: staging, prod",
         "    migrations   dev: 2 pending — run: pithy migrate --env dev",
         "                 staging: 1 pending — run: pithy migrate --env staging",

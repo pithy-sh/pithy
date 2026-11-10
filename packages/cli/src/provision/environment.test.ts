@@ -128,7 +128,7 @@ describe("provisionEnvironment, for a declared environment", () => {
   });
 
   /**
-   * **A field key nothing rotates is refused before anything is created (#390).** The rotation lives in the secrets
+   * **A field key nothing rotates is refused before anything is created.** The rotation lives in the secrets
    * manager, so a project with an encrypted field and no `secrets` anywhere would hold a key minted once and never
    * rotated, with nothing to report it.
    */
@@ -168,15 +168,12 @@ describe("provisionEnvironment, for a declared environment", () => {
   });
 
   test("creates nothing for a binding this Worker declines", async () => {
-    // The other half of #440. Stopping `pithy upgrade` writing the binding while `pithy provision` still
-    // created the bucket handed the adopter exactly the resource the decline said they did not want.
-    // The manifest has to be installed for the decline to resolve at all — a decline resolves against
-    // what the Worker composes, and a name nothing declares is `unrecognized` and changes nothing.
+    // A declined binding gets no resource, as `pithy upgrade` writes it no entry. The manifest has to be
+    // installed for the decline to resolve at all — a decline resolves against what the Worker composes, and
+    // a name nothing declares is `unrecognized` and changes nothing.
     //
-    // **This one is blind to #514, and stays.** It writes the manifest to the *project root*, which is
-    // where the old root-only scan was already looking, so it was green before that fix and after it. The
-    // gate is "creates nothing for a decline whose capability is installed only under the Worker's own
-    // node_modules" below; this is the control that keeps a root-declared capability working.
+    // The manifest sits at the project root: this is the control that keeps a root-installed capability
+    // working, beside the test below that installs it under the Worker alone.
     const optional = defineCapability({
       name: "app",
       requiredBindings: [
@@ -227,23 +224,15 @@ describe("provisionEnvironment, for a declared environment", () => {
   });
 
   /**
-   * **The same decline, with the manifest where the kit tells adopters to put it (#514).**
+   * **The same decline, with the manifest where the kit tells adopters to put it.**
    *
-   * The case above and the one below are the pair that made this look covered, and they are blind to it
-   * for one reason: both write the fixture manifest to `<root>/node_modules/@pithy-sh/app` — the *project
-   * root* — which is the one place `availableManifests(projectDir)` was already looking. They pass before
-   * this fix and after it, and neither can fail while a Worker's own `node_modules` is never read.
+   * The case above and the one below install the fixture manifest at the project root. A capability declared
+   * only on the Worker composing it installs under `apps/<name>/node_modules`, and the decline resolves there
+   * only when that directory is read too.
    *
-   * A capability declared only on the Worker composing it — capabilities being per-Worker, which is the
-   * shape this repository's own principles state — installs under `apps/<name>/node_modules`. The root
-   * scan found nothing there, so the decline resolved as `unrecognized`, and provisioning created the
-   * bucket and wrote the binding back into the file the adopter had removed it from. `pithy upgrade` had
-   * honored the same declaration since #440; the two commands disagreed about one config line.
-   *
-   * **This test is the gate.** The manifest goes under the Worker and nowhere else — the arrangement is
-   * the whole assertion, so it is written out here rather than shared with a neighbor that could quietly
-   * move it back to the root. Both halves are asserted, because the resource and the stanza are two
-   * separate writes off one answer: a fix that skipped the creation but still wrote the binding would
+   * The manifest goes under the Worker and nowhere else — the arrangement is the whole assertion, so it is
+   * written out here rather than shared with a neighbor. Both halves are asserted, because the resource and the
+   * stanza are two separate writes off one answer: skipping the creation but still writing the binding would
    * leave a `wrangler.jsonc` pointing at a bucket that does not exist.
    */
   test("creates nothing for a decline whose capability is installed only under the Worker's own node_modules", async () => {
@@ -292,8 +281,8 @@ describe("provisionEnvironment, for a declared environment", () => {
     });
 
     expect([...stores.r2.keys()]).toEqual([]);
-    // And the binding is not written back into the file the adopter removed it from — the second half of
-    // the report in #514, and a separate write from the one above.
+    // And the binding is not written back into the file the adopter removed it from, a separate write from
+    // the one above.
     const stanza = await readStanza(workerDir, "staging");
     expect((stanza?.r2_buckets ?? []).map((bucket) => bucket.binding)).toEqual([]);
     // The skip is reported. A resource that was not created leaves no other trace of itself.
@@ -318,16 +307,13 @@ describe("provisionEnvironment, for a declared environment", () => {
   /**
    * **A forked capability's decline is honored, because provisioning acts on the fork.**
    *
-   * The first cut of #514 passed `ejectedCapabilities` into this resolution "for the same reason
-   * `buildReconcilePlan` passes it", and that reason does not carry across. An upgrade *skips* an ejected
-   * capability — it writes nothing for a fork — so dropping its manifest costs the fork nothing. This
-   * command decides what to create from the **composed instances**, and a fork is composed: drop its
-   * manifest and the decline resolves `unrecognized`, the bucket is created, and the binding is written
-   * back into the file the adopter removed it from. That is #440 verbatim, for the one capability whose
-   * code the adopter owns, and silent, because an unrecognized decline reports no skip.
+   * An upgrade *skips* an ejected capability, so `buildReconcilePlan` drops its manifest. This command decides
+   * what to create from the **composed instances**, and a fork is composed: drop its manifest and the decline
+   * resolves `unrecognized`, the bucket is created, and the binding is written back into the file the adopter
+   * removed it from, silently, because an unrecognized decline reports no skip.
    *
-   * **This test is the gate for that.** Revert the `ejected` argument at the call site and both halves
-   * fail: `stores.r2` gains the bucket and `report.declined` empties.
+   * Drop the `ejected` argument at the call site and both halves fail: `stores.r2` gains the bucket and
+   * `report.declined` empties.
    */
   test("honors a decline against an ejected capability, because the fork it composes is what gets provisioned", async () => {
     const optional = defineCapability({
@@ -374,7 +360,7 @@ describe("provisionEnvironment, for a declared environment", () => {
     });
 
     expect([...stores.r2.keys()]).toEqual([]);
-    // And not written back into the stanza the adopter emptied — the second half of #440.
+    // And not written back into the stanza the adopter emptied.
     expect(((await readStanza(workerDir, "staging"))?.r2_buckets ?? []).map((bucket) => bucket.binding)).toEqual([]);
     expect(report.declined).toEqual([
       {
@@ -502,7 +488,7 @@ describe("provisionEnvironment, for a declared environment", () => {
           name: "replay-board",
           dir: workerDir,
           capabilities: [optional],
-          // The singular. TypeScript accepts it, and until #514 so did the run.
+          // The singular. TypeScript accepts it; the run refuses it.
           config: { capabilities: [], declinedBinding: { ASSETS: "no R2 in this account" } } as never,
         },
       ],
@@ -523,8 +509,7 @@ describe("provisionEnvironment, for a declared environment", () => {
     // database. So a decline is only decisive when every Worker that declares the binding declines it;
     // one Worker opting out must not take the other's bucket away.
     //
-    // **The second of the blind pair, and it stays too**: its manifest is at the project root as well.
-    // It pins the union rule, which #514's fix must not disturb — and the report it now carries is what
+    // Its manifest is at the project root as well. It pins the union rule, and the report it carries is what
     // stops the run calling this a skip, because the bucket exists.
     const optional = defineCapability({
       name: "app",
@@ -711,8 +696,8 @@ describe("provisionEnvironment, for a declared environment", () => {
   });
 
   /**
-   * The other half of #580. A service binding has to name the script the callee *actually* deploys under,
-   * and since #580 that is whatever the callee's own `env.<name>.name` says — `<project>-<env>-<worker>`
+   * A service binding has to name the script the callee *actually* deploys under, which is whatever the
+   * callee's own `env.<name>.name` says — `<project>-<env>-<worker>`
    * in every scaffolded project. Composing wrangler's suffix here instead would write a binding pointing
    * at a script nobody deploys: RPC through it fails at runtime and provisioning reports success, which
    * is exactly the failure `resolveServiceTarget` exists to prevent, arriving one step later.
@@ -771,7 +756,7 @@ describe("provisionEnvironment, for a declared environment", () => {
   });
 
   /**
-   * **What a binding's manifest says about its resource's name, honored by the run (#513).**
+   * **What a binding's manifest says about its resource's name, honored by the run.**
    *
    * The run reads `scope` and `resource` from the manifest and from nowhere else — `pithy add` and
    * `pithy upgrade` both read the manifest and neither reaches a composed instance, so a declaration on
@@ -939,12 +924,11 @@ describe("provisionEnvironment, for a declared environment", () => {
 });
 
 /**
- * **A binding the Worker's own app declares is a first-class declaration (#662).** The app has no manifest, so
- * provisioning read its naming from nowhere: a `d1` binding got a resource under the default name, its
- * `scope: "global"` or `resource:` dropped. And the kinds the kit does not provision rode into a feature or
- * vanished according to wrangler's JSON shape. Both are the app's composed declaration now.
+ * **A binding the Worker's own app declares is a first-class declaration.** The app has no manifest, so its
+ * `scope` and `resource` are read from the composed app, and the kinds the kit does not provision reach a
+ * feature from that declaration rather than from wrangler's JSON shape.
  */
-describe("a binding the Worker's own app declares (#662)", () => {
+describe("a binding the Worker's own app declares", () => {
   let dir: string;
   let workerDir: string;
   const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {}, administersItself: false };
@@ -989,11 +973,39 @@ describe("a binding the Worker's own app declares (#662)", () => {
     expect(tracked.env.staging?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "replay-staging-work" }] });
   });
 
+  test("a consuming queue gets its consumers entry in a stanza provisioning creates", async () => {
+    await writeFile(join(workerDir, "wrangler.jsonc"), '{\n  "name": "replay-board"\n}\n');
+    const board = defineCapability({
+      name: "board",
+      requiredBindings: [
+        { type: "queue", name: "JOBS", consumer: { maxRetries: 3, deadLetter: "JOBS_DLQ" } },
+        { type: "queue", name: "JOBS_DLQ" },
+      ] satisfies BindingSpecInput[],
+    });
+    const { provisioners } = fakeProvisioners();
+    await provisionEnvironment({
+      projectDir: dir,
+      scope: environmentScope("replay", "staging"),
+      capabilities: [board],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "replay-board", dir: workerDir, capabilities: [board], config: { capabilities: [], app: board } },
+      ],
+      ...noBackend,
+    });
+    const tracked = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { queues?: { consumers?: unknown } }>;
+    };
+    expect(tracked.env.staging?.queues?.consumers).toEqual([
+      { queue: "replay-staging-jobs", max_retries: 3, dead_letter_queue: "replay-staging-jobs-dlq" },
+    ]);
+  });
+
   /**
    * **The acceptance test: a Worker whose app declares a binding of each new kind deploys to a feature with every
    * one of them in its env.** The top level is what `pithy upgrade` writes from the app's declaration; the feature
-   * config is what `pithy deploy --env feature` hands wrangler. Before #662, every array-shaped kind here reached
-   * the feature as `[]` and read `undefined` at runtime.
+   * config is what `pithy deploy --env feature` hands wrangler. An array-shaped kind that reached the feature as
+   * `[]` would read `undefined` at runtime.
    */
   test("reaches a feature environment, each binding present in the config the feature deploys", async () => {
     const declared: BindingSpecInput[] = [
@@ -1059,7 +1071,7 @@ describe("a binding the Worker's own app declares (#662)", () => {
 });
 
 /**
- * **A project that administers itself gets a service binding to itself (#616).**
+ * **A project that administers itself gets a service binding to itself.**
  *
  * A Worker cannot fetch its own hostname: the subrequest loops back out through the edge into the Worker
  * it came from and hangs until Cloudflare answers 522, while the same route answers in under two seconds
@@ -1155,13 +1167,12 @@ describe("a self-administering project", () => {
 
 /**
  * **A Durable Object's `script_name` is a deploy name, and resolving it as anything else binds the wrong
- * Worker (#650 review, defect 5).**
+ * Worker.**
  *
- * The lookup matched `worker.name === target || worker.dir.endsWith("/" + target)` in one pass, which is right
- * for a `service` target — a capability writes that as `apps/<name>` — and wrong for a script name twice over:
- * an earlier Worker matching by *directory* answered for a later one matching by its real deploy name, and a
- * foreign script whose name happens to equal a local directory was silently retargeted at this project's copy.
- * Neither said anything.
+ * Matching a directory is right for a `service` target — a capability writes that as `apps/<name>` — and wrong
+ * for a script name twice over: an earlier Worker matching by *directory* would answer for a later one matching
+ * by its real deploy name, and a foreign script whose name equals a local directory would be retargeted at this
+ * project's copy.
  */
 describe("a Durable Object script_name, resolved", () => {
   let dir: string;
@@ -1249,7 +1260,7 @@ describe("a Durable Object script_name, resolved", () => {
   });
 
   /**
-   * **An app's service binding to another app or a kit Worker, in a feature (#617).** The top level carries dev's
+   * **An app's service binding to another app or a kit Worker, in a feature.** The top level carries dev's
    * entry — `pithy worker sync` wrote it — and the feature has to name its own deployment of each target: the
    * sibling's feature copy, and the kit host the feature deploys. Neither is dropped as a stranger's script.
    */

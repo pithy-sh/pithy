@@ -56,7 +56,7 @@ Project health:
   api:
     prereqs      every composed capability has its peers ✓
     config       parses against every capability schema ✓
-    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc
+    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc — run `pithy worker sync --worker api --env staging`
                  env: staging, prod
     migrations   dev: 2 pending — run: pithy migrate --env dev
                  staging: 1 pending — run: pithy migrate --env staging
@@ -122,7 +122,7 @@ Project health:
 
 A database that could not be read is **not** `0 pending`. It is the one thing a count cannot say, and saying it wrongly is a green line about a schema nobody compared.
 
-The **`bindings`** line reads the Worker's own app as well as what it composes. An app declares the bindings it needs in `requiredBindings` ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)) and has no manifest, so its bindings are read from the composed app. One the app declares and a stanza lacks is named here like any other, and fails the exit: it is the binding the Worker would refuse to boot on. `pithy upgrade` writes it.
+The **`bindings`** line reads the Worker's own app as well as what it composes. An app declares the bindings it needs in `requiredBindings` ([CLI.md](../CLI.md#declaring-a-binding-on-your-own-app)) and has no manifest, so its bindings are read from the composed app. One the app declares and a stanza lacks is named here like any other, and fails the exit: it is the binding the Worker would refuse to boot on. `pithy worker sync --worker <worker>` writes a D1, KV, R2 or queue binding, with `--env <env>` when only deployed environments lack it, since a binding one of them composes may be one `dev` does not; `pithy upgrade` writes every other kind.
 
 The **`bindings`** line covers both halves of a binding, not only the half that is config. A Durable Object is declared twice — a `durable_objects.bindings` entry naming a `class_name`, and an `export { <Class> } from "…";` on the module the Worker's `main` names, which is what wrangler resolves that name against. A project carrying the first and not the second is refused at deploy, so the class is named here and `pithy upgrade` writes it:
 
@@ -847,7 +847,7 @@ Three rules hold across the payload. **Paths are absolute here, never tilde-abbr
 | `workflows` | `pithy worker sync --worker <worker> --env <env>`, for an unsynced stanza |
 | `supportSearchTriggers` | `pithy support provision --worker <worker>` |
 | `settings` | The capability's own command, where its finding names one (`docs/CLI.md` §5.6) |
-| `project` | `pithy add <peer> --worker <worker>` for a missing prerequisite, and `pithy add <capability> --worker <worker>` for a capability composed and installed nowhere — each with `--with-prerequisites` when it brings a prerequisite that Worker lacks, and `null` when it has an option with no default that the Worker's config does not already state, which is a person's choice; `pithy upgrade --worker <worker>` for a missing option, binding or entry export; `pithy migrate --env dev` for `dev`'s pending migrations |
+| `project` | `pithy add <peer> --worker <worker>` for a missing prerequisite, and `pithy add <capability> --worker <worker>` for a capability composed and installed nowhere — each with `--with-prerequisites` when it brings a prerequisite that Worker lacks, and `null` when it has an option with no default that the Worker's config does not already state, which is a person's choice; `pithy worker sync --worker <worker>` for a missing D1, KV, R2 or queue binding, with `--env <env>` naming the first environment that lacks it when `dev` does not; `pithy upgrade --worker <worker>` for a missing option, any other binding, or an entry export; `pithy migrate --env dev` for `dev`'s pending migrations |
 
 Everything else that fails the exit — credentials, the project name, a stamp, an environment declaration, a config that throws, a `dev.json`, a decline, an entitlement gate nothing resolves, an undeclared migration in `dev` — carries `fix: null`.
 

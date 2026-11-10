@@ -86,6 +86,7 @@ import {
   docsConnectFix,
   EMPTY_DEV_VARS_FIX,
   healthWithFixes,
+  missingBindingFix,
   prerequisitePlan,
   secretBindingFix,
   strandedTurnstileFix,
@@ -2191,7 +2192,9 @@ function workerHealthLines(
     bindingLine("all required bindings present ✓");
   } else {
     for (const binding of health.bindings.missing) {
-      bindingLine(`${binding.name} (${binding.type}) missing from wrangler.jsonc`);
+      bindingLine(
+        `${binding.name} (${binding.type}) missing from wrangler.jsonc — run \`${missingBindingFix(worker, binding)}\``,
+      );
       bindingLines.push(`${HEALTH_CONT}env: ${binding.envs.join(", ")}`);
     }
     // The other half of a Durable Object binding, and the half that lives in the adopter's code.

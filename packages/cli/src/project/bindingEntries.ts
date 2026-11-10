@@ -283,6 +283,11 @@ export interface BindingScope {
    * names, such as the database `audit({ database })` sets.
    */
   composed?: Capability;
+  /**
+   * Resource names already decided in this scope, by binding: the ones `pithy provision` has just created. A name
+   * here is written as it is, in place of the one {@link proposeName} would compose.
+   */
+  named?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -422,6 +427,8 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
  * stanza has to point at the same thing.
  */
 function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv" | "queue"): string | undefined {
+  const decided = scope.named?.get(binding.name);
+  if (decided !== undefined) return decided;
   const { project } = scope;
   if (project === undefined) return undefined;
   const owner = ownerIn(scope, binding);
@@ -691,10 +698,13 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "queue": {
       // The queue `pithy provision` creates, named by the same composer. A producer naming no queue is an entry
       // `wrangler deploy` cannot bind, so a queue this cannot name is skipped and said, never half-written.
-      if (scope.project === undefined) return { outcome: "skipped", reason: "no project name is resolved" };
       const name = proposeName(scope, binding, "queue");
       if (name === undefined) {
-        return { outcome: "skipped", reason: `the naming scheme does not accept the environment "${scope.env}"` };
+        const reason =
+          scope.project === undefined
+            ? "no project name is resolved"
+            : `the naming scheme does not accept the environment "${scope.env}"`;
+        return { outcome: "skipped", reason };
       }
       stanza.queues ??= {};
       stanza.queues.producers ??= [];
