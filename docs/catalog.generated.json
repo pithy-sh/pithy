@@ -1338,6 +1338,43 @@
         "--json",
         "--no-json"
       ]
+    },
+    {
+      "path": "workflow",
+      "flags": []
+    },
+    {
+      "path": "workflow list",
+      "flags": [
+        "--env",
+        "--worker",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "workflow status",
+      "flags": [
+        "--env",
+        "--worker",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "workflow trigger",
+      "flags": [
+        "--env",
+        "--worker",
+        "--params",
+        "--id",
+        "--confirm",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
+        "--json",
+        "--no-json"
+      ]
     }
   ],
   "globalFlags": [

@@ -105,6 +105,8 @@ const REACH: Readonly<Record<string, readonly string[]>> = {
   "vector reprocess": ["--env", "staging"],
   "vector reset": ["--env", "staging", "--confirm-reset", "yes, i really want to reset staging"],
   "worker sync": [],
+  "workflow status": ["collect", "backfill-1", "--env", "staging"],
+  "workflow trigger": ["collect", "--env", "staging"],
 };
 
 /**

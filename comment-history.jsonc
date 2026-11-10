@@ -418,7 +418,6 @@
     "packages/cli/src/commands/migrateDryRun.test.ts": 1,
     "packages/cli/src/commands/migrateSecretTables.test.ts": 1,
     "packages/cli/src/commands/payments.test.ts": 5,
-    "packages/cli/src/commands/phraseCancel.test.ts": 1,
     "packages/cli/src/commands/provisionDryRun.test.ts": 2,
     "packages/cli/src/commands/provisionEvents.test.ts": 2,
     "packages/cli/src/commands/restore.test.ts": 1,

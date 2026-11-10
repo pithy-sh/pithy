@@ -8,15 +8,16 @@ import { rollbackPhrase } from "./migrate";
 import { confirmPrompt } from "./provision";
 import { productionPrompt, resetPrompt as seedResetPrompt } from "./seed";
 import { resetPrompt as vectorResetPrompt } from "./vector";
+import { triggerPrompt } from "./workflow";
 
 /**
- * **Ctrl-C at a typed-phrase prompt is an interrupt, not a refusal (#697).**
+ * **Ctrl-C at a typed-phrase prompt is an interrupt, not a refusal.**
  *
- * The four commands that ask a person for a confirmation phrase — `provision`, `seed` (reset and
- * production), `migrate --rollback` and `vector reset` — used to turn a cancel into an empty answer. The
- * empty answer failed the phrase match, so the run ended `core/person_required`, exit 5: "was not
- * confirmed", when nobody had refused anything. `docs/CLI.md` §3.8 says Ctrl-C at a prompt exits 130, and
- * so does every other prompt in the CLI. Each factory is driven here with a scripted cancel.
+ * Every command that asks a person for a confirmation phrase — `provision`, `seed` (reset and production),
+ * `migrate --rollback`, `vector reset` and `workflow trigger` — exits 130 when the prompt is canceled, as
+ * `docs/CLI.md` §3.8 says every prompt does. A cancel must never reach the phrase match as an empty answer,
+ * which would end the run `core/person_required`, exit 5, "was not confirmed", when nobody refused anything.
+ * Each factory is driven here with a scripted cancel.
  *
  * `@clack/prompts` is reached through a dynamic import at the point of use, so the module itself is what
  * this file replaces. `cancel` is the exact value `isCancel` is mocked to recognize.
@@ -40,6 +41,7 @@ const PROMPTS: readonly (readonly [string, () => Promise<string | undefined>])[]
   ["seed productionPrompt", productionPrompt()],
   ["vector resetPrompt", vectorResetPrompt("staging")],
   ["migrate promptRollback", () => rollbackPhrase({ env: "staging", json: false, rollback: true, group: "g1" })],
+  ["workflow triggerPrompt", triggerPrompt("prod")],
 ];
 
 describe("a typed-phrase prompt", () => {
@@ -75,6 +77,6 @@ describe("a typed-phrase prompt", () => {
   });
 
   test("anti-vacuous: every phrase prompt the confirmation gates are handed is here", () => {
-    expect(PROMPTS).toHaveLength(5);
+    expect(PROMPTS).toHaveLength(6);
   });
 });

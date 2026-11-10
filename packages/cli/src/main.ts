@@ -54,6 +54,7 @@ const COMMANDS = {
   dashboard: { group: "Operate", load: () => import("./commands/dashboard").then((m) => m.default) },
   audit: { group: "Operate", load: () => import("./commands/audit").then((m) => m.default) },
   mcp: { group: "Operate", load: () => import("./commands/mcp").then((m) => m.default) },
+  workflow: { group: "Operate", load: () => import("./commands/workflow").then((m) => m.default) },
 
   // Capabilities — one command per capability that provisions infrastructure of its own.
   secrets: { group: "Capabilities", load: () => import("./commands/secrets").then((m) => m.default) },
