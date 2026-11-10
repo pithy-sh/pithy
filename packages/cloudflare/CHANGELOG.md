@@ -1,5 +1,12 @@
 # @pithy-sh/cloudflare
 
+## 0.10.4
+
+### Patch Changes
+
+- Updated dependencies [[`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907), [`5504976`](https://github.com/pithy-sh/pithy/commit/5504976482aeaea000fa212524f0353a27310da1), [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4)]:
+  - @pithy-sh/core@0.21.0
+
 ## 0.10.3
 
 ### Patch Changes

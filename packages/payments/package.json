@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/payments",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -42,9 +42,9 @@
     "@paddle/paddle-js": "^1.6.4"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.20.1",
-    "@pithy-sh/ledger": "^0.6.6",
-    "@pithy-sh/secrets": "^0.6.8",
+    "@pithy-sh/core": "^0.21.0",
+    "@pithy-sh/ledger": "^0.6.7",
+    "@pithy-sh/secrets": "^0.6.9",
     "@pithy-sh/ui-core": "^0.1.0",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",

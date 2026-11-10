@@ -1,5 +1,17 @@
 # @pithy-sh/core
 
+## 0.21.0
+
+### Minor Changes
+
+- [#987](https://github.com/pithy-sh/pithy/pull/987) [`5504976`](https://github.com/pithy-sh/pithy/commit/5504976482aeaea000fa212524f0353a27310da1) Thanks [@kingmesal](https://github.com/kingmesal)! - A Workflow spec can name its instances, so a scheduled job can run once per day under that day's name.
+
+### Patch Changes
+
+- [#990](https://github.com/pithy-sh/pithy/pull/990) [`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` writes the test bindings a capability needs, so the first Workers test after `pithy add secrets` passes.
+
+- [#992](https://github.com/pithy-sh/pithy/pull/992) [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy workflow trigger` starts any Workflow by hand, with validated params and an optional instance id.
+
 ## 0.20.1
 
 ### Patch Changes

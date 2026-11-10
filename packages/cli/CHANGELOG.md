@@ -1,5 +1,29 @@
 # @pithy-sh/cli
 
+## 0.25.0
+
+### Minor Changes
+
+- [#992](https://github.com/pithy-sh/pithy/pull/992) [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy workflow trigger` starts any Workflow by hand, with validated params and an optional instance id.
+
+### Patch Changes
+
+- [#993](https://github.com/pithy-sh/pithy/pull/993) [`eed536b`](https://github.com/pithy-sh/pithy/commit/eed536ba71f48a92f8623155ff461e111db73c56) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` finds packages installed in a Worker's own folder, and writes the dependency and the import where they belong.
+
+- [#990](https://github.com/pithy-sh/pithy/pull/990) [`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` writes the test bindings a capability needs, so the first Workers test after `pithy add secrets` passes.
+
+- [#991](https://github.com/pithy-sh/pithy/pull/991) [`3a5fa62`](https://github.com/pithy-sh/pithy/commit/3a5fa6273d99ef254d44d2bb461f59e34c1ded29) Thanks [@kingmesal](https://github.com/kingmesal)! - A config that will not load now says which file and line broke it, and the lint safeguards catch the syntax before the CLI does.
+
+- [#989](https://github.com/pithy-sh/pithy/pull/989) [`7395c91`](https://github.com/pithy-sh/pithy/commit/7395c91654946e1d6fbab8d6a011009ba5c90d29) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy worker sync` writes every binding your app declares, D1 and R2 included.
+
+- [#988](https://github.com/pithy-sh/pithy/pull/988) [`2e8a745`](https://github.com/pithy-sh/pithy/commit/2e8a74550d8cece7e248b9b0d365c519c258cc73) Thanks [@kingmesal](https://github.com/kingmesal)! - A feature worktree's `biome check` now checks its own files instead of none.
+- Updated dependencies [[`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907), [`5504976`](https://github.com/pithy-sh/pithy/commit/5504976482aeaea000fa212524f0353a27310da1), [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4)]:
+  - @pithy-sh/core@0.21.0
+  - @pithy-sh/secrets@0.6.9
+  - @pithy-sh/email@0.10.4
+  - @pithy-sh/turnstile@0.8.5
+  - @pithy-sh/cloudflare@0.10.4
+
 ## 0.24.2
 
 ### Patch Changes

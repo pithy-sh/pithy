@@ -1,5 +1,16 @@
 # @pithy-sh/media
 
+## 0.8.5
+
+### Patch Changes
+
+- [#990](https://github.com/pithy-sh/pithy/pull/990) [`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` writes the test bindings a capability needs, so the first Workers test after `pithy add secrets` passes.
+- Updated dependencies [[`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907), [`5504976`](https://github.com/pithy-sh/pithy/commit/5504976482aeaea000fa212524f0353a27310da1), [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4)]:
+  - @pithy-sh/core@0.21.0
+  - @pithy-sh/secrets@0.6.9
+  - @pithy-sh/storage@0.7.7
+  - @pithy-sh/cloudflare@0.10.4
+
 ## 0.8.4
 
 ### Patch Changes

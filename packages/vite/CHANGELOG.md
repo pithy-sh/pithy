@@ -1,5 +1,13 @@
 # @pithy-sh/vite
 
+## 0.21.0
+
+### Patch Changes
+
+- [#991](https://github.com/pithy-sh/pithy/pull/991) [`3a5fa62`](https://github.com/pithy-sh/pithy/commit/3a5fa6273d99ef254d44d2bb461f59e34c1ded29) Thanks [@kingmesal](https://github.com/kingmesal)! - A config that will not load now says which file and line broke it, and the lint safeguards catch the syntax before the CLI does.
+- Updated dependencies [[`dfb0986`](https://github.com/pithy-sh/pithy/commit/dfb09868bc6650779ed618f6a0837e92134de907), [`5504976`](https://github.com/pithy-sh/pithy/commit/5504976482aeaea000fa212524f0353a27310da1), [`95d7e43`](https://github.com/pithy-sh/pithy/commit/95d7e43fc18408e915e57d3f7512b0d7af56abe4)]:
+  - @pithy-sh/core@0.21.0
+
 ## 0.20.1
 
 ### Patch Changes
