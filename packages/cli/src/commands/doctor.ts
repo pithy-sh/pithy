@@ -118,6 +118,12 @@ import {
 } from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkRetention, describeRetention, type RetentionCheck, type RetentionOptions } from "../doctor/retention";
+import {
+  checkRootImports,
+  describeRootImports,
+  ROOT_IMPORTS_ACTION,
+  type RootImportsCheck,
+} from "../doctor/rootImports";
 import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import {
@@ -409,6 +415,11 @@ export interface DoctorReport {
    * finding prints in both forms and never fails the exit: a project may test its Workers some other way.
    */
   testBindings: TestBindingsCheck | null;
+  /**
+   * Whether the project root resolves every package its `vitest.workers.config.ts` imports. `null` outside a
+   * project, and `could-not-check` when the check threw. A finding prints in both forms and never fails the exit.
+   */
+  rootImports: RootImportsCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares, and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -910,6 +921,8 @@ export interface DoctorReportOptions {
     projectDir: string;
     workers: readonly TestBindingsWorker[];
   }) => Promise<TestBindingsCheck>;
+  /** Root-import seam; defaults to {@link checkRootImports}. Reads files only. */
+  checkRootImports?: (projectDir: string) => Promise<RootImportsCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -1115,6 +1128,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeBiomeIncludes = options.checkBiomeIncludes ?? checkBiomeIncludes;
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeTestBindings = options.checkTestBindings ?? checkTestBindings;
+  const probeRootImports = options.checkRootImports ?? checkRootImports;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1783,6 +1797,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         )
       : null;
 
+  // What the Workers test config imports against what the project root resolves. Files only.
+  const rootImports = inProject
+    ? await probed<RootImportsCheck>(() => probeRootImports(options.projectDir), {
+        state: "could-not-check",
+        unresolved: [],
+      })
+    : null;
+
   // One copy of each shared runtime, or several. Cheap — it resolves rather than reading a directory —
   // and it answers a question whose natural symptom is a TypeScript error naming neither the package
   // nor the duplication, which is the kind of thing this command exists to say out loud.
@@ -1841,6 +1863,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     settings,
     localDelivery,
     testBindings,
+    rootImports,
     sharedRuntimes,
     devSecretsFile,
     devVarsLocal,
@@ -3696,6 +3719,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // A package the Workers test config imports that the project root does not resolve. Printed in both forms.
+  if (report.rootImports?.state === "unresolved") {
+    blocks.push(
+      [
+        "Root imports:",
+        ...describeRootImports(report.rootImports).map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${ROOT_IMPORTS_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -3955,6 +3989,18 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             detail: describeTestBindings({ state: "missing", missing: [entry] }).join(" "),
           })),
           findings: describeTestBindings(report.testBindings),
+        }
+      : null,
+    rootImports: report.rootImports
+      ? {
+          state: report.rootImports.state,
+          unresolved: report.rootImports.unresolved.map((entry) => ({
+            ...entry,
+            detail: describeRootImports({ state: "unresolved", unresolved: [entry] }).join(" "),
+            // An edit to the root package.json and an install, which no `pithy` command makes.
+            fix: null,
+          })),
+          findings: describeRootImports(report.rootImports),
         }
       : null,
     selfBinding: report.selfBinding
@@ -4515,6 +4561,31 @@ const DoctorPayload = z
         )
         .describe("One entry per capability."),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per capability."),
+    }),
+    rootImports: Check("Packages vitest.workers.config.ts imports that the project root does not resolve, or `null`.", {
+      state: State("`ok`, `unresolved`, `could-not-check`"),
+      unresolved: z
+        .array(
+          z
+            .object({
+              file: z.string().describe("The config, from the project root."),
+              package: z.string().describe("The package the import resolves through."),
+              declared: z
+                .boolean()
+                .describe("Whether the root package.json declares it, so only the install is missing."),
+              line: z
+                .string()
+                .nullable()
+                .describe(
+                  "The devDependencies line to add, at a workspace member's range, or `null` when there is none.",
+                ),
+              detail: z.string().describe("The sentence."),
+              fix: DoctorFix,
+            })
+            .describe("One package the root does not resolve."),
+        )
+        .describe("One entry per package, in import order."),
+      findings: z.array(z.string().describe("One finding.")).describe("One sentence per package."),
     }),
     biomeIncludes: Check("Biome exclusions that would skip every file of a checkout, or `null` outside a project.", {
       state: State("`ok`, `unanchored`, `could-not-check`"),

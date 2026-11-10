@@ -992,6 +992,17 @@ describe("every finding in every block carries fix", () => {
           { capability: "secrets", workers: ["api"], bindings: ["SECRETS"], fix: "pithy add secrets --worker api" },
         ],
       }),
+      checkRootImports: async () => ({
+        state: "unresolved",
+        unresolved: [
+          {
+            file: "vitest.workers.config.ts",
+            package: "@pithy-sh/secrets",
+            declared: false,
+            line: '"@pithy-sh/secrets": "^0.6.8"',
+          },
+        ],
+      }),
       checkServiceBindings: async () => ({
         state: "faulty",
         faults: [{ kind: "missing-target", worker: "api", binding: "APP_Z", target: "app-z", path: null }],

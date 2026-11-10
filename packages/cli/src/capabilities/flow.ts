@@ -16,6 +16,7 @@ import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
+import type { LockfileSync } from "../project/rootConfigImports";
 import { type WorkerIdentity, workerDirName, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
 import { type AddBootstrapOptions, bootstrapAdd } from "./addBootstrap";
@@ -287,6 +288,11 @@ export interface RunAddOptions {
   declare?: DeclareStep;
   /** Override the migrate step (tests inject a stub). */
   migrate?: MigrateStep;
+  /**
+   * Bring the lockfile in step after a test binding's import was declared at the root (default:
+   * `syncLockfile`, the project's `<pm> install` at the root).
+   */
+  sync?: LockfileSync;
   /** Copy the capability's source into the repo and repoint the wiring at it (`--eject`). */
   eject?: boolean;
   /** With `eject`, overwrite an existing local copy (`--force`). */
@@ -512,6 +518,7 @@ async function composePrerequisites(
       ...(options.json === undefined ? {} : { json: options.json }),
       ...(options.install === undefined ? {} : { install: options.install }),
       ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
+      ...(options.sync === undefined ? {} : { sync: options.sync }),
       ...(options.audit === undefined ? {} : { audit: options.audit }),
       ...(options.bootstrap === undefined ? {} : { bootstrap: options.bootstrap }),
       ...(options.productionEnvironments === undefined
@@ -666,6 +673,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       projectDir,
       workerDir,
       manifest,
+      ...(options.sync ? { sync: options.sync } : {}),
       composed: async () =>
         allCapabilities(await composeFor(LOCAL_ENVIRONMENT, (load) => load(workerDir, { fresh: true }))).find(
           (capability) => capability.name === manifest.name,

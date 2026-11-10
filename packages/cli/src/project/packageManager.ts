@@ -178,18 +178,33 @@ export const runPackageManager: InstallRunner = async (command, args, cwd) => {
   await execCommand(command, args, { cwd });
 };
 
-const spawnInstall: InstallRunner = async (command, args, cwd) => {
-  try {
-    await runPackageManager(command, args, cwd);
-  } catch (cause) {
-    throw new InternalError({
-      message: `${command} ${args.join(" ")} failed.`,
-      action: `Install the package by hand: ${command} ${args.join(" ")}.`,
-      // The installer's captured output, without its color: a `--json` error line carries it.
-      detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
-    });
-  }
-};
+/** `run`, with a failure turned into the error that names the command to run by hand. */
+function guarded(run: InstallRunner): InstallRunner {
+  return async (command, args, cwd) => {
+    try {
+      await run(command, args, cwd);
+    } catch (cause) {
+      throw new InternalError({
+        message: `${command} ${args.join(" ")} failed.`,
+        action: `Install the package by hand: ${command} ${args.join(" ")}.`,
+        // The installer's captured output, without its color: a `--json` error line carries it.
+        detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
+      });
+    }
+  };
+}
+
+const spawnInstall: InstallRunner = guarded(runPackageManager);
+
+/**
+ * Bring the project's lockfile in step with a `package.json` the CLI wrote itself: `<pm> install` at the root, with
+ * the manager the lockfile belongs to. A project with no lockfile has nothing to keep in step, and runs nothing.
+ */
+export async function syncLockfile(projectDir: string, run: InstallRunner = runPackageManager): Promise<void> {
+  const found = await detectLockfile(projectDir);
+  if (found === null) return;
+  await guarded(run)(found.pm, ["install"], projectDir);
+}
 
 export interface InstallPackageOptions {
   /** The project root — where the lockfile lives, and where the install runs when no Worker owns it. */

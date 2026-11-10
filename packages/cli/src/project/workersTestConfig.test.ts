@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,7 +181,53 @@ describe("writeTestBindings", () => {
   test("writes nothing to a project with no Workers test config", async () => {
     expect(await writeTestBindings(dir, "secrets", SECRETS)).toEqual([]);
   });
+
+  test("declares the package a value binding imports as a root devDependency, and syncs the lockfile", async () => {
+    await workspace(dir);
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), TEMPLATE);
+    const synced: string[] = [];
+
+    await writeTestBindings(dir, "secrets", SECRETS, async (projectDir) => {
+      synced.push(projectDir);
+    });
+
+    const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    expect(root.devDependencies).toEqual({ "@pithy-sh/secrets": "^0.6.8", vitest: "^4.1.0" });
+    expect(root.dependencies).toBeUndefined();
+    expect(synced).toEqual([dir]);
+  });
+
+  test("a re-run on a config that already binds the value declares its package at a root that lacks it", async () => {
+    await workspace(dir);
+    const bound = withTestBindings(TEMPLATE, SECRETS).source;
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), bound);
+    const synced: string[] = [];
+
+    expect(
+      await writeTestBindings(dir, "secrets", SECRETS, async (projectDir) => {
+        synced.push(projectDir);
+      }),
+    ).toEqual([]);
+
+    expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(bound);
+    const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    expect(root.devDependencies).toEqual({ "@pithy-sh/secrets": "^0.6.8", vitest: "^4.1.0" });
+    expect(synced).toEqual([dir]);
+  });
 });
+
+/** A Bun workspace whose `apps/board` member declares `@pithy-sh/secrets`, and whose root does not. */
+async function workspace(dir: string): Promise<void> {
+  await writeFile(
+    join(dir, "package.json"),
+    `${JSON.stringify({ name: "replay", workspaces: ["apps/*"], devDependencies: { vitest: "^4.1.0" } }, null, 2)}\n`,
+  );
+  await mkdir(join(dir, "apps", "board"), { recursive: true });
+  await writeFile(
+    join(dir, "apps", "board", "package.json"),
+    JSON.stringify({ name: "board", dependencies: { "@pithy-sh/secrets": "^0.6.8" } }),
+  );
+}
 
 describe("withoutTestBindings", () => {
   const MEDIA: TestBinding[] = [
@@ -248,6 +294,18 @@ describe("removeTestBindings", () => {
     await writeFile(join(dir, WORKERS_TEST_CONFIG), withTestBindings(TEMPLATE, SECRETS).source);
     expect(await removeTestBindings(dir, SECRETS)).toEqual(["SECRETS", "SECRETS_ENCRYPTION_KEYS"]);
     expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(TEMPLATE);
+  });
+
+  test("takes out the root devDependency once nothing imports the package", async () => {
+    await workspace(dir);
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), TEMPLATE);
+    const sync = async () => {};
+    await writeTestBindings(dir, "secrets", SECRETS, sync);
+
+    await removeTestBindings(dir, SECRETS, sync);
+
+    const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    expect(root.devDependencies).toEqual({ vitest: "^4.1.0" });
   });
 
   test("leaves a project with no Workers test config alone", async () => {

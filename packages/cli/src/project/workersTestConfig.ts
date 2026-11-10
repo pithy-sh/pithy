@@ -4,8 +4,8 @@
 import { join } from "node:path";
 import type { TestBinding } from "@pithy-sh/core/src/capability/testBinding";
 import { findNamedImport, type ScannedConfig, scanConfig } from "../capabilities/configImports";
-import { writeFileAtomic } from "./atomic";
 import { readOptionalFile } from "./readOptionalFile";
+import { type LockfileSync, writeRootConfig } from "./rootConfigImports";
 
 /** The project-root Vitest config every `*.workers.test.ts` runs under. */
 export const WORKERS_TEST_CONFIG = "vitest.workers.config.ts";
@@ -224,13 +224,15 @@ export function missingTestBindings(source: string, bindings: readonly TestBindi
 
 /**
  * Write a capability's test bindings into the project's Workers test config, returning the notes `pithy add`
- * prints: one for the bindings no test config can provide, one for those this config had nowhere to put. A
- * project with no Workers test config is left alone.
+ * prints: one for the bindings no test config can provide, one for those this config had nowhere to put. The
+ * write goes through {@link writeRootConfig}, so a package a value binding imports is declared at the root and
+ * `sync` runs when that changed the root `package.json`. A project with no Workers test config is left alone.
  */
 export async function writeTestBindings(
   projectDir: string,
   capability: string,
   bindings: readonly TestBinding[],
+  sync?: LockfileSync,
 ): Promise<string[]> {
   const notes: string[] = [];
   const unbound = bindings.filter((binding) => !isStated(binding)).map((binding) => binding.name);
@@ -243,7 +245,7 @@ export async function writeTestBindings(
     );
   }
   const { source, unplaced } = withTestBindings(original, bindings);
-  if (source !== original) await writeFileAtomic(path, source);
+  await writeRootConfig({ projectDir, file: WORKERS_TEST_CONFIG, original, source, ...(sync ? { sync } : {}) });
   if (unplaced.length > 0) {
     notes.push(
       `${capability}: add ${unplaced.join(", ")} to the miniflare options in ${WORKERS_TEST_CONFIG}. No miniflare block was found to write them into.`,
@@ -363,14 +365,18 @@ export function withoutTestBindings(original: string, bindings: readonly TestBin
 }
 
 /**
- * Take test bindings out of the project's Workers test config, returning the names taken out. A project with no
- * Workers test config is left alone.
+ * Take test bindings out of the project's Workers test config, returning the names taken out. The write goes
+ * through {@link writeRootConfig}, so the root `devDependency` of a package no root file imports any more goes with
+ * it. A project with no Workers test config is left alone.
  */
-export async function removeTestBindings(projectDir: string, bindings: readonly TestBinding[]): Promise<string[]> {
-  const path = join(projectDir, WORKERS_TEST_CONFIG);
-  const original = await readOptionalFile(path);
+export async function removeTestBindings(
+  projectDir: string,
+  bindings: readonly TestBinding[],
+  sync?: LockfileSync,
+): Promise<string[]> {
+  const original = await readOptionalFile(join(projectDir, WORKERS_TEST_CONFIG));
   if (original === null) return [];
   const { source, removed } = withoutTestBindings(original, bindings);
-  if (source !== original) await writeFileAtomic(path, source);
+  await writeRootConfig({ projectDir, file: WORKERS_TEST_CONFIG, original, source, ...(sync ? { sync } : {}) });
   return removed;
 }
