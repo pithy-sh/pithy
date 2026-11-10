@@ -76,7 +76,7 @@ let projects = 0;
 async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir: string }> {
   const projectDir = await mkdtemp(join(tmpdir(), "pithy-turnstile-"));
   dirs.push(projectDir);
-  // The dev secrets file is keyed on the project's `name` (#156), and a distinct one per call keeps
+  // The dev secrets file is keyed on the project's `name`, and a distinct one per call keeps
   // two tests from sharing a file. `vitest.setup.ts` keeps all of them out of the real config dir.
   projects += 1;
   await writeFile(join(projectDir, "pithy.config.ts"), `export default { name: "turnstile-${projects}" };\n`);
@@ -97,8 +97,8 @@ afterEach(() => vi.clearAllMocks());
 
 describe("CloudflareTurnstileProvisioner", () => {
   test("writeDev puts the secret in the dev secrets file, and no sitekey anywhere", async () => {
-    // `turnstile-secret-keys` is a `d1` registry secret, so it goes through `writeDevSecrets` (#149). The
-    // sitekey is not a dev value at all any more: it is a build input, written into `pithy.config.ts` (#590).
+    // `turnstile-secret-keys` is a `d1` registry secret, so it goes through `writeDevSecrets`. The sitekey is
+    // not a dev value at all: it is a build input, written into `pithy.config.ts`.
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -121,9 +121,8 @@ describe("CloudflareTurnstileProvisioner", () => {
   });
 
   test("writeDev leaves nothing about the secret in the checkout, and no .gitignore line either", async () => {
-    // This used to write the project's `.gitignore` before placing the value, and fail the whole
-    // provision when it could not. The widget secret is at `<config>/<project>/secrets.jsonc` now, so
-    // there is nothing in the repository to ignore and nothing for a commit to reach (#156).
+    // The widget secret is at `<config>/<project>/secrets.jsonc`, so there is nothing in the repository to
+    // ignore and nothing for a commit to reach.
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -168,7 +167,7 @@ describe("CloudflareTurnstileProvisioner", () => {
   });
 
   test("removing a stranded dev sitekey names the Worker whose .dev.vars it could not regenerate", async () => {
-    // The delivery report `writeDevVars` returns is said, not dropped (the #153 lesson, third call site).
+    // The delivery report `writeDevVars` returns is said, not dropped.
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -281,11 +280,11 @@ describe("CloudflareTurnstileProvisioner", () => {
   });
 
   /**
-   * The two destinations, each asserted in the shape it actually holds (#535).
+   * The two destinations, each asserted in the shape it actually holds.
    *
-   * This writer serialized for both and the two do not take the same thing, so the dev file held a
-   * JSON string containing JSON — refused by `TurnstileSecrets` at the root, and reported by
-   * `pithy doctor` rather than by the run that wrote it.
+   * The two do not take the same thing: serialized for both, the dev file would hold a JSON string containing
+   * JSON — refused by `TurnstileSecrets` at the root, and reported by `pithy doctor` rather than by the run that
+   * wrote it.
    */
   test("the dev secrets file gets the shape the registry declares, with nothing to parse first", async () => {
     const { cf } = fakeCf();
@@ -710,7 +709,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     expect(await devSecrets(projectDir)).toEqual({});
   });
 
-  test("writeAccount records the confirmed account for a deployed environment, and nothing else (#731)", async () => {
+  test("writeAccount records the confirmed account for a deployed environment, and nothing else", async () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
@@ -783,7 +782,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
 });
 
 /**
- * "The domain is free" and "I asked an account nobody claims" are the same empty listing (#378).
+ * "The domain is free" and "I asked an account nobody claims" are the same empty listing.
  *
  * This one is the worst of the creative sites: the guard's *passing* is what mints a live production
  * widget, so an unconfirmed account turns a safety check into the thing that authorizes the mistake.
@@ -828,14 +827,12 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable on an unconfirmed
 });
 
 /**
- * **A run the sitekey writer will refuse creates nothing and writes nothing** (#590 review).
+ * **A run the sitekey writer will refuse creates nothing and writes nothing.**
  *
- * The writer ran last: after the dev secret, the staging secret, a real production widget and the prod
- * secret. Its refusals — a key that is not a string literal, a registration it cannot find — read only the
- * source, and none depends on the sitekey Cloudflare returns. So a refused run had already minted a widget
- * and stored both secrets, while the docs said "Nothing is written", and the rerun it asked for reused the
- * widget and warned about a secret that was in fact stored. Teardown had the same order: the widgets and
- * secrets were deleted before `clearProductionSitekeys` refused, and the stranded vars were never removed.
+ * The writer's refusals — a key that is not a string literal, a registration it cannot find — read only the
+ * source, and none depends on the sitekey Cloudflare returns, so they are asked before the dev secret, the
+ * staging secret, a real production widget and the prod secret. Teardown is held to the same order: nothing is
+ * deleted before `clearProductionSitekeys` would refuse.
  *
  * Driven through the real orchestrator and the real provisioners, over a stubbed Cloudflare API and a
  * recording dispatcher, so the order under test is the one a command runs.

@@ -31,8 +31,7 @@ function discover(root: string, names: string[]): () => Promise<WorkerTarget[]> 
  * `<project>-<name>` in its `wrangler.jsonc` — which is what discovery reports as `WorkerTarget.name`
  * and what every port registry, plan and listing keys on.
  *
- * `discover` above gives both the same string, and that is the fixture shape #136 is the story of: it
- * makes indexing one by the other look correct. Every assertion about *which* name a report carries, or
+ * `discover` above gives both the same string, which makes indexing one by the other look correct. Every assertion about *which* name a report carries, or
  * which name a map was keyed by, uses this one instead.
  */
 function discoverDeployed(root: string, names: string[]): () => Promise<WorkerTarget[]> {
@@ -363,8 +362,8 @@ describe("listWorkers", () => {
     ]);
   });
 
-  // There is one source now (#548), so what these cases guard is that the listing did not grow a second
-  // one: a target with no dev block starts, and only the branch's own answer subtracts from that.
+  // The branch's answer is the one source: a target with no dev block starts, and only the branch's own
+  // answer subtracts from that.
   test("a worker with no dev block starts, like every other worker", async () => {
     const { workers } = await listWorkers({
       projectDir: dir,
@@ -374,8 +373,7 @@ describe("listWorkers", () => {
     expect(workers[0]?.autostart).toBe(true);
   });
 
-  // The opt-out moved off the manifest and onto the branch (#548). It is the developer's, on this
-  // machine, so the listing has to read it from the registry — and has to keep the two apart, because
+  // The opt-out is the branch's. It is the developer's, on this machine, so the listing has to read it from the registry — and has to keep the two apart, because
   // *the project does not run this* and *I turned this off* send a reader to different files.
   test("a worker this branch turned off is reported as such, and marked local", async () => {
     const registryPath = join(dir, "dev-ports.json");
@@ -419,7 +417,7 @@ describe("listWorkers", () => {
   });
 
   /**
-   * **The listing says when an answer was recorded under a checkout that is gone (#685).**
+   * **The listing says when an answer was recorded under a checkout that is gone.**
    *
    * Moving the checkout changes the registry key, so what the developer said is orphaned and
    * `readWorkerAutostart` answers `{}` — the same answer a branch that said nothing gets. The row for
@@ -542,7 +540,7 @@ describe("removeWorker", () => {
     ).rejects.toThrow(ValidationError);
   });
 
-  /** A Worker another one binds is not removed out from under it (#617). */
+  /** A Worker another one binds is not removed out from under it. */
   test("refuses while another Worker binds it, naming every one, and deletes nothing", async () => {
     for (const name of ["app-a", "app-b", "app-c"]) {
       await mkdir(join(dir, "apps", name), { recursive: true });
@@ -627,7 +625,7 @@ describe("renameWorker", () => {
   }
 
   /**
-   * **`--dry-run` decides everything the rename decides and writes nothing (#697).** The plan names the
+   * **`--dry-run` decides everything the rename decides and writes nothing.** The plan names the
    * move and diffs the two edits, and those diffs are the bytes the real rename then writes.
    */
   describe("dry run", () => {
@@ -734,7 +732,7 @@ describe("renameWorker", () => {
   });
 
   /**
-   * **Every other Worker's binding follows the rename, and keeps its name (#617).** The declaration names the
+   * **Every other Worker's binding follows the rename, and keeps its name.** The declaration names the
    * Worker by directory and each stanza names the script it deploys as, so both move — the binding name stays,
    * because the binder's code reads it.
    */
@@ -796,7 +794,7 @@ describe("renameWorker", () => {
   });
 
   /**
-   * **A rename moves every name it invalidates, and the self binding names a script (#616).**
+   * **A rename moves every name it invalidates, and the self binding names a script.**
    *
    * `services[].service` is the one target in a stanza that is a script name rather than a computed
    * resource address, so it is the one a rename has to carry. Left behind, it names the orphan the
@@ -1013,10 +1011,8 @@ describe("renameWorker", () => {
   });
 
   test("a symlink at apps/<from> is refused — the source is gated too, not only the destination", async () => {
-    // #164, the seventh producer of this class and its third verb. The destination was gated and the
-    // source was not, so `rename` moved the *link* to `apps/board` — still pointing outside the project —
-    // and the `wrangler.jsonc` and `package.json` rewrites below then went straight through it. Reproduced
-    // against a canary directory: the command reported success and left the canary's files renamed.
+    // `rename` moves the *link*, so an ungated source would arrive at `apps/board` still pointing outside the
+    // project, and the `wrangler.jsonc` and `package.json` rewrites would go through it into the canary.
     const canary = join(dir, "canary");
     await mkdir(canary, { recursive: true });
     await writeFile(join(canary, "wrangler.jsonc"), '{ "name": "acme-api" }\n');
@@ -1121,17 +1117,14 @@ describe("renameWorker", () => {
 });
 
 /**
- * **The assertion is agreement, because the defect was disagreement.**
+ * **The assertion is agreement.**
  *
- * `worker sync` reported `worker`/`deployedAs` through `workerIdentity`; `add`, `list`, `remove` and
- * `rename` reported `name`/`dir` — and `name` was the directory in `add` and the deployed script name in
- * the other three. Nothing failed, because nothing compared two of them. A per-subcommand shape test would
- * not have either: each was internally consistent and individually documented. So this walks one Worker
- * through every subcommand and asserts they name it the same way, which is the only assertion the old
- * shape could not have passed (#229, #144).
+ * Every subcommand reports a Worker through `workerIdentity`. A per-subcommand shape test would pass a
+ * subcommand that is internally consistent and names the Worker differently from its siblings, so this walks
+ * one Worker through every subcommand and asserts they name it the same way.
  *
- * Real discovery throughout — no worker-set stub. A stub is free to make the two names identical, and a
- * fixture that did exactly that is the whole of #136.
+ * Real discovery throughout — no worker-set stub. A stub is free to make the two names identical, which
+ * would hide a report keyed by the wrong one.
  */
 describe("the five worker subcommands report one identity", () => {
   let dir: string;

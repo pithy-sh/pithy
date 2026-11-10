@@ -41,6 +41,7 @@ import type { CapabilityQueueHandler } from "../queue/consumer";
 import type { PurgeWindowDefault } from "../retention/policy";
 import type { SeedSet } from "../seed/seed";
 import type { SessionRotatedListener } from "../session/rotated";
+import type { WorkerVarsDeclaration } from "../worker/vars";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 import type { ClientProjection, ClientProjectionContext } from "./client";
@@ -817,6 +818,12 @@ export interface Capability<
    * index in the project. Omit it when a capability owns no index, which is the ordinary case.
    */
   vectorIndexes?: readonly VectorIndexContribution[];
+  /**
+   * The wrangler vars this capability reads, from `defineVars` in `../worker/vars.ts`. `pithy worker sync` writes
+   * each into every stanza of a Worker composing it, beside the Worker's own `vars`, and a name declared twice is
+   * refused.
+   */
+  vars?: WorkerVarsDeclaration;
   /** Bindings this capability needs in the env (normalized — `optional` is always set). */
   requiredBindings: BindingSpec[];
 }

@@ -9,10 +9,12 @@ import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { type FeatureIdentity, featureWorkerName, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
+import { defineVars } from "@pithy-sh/core/src/worker/vars";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { FeatureResource } from "../feature/manifest";
+import { declaredWorkerVars } from "../project/workerVars";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
 import { applyProvisionedEnv, applySecretBindings, bindFeatureHosts } from "./wranglerEnv";
@@ -697,6 +699,81 @@ describe("the address applyProvisionedEnv stamps", () => {
     await provision(environmentScope("replay", "staging"), "acme");
 
     expect((await stanzaVars(wranglerPath, "staging"))?.BASE_URL).toBe("https://app.example.com");
+  });
+});
+
+/**
+ * **A stanza provisioning writes gets each declared var at its environment's value.** A new stanza is seeded from
+ * the top level, so without this a feature, or a declared environment provisioned before `pithy worker sync` ran,
+ * deploys with dev's value.
+ */
+describe("the declared vars applyProvisionedEnv writes", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const feature = featureScope({ project: "replay", issue: "643", slug: "feature-vars" });
+  const minutes = (environments: Record<string, number>) =>
+    declaredWorkerVars(
+      {
+        vars: defineVars({
+          READY_AFTER_MINUTES: { description: "Minutes.", schema: z.number().int(), default: 15, environments },
+        }),
+      },
+      [],
+    );
+
+  const varsOf = async (path: string, key: string): Promise<Record<string, unknown> | undefined> =>
+    (parse(await readFile(path, "utf8")) as unknown as { env: Record<string, { vars?: Record<string, unknown> }> }).env[
+      key
+    ]?.vars;
+
+  const provision = (scope: typeof feature, vars: ReturnType<typeof minutes>) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+      vars,
+    });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envvars-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", vars: { ENVIRONMENT: "dev", READY_AFTER_MINUTES: 1 } }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a declared environment's new stanza gets its own value, not the top level's", async () => {
+    await provision(environmentScope("replay", "prod"), minutes({ dev: 1, prod: 30 }));
+    expect((await varsOf(wranglerPath, "prod"))?.READY_AFTER_MINUTES).toBe(30);
+  });
+
+  test("a feature gets its own value where declared, else the default", async () => {
+    await provision(feature, minutes({ dev: 1, feature: 5 }));
+    expect((await varsOf(featureConfigPath(dir), "feature"))?.READY_AFTER_MINUTES).toBe(5);
+
+    await provision(feature, minutes({ dev: 1 }));
+    expect((await varsOf(featureConfigPath(dir), "feature"))?.READY_AFTER_MINUTES).toBe(15);
+  });
+
+  test("a valid value set by hand in a tracked stanza stays", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        vars: { ENVIRONMENT: "dev", READY_AFTER_MINUTES: 1 },
+        env: { prod: { name: "replay-prod-board", vars: { ENVIRONMENT: "prod", READY_AFTER_MINUTES: 45 } } },
+      }),
+    );
+    await provision(environmentScope("replay", "prod"), minutes({ dev: 1, prod: 30 }));
+    expect((await varsOf(wranglerPath, "prod"))?.READY_AFTER_MINUTES).toBe(45);
   });
 });
 

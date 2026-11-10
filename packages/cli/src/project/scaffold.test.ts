@@ -301,6 +301,17 @@ describe("scaffoldProject", () => {
     expect(wrangler.env.prod?.vars?.PROJECT).toBe("acme");
   });
 
+  test("every stanza's identity vars name the project and the Worker, on the template's own stanzas too", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "acme", worker: "edge" });
+    const wrangler = parse(await readFile(join(dir, "apps", "edge", "wrangler.jsonc"), "utf8")) as unknown as {
+      vars: Record<string, string>;
+      env: Record<string, { vars: Record<string, string> }>;
+    };
+    expect(wrangler.vars).toEqual({ ENVIRONMENT: "dev", PROJECT: "acme", WORKER: "edge" });
+    expect(wrangler.env.staging?.vars).toEqual({ ENVIRONMENT: "staging", PROJECT: "acme", WORKER: "edge" });
+    expect(wrangler.env.prod?.vars).toEqual({ ENVIRONMENT: "prod", PROJECT: "acme", WORKER: "edge" });
+  });
+
   test("the stamped PROJECT is the name requireProjectName resolves, not the raw input", async () => {
     // The Worker's stamp and the CLI's resource names must be the same string, or a sweep filtering on
     // `<project>-` finds nothing the Worker minted. `requireProjectName` kebabs, so the scaffold does too.

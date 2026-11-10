@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { commandNameOf, isCommandPath } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
-import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { DEFAULT_ENVIRONMENTS, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { featureMarkerInProjectName } from "@pithy-sh/core/src/naming/feature";
 import {
   assertValidProjectName,
@@ -17,11 +17,13 @@ import {
   RESERVED_TEST_PREFIX,
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { ENVIRONMENT_VAR, PROJECT_VAR, WORKER_VAR } from "@pithy-sh/core/src/worker/identity";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { errnoOf } from "./atomic";
 import { loadProjectEnvironments } from "./config";
 import { lstatAsProject } from "./linkView";
 import { applyLinter, DEFAULT_LINTER, type Linter, OXLINT_TEMPLATE, shipsWith } from "./lint";
+import { setStanzaVar } from "./stanzaVars";
 import { committedFiles } from "./templateFiles";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { topLevelKeysToRepeat } from "./wranglerInheritance";
@@ -985,12 +987,21 @@ function renderEnvironmentsBlock(environments: readonly string[]): string {
  *
  * Nothing here deletes a stanza on an existing project: this runs once, on a directory `init` just
  * created, and an adopter's stanza stays theirs.
+ *
+ * Every stanza's identity vars — `ENVIRONMENT`, `PROJECT`, `WORKER` — are set here through the one writer, the
+ * top level's included, whatever the template ships them as.
  */
 async function stampEnvironmentStanzas(
   workerDir: string,
   identity: { project: string; worker: string; environments: readonly string[] },
 ): Promise<void> {
   const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
+  const stampIdentity = (stanza: object, environment: string) => {
+    setStanzaVar(stanza, ENVIRONMENT_VAR, environment);
+    setStanzaVar(stanza, PROJECT_VAR, identity.project);
+    setStanzaVar(stanza, WORKER_VAR, identity.worker);
+  };
+  stampIdentity(config, LOCAL_ENVIRONMENT);
   const declared = [...identity.environments];
   // What the top level declares that an environment does not inherit. Read rather than listed: this
   // rewrite REPLACES every stanza, so a key the template declares once above and this loop forgets is a
@@ -998,31 +1009,38 @@ async function stampEnvironmentStanzas(
   // `wranglerInheritance.ts` and is gated against wrangler's own `notInheritable` call sites, so a
   // wrangler release that adds a key reaches here without anybody remembering to come back.
   const repeated = topLevelKeysToRepeat(config);
-  // The template already ships the default pair, comments and all. Rewriting it to produce the same
-  // names would only cost the prose that explains them.
-  if (JSON.stringify(Object.keys(config.env ?? {})) === JSON.stringify(declared)) return;
+  // The template already ships the default pair, comments and all. Rebuilding it to produce the same
+  // names would only cost the prose that explains them, so its stanzas keep their place and get their vars.
+  if (JSON.stringify(Object.keys(config.env ?? {})) === JSON.stringify(declared)) {
+    for (const [environment, stanza] of Object.entries(config.env ?? {})) {
+      if (typeof stanza === "object" && stanza !== null) stampIdentity(stanza, environment);
+    }
+    await writeWranglerConfig(workerDir, config);
+    return;
+  }
   // The template's note above `env` names staging and production. For any other set it would be a false
   // sentence in a checked-in file.
   delete (config as Record<symbol, unknown>)[Symbol.for("before:env")];
+  // `vars` is this environment's, not a copy of dev's: the identity vars below are its whole block.
+  const { vars: _dev, ...carried } = repeated;
   config.env = Object.fromEntries(
-    declared.map((environment) => [
-      environment,
-      {
+    declared.map((environment) => {
+      const stanza: Record<string, unknown> = {
         // The script this environment deploys under, in the kit's shape. Written here as well as
         // in the template's own stanzas, because this rewrite REPLACES them: a stanza rebuilt without it
         // falls back to wrangler's `<name>-<env>` suffix, and one project's environments end up named two
         // different ways depending on which environments it declared.
         name: environmentWorkerName(identity.project, environment, identity.worker),
-        // Everything the top level declares and an environment does not inherit, carried down verbatim.
-        // The three keys below then override what is theirs to override: `vars` is this environment's,
-        // not a copy of dev's, and the two binding arrays start empty because nothing is provisioned yet.
-        ...structuredClone(repeated),
-        // All three repeat per stanza: `env.<name>.vars` REPLACES the top-level block, never merges it.
-        vars: { ENVIRONMENT: environment, PROJECT: identity.project, WORKER: identity.worker },
+        // Everything else the top level declares and an environment does not inherit, carried down
+        // verbatim. The two binding arrays then start empty because nothing is provisioned yet.
+        ...structuredClone(carried),
         d1_databases: [],
         kv_namespaces: [],
-      },
-    ]),
+      };
+      // All three repeat per stanza: `env.<name>.vars` REPLACES the top-level block, never merges it.
+      stampIdentity(stanza, environment);
+      return [environment, stanza];
+    }),
   );
   await writeWranglerConfig(workerDir, config);
 }
@@ -1112,28 +1130,21 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
       .replace(ENVIRONMENTS_PLACEHOLDER, () => renderEnvironmentsBlock(environments)),
   );
 
-  // Four kinds of stamp into the worker's wrangler.jsonc. The top-level `name` is the dev deploy name
+  // The deploy names in the worker's wrangler.jsonc. The top-level `name` is the dev deploy name
   // (project + worker); each `env.<name>.name` is that environment's, in the kit's own shape
-  // ({@link environmentWorkerName}); `PROJECT` is the project alone; `WORKER` is this Worker's own
-  // directory name. `PROJECT` and every deploy name are the kebabed form — the string
-  // `requireProjectName` hands every command that composes a `<project>-<env>-<thing>` name. A `PROJECT`
-  // that differed would attribute the Worker's Images/Stream assets to a project no sweep filters on, and
-  // a `name` that differed would not deploy.
+  // ({@link environmentWorkerName}). Every deploy name is the kebabed form — the string
+  // `requireProjectName` hands every command that composes a `<project>-<env>-<thing>` name — and a `name`
+  // that differed would not deploy. The identity vars are not text: {@link stampEnvironmentStanzas} sets them.
   //
-  // `WORKER` and the environment names are keyed off `DEFAULT_WORKER` and `DEFAULT_ENVIRONMENTS` rather
-  // than literals, because the template ships those and the directory has just been renamed to `worker`
-  // above — a literal here would be two places to change and one of them would be forgotten.
+  // The environment names are keyed off `DEFAULT_WORKER` and `DEFAULT_ENVIRONMENTS` rather than literals,
+  // because the template ships those and the directory has just been renamed to `worker` above — a literal
+  // here would be two places to change and one of them would be forgotten.
   //
-  // `replaceAll`, because `env.<name>.vars` replaces rather than merges, so each placeholder appears once
-  // per environment stanza and a first-occurrence replace would leave staging and prod owned by `pithy-app`.
   // The top-level `"name": "pithy-app"` carries its closing quote, so it cannot match the longer
   // `"name": "pithy-app-staging-api"` the environment stamps below rewrite.
   const wranglerPath = join(workerDir, "wrangler.jsonc");
   const wrangler = await readFile(wranglerPath, "utf8");
-  let stamped = wrangler
-    .replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`)
-    .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
-    .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`);
+  let stamped = wrangler.replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`);
   for (const environment of DEFAULT_ENVIRONMENTS) {
     const shipped = environmentWorkerName(TEMPLATE_PROJECT, environment, DEFAULT_WORKER);
     stamped = stamped.replaceAll(

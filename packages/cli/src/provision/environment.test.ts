@@ -9,6 +9,7 @@ import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { phi } from "@pithy-sh/core/src/privacy/classes";
 import { encrypted, encryptedTable } from "@pithy-sh/core/src/privacy/encrypted";
+import { defineVars } from "@pithy-sh/core/src/worker/vars";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse, stringify } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -971,6 +972,37 @@ describe("a binding the Worker's own app declares", () => {
       env: Record<string, { queues?: unknown }>;
     };
     expect(tracked.env.staging?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "replay-staging-work" }] });
+  });
+
+  test("a stanza provisioning creates gets each var the Worker declares at that environment's value", async () => {
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      '{\n  "name": "replay-board",\n  "vars": { "ENVIRONMENT": "dev", "READY_AFTER_MINUTES": 1 }\n}\n',
+    );
+    const board = defineCapability({ name: "board", requiredBindings: [] });
+    const vars = defineVars({
+      READY_AFTER_MINUTES: {
+        description: "Minutes.",
+        schema: z.number().int(),
+        default: 15,
+        environments: { dev: 1, prod: 30 },
+      },
+    });
+    const { provisioners } = fakeProvisioners();
+    await provisionEnvironment({
+      projectDir: dir,
+      scope: environmentScope("replay", "prod"),
+      capabilities: [board],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "replay-board", dir: workerDir, capabilities: [board], config: { capabilities: [], app: board, vars } },
+      ],
+      ...noBackend,
+    });
+    const tracked = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { vars?: Record<string, unknown> }>;
+    };
+    expect(tracked.env.prod?.vars).toEqual({ ENVIRONMENT: "prod", READY_AFTER_MINUTES: 30 });
   });
 
   test("a consuming queue gets its consumers entry in a stanza provisioning creates", async () => {

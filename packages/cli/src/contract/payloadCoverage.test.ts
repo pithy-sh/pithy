@@ -163,6 +163,7 @@ const OPEN_SUBTREES = [
   "doctor: $.turnstileSitekeys|0",
   "doctor: $.turnstileSitekeys|0.stranded[]",
   "doctor: $.turnstileSitekeys|0.unrendered[]",
+  "doctor: $.varStanzas|0",
   "doctor: $.workerNames|0",
   "doctor: $.workerNames|0.convention[]",
   "doctor: $.workerNames|0.mismatches[]",

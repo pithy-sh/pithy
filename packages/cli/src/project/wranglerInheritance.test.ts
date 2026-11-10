@@ -26,11 +26,8 @@ import {
  * wrangler at runtime would make this test compare wrangler to itself, which is the one shape that cannot
  * fail. The declaration is the claim; wrangler is the subject; this is the gate between them.
  *
- * **Why a hand-written list needed a gate at all.** #581 opened with a four-name list of non-inherited
- * keys, written from a wrangler warning read at a terminal. Two of the four names were wrong — both
- * `observability` and `triggers` *are* inherited — and the error survived a day, a commit in the kit's
- * first adopter, and an issue body. Wrangler's real list is 41 names. Nothing but this comparison would
- * have caught that, and nothing but this comparison will catch the next one.
+ * **Why a hand-written list needs a gate at all.** A list written from a wrangler warning gets names wrong —
+ * both `observability` and `triggers` *are* inherited — and only this comparison catches it.
  *
  * ## Two readers, because one could go quiet
  *
@@ -128,9 +125,9 @@ describe("the declared list agrees with wrangler", () => {
     expect(new Set(NOT_INHERITED_BY_ENVIRONMENTS).size).toBe(NOT_INHERITED_BY_ENVIRONMENTS.length);
   });
 
-  test("the keys #581 was wrong about are on the side wrangler puts them", () => {
-    // Not a second list: these four are the issue's own claim, kept as the regression it was. `vars` and
-    // `version_metadata` are not inherited; `observability` and `triggers` are, and a check that reported
+  test("the keys easiest to get wrong are on the side wrangler puts them", () => {
+    // Not a second list: `vars` and `version_metadata` are not inherited; `observability` and `triggers` are,
+    // and a check that reported
     // them would be noise on every project that declares logging once at the top level.
     expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain("vars");
     expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain("version_metadata");
@@ -162,7 +159,7 @@ describe("unrepeatedKeys", () => {
   });
 
   test("an inherited key is never reported, however absent it is", () => {
-    // The whole correction on #581. `observability` at the top level and nowhere else is correct config.
+    // `observability` at the top level and nowhere else is correct config.
     expect(unrepeatedKeys({ observability: { enabled: true }, triggers: { crons: [] }, env: { prod: {} } })).toEqual(
       [],
     );
@@ -237,10 +234,8 @@ describe("topLevelKeysToRepeat", () => {
 /**
  * **The one place a stanza is created**, and what a created one starts out holding.
  *
- * #581 taught two of the kit's stanza writers to repeat what an environment does not inherit and missed
- * the third — `provision/wranglerEnv.ts`, the one every `pithy provision` and every feature deploy goes
- * through, which built its stanza as `config.env[key] ?? {}` and filled in ids. Four more modules had the
- * same three lines. `ci/envStanzaWriters.test.ts` is what keeps a seventh from being written.
+ * Every writer that creates a stanza goes through it; `ci/envStanzaWriters.test.ts` fails on one that builds its
+ * own as `config.env[key] ?? {}`.
  */
 describe("stanzaFor", () => {
   const starter = () => ({
@@ -287,7 +282,7 @@ describe("stanzaFor", () => {
   });
 
   /**
-   * **A key Pithy does not model follows wrangler's inheritance, not a blanket rule (#662 review).** `docs/CLI.md`
+   * **A key Pithy does not model follows wrangler's inheritance, not a blanket rule.** `docs/CLI.md`
    * states what these pin: an inherited key is written once and neither copied nor reported, a non-inherited one is
    * reported where a stanza leaves it out, and a new stanza empties every list in it — nested one level in an
    * object as well as bare — while a flat value comes down whole.
@@ -330,10 +325,10 @@ describe("stanzaFor", () => {
   });
 
   /**
-   * **A rate limiter is the same in every environment, so a new stanza carries it (#643).** Its `namespace_id`
+   * **A rate limiter is the same in every environment, so a new stanza carries it.** Its `namespace_id`
    * is derived from the binding name alone and its policy is the adopter's, so nothing in it is an environment's
-   * own resource. Emptied, a feature's generated stanza bound no `AUTH_RATE_LIMITER` and auth refused every
-   * request. Workflows are not carried: their entries name `dev`'s Workflows.
+   * own resource. Emptied, a feature's generated stanza would bind no `AUTH_RATE_LIMITER` and auth would refuse
+   * every request. Workflows are not carried: their entries name `dev`'s Workflows.
    */
   test("carries rate limiters whole, and still empties the Workflows, which name dev's", () => {
     const limiter = { name: "AUTH_RATE_LIMITER", namespace_id: "3093", simple: { limit: 100, period: 60 } };
@@ -363,7 +358,7 @@ describe("stanzaFor", () => {
     for (const key of Object.values(WRANGLER_KEYS)) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
   });
 
-  test("derives what it carries whole from seedPolicy, never a list of names (#662)", () => {
+  test("derives what it carries whole from seedPolicy, never a list of names", () => {
     const kinds = BindingType.options.map((option) => option.value);
     const keysWith = (...policies: string[]) =>
       kinds.filter((kind) => policies.includes(seedPolicy(kind))).map((kind) => WRANGLER_KEYS[kind]);
@@ -375,9 +370,9 @@ describe("stanzaFor", () => {
   });
 
   /**
-   * **Every account-level kind comes down whole; every environment-owned one starts empty (#662).** Before this,
-   * what survived into a new stanza turned on wrangler's value *shape*: `browser` (an object) survived and
-   * `hyperdrive` (an array) was emptied, though neither names anything an environment owns.
+   * **Every account-level kind comes down whole; every environment-owned one starts empty.** What survives
+   * into a new stanza turns on the kind, never on wrangler's value *shape*: `browser` is an object and
+   * `hyperdrive` an array, and neither names anything an environment owns.
    */
   test("carries a carry kind's entries into a new stanza, and still empties a provision kind's", () => {
     const carried = {
@@ -402,7 +397,7 @@ describe("stanzaFor", () => {
   });
 
   /**
-   * **A feature is a branch of `dev`; a declared environment is not (#650 review, #662).** `send_email` names an
+   * **A feature is a branch of `dev`; a declared environment is not.** `send_email` names an
    * address verified once at the account and carries a decision about where mail goes. A feature inherits dev's
    * decision, the way it inherits `vars`; `prod` starts with none, so a laptop's address never reaches its users.
    */
@@ -415,7 +410,7 @@ describe("stanzaFor", () => {
   });
 
   /**
-   * **A Hyperdrive config and a pipeline stream are one environment's, though the account holds them (#662).** A
+   * **A Hyperdrive config and a pipeline stream are one environment's, though the account holds them.** A
    * Hyperdrive config is one origin database's connection, and a stream feeds one sink. The top level is dev, so a
    * declared environment seeded from it would read and write dev's Postgres and dev's sink, and nothing would fail.
    */
@@ -437,7 +432,7 @@ describe("stanzaFor", () => {
   });
 
   test("leaves a stanza that is already there exactly as it is", () => {
-    // An adopter's stanza is theirs (#142). A key they left out is a decision; `pithy doctor` reports it
+    // An adopter's stanza is theirs. A key they left out is a decision; `pithy doctor` reports it
     // and nothing here writes over it.
     const config = starter();
     const theirs = { name: "acme-prod-api" };

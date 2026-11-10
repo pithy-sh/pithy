@@ -1007,6 +1007,12 @@ describe("every finding in every block carries fix", () => {
         state: "duplicated",
         duplicates: [{ package: "@pithy-sh/secrets", members: [".", "apps/api"] }],
       }),
+      checkVarStanzas: async () => ({
+        state: "faulty",
+        findings: [
+          { worker: "api", kind: "missing", stanza: "env.prod", name: "FEED", declared: false, line: '"FEED": "x"' },
+        ],
+      }),
       checkServiceBindings: async () => ({
         state: "faulty",
         faults: [{ kind: "missing-target", worker: "api", binding: "APP_Z", target: "app-z", path: null }],

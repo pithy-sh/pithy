@@ -33,7 +33,7 @@ pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
 | `--dry-run` | `rename`, `sync` | `false` | Show the plan and write nothing. Every refusal still applies, `rename`'s live-script check included |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
-| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its D1, KV, R2 and queue bindings, its Workflow bindings, its cron, its service bindings, its D1 names. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
+| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its D1, KV, R2 and queue bindings, its Workflow bindings, its cron, its service bindings, its D1 names, its declared vars. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all seven | `false` | One line of machine-readable output |
 
 ## What it does
@@ -48,7 +48,7 @@ It also names **answers recorded for a checkout that is gone**. Those answers ar
 
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database. **It refuses while another Worker binds the one going**, and names every one: their service bindings would name a script nothing deploys. Unbind each first.
 
-**`sync`** writes what the Worker's `pithy.config.ts` and `pithy.worker.jsonc` declare into its `wrangler.jsonc`. Several halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
+**`sync`** writes what the Worker's `pithy.config.ts` and `pithy.worker.jsonc` declare into its `wrangler.jsonc`: its address, its Workflows and cron, its bindings, its owned bindings and its vars. Several halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
 
 The first half is the address. A `domains` block names where the Worker answers per environment, and `sync` writes the `custom_domain` route and the `vars.BASE_URL` it implies. **This is the only non-interactive way to get that route written.** Before it, the route was written by the domain prompt during `pithy init` or `pithy worker add` and nowhere else, so a `domains` block added by hand — the documented way to add an environment — declared an address nothing served: `pithy doctor` reported it healthy, `pithy deploy` shipped it, and the Worker answered on nothing. Doctor now reports that as a missing route and names this command. Running it twice changes nothing and writes nothing.
 
@@ -59,6 +59,8 @@ The third half writes every D1, KV, R2 and queue binding the Worker composes, th
 The fourth half is the app's service bindings: each declared one written into `services` in every stanza, at the script its target deploys as there, as `bind` writes it. An entry you wrote by hand is left as it is.
 
 The fifth half is the Worker's D1 entries against its `ownBindings`. A binding listed after its entries were written still names the shared database, and one taken out still names the Worker's own, so each entry naming the other of the pair gets the `database_name` `pithy provision` composes for this Worker. An environment stanza that already holds a real `database_id` is left alone, for `pithy provision --repoint` to move, and a name chosen by hand is never rewritten. The top-level stanza, which is local dev's, also gets a `database_id` of its own for an owned binding, and loses it when the entry is taken out, so `pithy dev`, `migrate` and `seed` keep the two databases apart. Only names the kit composed are rewritten: a name you chose is yours, and `pithy doctor` reports it. An environment stanza that already holds a real `database_id` is left for `pithy provision --env <env> --repoint`, because renaming it here would point the name at one database and the id at another. A `scope: "global"` binding of any kind in `ownBindings`, such as support's `SUPPORT_BUCKET` R2 bucket, is refused before anything is written, naming the capability, in a Worker that composes no database as in one that does.
+
+The sixth half is the vars the Worker declares with `defineVars`, in its `pithy.config.ts` or on a capability it composes ([`docs/CLI.md`](../CLI.md) §3.6, "Declaring a Worker's vars"). Each is written into the top-level `vars` and every `env.<name>.vars` that lacks it, at that environment's value, else the default, after every other half, so a stanza another half has just created gets it too. A value a stanza already holds that parses under the var's schema is yours and stays. One that does not is reported — `prod: READY_AFTER_MINUTES is "soon", which its declaration refuses: … Kept.` — and left as it is. A var nobody declared is never written or deleted. The one value rewritten is a copy of the top level's in an environment the declaration gives its own value: every command that creates an `env.<name>` stanza seeds its `vars` from the top level, so a new `env.prod` starts at dev's. `pithy doctor` names any stanza that drops a declared var, holds one at the top level's value, or holds one its schema refuses, and names this command for the first two. A refused value is yours to fix by hand. A second run writes nothing.
 
 **`pithy doctor` and `pithy deploy --env <name>` read the Workflow half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
 
@@ -192,7 +194,7 @@ $ pithy worker rename --from api --to board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"bindings":[{"env":"dev","written":[{"binding":"DB","type":"d1"}],"skipped":[]}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[]}
+{"command":"worker.sync","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"bindings":[{"env":"dev","written":[{"binding":"DB","type":"d1"}],"skipped":[]}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[],"vars":[{"env":"dev","written":[{"name":"READY_AFTER_MINUTES","value":15}],"invalid":[]}]}
 ```
 
 | key | type | meaning |
@@ -231,6 +233,10 @@ $ pithy worker sync --worker api --json
 | `ownedBindings[].field` | `"database_name" \| "database_id"` | The field written or removed. `database_id` only ever moves in the top-level stanza |
 | `ownedBindings[].from` | `string` | What it said before. Absent when the field was not there |
 | `ownedBindings[].to` | `string` | What it says now. Absent when the field was removed |
+| `vars` | `object[]` | One entry per environment, for the vars the Worker and its capabilities declare with `defineVars`. Empty when it declares none |
+| `vars[].env` | `string` | The environment written. `dev` names the top-level stanza |
+| `vars[].written` | `object[]` | The vars written into that stanza, each `{ name, value }`: the environment's own value, else the default. Each one it lacked, and each it held at the top level's value where the declaration gives the environment its own. Empty on a re-run |
+| `vars[].invalid` | `object[]` | The vars that stanza holds a value for that the declaration refuses, each `{ name, value, problem }`. The value is kept as it is |
 | `plan` | `object` | Present only under `--dry-run`: the Worker's `wrangler.jsonc` edit with its diff and one sentence per change, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). `files` is empty when the run would change nothing |
 
 ```
@@ -291,11 +297,18 @@ Could not read api's wrangler.jsonc.
 Fix the file, then run the rename again — this command edits it.
 ```
 
-**Nothing to sync.** `sync` writes what `domains`, an `app` capability, `ownBindings` and the D1, KV, R2 and queue bindings it composes declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write. A Worker that composes only a library capability's resources is synced, not refused.
+**Nothing to sync.** `sync` writes what `domains`, an `app` capability, `ownBindings`, `vars` and the D1, KV, R2 and queue bindings it composes declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write. A Worker that composes only a library capability's resources, or declares only vars, is synced, not refused.
 
 ```
-api declares neither domains nor an app capability.
-Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.
+api declares neither domains nor an app capability, and no vars.
+Declare `domains`, `vars` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, each var, the Workflow bindings and cron.
+```
+
+**A `vars` declaration that cannot be read.** Refused before anything is written: a `vars` not built with `defineVars`, and a var two sources declare, naming both.
+
+```
+The var READY_AFTER_MINUTES is declared twice: by pithy.config.ts and by stats-feed.
+Declare each var once. Rename one, or take it out of the Worker's own vars.
 ```
 
 **A `domains` block that is not valid.** Refused with the field named, rather than written into a `routes` entry Cloudflare rejects at deploy.

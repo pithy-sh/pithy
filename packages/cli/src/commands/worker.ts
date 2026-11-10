@@ -30,6 +30,7 @@ import { bindableFrom, bindWorker, readServiceProject, unbindWorker } from "../p
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
 import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { discoverWorkers } from "../project/workers";
+import { declaredWorkerVars, reconcileWorkerVars, type WorkerVarRun } from "../project/workerVars";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -252,6 +253,38 @@ const WorkerSyncPayload = z
           .describe("One field one D1 entry changed."),
       )
       .describe("What `ownBindings` changed in the Worker's D1 entries: its own names, and its own local store."),
+    vars: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment written — `dev` for the top-level stanza."),
+            written: z
+              .array(
+                z
+                  .object({
+                    name: z.string().describe("The var name."),
+                    value: z.unknown().describe("The value written: the environment's own, else the default."),
+                  })
+                  .describe("One var written."),
+              )
+              .describe(
+                "The declared vars written into this stanza: each one it lacked, and each it held at the top level's value where the declaration gives this environment its own.",
+              ),
+            invalid: z
+              .array(
+                z
+                  .object({
+                    name: z.string().describe("The var name."),
+                    value: z.unknown().describe("The value the stanza holds."),
+                    problem: z.string().describe("Why the declaration refuses it."),
+                  })
+                  .describe("One var whose value the declaration refuses. Kept as it is."),
+              )
+              .describe("The declared vars this stanza holds a value for that does not parse."),
+          })
+          .describe("One environment's declared vars."),
+      )
+      .describe("What the Worker's declared vars wrote, per environment."),
     plan: PlanKey,
   })
   .describe("What `pithy worker sync` wrote, or under `--dry-run` would.");
@@ -694,6 +727,7 @@ interface WorkerSyncReport {
   runs: Awaited<ReturnType<typeof reconcileAppWorkflows>>;
   serviceRuns: Awaited<ReturnType<typeof reconcileServiceStanzas>>;
   ownedBindings: Awaited<ReturnType<typeof reconcileOwnedDatabases>>;
+  vars: WorkerVarRun[];
   /** How many bindings the Worker's `pithy.worker.jsonc` lists in `ownBindings`. */
   owned: number;
 }
@@ -766,6 +800,9 @@ async function syncWorker(options: {
     });
   }
 
+  // Before any write: a `vars` defineVars did not build, or a name declared twice, leaves wrangler.jsonc untouched.
+  const declaredVars = declaredWorkerVars(target.config, target.capabilities);
+
   // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
   // and a Worker with no `app` block still answers somewhere.
   const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
@@ -785,11 +822,18 @@ async function syncWorker(options: {
   const ownedBindings = owning
     ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
     : [];
-  if (!app && domains === undefined && !composesResources && ownBindings.length === 0 && ownedBindings.length === 0) {
+  if (
+    !app &&
+    domains === undefined &&
+    !composesResources &&
+    ownBindings.length === 0 &&
+    ownedBindings.length === 0 &&
+    declaredVars.size === 0
+  ) {
     throw new NotFoundError({
-      message: `${target.name} declares neither domains nor an app capability.`,
+      message: `${target.name} declares neither domains nor an app capability, and no vars.`,
       action:
-        "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
+        "Declare `domains`, `vars` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, each var, the Workflow bindings and cron.",
     });
   }
 
@@ -825,7 +869,14 @@ async function syncWorker(options: {
           ...(env === undefined ? {} : { env }),
         })
       : [];
-  return { target, routes, bindings, runs, serviceRuns, ownedBindings, owned: ownBindings.length };
+  // Last: every write above may seed a new stanza from the top level, and a declared var's value there is dev's
+  // until this rewrites it to that environment's own.
+  const vars = await reconcileWorkerVars({
+    workerDir: target.dir,
+    declared: declaredVars,
+    ...(env === undefined ? {} : { env }),
+  });
+  return { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned: ownBindings.length };
 }
 
 /** One sentence per change a sync report holds, as the text output and a dry run's plan both say it. */
@@ -850,6 +901,14 @@ function syncChanges(report: WorkerSyncReport): string[] {
   for (const run of report.serviceRuns) {
     if (!run.changed) continue;
     lines.push(`${run.env}: ${run.services.map((entry) => `${entry.binding} to ${entry.service}`).join(", ")}.`);
+  }
+  for (const run of report.vars) {
+    if (run.written.length > 0) lines.push(`${run.env}: ${run.written.map((entry) => entry.name).join(", ")} written.`);
+    for (const entry of run.invalid) {
+      lines.push(
+        `${run.env}: ${entry.name} is ${JSON.stringify(entry.value)}, which its declaration refuses: ${entry.problem.replace(/\.$/, "")}. Kept.`,
+      );
+    }
   }
   for (const change of report.ownedBindings) {
     lines.push(
@@ -890,9 +949,9 @@ async function planWorkerSync(
 
 /**
  * `pithy worker sync` — write what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`: the
- * route and `vars.BASE_URL` its `domains` block implies, every D1, KV, R2 and queue binding it composes, the app
- * capability's Workflows and cron schedule, and the D1 names its `pithy.worker.jsonc` `ownBindings` imply, for every
- * environment it declares.
+ * route and `vars.BASE_URL` its `domains` block implies, each var it and its capabilities declare with `defineVars`,
+ * every D1, KV, R2 and queue binding it composes, the app capability's Workflows and cron schedule, and the D1 names
+ * its `pithy.worker.jsonc` `ownBindings` imply, for every environment it declares.
  *
  * **One command for one job: the declaration is the truth, this is what makes wrangler agree with it.**
  * A library capability's Workflows arrive with `pithy <capability> provision`; the adopter's own, its resource
@@ -910,7 +969,7 @@ const sync = withContract(
     meta: {
       name: "sync",
       description:
-        "Write what pithy.config.ts declares — domains routes, bindings, Workflows, cron — into wrangler.jsonc",
+        "Write what pithy.config.ts declares — domains routes, vars, bindings, Workflows, cron — into wrangler.jsonc",
     },
     args: {
       worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
@@ -929,10 +988,10 @@ const sync = withContract(
         const { report, plan } = dryRun
           ? await planWorkerSync(projectDir, options)
           : { report: await syncWorker({ ...options, projectDir }), plan: undefined };
-        const { target, routes, bindings, runs, serviceRuns, ownedBindings, owned } = report;
+        const { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned } = report;
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, plan })}\n`,
+            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, vars, plan })}\n`,
           );
           return;
         }
@@ -948,7 +1007,8 @@ const sync = withContract(
           bindings.every((run) => run.written.length === 0 && run.skipped.length === 0) &&
           runs.every((run) => !run.changed) &&
           serviceRuns.every((run) => !run.changed) &&
-          ownedBindings.length === 0
+          ownedBindings.length === 0 &&
+          vars.every((run) => run.written.length === 0 && run.invalid.length === 0)
         ) {
           // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
           // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
@@ -958,6 +1018,7 @@ const sync = withContract(
             bindings.length === 0 &&
             owned === 0 &&
             serviceRuns.length === 0 &&
+            vars.length === 0 &&
             runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
           process.stdout.write(
             nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,

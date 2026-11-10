@@ -17,7 +17,9 @@ import { appendBinding, bindingSlot, placeBinding, type WranglerStanza } from ".
 import { declaredBindingSpecs } from "../project/declaredBindings";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { removeStanzaVar, setStanzaVar } from "../project/stanzaVars";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
+import { applyDeclaredVars, type DeclaredWorkerVar } from "../project/workerVars";
 import { readWranglerConfig } from "../project/wrangler";
 import { CARRIED_INTO_FEATURE, stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, featureConfigPath, provisionConfigPath } from "./featureConfig";
@@ -489,12 +491,8 @@ function stampFeatureAddress(stanza: EnvBindings, top: Record<string, unknown>, 
     stanza: inheritAddressKeys(top, address, FEATURE_ENVIRONMENT),
     subdomain,
   });
-  if (resolved) {
-    stanza.vars ??= {};
-    stanza.vars[BASE_URL_VAR] = resolved.url;
-    return;
-  }
-  if (stanza.vars) delete stanza.vars[BASE_URL_VAR];
+  if (resolved) setStanzaVar(stanza, BASE_URL_VAR, resolved.url);
+  else removeStanzaVar(stanza, BASE_URL_VAR);
 }
 
 /**
@@ -583,6 +581,13 @@ export async function applyProvisionedEnv(options: {
    */
   capabilities?: readonly Capability[];
   /**
+   * The vars this Worker declares, from `declaredWorkerVars`. Each is written into the stanza at this scope's value
+   * through `applyDeclaredVars`, the writer `pithy worker sync` uses: a stanza seeded here starts from the top
+   * level's `vars`, and a feature's is reseeded on every run, so without it either one deploys with dev's value.
+   * Omitted, no declared var is written.
+   */
+  vars?: ReadonlyMap<string, DeclaredWorkerVar>;
+  /**
    * Told the bindings a feature stanza gave up — a `durable_objects` or `services` entry naming a
    * script this project does not own. A feature has no copy of that Worker to point at, and binding a
    * stranger's live namespace is worse than binding nothing, so the entry is stripped and the run says so.
@@ -622,6 +627,7 @@ export async function applyProvisionedEnv(options: {
       featureCrons(stanza);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
+    if (options.vars) applyDeclaredVars(stanza, options.scope.stanza, options.vars, top);
     scopedArtifacts(stanza, top, () => options.scope.artifactsNamespace);
     const named = new Map(options.resources.map((resource) => [resource.binding, resource.name]));
     const declared = new Map(

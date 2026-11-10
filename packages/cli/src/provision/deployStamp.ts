@@ -3,17 +3,17 @@
 
 import { createHash } from "node:crypto";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { setStanzaVar } from "../project/stanzaVars";
 
 /**
  * **What a kit Worker says about itself, so a deploy can tell whether it needs to happen.**
  *
- * A capability that owns Workflows ships a Worker of its own, and until #537 nothing decided whether
- * it needed redeploying. `deployWorker` resolved the template and shelled `wrangler deploy`, every
- * time. That left an adopter's CI two options and both were bad: re-upload an unchanged Worker on
- * every push to main, versioning the script that hosts their durable jobs and paying a full
- * provisioning pass — or leave it out, and let the Worker go **stale silently**. It has no request
- * and no access to `pithy.config.ts`, so its configuration is stamped into its vars at provision
- * time: `EMAIL_THEME`, `BASE_URL`, one `EMAIL_MESSAGES_<locale>` per locale, resolved binding ids,
+ * A capability that owns Workflows ships a Worker of its own, and something has to decide whether it
+ * needs redeploying. Deploying it every time leaves an adopter's CI two options and both are bad:
+ * re-upload an unchanged Worker on every push to main, versioning the script that hosts their durable
+ * jobs and paying a full provisioning pass — or leave it out, and let the Worker go **stale silently**.
+ * It has no request and no access to `pithy.config.ts`, so its configuration is stamped into its vars
+ * at provision time: `EMAIL_THEME`, `BASE_URL`, one `EMAIL_MESSAGES_<locale>` per locale, resolved binding ids,
  * the cron. Edit a theme and the kit's Worker keeps sending the old one. Nothing fails.
  *
  * So the deployed Worker carries one var naming what it was deployed from. It ships **inside the
@@ -105,7 +105,12 @@ export function deployStamp(config: WorkflowHostTemplate, version: string): stri
  * a resolver may hand to something else on the same run.
  */
 export function stampConfig(config: WorkflowHostTemplate, version: string): WorkflowHostTemplate {
-  return { ...config, vars: { ...config.vars, [DEPLOY_STAMP_VAR]: deployStamp(config, version) } };
+  // The vars are copied one by one into a block of the copy's own, so the stamp never lands in the caller's.
+  const { vars = {}, ...rest } = config;
+  const stamped: WorkflowHostTemplate = rest;
+  for (const [name, value] of Object.entries(vars)) setStanzaVar(stamped, name, value);
+  setStanzaVar(stamped, DEPLOY_STAMP_VAR, deployStamp(config, version));
+  return stamped;
 }
 
 /** A stamp read off a deployed Worker, split back into the two facts it carries. */
@@ -180,10 +185,10 @@ export interface StampVerdict {
 export function stampVerdict(comparison: StampComparison): StampVerdict {
   const { pkg, current, deployed } = comparison;
   if (comparison.force) return { deploy: true, reason: "--force was given." };
-  // **Past tense, because the reason is read after the outcome** (#645). The row prints `<worker>: deployed.
+  // **Past tense, because the reason is read after the outcome.** The row prints `<worker>: deployed.
   // <reason>`, so a reason in the present tense describes an account the deploy has just changed:
-  // `acme-prod-email: deployed. acme-prod-email is not deployed.` was two statements, and the second was
-  // false by the time anybody read it. Each sentence here is about what the account held before this run,
+  // `acme-prod-email: deployed. acme-prod-email is not deployed.` is two statements, and the second is
+  // false by the time anybody reads it. Each sentence here is about what the account held before this run,
   // which stays true whatever the run then did — and names nothing the row has not already named.
   if (deployed.state === "absent") return { deploy: true, reason: "It was not on the account." };
   if (deployed.state === "unstamped") return { deploy: true, reason: "It carried no deploy stamp." };

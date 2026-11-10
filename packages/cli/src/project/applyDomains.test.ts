@@ -61,10 +61,7 @@ describe("applyDomains", () => {
     expect(await readFile(path.join(dir, "wrangler.jsonc"), "utf8")).toBe(first);
   });
 
-  /**
-   * And it says so. `pithy worker sync` is a command an adopter runs on a hunch, so a second run has to
-   * be visibly a no-op — reported as one, not just written as one (#264).
-   */
+  /** A reconcile command is run on a hunch, so a second run is reported as a no-op, not only written as one. */
   it("reports the second run as changing nothing, and does not touch the file", async () => {
     const dir = await worker();
     await applyDomains(dir, DOMAINS);
@@ -142,7 +139,7 @@ describe("applyDomains", () => {
   });
 
   /**
-   * **The gate for #256: `vars.BASE_URL` and the origin an adopter's config composes are one value.**
+   * **`vars.BASE_URL` and the origin an adopter's config composes are one value.**
    *
    * Not "both are `https://<pattern>`", which is a restatement of today's formula and would keep passing
    * if one side grew a port, a path, or a trailing slash. What is asserted is that the string this writes

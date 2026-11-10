@@ -37,6 +37,7 @@ import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { renderDevVarsNotes } from "../devSecrets/report";
 import { envStanzas, type WranglerStanza } from "../project/bindingEntries";
+import { removeStanzaVar, stanzaVarsOf } from "../project/stanzaVars";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { assertTurnstileSitekeysWritable, writeTurnstileSitekeys } from "./turnstileSitekeys";
 
@@ -65,7 +66,7 @@ function ourWidgetNames(project: string): Set<string> {
 /**
  * The routing facts the turnstile secret carries — a `d1`, per-environment, rotatable JSON value, and
  * not a `bootstrap` one: its value is an envelope every reader decodes rather than something read
- * straight off a binding before the store is open. Stated because a request states it (#517).
+ * straight off a binding before the store is open. Stated because a request states it.
  */
 const SECRET_FACTS = {
   backend: "d1",
@@ -76,7 +77,7 @@ const SECRET_FACTS = {
 } as const;
 
 /**
- * The routing facts `turnstile-account` carries (#731): the same `d1`, per-environment JSON value as the widget
+ * The routing facts `turnstile-account` carries: the same `d1`, per-environment JSON value as the widget
  * secret, and not rotatable, because an account id is not a credential and nothing rolls it.
  */
 const ACCOUNT_FACTS = { ...SECRET_FACTS, rotatable: false } as const;
@@ -118,7 +119,7 @@ async function upsertManaged(
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;
   /**
-   * The account the production widget is created in, and what vouches for it (#378).
+   * The account the production widget is created in, and what vouches for it.
    *
    * `assertDomainAvailable` reads an empty listing as "the domain is free" and provisioning then mints a
    * real widget. Against an account nothing claims, that listing is empty because the widgets it would
@@ -167,7 +168,7 @@ function stderrNotes(line: string): void {
 }
 
 /**
- * Remove every `TURNSTILE_SITEKEY_*` var #53's provisioner left behind, from the one Worker's `wrangler.jsonc`
+ * Remove every stranded `TURNSTILE_SITEKEY_*` var, from the one Worker's `wrangler.jsonc`
  * (every stanza, the top level included) and from the project's `dev.json` — and regenerate the Worker
  * `.dev.vars` files when `dev.json` changed, so the stale line leaves the file wrangler reads.
  *
@@ -189,13 +190,11 @@ async function removeStranded(
     removed.push({ name, environment });
   };
 
-  const config = (await readWranglerConfig(workerDir)) as WranglerStanza & { vars?: Record<string, unknown> };
+  const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
   let wranglerChanged = false;
   for (const { env, stanza } of envStanzas(config)) {
-    const vars = (stanza as { vars?: Record<string, unknown> }).vars;
-    if (vars === undefined || vars === null || typeof vars !== "object") continue;
-    for (const name of Object.keys(vars).filter(isStrandedSitekeyVar)) {
-      delete vars[name];
+    for (const name of Object.keys(stanzaVarsOf(stanza) ?? {}).filter(isStrandedSitekeyVar)) {
+      removeStanzaVar(stanza, name);
       record(name, env);
       wranglerChanged = true;
     }
@@ -226,7 +225,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
   /**
-   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * The project's declared environments — what a `global` secret write fans out across. Carried
    * rather than assumed, so a shared secret reaches every environment the project deploys to.
    */
   readonly #environments: DeclaredEnvironments | readonly string[];
@@ -247,7 +246,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
 
   /**
    * Refuse the domain if a widget that is not ours already covers it — and refuse the *question* if the
-   * account that would answer it is one nothing claims (#378).
+   * account that would answer it is one nothing claims.
    *
    * The two failures are opposite in shape and identical on the wire. A foreign widget is a listing with
    * an entry in it; an unconfirmed account is a listing with nothing in it, which is the same thing "the
@@ -276,19 +275,17 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   /**
    * The dev widget's secret, into the dev secrets file.
    *
-   * **The secret is a `d1` registry secret, so it goes into the dev secrets file (#149)** — through
-   * `writeDevSecrets`, the one funnel every dev secret passes through, at `<config>/<project>/` since
-   * #156. `replace`, because Cloudflare issued this value: keeping an older one because a value is already
+   * **The secret is a `d1` registry secret, so it goes into the dev secrets file** — through
+   * `writeDevSecrets`, the one funnel every dev secret passes through, at `<config>/<project>/`. `replace`, because Cloudflare issued this value: keeping an older one because a value is already
    * there leaves the project verifying against a widget it no longer has.
    *
-   * **No sitekey is written here any more (#590).** This used to record the dev sitekey in `dev.json` and
-   * regenerate `.dev.vars` with it, where nothing read it: the front end gets its sitekey from the build,
-   * which reads `pithy.config.ts`. {@link writeSitekeys} writes it there, for every environment at once.
+   * **No sitekey is written here.** The front end gets its sitekey from the build, which reads
+   * `pithy.config.ts`, and {@link writeSitekeys} writes it there, for every environment at once.
    */
   async writeDev(secret: TurnstileSecrets): Promise<void> {
     // Through the registry entry, like every other writer: the entry is what says whether this
-    // secret's destination takes an envelope or the value itself (#323), and — since #535 — whether
-    // the value inside it is validated before a byte is written. The object, never a serialization of
+    // secret's destination takes an envelope or the value itself, and whether the value inside it is
+    // validated before a byte is written. The object, never a serialization of
     // it: a `json` secret states its own structure in this file, and the seeder serializes on the way
     // out (`devSecretsFile.ts`).
     const entry: SecretRegistryEntry | undefined = turnstileSecretsRegistry[TURNSTILE_SECRET_NAME];
@@ -301,12 +298,10 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
    * The widget secret into one deployed environment's managed store, through the validator every other
    * managed write goes through.
    *
-   * **`validateSecretValue` is not decoration here — it is the write-time check this path had never
-   * had (#535).** A manager Workflow is a secure-but-dumb writer: it cannot hold the schema, because a
-   * brand-new secret's registry entry is not bundled into any *deployed* manager yet
-   * (`management/writeSecret.ts`). So the CLI is the authoritative validator, and `pithy secrets
-   * create` has always called this. This writer composed the string itself and skipped it, which is
-   * how one capability shipped a value its own registry refuses.
+   * **`validateSecretValue` is the write-time check.** A manager Workflow is a secure-but-dumb writer: it
+   * cannot hold the schema, because a brand-new secret's registry entry is not bundled into any *deployed*
+   * manager yet (`management/writeSecret.ts`). So the CLI is the authoritative validator, here as in
+   * `pithy secrets create`, and a value its own registry refuses is never written.
    */
   async writeManagedSecret(env: ManagedTurnstileEnv, secret: TurnstileSecrets): Promise<void> {
     const entry: SecretRegistryEntry | undefined = turnstileSecretsRegistry[TURNSTILE_SECRET_NAME];
@@ -324,7 +319,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   }
 
   /**
-   * The account the widgets live in, as `turnstile-account`, for one environment (#731) — the account this run
+   * The account the widgets live in, as `turnstile-account`, for one environment — the account this run
    * confirmed, never one a shell happened to export. dev's goes into the dev secrets file and a deployed
    * environment's through the manager, each through the registry entry, so the value is validated before a
    * byte is written. It is an id, not a credential.
@@ -412,7 +407,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   readonly #workerDir: string;
   readonly #dispatcher: SecretDispatcher;
   /**
-   * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
+   * The project's declared environments — what a `global` secret write fans out across. Carried
    * rather than assumed, so a shared secret reaches every environment the project deploys to.
    */
   readonly #environments: DeclaredEnvironments | readonly string[];
@@ -451,11 +446,11 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   }
 
   async deleteManagedSecret(): Promise<void> {
-    // The project's declaration, not a hardcoded pair: a project that deploys to `live` had its secret
-    // written there and would have kept it forever, because teardown only ever looked at two names.
+    // The project's declaration, not a hardcoded pair: a project that deploys to `live` has its secret
+    // written there, and teardown takes it from there too.
     for (const env of this.#environments) {
       // Delete is idempotent in the manager (a missing name is a no-op), so this is safe to re-run. The
-      // widget secret and the account it lives in go together (#731).
+      // widget secret and the account it lives in go together.
       for (const { name, facts } of MANAGED_SECRETS) {
         await dispatchSecretWrite(
           this.#dispatcher,
@@ -471,13 +466,13 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
    * in the dev secrets file. Leaving
    * the value there would have the next `pithy dev` seed a key for a widget that no longer exists.
    *
-   * The secret's name is still passed to the bootstrap removal, and that is deliberate: a project provisioned
-   * before #153 recorded the transitional copy, and teardown is the run that should take it. A name that
-   * is not recorded is a no-op. The stranded sitekey vars are {@link removeStrandedSitekeyVars}'s.
+   * The secret's name is still passed to the bootstrap removal, and that is deliberate: an older project may
+   * hold a bootstrap copy of it, and teardown is the run that should take it. A name that is not recorded is a
+   * no-op. The stranded sitekey vars are {@link removeStrandedSitekeyVars}'s.
    *
    * **The adopter's own `.dev.vars` is not touched.** Each Worker's is generated from the bootstrap set,
    * so taking the names out of that set is what drops the lines — and the project root's file, if there
-   * is one, is theirs. See #154.
+   * is one, is theirs.
    */
   async clearDev(_modes: TurnstileMode[]): Promise<void> {
     await removeBootstrapVars(this.#projectDir, [TURNSTILE_SECRET_NAME]);

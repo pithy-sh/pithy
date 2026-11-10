@@ -36,8 +36,8 @@ describe("scaffoldWorker", () => {
       name: string;
       env: { staging: unknown; prod: unknown };
     };
-    // The deploy name leads with the project. A Worker script name is account-flat, so the bare directory
-    // name meant two projects that each added `web` deployed to one script and the second overwrote it.
+    // The deploy name leads with the project. A Worker script name is account-flat, so under the bare
+    // directory name two projects that each added `web` would deploy to one script.
     expect(wrangler.name).toBe("acme-web");
     expect(wrangler.env.staging).toBeDefined();
     expect(wrangler.env.prod).toBeDefined();
@@ -45,8 +45,8 @@ describe("scaffoldWorker", () => {
     const manifest = parse(await readFile(join(workerDir, "pithy.worker.jsonc"), "utf8")) as unknown as {
       dev: { autostart?: boolean; readySignal: string };
     };
-    // The scaffolder stopped writing it (#548): a fresh manifest carries no autostart key, because
-    // there is no longer a project-wide answer for it to state.
+    // A fresh manifest carries no autostart key: every Worker autostarts unless its own manifest says
+    // otherwise, and there is no project-wide answer for the scaffold to state.
     expect(manifest.dev.autostart).toBeUndefined();
     expect(manifest.dev.readySignal).toBe("Ready on https?://");
 
@@ -160,10 +160,8 @@ describe("scaffoldWorker", () => {
   });
 
   test("refuses a symlinked apps/, and writes nothing through it", async () => {
-    // #147 lstat'd `apps/<name>` and stopped there, so a link one level up carried the whole worker out of
-    // the project exactly as before. Reproduced against the real CLI: `pithy init --name replay --worker
-    // board`, move `apps` out and symlink it back, `pithy worker add escape` — every file landed outside,
-    // and the command printed the in-project path and exited 0.
+    // A link one level above `apps/<name>` would carry the whole Worker out of the project while the
+    // command printed the in-project path and exited 0, so every component from the project down is checked.
     const outside = join(dir, "outside");
     await mkdir(outside, { recursive: true });
     await symlink(outside, join(dir, "apps"));
