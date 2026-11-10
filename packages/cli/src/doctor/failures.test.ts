@@ -368,6 +368,16 @@ describe("each gating check is one entry, with its fix", () => {
       "featureRatelimitIds",
     ],
     [
+      "a Biome exclusion that skips a feature worktree",
+      {
+        checkBiomeIncludes: async () => ({
+          state: "unanchored",
+          findings: ['biome.jsonc excludes "!**/.worktrees". Write "!.worktrees" instead.'],
+        }),
+      },
+      "biomeIncludes",
+    ],
+    [
       "a stanza the declaration does not name",
       {
         checkEnvironments: async () => ({
