@@ -3,7 +3,8 @@ import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared"
 
 // One `vitest run`, two projects. Vitest 4 drives multiple projects through
 // `test.projects` — workspace files (`vitest.workspace.ts`) were removed.
-//   node    — pure logic in `*.test.ts`, default node environment.
+//   node    — pure logic in `*.test.ts`, default node environment. A `*.fixture.test.ts` is a
+//             module only the workers project loads, such as its Miniflare `main`.
 //   workers — real D1 (`DB`) + KV (`SESSIONS`) via Miniflare in `*.workers.test.ts`
 //             (see `vitest.workers.config.ts`).
 export default defineConfig({
@@ -17,8 +18,8 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["src/**/*.workers.test.ts", "node_modules/**"],
-          // No ambient account, no real config directory. #198, #200 — see `vitest.shared.ts`.
+          exclude: ["src/**/*.workers.test.ts", "src/**/*.fixture.test.ts", "node_modules/**"],
+          // No ambient account, no real config directory; `vitest.shared.ts` says why.
           env: { ...NO_ACCOUNT },
           setupFiles: [CONFIG_DIR_SETUP],
         },

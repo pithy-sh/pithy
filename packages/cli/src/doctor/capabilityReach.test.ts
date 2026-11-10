@@ -46,15 +46,12 @@ describe("capabilityReachHealth", () => {
   });
 
   /**
-   * **The layout #533 was reported about, and the reason this is now a green line.**
+   * **A per-Worker install is reachable.**
    *
    * The Worker's `pithy.config.ts` is imported by path, so its own imports resolve from `apps/api/` and
-   * the composition is perfect. Round two's resolver asked the **project root** alone, so every `pithy
-   * payments …` command refused with *"the payments capability is not installed. Run `pithy add
-   * payments`"* — a sentence that is wrong twice and whose action rewrites a hand-built config — and this
-   * check reported the layout as a fault to explain it. `kitResolve` reaches a Worker's own
-   * `node_modules` now, so the commands work and the report says so; a red line here would be doctor
-   * telling an adopter to move an install that is fine.
+   * the composition is perfect, and `kitResolve` reaches a Worker's own `node_modules`, so every `pithy
+   * payments …` command works. A red line here would be doctor telling an adopter to move an install that
+   * is fine.
    */
   test("a capability installed under the Worker that composes it is reachable", async () => {
     const api = await worker("api", ["payments"]);
@@ -80,12 +77,10 @@ describe("capabilityReachHealth", () => {
   /**
    * The check and the resolver ask one question, and this is the assertion that they do.
    *
-   * They were two lookups for one round — a walk up from the root here, `kitResolve` there — and the
-   * report existed *because* they disagreed. A capability the CLI can load and doctor calls unreachable is
-   * the same defect wearing the other sign, so the two are pinned against each other rather than
-   * separately.
+   * A capability the CLI can load and doctor calls unreachable, or the reverse, is a report that disagrees
+   * with the commands, so the two are pinned against each other rather than separately.
    */
-  // #711: the fix names the first composing Worker's add, which `pithy add` runs over what its config already says.
+  // The fix names the first composing Worker's add, which `pithy add` runs over what its config already says.
   // So the finding records what that Worker settles: what it composes, and which of the capability's required options
   // its registration states.
   test("an unreachable capability records what its first Worker's config already settles", async () => {
@@ -177,7 +172,7 @@ describe("capabilityReachHealth", () => {
 });
 
 /**
- * **One capability, two versions across a project's Workers (#539).**
+ * **One capability, two versions across a project's Workers.**
  *
  * The state is reachable and nothing refuses it: `kitResolve` takes the first `apps/*` match in directory
  * order, so `pithy payments provision` acting for `apps/api` builds its plan from api's manifest and
@@ -206,7 +201,7 @@ describe("capabilityReachHealth — version skew", () => {
   /**
    * **It reports and it does not fail the exit.**
    *
-   * `unreachable` fails `ok` because every `pithy <capability>` command for it refuses today. Skew refuses
+   * `unreachable` fails `ok` because every `pithy <capability>` command for it refuses. Skew refuses
    * nothing, and a project legitimately mid-upgrade — one Worker bumped ahead of the other — must not read
    * as broken while it is being fixed.
    */

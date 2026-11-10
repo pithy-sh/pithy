@@ -13,26 +13,18 @@ declare global {
 
 // Eagerly import every source module except tests, so any newly exported schema is covered
 // automatically — there is no manual list to keep in sync.
-// The presence room's Durable Object module and the workers test entry that re-exports it are left out: they
-// import `cloudflare:workers`, which exists only in workerd, and export no schema.
-const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./presence/durableObject.ts", "!./testWorker.ts"], {
+// The presence room's Durable Object module is left out: it imports `cloudflare:workers`, which exists only in
+// workerd, and exports no schema.
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts", "!./presence/durableObject.ts"], {
   eager: true,
 });
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
   test("the sweep is looking at the package, not at nothing", () => {
-    // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches
-    // nothing produces no findings, and no findings is what passing looks like — so the population is
-    // pinned in three places, and a collapse in any one of them is loud.
-    //
-    // Near-exact, not a comfortable floor: measured at 129 modules, 114 schemas and 1441 fields on
-    // 2026-08-23, and each floor is 95% of that. The slack is there so deleting a module is not a red
-    // build; it is nowhere near enough for a glob that lost the package.
-    //
-    // The field count moved by 242 in one edit (#441): `params` was added to `publicFields` in
-    // ./error/payload, which is spread into all 120 kit `...Public` members and into `ExtendedPublic`,
-    // and each of those is extended once more into a full member. That is what "one edit propagates
-    // everywhere" looks like from here — so the floor is **re-measured** after such a change, never
-    // nudged until it goes green.
+    // A glob that matches nothing produces no findings, and no findings is what passing looks like, so the
+    // population is pinned in three places. Each floor is near-exact, about 95% of what the package holds:
+    // enough slack that deleting a module is not a red build, nowhere near enough for a glob that lost the
+    // package. One edit to a shared schema such as `publicFields` moves the field count by hundreds, so after
+    // one the floor is re-measured, never nudged until it goes green.
     const walk = undescribedExports(modules);
     expect(walk.modules).toBeGreaterThanOrEqual(122);
     expect(walk.schemas).toBeGreaterThanOrEqual(108);

@@ -17,14 +17,16 @@ import { UNIT_BUDGETS, WORKERS_ENV_SETUP } from "../../vitest.shared";
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      // Registers the presence room's Durable Object class so `PRESENCE_ROOMS` resolves. Its fetch is inert.
-      main: "./src/testWorker.ts",
+      // Registers the presence room's Durable Object class so `PRESENCE_ROOMS` resolves, and the Workflow behind
+      // `INTERLEAVED`. Its fetch is inert.
+      main: "./src/testWorker.fixture.test.ts",
       miniflare: {
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB", "ANALYTICS"],
         kvNamespaces: ["SESSIONS", "CONTROL_PLANE"],
         durableObjects: { PRESENCE_ROOMS: "PresenceRoom" },
+        workflows: { INTERLEAVED: { name: "interleaved", className: "InterleavedWorkflow" } },
       },
     }),
   ],

@@ -8,7 +8,8 @@
 // `ANALYTICS` (a second database, to exercise the multi-database registry), KV
 // `SESSIONS`, and KV `CONTROL_PLANE` (the control-plane seam's replay set, which
 // gets its own namespace rather than sharing sessions), and the `PRESENCE_ROOMS`
-// Durable Object every presence room lives in.
+// Durable Object every presence room lives in, and the `INTERLEAVED` Workflow the
+// gate in `testing.ts` is exercised against.
 // `cloudflare:test` types its `env` as `Cloudflare.Env`, so the test bindings are
 // declared by augmenting that interface.
 declare namespace Cloudflare {
@@ -18,5 +19,6 @@ declare namespace Cloudflare {
     SESSIONS: KVNamespace;
     CONTROL_PLANE: KVNamespace;
     PRESENCE_ROOMS: DurableObjectNamespace<import("./presence/durableObject").PresenceRoom>;
+    INTERLEAVED: Workflow<{ run: string }>;
   }
 }
