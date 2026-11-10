@@ -732,8 +732,6 @@
     "packages/cli/src/project/workerIdentity.ts": 3,
     "packages/cli/src/project/workerManifest.test.ts": 2,
     "packages/cli/src/project/workerScope.ts": 9,
-    "packages/cli/src/project/workflows.test.ts": 4,
-    "packages/cli/src/project/workflows.ts": 9,
     "packages/cli/src/project/wrangler.test.ts": 11,
     "packages/cli/src/project/wrangler.ts": 16,
     "packages/cli/src/provision/confirm.test.ts": 1,
