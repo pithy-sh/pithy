@@ -44,3 +44,32 @@ describe("createGate in a Workflow", () => {
     }
   });
 });
+
+/** Registers gates for a run that passes straight through its hold step. */
+function passRun(run: string) {
+  const gates = holdRun(run);
+  gates.release.open();
+}
+
+describe("introspectWorkflowInstance and instance ids", () => {
+  test("refuses a second create under an id while its introspector is held", async () => {
+    passRun("dup");
+    await using instance = await introspectWorkflowInstance(env.INTERLEAVED, "dup");
+    await env.INTERLEAVED.create({ id: "dup", params: { run: "dup" } });
+    await instance.waitForStatus("complete");
+    await expect(env.INTERLEAVED.create({ id: "dup", params: { run: "dup" } })).rejects.toThrow(/already exists/);
+  });
+
+  test("accepts a second create under an id once its introspector is disposed", async () => {
+    passRun("reused");
+    {
+      await using instance = await introspectWorkflowInstance(env.INTERLEAVED, "reused");
+      await env.INTERLEAVED.create({ id: "reused", params: { run: "reused" } });
+      await instance.waitForStatus("complete");
+    }
+    await using again = await introspectWorkflowInstance(env.INTERLEAVED, "reused");
+    await env.INTERLEAVED.create({ id: "reused", params: { run: "reused" } });
+    await again.waitForStatus("complete");
+    expect(interleaved.log.filter((entry) => entry === "reused:finish")).toHaveLength(2);
+  });
+});
