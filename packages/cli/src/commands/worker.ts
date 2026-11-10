@@ -10,13 +10,16 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { bindingDeclarations } from "../capabilities/bindingNamings";
 import { composedManifests } from "../capabilities/manifests";
+import { honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { withContract } from "../contract/commandContract";
+import { FeatureResource } from "../feature/manifest";
 import { describeStaleAutostartRoots, StaleAutostartRoot } from "../feature/ports";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { loadProject, loadWorkerDomains, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { declaredBindingSpecs, reconcileDeclaredBindings } from "../project/declaredBindings";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { reconcileOwnedDatabases, refuseOwnedGlobals } from "../project/ownedStanzas";
@@ -160,6 +163,38 @@ const WorkerSyncPayload = z
           .describe("One environment's route."),
       )
       .describe("What the `domains` declaration wrote, per environment."),
+    bindings: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment written — `dev` for the top-level stanza."),
+            written: z
+              .array(
+                z
+                  .object({
+                    binding: z.string().describe("The binding name in the Worker's env."),
+                    type: FeatureResource.shape.kind.describe("Its kind: d1, kv, r2 or queue."),
+                  })
+                  .describe("One entry written."),
+              )
+              .describe("The entries this stanza lacked and now has."),
+            skipped: z
+              .array(
+                z
+                  .object({
+                    binding: z.string().describe("The binding name in the Worker's env."),
+                    type: FeatureResource.shape.kind.describe("Its kind: d1, kv, r2 or queue."),
+                    reason: z.string().describe("Why the entry could not be written, in an operator's words."),
+                  })
+                  .describe("One entry not written."),
+              )
+              .describe("The entries this stanza lacks and could not be given."),
+          })
+          .describe("One environment's resource bindings."),
+      )
+      .describe(
+        "The D1, KV, R2 and queue bindings the Worker composes, written into each stanza that lacked them, per environment.",
+      ),
     runs: z
       .array(
         z
@@ -650,13 +685,16 @@ function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDo
 
 /**
  * `pithy worker sync` — write what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`: the
- * route and `vars.BASE_URL` its `domains` block implies, the app capability's Workflows and cron schedule, and
- * the D1 names its `pithy.worker.jsonc` `ownBindings` imply, for every environment it declares.
+ * route and `vars.BASE_URL` its `domains` block implies, every D1, KV, R2 and queue binding it composes, the app
+ * capability's Workflows and cron schedule, and the D1 names its `pithy.worker.jsonc` `ownBindings` imply, for every
+ * environment it declares.
  *
  * **One command for one job: the declaration is the truth, this is what makes wrangler agree with it.**
- * A library capability's Workflows arrive with `pithy <capability> provision`; the adopter's own, a `domains`
- * block added by hand, and an `ownBindings` entry added after the bindings were written arrive here. This is
- * the command `pithy doctor` names when it reports a route the declaration implies and the stanza lacks.
+ * A library capability's Workflows arrive with `pithy <capability> provision`; the adopter's own, its resource
+ * bindings, a `domains` block added by hand, and an `ownBindings` entry added after the bindings were written arrive
+ * here. This is
+ * the command `pithy doctor` names when it reports a route the declaration implies and the stanza lacks, or a
+ * D1, KV, R2 or queue binding the Worker composes and the stanza lacks.
  *
  * It writes config and nothing else — no Cloudflare call, no deploy — so it is safe to run on any branch,
  * at any time, as often as you like. A second run reports "already in sync" and touches no file.
@@ -665,7 +703,8 @@ const sync = withContract(
   defineCommand({
     meta: {
       name: "sync",
-      description: "Write what pithy.config.ts declares — domains routes, Workflows, cron — into wrangler.jsonc",
+      description:
+        "Write what pithy.config.ts declares — domains routes, bindings, Workflows, cron — into wrangler.jsonc",
     },
     args: {
       worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
@@ -699,6 +738,9 @@ const sync = withContract(
         const composesDatabase = target.capabilities.some((capability) =>
           capability.requiredBindings.some((binding) => binding.type === "d1"),
         );
+        // Every D1, KV, R2 and queue binding the Worker composes is written below, so a Worker composing one reads
+        // the project name for the names those entries carry, and writes what needs none without it.
+        const composesResources = declaredBindingSpecs(target.capabilities).length > 0;
         // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
         // once deployed, so a guessed project would name a Workflow another owns. A script name and a database
         // name are the same.
@@ -707,35 +749,60 @@ const sync = withContract(
         const project =
           app || ownBindings.length > 0
             ? await loadProject(projectDir).then(requireProjectName)
-            : composesDatabase
+            : composesResources
               ? await loadProject(projectDir)
                   .then(requireProjectName)
                   .catch(() => undefined)
               : undefined;
+        const manifests =
+          composesResources || (project && ownBindings.length > 0)
+            ? (await composedManifests(projectDir, target.dir)).manifests
+            : [];
+        const declarations = bindingDeclarations(manifests, target.config.app);
         const owning =
           project && (composesDatabase || ownBindings.length > 0)
-            ? {
-                workerDir: target.dir,
-                project,
-                capabilities: target.capabilities,
-                declarations: bindingDeclarations(
-                  (await composedManifests(projectDir, target.dir)).manifests,
-                  target.config.app,
-                ),
-                ownBindings,
-              }
+            ? { workerDir: target.dir, project, capabilities: target.capabilities, declarations, ownBindings }
             : undefined;
         // Before any write: a global binding in `ownBindings` fails the command with wrangler.jsonc untouched.
         if (owning) refuseOwnedGlobals(owning);
+        // Before any write too: a declaration nobody can read leaves nothing out, so every optional binding it
+        // meant to decline would be written into every stanza.
+        const declines = composesResources
+          ? workerDeclines({ manifests, capabilities: target.capabilities, workerConfig: target.config })
+          : undefined;
+        if (declines?.state === "invalid") {
+          throw new ValidationError({
+            message: "This Worker's `declinedBindings` declaration is not valid.",
+            action: `Fix \`declinedBindings\` in ${target.name}'s pithy.config.ts. Each entry is a binding name mapped to a one-line reason. ${declines.problem}`,
+          });
+        }
 
         // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
         // and a Worker with no `app` block still answers somewhere.
         const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
 
+        // Ahead of the `ownBindings` rewrite, so an entry written here is already named for its owner.
+        const bindings = composesResources
+          ? await reconcileDeclaredBindings({
+              workerDir: target.dir,
+              ...(project === undefined ? {} : { project }),
+              capabilities: target.capabilities,
+              declarations,
+              declined: declines === undefined ? new Set() : honoredNames(declines),
+              ownBindings,
+              ...(env === undefined ? {} : { env }),
+            })
+          : [];
         const ownedBindings = owning
           ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
           : [];
-        if (!app && domains === undefined && ownBindings.length === 0 && ownedBindings.length === 0) {
+        if (
+          !app &&
+          domains === undefined &&
+          !composesResources &&
+          ownBindings.length === 0 &&
+          ownedBindings.length === 0
+        ) {
           throw new NotFoundError({
             message: `${target.name} declares neither domains nor an app capability.`,
             action:
@@ -778,7 +845,7 @@ const sync = withContract(
 
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs, serviceRuns, ownedBindings })}\n`,
+            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings })}\n`,
           );
           return;
         }
@@ -786,6 +853,7 @@ const sync = withContract(
         // command is run on a hunch, often, and it has to be obvious when it did nothing.
         if (
           routes.every((route) => !route.changed) &&
+          bindings.every((run) => run.written.length === 0 && run.skipped.length === 0) &&
           runs.every((run) => !run.changed) &&
           serviceRuns.every((run) => !run.changed) &&
           ownedBindings.length === 0
@@ -795,6 +863,7 @@ const sync = withContract(
           // job's binding out — so a run per environment saying nothing is exactly the empty case.
           const nothing =
             routes.length === 0 &&
+            bindings.length === 0 &&
             ownBindings.length === 0 &&
             serviceRuns.length === 0 &&
             runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
@@ -807,6 +876,14 @@ const sync = withContract(
         for (const route of routes) {
           if (!route.changed) continue;
           process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
+        }
+        for (const run of bindings) {
+          if (run.written.length > 0) {
+            process.stdout.write(`${run.env}: ${run.written.map((entry) => entry.binding).join(", ")} written.\n`);
+          }
+          for (const entry of run.skipped) {
+            process.stdout.write(`${run.env}: ${entry.binding} not written: ${entry.reason}.\n`);
+          }
         }
         for (const run of runs) {
           if (!run.changed) continue;

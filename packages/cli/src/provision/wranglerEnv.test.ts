@@ -55,7 +55,7 @@ describe("applyProvisionedEnv", () => {
 
   /**
    * Where this scope's ids actually land. A feature's are a build artifact and go to the generated
-   * config under the already-ignored `.wrangler/`; a declared environment's are source (#242).
+   * config under the already-ignored `.wrangler/`; a declared environment's are source.
    */
   const written = (scope: typeof feature): string => (scope.source ? wranglerPath : featureConfigPath(dir));
 
@@ -90,9 +90,8 @@ describe("applyProvisionedEnv", () => {
   });
 
   /**
-   * **A config that will not open is a refusal naming it (#697).** The read was a bare `readFile`, so a
-   * `wrangler.jsonc` the run could not read escaped as node's own `EACCES`: a stack trace, no `--json` line, and
-   * nothing a dry run could agree with. It is the one reader's refusal now, the one every other command gives.
+   * **A config that will not open is a refusal naming it**, the one reader's refusal every other command gives,
+   * never node's own `EACCES`.
    */
   test.skipIf(process.getuid?.() === 0)(
     "an unreadable wrangler.jsonc is refused by name, as every reader refuses it",
@@ -124,7 +123,7 @@ describe("applyProvisionedEnv", () => {
     const generated = parse(await read(feature)) as unknown as Parsed;
     const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
     expect(generated.env.feature?.d1_databases?.[0]?.database_id).toBe("uuid-1");
-    // The tracked file never learned about the feature at all — that is the whole of #242.
+    // The tracked file never learns about the feature at all.
     expect(tracked.env.feature).toBeUndefined();
     expect(tracked.env.staging?.d1_databases?.[0]).toEqual({
       binding: "DB",
@@ -145,10 +144,7 @@ describe("applyProvisionedEnv", () => {
     expect(stanza?.d1_databases?.[0]?.database_id).toBe("uuid-2");
   });
 
-  /**
-   * `<project>-f<issue>-<slug>-<app>`, with the project once. This pinned `replay-f69-demo--replay-board`
-   * until #587 — the defect, locked in by the test that should have caught it.
-   */
+  /** `<project>-f<issue>-<slug>-<app>`, with the project once. */
   test("names the Worker for the scope and points services at that scope's deployments", async () => {
     await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo--web" }] });
 
@@ -169,8 +165,7 @@ describe("applyProvisionedEnv", () => {
   });
 
   /**
-   * The `secrets_store_secrets` stanza `pithy add` deliberately could not write, and nothing came back
-   * for (#238, #239). Complete by construction — wrangler refuses a config whose entry is missing a
+   * The `secrets_store_secrets` stanza `pithy add` cannot write. Complete by construction — wrangler refuses a config whose entry is missing a
    * `store_id` or a `secret_name`, so a partial entry is not a degraded binding, it is a broken Worker.
    */
   test("writes the secrets_store_secrets stanza, upserting by binding", async () => {
@@ -204,10 +199,8 @@ describe("applyProvisionedEnv", () => {
   });
 
   /**
-   * **One write, holding everything (#592).** A feature's config is regenerated from the tracked file on
-   * every write, so a second write for its secrets started from a stanza with no name, no ids and no
-   * services and kept only the secrets. The Worker deployed as `<script>-feature`, a name nothing records
-   * and teardown never deletes, with every binding id-less.
+   * **One write, holding everything.** A feature's config is regenerated from the tracked file on every
+   * write, so a second write for its secrets would start from a stanza with no name, no ids and no services.
    */
   test("a feature's secrets do not cost it its name, its ids or its services", async () => {
     await apply(feature, {
@@ -252,7 +245,7 @@ describe("applyProvisionedEnv", () => {
   });
 
   /**
-   * **A Worker cannot fetch its own hostname** (#616). The subrequest loops back out through the edge
+   * **A Worker cannot fetch its own hostname.** The subrequest loops back out through the edge
    * into the Worker it came from and hangs until Cloudflare answers 522, so a project that administers
    * itself dispatches through the runtime instead — and the binding that does it has to name the script
    * *this* stanza deploys as.
@@ -339,14 +332,9 @@ describe("applyProvisionedEnv", () => {
 /**
  * The name in an environment stanza is the adopter's, and provisioning reads it rather than writing over it.
  *
- * This reverses what `environmentScope` argued (#580). The old rule recomputed `<name>-<env>` — wrangler's
- * own suffix — on every provision, which was harmless only while nothing else ever wrote a name there. Since
- * #580 the starter template writes one, `<project>-<env>-<worker>`, so recomputing would have made the
- * template's stamp pointless *and* renamed the Worker of every project that had taken it — on the next
- * provision, silently, taking its routes and every `service` binding pointing at it along.
- *
- * The fallback is untouched: a stanza that names nothing still gets wrangler's suffix, so a project that
- * never declared a name deploys exactly where it always did.
+ * The starter template writes one, `<project>-<env>-<worker>`, and recomputing it would rename the Worker
+ * silently, taking its routes and every `service` binding pointing at it along. A stanza that names nothing
+ * gets wrangler's suffix, `<name>-<env>`.
  */
 describe("applyProvisionedEnv and a declared environment name", () => {
   let dir: string;
@@ -395,13 +383,12 @@ describe("applyProvisionedEnv and a declared environment name", () => {
 });
 
 /**
- * **A stanza provisioning creates repeats what an environment does not inherit** (#581).
+ * **A stanza provisioning creates repeats what an environment does not inherit.**
  *
- * #581 taught the two scaffolders — `project/scaffold.ts` and `project/workerScaffold.ts` — and this is
- * the third writer of the same thing, the one every `pithy provision` and every feature deploy goes
- * through. Its stanza is created empty and filled with ids, so a `feature` stanza (which never pre-exists,
- * `env.feature` being unwritable in a tracked config) repeated nothing: the Worker deployed with no `vars`
- * at all — no `ENVIRONMENT`, no `PROJECT`, no `WORKER` — and no `CF_VERSION_METADATA`.
+ * The same rule `project/scaffold.ts` and `project/workerScaffold.ts` follow, for the writer every
+ * `pithy provision` and every feature deploy goes through. A `feature` stanza never pre-exists, `env.feature`
+ * being unwritable in a tracked config, so without it the Worker would deploy with no `vars` and no
+ * `CF_VERSION_METADATA`.
  *
  * Stated as the invariant rather than as a list of key names. `unrepeatedKeys` reads the config the writer
  * produced and answers for **every** non-inherited key it declares, so a wrangler release that adds one
@@ -508,7 +495,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
 });
 
 /**
- * **Every stanza names its own environment's Artifacts namespace (#673).** The key is array-shaped and its kind is
+ * **Every stanza names its own environment's Artifacts namespace.** The key is array-shaped and its kind is
  * `provision`, so a stanza starts it empty; this is the writer that fills it, by binding, from the top level's.
  */
 describe("the Artifacts namespace applyProvisionedEnv writes", () => {
@@ -581,7 +568,7 @@ describe("the Artifacts namespace applyProvisionedEnv writes", () => {
 });
 
 /**
- * **A feature's generated stanza carries its own address (#643).**
+ * **A feature's generated stanza carries its own address.**
  *
  * The Worker cannot look up the account's `workers.dev` subdomain, so provisioning does, derives
  * `https://<script>.<subdomain>.workers.dev` through the one resolver, and stamps it as `vars.BASE_URL` — the
@@ -642,7 +629,7 @@ describe("the address applyProvisionedEnv stamps", () => {
     expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
   });
 
-  test("a top-level workers_dev: false, which wrangler inherits, stamps no workers.dev address (#643)", async () => {
+  test("a top-level workers_dev: false, which wrangler inherits, stamps no workers.dev address", async () => {
     await writeFile(
       wranglerPath,
       JSON.stringify({
@@ -658,10 +645,10 @@ describe("the address applyProvisionedEnv stamps", () => {
   });
 
   /**
-   * **Finding 3: a top-level route never reaches a feature (#643).** wrangler inherits `routes` into a stanza that
-   * sets none, so a branch deploy took the project's custom domain, and with routes and no `workers_dev` it got no
-   * `workers.dev` address while provisioning stamped one. The feature stanza now states `routes: []` — its own,
-   * which wins — and its stamped address is the one wrangler will give it.
+   * **A top-level route never reaches a feature.** wrangler inherits `routes` into a stanza that sets none, which
+   * would give a branch deploy the project's custom domain and, with no `workers_dev`, no `workers.dev` address.
+   * The feature stanza states `routes: []` — its own, which wins — and its stamped address is the one wrangler
+   * will give it.
    */
   test("a top-level route is stripped from the feature stanza, and the workers.dev address is still stamped", async () => {
     await writeFile(
@@ -706,7 +693,7 @@ describe("the address applyProvisionedEnv stamps", () => {
     expect(tracked.env.staging.routes).toBeUndefined();
   });
 
-  test("a declared environment is never stamped from workers.dev (#89)", async () => {
+  test("a declared environment is never stamped from workers.dev", async () => {
     await provision(environmentScope("replay", "staging"), "acme");
 
     expect((await stanzaVars(wranglerPath, "staging"))?.BASE_URL).toBe("https://app.example.com");
@@ -714,7 +701,7 @@ describe("the address applyProvisionedEnv stamps", () => {
 });
 
 /**
- * **F4 of #643's review: what a feature stanza gives up, and what it must carry.** Routes are stripped from a
+ * **What a feature stanza gives up, and what it must carry.** Routes are stripped from a
  * feature stanza — and the run is told which, whether they were inherited or declared under a tracked
  * `env.feature`. Rate limiters are bound whether or not that stanza already exists, and every one of them gets
  * the feature's own namespace: nothing is shared between a feature and any other environment.
@@ -840,13 +827,12 @@ describe("a feature stanza's routes and rate limiters", () => {
 });
 
 /**
- * **The app's own same-script bindings in a feature's stanza (#650).**
+ * **The app's own same-script bindings in a feature's stanza.**
  *
- * A feature deployment answered 500 on every request — `Missing required bindings: workflow:CONNECTION_ROTATION,
- * workflow:ROTATION_SWEEP` — because the generated stanza carried the kit hosts' Workflows and none of the app's
- * own. Staging and prod carry theirs, written by `pithy worker sync` into the tracked file; the feature's stanza
- * is regenerated from that file on every run and `stanzaFor` empties every binding array it seeds, so nothing
- * put them back. A Durable Object namespace the app declares went the same way, for the same reason.
+ * Staging and prod carry the app's Workflows, written by `pithy worker sync` into the tracked file. The feature's
+ * stanza is regenerated from that file on every run and `stanzaFor` empties every binding array it seeds, so
+ * provisioning puts the app's Workflows and Durable Object namespaces back, or every request would answer
+ * `Missing required bindings`.
  */
 describe("a feature stanza's app-owned bindings", () => {
   let dir: string;
@@ -1001,11 +987,9 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **A script this project does not deploy is stripped, never written (#650 review, defect 1).** Written, the
-   * feature Worker reads and writes a Durable Object namespace inside a live Worker somebody else owns —
-   * `featureHostNameLeaks` never sees an app Worker's config, so nothing downstream would have caught it.
-   * `stripFeatureRoutes` makes the same trade twenty lines up, and `seedValue` states the preference: an absent
-   * binding fails loudly on the first request, a shared one corrupts quietly.
+   * **A script this project does not deploy is stripped, never written.** Written, the feature Worker would read
+   * and write a Durable Object namespace inside a live Worker somebody else owns, and `featureHostNameLeaks` never
+   * sees an app Worker's config. An absent binding fails loudly on the first request; a shared one corrupts quietly.
    */
   test("strips a Durable Object naming a Worker this project does not deploy, and says so", async () => {
     await writeFile(
@@ -1087,7 +1071,7 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **A feature states its own schedule, empty included (#650 review, defect 4).** `triggers` is one of the keys
+   * **A feature states its own schedule, empty included.** `triggers` is one of the keys
    * wrangler *does* inherit, so a stanza that says nothing takes the top level's crons — and the top level's are
    * `dev`'s, or whatever the adopter runs in production. `setCrons` writing nothing is right for a tracked
    * stanza, where an absent `crons` means "leave the deployed schedule alone"; it is wrong for a feature, which
@@ -1120,11 +1104,11 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **A Durable Object in a sibling Worker of this project is retargeted, not dropped (#650 review, defect 2).**
+   * **A Durable Object in a sibling Worker of this project is retargeted, not dropped.**
    *
-   * `services` to that very Worker is retargeted through `scope.worker(...)` two statements down. A DO binding
-   * naming the same script is the same wiring by another key, and dropping it deployed the feature with no
-   * `LOBBY` — `Missing required bindings: durable_object:LOBBY`, the error this whole issue is about.
+   * `services` to that very Worker is retargeted through `scope.worker(...)`. A DO binding naming the same script
+   * is the same wiring by another key, and dropped, the feature would answer
+   * `Missing required bindings: durable_object:LOBBY`.
    */
   test("a Durable Object in a sibling Worker of this project is retargeted at the feature's copy", async () => {
     await writeFile(
@@ -1189,10 +1173,9 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **A tracked `env.feature`'s entry is retargeted like any other (#650 review, defect 2).** `featureRatelimits`
-   * rewrites the namespace of an entry the adopter wrote there, for the same reason: which binding and which
-   * class is the adopter's choice, and which script it resolves to in this environment is this run's answer.
-   * Left alone, the feature bound the namespace of the sibling's **dev** Worker.
+   * **A tracked `env.feature`'s entry is retargeted like any other.** Which binding and which class is the
+   * adopter's choice, and which script it resolves to in this environment is this run's answer. Left alone, the
+   * feature would bind the namespace of the sibling's **dev** Worker.
    */
   test("retargets a Durable Object a tracked env.feature declares against the sibling's dev script", async () => {
     await writeFile(
@@ -1231,10 +1214,9 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **One sibling Worker, two keys, one answer (#650 review, defect 6).** A capability's `service` binding was
-   * already retargeted by the caller; a hand-written one was emptied with the rest of the stanza and never put
-   * back, so the same adopter got the Durable Object and not the RPC to the very same Worker. Retargeted, not
-   * dropped: a feature deploys its own copy of every Worker in the project, so the wiring is meaningful there.
+   * **One sibling Worker, two keys, one answer.** A capability's `service` binding is retargeted by the caller,
+   * and a hand-written one here, beside the Durable Object to the same Worker. Retargeted, not dropped: a feature
+   * deploys its own copy of every Worker in the project, so the wiring is meaningful there.
    */
   test("retargets a hand-written service to a sibling, exactly as it retargets the Durable Object", async () => {
     await writeFile(
@@ -1279,7 +1261,7 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **A cron an adopter wrote into a tracked `env.feature` is theirs (#650 review, defect 4).** The empty list
+   * **A cron an adopter wrote into a tracked `env.feature` is theirs.** The empty list
    * fills a gap — `triggers` is inherited, so a stanza that says nothing runs the top level's — and a gap is all
    * it fills.
    */
@@ -1297,9 +1279,9 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **`send_email` is carried into a feature whole (#650 review, defect 5; #662).** A send binding names an
-   * account-level Cloudflare Email Service address, and a feature is a branch of dev — `email`'s `branch` seed
-   * policy. Emptied, a hand-written one failed at runtime as `env.NOTIFY is undefined`.
+   * **`send_email` is carried into a feature whole.** A send binding names an account-level Cloudflare Email
+   * Service address, and a feature is a branch of dev — `email`'s `branch` seed policy. Emptied, it would fail at
+   * runtime as `env.NOTIFY is undefined`.
    */
   test("a send_email binding the top level declares is carried into the feature whole", async () => {
     await writeFile(
@@ -1314,7 +1296,7 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **And a declared environment's first stanza does not get dev's (#650 review, defect 7).** A `send_email`
+   * **And a declared environment's first stanza does not get dev's.** A `send_email`
    * entry carries a routing *decision*, so seeding `env.prod` from the top level writes the address on a
    * developer's laptop into production's stanza. A feature may inherit it — a branch of dev is what a feature is
    * — and a declared environment may not. See `wranglerInheritance.ts` for why that rules out `CARRIED_WHOLE`.
@@ -1349,11 +1331,11 @@ describe("a feature stanza's app-owned bindings", () => {
 });
 
 /**
- * **F2 of #643's review: a host that failed to deploy leaves no binding to it.** The app Worker's entries into
+ * **A host that failed to deploy leaves no binding to it.** The app Worker's entries into
  * the kit hosts are written after the deploy, and only for the hosts that deployed — and a re-run whose host now
  * fails takes back the entry an earlier run wrote.
  */
-describe("a feature stanza's carried bindings (#662)", () => {
+describe("a feature stanza's carried bindings", () => {
   let dir: string;
   let wranglerPath: string;
   const feature = featureScope({ project: "replay", issue: "662", slug: "bindings" });
@@ -1440,6 +1422,114 @@ describe("a feature stanza's carried bindings (#662)", () => {
       env: Record<string, { queues?: unknown }>;
     };
     expect(tracked.env.staging?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "replay-staging-jobs" }] });
+  });
+
+  test("writes the entry the capability's own spec states: its consumer and its remote", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    const jobs = defineCapability({
+      name: "jobs",
+      requiredBindings: [
+        { type: "queue", name: "JOBS", consumer: { maxRetries: 3, deadLetter: "JOBS_DLQ" } },
+        { type: "queue", name: "JOBS_DLQ" },
+        { type: "r2", name: "PUBLISHED", remote: true },
+      ],
+    });
+    const qa = environmentScope("replay", "qa");
+    await applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope: qa,
+      resources: [
+        { kind: "queue", binding: "JOBS", name: "replay-qa-jobs", id: "q1" },
+        { kind: "queue", binding: "JOBS_DLQ", name: "replay-qa-jobs-dlq", id: "q2" },
+        { kind: "r2", binding: "PUBLISHED", name: "replay-qa-published", id: "replay-qa-published" },
+      ],
+      capabilities: [jobs],
+      services: [],
+      secrets: [],
+    });
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: Record<string, { queues?: { consumers?: unknown[] }; r2_buckets?: unknown[] }>;
+    };
+    expect(tracked.env.qa?.queues?.consumers).toEqual([
+      { queue: "replay-qa-jobs", max_retries: 3, dead_letter_queue: "replay-qa-jobs-dlq" },
+    ]);
+    expect(tracked.env.qa?.r2_buckets).toEqual([
+      { binding: "PUBLISHED", remote: true, bucket_name: "replay-qa-published" },
+    ]);
+  });
+
+  describe("a stanza whose producer names another environment's queue", () => {
+    const jobs = defineCapability({
+      name: "jobs",
+      requiredBindings: [
+        { type: "queue", name: "JOBS", consumer: { maxRetries: 3, deadLetter: "JOBS_DLQ" } },
+        { type: "queue", name: "JOBS_DLQ" },
+      ],
+    });
+    const staging = environmentScope("replay", "staging");
+    const provisionJobs = () =>
+      applyProvisionedEnv({
+        administersItself: false,
+        workerDir: dir,
+        worker: BOARD,
+        scope: staging,
+        resources: [
+          { kind: "queue", binding: "JOBS", name: "replay-staging-jobs", id: "q1" },
+          { kind: "queue", binding: "JOBS_DLQ", name: "replay-staging-jobs-dlq", id: "q2" },
+        ],
+        capabilities: [jobs],
+        services: [],
+        secrets: [],
+      });
+    const stagingQueues = async () =>
+      (parse(await readFile(wranglerPath, "utf8")) as unknown as { env: Record<string, { queues?: unknown }> }).env
+        .staging?.queues;
+
+    test("consumes the queue it produces to, never the stale one", async () => {
+      await writeFile(
+        wranglerPath,
+        JSON.stringify({
+          name: "replay-board",
+          env: { staging: { queues: { producers: [{ binding: "JOBS", queue: "replay-dev-jobs" }] } } },
+        }),
+      );
+      await provisionJobs();
+      await provisionJobs();
+      expect(await stagingQueues()).toEqual({
+        producers: [
+          { binding: "JOBS", queue: "replay-staging-jobs" },
+          { binding: "JOBS_DLQ", queue: "replay-staging-jobs-dlq" },
+        ],
+        consumers: [{ queue: "replay-staging-jobs", max_retries: 3, dead_letter_queue: "replay-staging-jobs-dlq" }],
+      });
+    });
+
+    test("moves the stale queue's consumer with its producer, keeping the adopter's settings", async () => {
+      await writeFile(
+        wranglerPath,
+        JSON.stringify({
+          name: "replay-board",
+          env: {
+            staging: {
+              queues: {
+                producers: [{ binding: "JOBS", queue: "replay-dev-jobs" }],
+                consumers: [{ queue: "replay-dev-jobs", max_retries: 7, max_batch_size: 5 }],
+              },
+            },
+          },
+        }),
+      );
+      await provisionJobs();
+      expect(await stagingQueues()).toEqual({
+        producers: [
+          { binding: "JOBS", queue: "replay-staging-jobs" },
+          { binding: "JOBS_DLQ", queue: "replay-staging-jobs-dlq" },
+        ],
+        consumers: [{ queue: "replay-staging-jobs", max_retries: 7, max_batch_size: 5 }],
+      });
+    });
   });
 });
 

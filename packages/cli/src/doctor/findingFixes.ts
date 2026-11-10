@@ -3,6 +3,7 @@
 
 import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { FEATURE_RESOURCE_KINDS } from "@pithy-sh/core/src/naming/feature";
 import { z } from "zod";
 import { type AddPlan, addPlan, projectAddFacts } from "../capabilities/addCommand";
 import type { McpClientId } from "../mcp/clients";
@@ -16,12 +17,11 @@ import type { MissingSecretBinding } from "./secretBindings";
 import type { StrandedSitekeyVarFinding, UnrenderedTurnstile } from "./turnstileSitekeys";
 
 /**
- * **The command that rights one `pithy doctor` finding, gated or not (#697).**
+ * **The command that rights one `pithy doctor` finding, gated or not.**
  *
  * `failures.ts` is the exit gate, and each of its entries carries `fix`. The findings that report and never
  * gate — a deployed environment's pending migrations, an unbound secret, an AI client nobody connected — are
- * faults too, and an agent reading `--json` had their prose and no command. So every finding entry in a
- * report block carries `fix`: a whole `pithy` command run as written, or `null` where none rights it.
+ * faults too, so every finding entry in a report block carries `fix`: a whole `pithy` command run as written, or `null` where none rights it.
  * `devSecrets` and `devVarsLocal` are the exception — they sort names into classes, and carry none. The rule
  * is `failures.ts`'s — an edit, a person's step, or a command that would lose data run blind is `null` — and
  * where a finding gates, the two read the same builder here, so the exit's `fix` and the block's cannot
@@ -48,6 +48,22 @@ export function upgradeFix(worker: WorkerDir): Command {
 }
 
 /**
+ * What writes one missing binding: `pithy worker sync` for a D1, KV, R2 or queue binding, and `pithy upgrade` for
+ * every other kind.
+ *
+ * `worker sync` without `--env` writes dev's composition into every stanza. A binding dev lacks is one dev composes,
+ * so that run writes it everywhere. A binding only deployed environments lack may be composed by them alone, so the
+ * command composes for the first of them with `--env`, and the next doctor run names any other.
+ */
+export function missingBindingFix(worker: WorkerDir, binding: { type: string; envs: readonly string[] }): Command {
+  if (!(FEATURE_RESOURCE_KINDS as readonly string[]).includes(binding.type)) return upgradeFix(worker);
+  const [first] = binding.envs;
+  return first === undefined || binding.envs.includes(LOCAL_ENVIRONMENT)
+    ? pithyCommand("worker sync", { flags: { "--worker": worker } })
+    : pithyCommand("worker sync", { flags: { "--worker": worker, "--env": first } });
+}
+
+/**
  * A declared peer composed nowhere: adding it is the whole remedy — with its own prerequisites, because the
  * peer may declare some this Worker lacks too (`testers` → `email` → `secrets`), and `pithy add` with nobody to
  * ask refuses over them. The flag composes only what is missing, so it is right whether or not anything is.
@@ -65,13 +81,13 @@ export function prerequisiteFix(worker: WorkerDir, requires: string, projectDir?
  * A capability composed and installed nowhere: `pithy add` for the first Worker composing it. Re-running it
  * is safe on the half already done. No Worker composing it is no Worker to name.
  *
- * With `--with-prerequisites` (#711), on `addCommand`'s rule: the package is installed nowhere, so no manifest
+ * With `--with-prerequisites`, on `addCommand`'s rule: the package is installed nowhere, so no manifest
  * can rule its prerequisites out, and without the flag `pithy add` with nobody to ask refuses over any it has.
  */
 export function capabilityReachPlan(entry: ReachEntry, projectDir?: string): AddPlan | null {
   const [worker] = entry.workers;
   if (worker === undefined) return null;
-  // What that Worker's config already settles (#711): a prerequisite it composes is not missing, and an option its
+  // What that Worker's config already settles: a prerequisite it composes is not missing, and an option its
   // registration states is not a choice — `pithy add` skips it, so naming one per value asks the reader to pick
   // what the config has already decided, and leaves an agent no fix.
   return addPlan({
@@ -108,7 +124,7 @@ export function migrationFix(entry: EnvironmentMigrations, productionEnvironment
 }
 
 /**
- * `dev`'s migrations on a checkout nothing has set up (#764): `pithy setup`, which migrates and does the rest
+ * `dev`'s migrations on a checkout nothing has set up: `pithy setup`, which migrates and does the rest
  * a fresh clone needs, rather than `pithy migrate` — the first of the commands it replaces, after which the
  * next refusal names the second. Every other environment, and a set-up checkout, is {@link migrationFix}.
  */
@@ -124,7 +140,7 @@ export function localMigrationFix(
 /**
  * An unbound Secrets Store secret. **A value the kit composes** has no `fix`: `pithy secrets provision` mints it, and
  * runs against every environment, production included — a person's decision, never the fix for one environment's
- * binding (#711). **A value only the operator has** is supplied first, with the `pithy secrets create` its sentence
+ * binding. **A value only the operator has** is supplied first, with the `pithy secrets create` its sentence
  * names; the provision that binds it is the step after.
  */
 export function secretBindingFix(entry: MissingSecretBinding): Command | null {
@@ -226,7 +242,10 @@ export function healthWithFixes(
         },
         bindings: {
           ...worker.bindings,
-          missing: worker.bindings.missing.map((binding) => ({ ...binding, fix: upgradeFix(name) })),
+          missing: worker.bindings.missing.map((binding) => ({
+            ...binding,
+            fix: missingBindingFix(name, binding),
+          })),
           declinedBindings: withNoFix(worker.bindings.declinedBindings, "declines"),
           generatedValues: withNoFix(withNoFix(worker.bindings.generatedValues, "drift"), "stalePins"),
         },

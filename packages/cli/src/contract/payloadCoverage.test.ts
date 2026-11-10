@@ -99,6 +99,7 @@ const OPEN_SUBTREES = [
   "doctor: $.auditSinks|0",
   "doctor: $.auditSinks|0.secrets[]",
   "doctor: $.auditSinks|0.sinks[]",
+  "doctor: $.biomeIncludes|0",
   "doctor: $.cloudflare.accountMismatch|0",
   "doctor: $.cloudflare.credentialSplit|0",
   "doctor: $.declaredNames|0",

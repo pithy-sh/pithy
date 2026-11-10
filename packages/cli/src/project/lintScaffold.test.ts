@@ -35,6 +35,16 @@ interface OxlintConfig {
   overrides: OxlintOverride[];
 }
 
+/** One of each construct Node's type stripping refuses, as a Worker module that is otherwise clean. */
+const UNERASABLE = [
+  ["a parameter property", "export class Tar {\n  constructor(private readonly name: string) {}\n}\n"],
+  ["an enum", "export enum Color {\n  Red,\n}\n"],
+  ["a namespace", "export namespace Values {\n  export const one = 1;\n}\n"],
+  ["an import equals declaration", 'import fs = require("node:fs");\n\nexport const read = fs.readFileSync;\n'],
+  ["an export assignment", 'const config = { name: "tar" };\n\nexport = config;\n'],
+  ["an angle-bracket type assertion", "const raw: unknown = 1;\n\nexport const size = <number>raw;\n"],
+] as const;
+
 const readJsonc = async <T>(path: string) => parse(await readFile(path, "utf8")) as unknown as T;
 
 /** Each rule's `includes`, as the Biome config scopes it. */
@@ -83,7 +93,7 @@ describe("pithy init --lint biome, the default", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("writes all six .grit files, byte for byte, and nothing of Oxlint's", async () => {
+  test("writes every .grit file, byte for byte, and nothing of Oxlint's", async () => {
     expect((await readdir(join(dir, "plugins"))).sort()).toEqual(LINT_RULES.map((rule) => `${rule}.grit`).sort());
     for (const rule of LINT_RULES) {
       expect(await readFile(join(dir, "plugins", `${rule}.grit`), "utf8")).toBe(
@@ -106,6 +116,27 @@ describe("pithy init --lint biome, the default", () => {
     expect(manifest.scripts.lint).toBe("biome check .");
     expect(manifest.devDependencies.oxlint).toBeUndefined();
   });
+
+  test.each(UNERASABLE)(
+    "fails biome check on %s in the Worker's source",
+    async (_, source) => {
+      const [worker] = await readdir(join(dir, "apps"));
+      const probe = join(dir, "apps", worker ?? "", "src", "probe.ts");
+      await writeFile(probe, source);
+      try {
+        const run = spawnSync(BIOME, ["check", "."], {
+          cwd: dir,
+          encoding: "utf8",
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+        expect(run.status).not.toBe(0);
+        expect(run.stdout + run.stderr).toContain("Node's type stripping refuses this");
+      } finally {
+        await rm(probe, { force: true });
+      }
+    },
+    60_000,
+  );
 });
 
 describe("pithy init --lint oxlint", () => {
@@ -129,7 +160,7 @@ describe("pithy init --lint oxlint", () => {
     expect(await pathExists(join(dir, OXLINT_TEMPLATE))).toBe(false);
   });
 
-  test("loads all six rules from the plugin", async () => {
+  test("loads every rule from the plugin", async () => {
     const config = await readJsonc<OxlintConfig>(join(dir, ".oxlintrc.json"));
     expect(config.jsPlugins).toEqual(["./plugins/pithy.oxlint.js"]);
     const rules = config.overrides.flatMap((override) => Object.entries(override.rules));
@@ -169,4 +200,20 @@ describe("pithy init --lint oxlint", () => {
       await rm(probe, { force: true });
     }
   }, 60_000);
+
+  test.each(UNERASABLE)(
+    "fails Oxlint on %s in the Worker's source",
+    async (_, source) => {
+      const probe = join(dir, "apps", "board", "src", "probe.ts");
+      await writeFile(probe, source);
+      try {
+        const run = spawnSync(OXLINT, [], { cwd: dir, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+        expect(run.status).not.toBe(0);
+        expect(run.stdout).toContain("pithy(no-unerasable-syntax)");
+      } finally {
+        await rm(probe, { force: true });
+      }
+    },
+    60_000,
+  );
 });

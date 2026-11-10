@@ -760,7 +760,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 6,
+      "schemaVersion": 7,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -987,6 +987,11 @@
         "$.testBindings.findings": "array",
         "$.testBindings.findings[]": "string",
         "$.testBindings{}": "unknown",
+        "$.biomeIncludes": "null | object",
+        "$.biomeIncludes.state": "string",
+        "$.biomeIncludes.findings": "array",
+        "$.biomeIncludes.findings[]": "string",
+        "$.biomeIncludes{}": "unknown",
         "$.docsMcp": "null | object",
         "$.docsMcp.state": "string",
         "$.docsMcp.findings": "array",
@@ -1222,7 +1227,7 @@
         "$.node": "string",
         "$.failures": "array",
         "$.failures[]": "object",
-        "$.failures[].check": "\"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
+        "$.failures[].check": "\"biomeIncludes\" | \"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"workerNames\" | \"workflows\"",
         "$.failures[].detail": "string",
         "$.failures[].fix": "null | string"
       }
@@ -3448,6 +3453,18 @@
         "$.routes[].pattern": "string",
         "$.routes[].baseUrl": "string",
         "$.routes[].changed": "boolean",
+        "$.bindings": "array",
+        "$.bindings[]": "object",
+        "$.bindings[].env": "string",
+        "$.bindings[].written": "array",
+        "$.bindings[].written[]": "object",
+        "$.bindings[].written[].binding": "string",
+        "$.bindings[].written[].type": "\"d1\" | \"kv\" | \"queue\" | \"r2\"",
+        "$.bindings[].skipped": "array",
+        "$.bindings[].skipped[]": "object",
+        "$.bindings[].skipped[].binding": "string",
+        "$.bindings[].skipped[].type": "\"d1\" | \"kv\" | \"queue\" | \"r2\"",
+        "$.bindings[].skipped[].reason": "string",
         "$.runs": "array",
         "$.runs[]": "object",
         "$.runs[].env": "string",

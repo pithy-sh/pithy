@@ -671,7 +671,7 @@ Tests live in a sibling `test/` directory mirroring `src/`. Avoid `*.test.ts` co
 
 ### Oxlint, for the starter's other linter
 
-The kit lints itself with Biome alone. Oxlint is a root devDependency, pinned exactly, for one test: `pithy init --lint oxlint` ships the kit's six lint safeguards as an Oxlint JS plugin beside the GritQL rules Biome runs, and `packages/cli/src/project/lintParity.test.ts` runs both linters over the same fixtures and fails on any difference. The pin is the one an Oxlint project installs, and `lint.test.ts` holds the two to each other.
+The kit lints itself with Biome alone. Oxlint is a root devDependency, pinned exactly, for one test: `pithy init --lint oxlint` ships the kit's lint safeguards as an Oxlint JS plugin beside the GritQL rules Biome runs, and `packages/cli/src/project/lintParity.test.ts` runs both linters over the same fixtures and fails on any difference. The pin is the one an Oxlint project installs, and `lint.test.ts` holds the two to each other.
 
 ### Caveat: Biome doesn't yet match every ESLint plugin
 

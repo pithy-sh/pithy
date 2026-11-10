@@ -15,7 +15,14 @@ import { isFixable, repointableIds } from "./bindingScope";
 import { describeCloudflareAccess } from "./cloudflare";
 import { describeDevPreferences } from "./devPreferences";
 import { describeEnvironmentDrift } from "./environments";
-import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
+import {
+  capabilityReachFix,
+  DoctorFix,
+  localMigrationFix,
+  missingBindingFix,
+  prerequisiteFix,
+  upgradeFix,
+} from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeHostBinding } from "./hostBindings";
 import { describeProjectName } from "./projectName";
@@ -70,6 +77,7 @@ export const DoctorCheck = z
     "serviceBindings",
     "hostBindings",
     "featureRatelimitIds",
+    "biomeIncludes",
     "environments",
     "environmentConfigs",
     "origins",
@@ -130,7 +138,7 @@ function workerFailures(
   for (const binding of checks.bindings.missing) {
     add(
       `${binding.name} (${binding.type}) is missing from wrangler.jsonc in ${binding.envs.join(", ")}`,
-      upgradeFix(directory),
+      missingBindingFix(directory, binding),
     );
   }
   for (const className of checks.bindings.missingExports) {
@@ -350,6 +358,12 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // The id is the adopter's to choose below the range, so no command is named.
   if (report.featureRatelimitIds?.state === "reserved") {
     for (const finding of report.featureRatelimitIds.findings) add("featureRatelimitIds", finding, null);
+  }
+
+  // A Biome exclusion that skips every file of a checkout, established by the project's own config. The
+  // remedy is an edit to that line.
+  if (report.biomeIncludes?.state === "unanchored") {
+    for (const finding of report.biomeIncludes.findings) add("biomeIncludes", finding, null);
   }
 
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc contradict each

@@ -1,0 +1,32 @@
+// Your config's loading gate. Scoped by the `includes` beside its entry in biome.jsonc.
+//
+// The CLI loads each `pithy.config.ts`, and every module it imports, through Node's type stripping. Stripping
+// erases types and nothing else, so it refuses TypeScript that compiles to code: an enum, a namespace with a value in
+// it, a constructor parameter property, `import x = require(...)`, `export =`, and an angle-bracket type assertion.
+// One of them anywhere in the config's imports fails every command that reads the config, while tsc, Vitest and the
+// Worker's bundler all accept it. This rule refuses every non-ambient namespace, type-only ones included, so it never
+// has to decide which kind it is looking at.
+//
+// The rewrites: an object `as const` with a union of its values for an enum, the module's own exports for a
+// namespace, a field declared in the class and assigned in the constructor for a parameter property, an import
+// statement for `import =`, `export default` for `export =`, and `value as T` for `<T>value`. Ambient declarations
+// (`declare enum`, `declare namespace`, anything in a `declare module` or a `.d.ts`) erase whole, and so does
+// `import type x = require(...)`, so they pass.
+//
+// This file is yours. Narrow the `includes` in biome.jsonc, widen them, or delete both the entry and this file.
+language js
+
+or {
+  TsEnumDeclaration(),
+  TsModuleDeclaration(),
+  TsImportEqualsDeclaration() as $import where { not $import <: r"import\s+type\s+[A-Za-z_$][\w$]*\s*=[\s\S]*" },
+  JsExport(export_clause=TsExportAssignmentClause()),
+  TsTypeAssertionExpression(),
+  TsPropertyParameter()
+} as $ref where {
+  not $ref <: within or {
+    TsDeclareStatement(),
+    TsExportDeclareClause()
+  } ,
+  register_diagnostic(span=$ref, message="Node's type stripping refuses this (a namespace once it holds a value; this rule refuses every namespace), and the CLI loads pithy.config.ts and every module it imports that way. Use an object as const for an enum, plain exports for a namespace, a field assigned in the constructor for a parameter property, an import statement for import =, export default for export =, and value as T for <T>value.")
+}

@@ -643,7 +643,7 @@ export default withContract(
       },
       lint: {
         type: "string",
-        description: `Which linter runs the kit's six lint rules: biome or oxlint. Oxlint keeps Biome as the formatter. Defaults to "${DEFAULT_LINTER}".`,
+        description: `Which linter runs the kit's lint rules: biome or oxlint. Oxlint keeps Biome as the formatter. Defaults to "${DEFAULT_LINTER}".`,
       },
       "react-native": {
         type: "boolean",

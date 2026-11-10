@@ -9,7 +9,7 @@ import { z } from "zod";
 import { writeJsonc } from "./jsonc";
 
 /**
- * **Which linter a new project's six lint safeguards run under.**
+ * **Which linter a new project's lint safeguards run under.**
  *
  * The starter carries both sets: a GritQL rule per safeguard in `plugins/*.grit`, loaded by `biome.jsonc`, and one
  * Oxlint JS plugin, `plugins/pithy.oxlint.js`, loaded by `.oxlintrc.json`. `pithy init --lint` picks one, and the
@@ -18,7 +18,7 @@ import { writeJsonc } from "./jsonc";
  */
 export const Linter = z
   .enum(["biome", "oxlint"])
-  .describe("The linter that runs the kit's six lint safeguards: `biome` (GritQL rules) or `oxlint` (a JS plugin).");
+  .describe("The linter that runs the kit's lint safeguards: `biome` (GritQL rules) or `oxlint` (a JS plugin).");
 export type Linter = z.infer<typeof Linter>;
 
 /** The default: what `init` scaffolded before it asked. */
@@ -33,7 +33,7 @@ export const OXLINT_PLUGIN = "plugins/pithy.oxlint.js";
 /** The starter's Oxlint config, as it ships. It lands as `.oxlintrc.json`. */
 export const OXLINT_TEMPLATE = "oxlintrc.template.json";
 
-/** The six safeguards, by the name both linters give them. */
+/** The safeguards, by the name both linters give them. */
 export const LINT_RULES = [
   "no-console",
   "no-process-io",
@@ -41,6 +41,7 @@ export const LINT_RULES = [
   "no-bare-zvalidator",
   "no-z-config",
   "no-raw-use-effect",
+  "no-unerasable-syntax",
 ] as const;
 
 /** The `lint` script an Oxlint project runs: Biome checks formatting and its own rules, Oxlint the safeguards. */

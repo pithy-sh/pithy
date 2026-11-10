@@ -2,7 +2,7 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   // Oxlint for lint; Biome still formats, and still lints with its recommended rules. `bun run lint` runs both.
   //
-  // The kit's six lint safeguards are one JS plugin, `plugins/pithy.oxlint.js`, and each override below turns one of
+  // The kit's seven lint safeguards are one JS plugin, `plugins/pithy.oxlint.js`, and each override below turns one of
   // its rules on for the code it is about — the same files the GritQL rule of the same name covers in a Biome
   // project. `excludeFiles` is what Biome writes as a `!` pattern: Oxlint reads a `!` in `files` as everything that
   // does not match.
@@ -19,6 +19,11 @@
   // `no-raw-use-effect` keeps effects in hooks named for what they sync with. Each exclusion is one such hook that
   // `pithy ui add` writes: Turnstile on the web and in the React Native web build, React Native's AppState, and the
   // platform store's transaction queue. Tests are outside the rule.
+  //
+  // `no-unerasable-syntax` keeps each config, and each Worker's own `.ts` source, loadable by Node's type stripping,
+  // which is how the CLI reads a config and every module it imports. A module a config imports from outside these
+  // files is loaded the same way and goes unchecked; widen them to cover it. A test is never imported by a config, and
+  // a `.d.ts` erases whole.
   //
   // Oxlint's JS plugin API is alpha and outside semver. None of these rules needs type information.
   //
@@ -59,6 +64,11 @@
         "**/apps/*/src/useStoreTransactions.ts"
       ],
       "rules": { "pithy/no-raw-use-effect": "error" }
+    },
+    {
+      "files": ["**/apps/*/src/**/*.ts", "**/pithy.config.ts"],
+      "excludeFiles": ["**/*.test.ts", "**/*.d.ts"],
+      "rules": { "pithy/no-unerasable-syntax": "error" }
     }
   ]
 }

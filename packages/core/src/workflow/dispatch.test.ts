@@ -6,35 +6,72 @@ import { z } from "zod";
 import { defineCapability } from "../capability/capability";
 import { PithyError } from "../error/pithyError";
 import type { Logger } from "../logger/logger";
-import { buildWorkflowDispatcher, resolveWorkflowBinding, triggerWorkflow } from "./dispatch";
+import { buildWorkflowDispatcher, instanceIdFor, resolveWorkflowBinding, triggerWorkflow } from "./dispatch";
 import { composeWorkflows } from "./register";
-import type { WorkflowRegistry } from "./spec";
+import type { RegisteredWorkflow, WorkflowRegistry } from "./spec";
 
 /** A Workflow binding that records what it was started with. The structural shape is all dispatch needs. */
 function fakeBinding() {
   const started: unknown[] = [];
+  const ids: Array<string | undefined> = [];
   return {
     started,
-    create: async (options?: { params?: unknown }) => {
+    ids,
+    create: async (options?: { id?: string; params?: unknown }) => {
       started.push(options?.params);
-      return { id: "instance-1" };
+      ids.push(options?.id);
+      return { id: options?.id ?? "instance-1" };
     },
   };
 }
 
+/**
+ * A Workflow binding holding one instance per id, as Cloudflare does: a second `create` under a taken id is
+ * refused, and `get` resolves for an id it holds. `lookUp: false` leaves `get` off, the way the loopback has none.
+ */
+function idBinding(options: { lookUp?: boolean } = {}) {
+  const ids: string[] = [];
+  const binding: {
+    ids: string[];
+    create: (o?: { id?: string }) => Promise<unknown>;
+    get?: (id: string) => Promise<unknown>;
+  } = {
+    ids,
+    create: async (o?: { id?: string }) => {
+      if (o?.id !== undefined && ids.includes(o.id)) throw new Error(`instance.already_exists: ${o.id}`);
+      if (o?.id !== undefined) ids.push(o.id);
+      return { id: o?.id };
+    },
+  };
+  if (options.lookUp !== false) {
+    binding.get = async (id: string) => {
+      if (!ids.includes(id)) throw new Error("instance.not_found");
+      return { id };
+    };
+  }
+  return binding;
+}
+
 /** A logger that records warnings, so the degraded path can be asserted rather than assumed silent. */
-function fakeLogger(): Logger & { warnings: Array<{ message: string; fields?: Record<string, unknown> }> } {
+function fakeLogger(): Logger & {
+  warnings: Array<{ message: string; fields?: Record<string, unknown> }>;
+  infos: Array<{ message: string; fields?: Record<string, unknown> }>;
+} {
   const warnings: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+  const infos: Array<{ message: string; fields?: Record<string, unknown> }> = [];
   const logger = {
     warnings,
+    infos,
     debug: () => {},
-    info: () => {},
+    info: (message: string, fields?: Record<string, unknown>) => {
+      infos.push({ message, fields });
+    },
     warn: (message: string, fields?: Record<string, unknown>) => {
       warnings.push({ message, fields });
     },
     error: () => {},
     child: () => logger,
-  } as unknown as Logger & { warnings: typeof warnings };
+  } as unknown as Logger & { warnings: typeof warnings; infos: typeof infos };
   return logger;
 }
 
@@ -180,6 +217,186 @@ describe("triggerWorkflow", () => {
   });
 });
 
+const DailyParams = z
+  .object({ region: z.string().default("all").describe("The region the daily pass covers.") })
+  .describe("Parameters for the daily stats pass.");
+
+/** A registry holding one job that names its instances by the UTC day it fired for, and one that names none. */
+function namedRegistry(): WorkflowRegistry {
+  return composeWorkflows([
+    defineCapability({
+      name: "stats",
+      requiredBindings: [],
+      workflows: {
+        daily: {
+          binding: "STATS_DAILY",
+          params: DailyParams,
+          className: "StatsDailyWorkflow",
+          schedule: "0 1 * * *",
+          instanceId: ({ firedAt, cron, params }) =>
+            `daily-${firedAt.toISOString().slice(0, 10)}-${(params as { region: string }).region}${cron ? "-cron" : ""}`,
+        },
+        adhoc: { binding: "STATS_ADHOC", params: DailyParams, className: "StatsAdhocWorkflow" },
+      },
+    }),
+  ]);
+}
+
+const FIRED = new Date("2026-11-09T01:00:00.000Z");
+
+describe("instanceIdFor", () => {
+  const daily = (): RegisteredWorkflow => {
+    const entry = namedRegistry()["stats/daily"];
+    if (!entry) throw new Error("expected stats/daily");
+    return entry;
+  };
+
+  it("hands the spec the fire time, the cron and the params", () => {
+    const seen: unknown[] = [];
+    const entry = daily();
+    entry.spec.instanceId = (context) => {
+      seen.push(context);
+      return "named";
+    };
+    expect(instanceIdFor(entry, { schedule: { cron: "0 1 * * *", firedAt: FIRED } }, { region: "eu" })).toBe("named");
+    expect(seen).toEqual([{ firedAt: FIRED, cron: "0 1 * * *", params: { region: "eu" } }]);
+  });
+
+  it("fires a manual start now, with no cron key at all", () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const entry = daily();
+    entry.spec.instanceId = (context) => {
+      seen.push({ ...context });
+      return "named";
+    };
+    const before = Date.now();
+    instanceIdFor(entry, {}, {});
+    const firedAt = seen[0]?.firedAt as Date;
+    expect(firedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(firedAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect("cron" in (seen[0] ?? {})).toBe(false);
+  });
+
+  it("takes the caller's id without asking the spec", () => {
+    const entry = daily();
+    entry.spec.instanceId = () => {
+      throw new Error("not asked");
+    };
+    expect(instanceIdFor(entry, { id: "given" }, {})).toBe("given");
+  });
+
+  it("is undefined for a spec that names no instances", () => {
+    const entry = namedRegistry()["stats/adhoc"];
+    if (!entry) throw new Error("expected stats/adhoc");
+    expect(instanceIdFor(entry, { schedule: { firedAt: FIRED } }, {})).toBeUndefined();
+  });
+});
+
+describe("triggerWorkflow instance ids", () => {
+  it("names a scheduled start by the spec's instanceId, with the fire time, the cron and the parsed params", async () => {
+    const binding = fakeBinding();
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, undefined, {
+      schedule: { cron: "0 1 * * *", firedAt: FIRED },
+    });
+    expect(binding.ids).toEqual(["daily-2026-11-09-all-cron"]);
+  });
+
+  it("names a manual start by the spec's instanceId when the caller passes no id", async () => {
+    const binding = fakeBinding();
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", { region: "eu" });
+    expect(binding.ids).toHaveLength(1);
+    expect(binding.ids[0]).toMatch(/^daily-\d{4}-\d{2}-\d{2}-eu$/);
+  });
+
+  it("uses the caller's id over the spec's instanceId", async () => {
+    const binding = fakeBinding();
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, undefined, {
+      id: "backfill-2026-11-01",
+    });
+    expect(binding.ids).toEqual(["backfill-2026-11-01"]);
+  });
+
+  it("passes no id for a spec without instanceId, scheduled or not", async () => {
+    const binding = fakeBinding();
+    const env = { STATS_ADHOC: binding };
+    await triggerWorkflow(env, namedRegistry(), "stats/adhoc", {});
+    await triggerWorkflow(env, namedRegistry(), "stats/adhoc", {}, undefined, { schedule: { firedAt: FIRED } });
+    expect(binding.ids).toEqual([undefined, undefined]);
+  });
+
+  it("starts a caller-named instance of a job without instanceId", async () => {
+    const binding = fakeBinding();
+    await triggerWorkflow({ STATS_ADHOC: binding }, namedRegistry(), "stats/adhoc", {}, undefined, { id: "once" });
+    expect(binding.ids).toEqual(["once"]);
+  });
+
+  it("logs a scheduled start whose id is taken as already started, and does not throw", async () => {
+    const binding = idBinding();
+    const log = fakeLogger();
+    const start = { schedule: { cron: "0 1 * * *", firedAt: FIRED } };
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, log, start);
+    await expect(
+      triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, log, start),
+    ).resolves.toBeUndefined();
+    expect(binding.ids).toEqual(["daily-2026-11-09-all-cron"]);
+    expect(log.infos).toEqual([
+      {
+        message: "workflow already started",
+        fields: { workflow: "stats/daily", id: "daily-2026-11-09-all-cron" },
+      },
+    ]);
+    expect(log.warnings).toEqual([]);
+  });
+
+  it("throws a manual start whose id is taken, because the caller asked for that instance", async () => {
+    const binding = idBinding();
+    const env = { STATS_DAILY: binding };
+    await triggerWorkflow(env, namedRegistry(), "stats/daily", {}, undefined, { id: "x" });
+    await expect(triggerWorkflow(env, namedRegistry(), "stats/daily", {}, undefined, { id: "x" })).rejects.toThrow(
+      "instance.already_exists",
+    );
+  });
+
+  it("throws a scheduled refusal when the id is not found afterwards, since it was not a taken id", async () => {
+    const log = fakeLogger();
+    const binding = {
+      create: async () => {
+        throw new Error("workflow not found");
+      },
+      get: async () => {
+        throw new Error("instance.not_found");
+      },
+    };
+    await expect(
+      triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, log, {
+        schedule: { firedAt: FIRED },
+      }),
+    ).rejects.toThrow("workflow not found");
+    expect(log.infos).toEqual([]);
+  });
+
+  it("throws a scheduled refusal on a binding that cannot look an instance up", async () => {
+    const binding = idBinding({ lookUp: false });
+    const start = { schedule: { firedAt: FIRED } };
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, undefined, start);
+    await expect(
+      triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, undefined, start),
+    ).rejects.toThrow("instance.already_exists");
+  });
+
+  it("carries the id over loopback in dev", async () => {
+    const wire = fakeFetch();
+    const binding = resolveWorkflowBinding(
+      { ENVIRONMENT: "dev", EMAIL_ORIGIN: "http://localhost:8797" },
+      { binding: "STATS_DAILY", capability: "email", fetch: wire.fetch },
+    );
+    await triggerWorkflow({ STATS_DAILY: binding }, namedRegistry(), "stats/daily", {}, undefined, {
+      schedule: { firedAt: FIRED },
+    });
+    expect(wire.calls[0]?.body).toEqual({ id: "daily-2026-11-09-all", params: { region: "all" } });
+  });
+});
+
 /** A `fetch` that records what it was asked for and always accepts. The loopback wire, stubbed. */
 function fakeFetch() {
   const calls: { url: string; body: unknown }[] = [];
@@ -204,10 +421,9 @@ describe("resolveWorkflowBinding", () => {
   });
 
   it("prefers a published origin over the binding in dev, because the local binding cannot reach anything", async () => {
-    // The order that closes #410 whatever wrangler hands a local Worker for a cross-script binding to a
-    // script it is not running: present-but-dead is indistinguishable at runtime from working, so a
-    // binding-first rule would leave the silence in place. A published origin is not something a
-    // composition has by accident — `pithy dev` writes one per host it is actually running.
+    // Whatever wrangler hands a local Worker for a cross-script binding to a script it is not running,
+    // present-but-dead is indistinguishable at runtime from working. A published origin is not something
+    // a composition has by accident: `pithy dev` writes one per host it is actually running.
     const binding = fakeBinding();
     const wire = fakeFetch();
     const resolved = resolveWorkflowBinding(
@@ -359,6 +575,20 @@ describe("buildWorkflowDispatcher", () => {
     const dispatcher = buildWorkflowDispatcher({}, registry(), log);
     await dispatcher.trigger("media/image-to-text", { id: "m1" });
     expect(log.warnings).toHaveLength(1);
+  });
+
+  it("passes the caller's id through trigger", async () => {
+    const binding = fakeBinding();
+    const dispatcher = buildWorkflowDispatcher({ STATS_DAILY: binding }, namedRegistry());
+    await dispatcher.trigger("stats/daily", {}, { id: "2026-11-01" });
+    expect(binding.ids).toEqual(["2026-11-01"]);
+  });
+
+  it("falls back to the spec's instanceId when trigger is given no id", async () => {
+    const binding = fakeBinding();
+    const dispatcher = buildWorkflowDispatcher({ STATS_DAILY: binding }, namedRegistry());
+    await dispatcher.trigger("stats/daily", { region: "us" });
+    expect(binding.ids[0]).toMatch(/^daily-\d{4}-\d{2}-\d{2}-us$/);
   });
 });
 

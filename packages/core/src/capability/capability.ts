@@ -827,9 +827,14 @@ export type CapabilityInput<
   Namespaces extends KvNamespaceSpecMap = Record<never, never>,
   Name extends string = string,
   Workflows extends WorkflowSpecMap = Record<never, never>,
-> = Omit<Capability<Databases, Namespaces, Name, Workflows>, "requiredBindings" | "processing"> & {
+> = Omit<Capability<Databases, Namespaces, Name, Workflows>, "requiredBindings" | "processing" | "workflows"> & {
   requiredBindings: BindingSpecInput[];
   processing?: readonly ProcessingActivityInput[];
+  /**
+   * As {@link Capability.workflows}. Intersected with {@link WorkflowSpecMap} so a function field such as
+   * `instanceId` is typed from the spec while `Workflows` is still being inferred from the literal.
+   */
+  workflows?: Workflows & WorkflowSpecMap;
 };
 
 /**

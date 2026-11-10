@@ -7,11 +7,24 @@
   // directories that are not one yet — the ignores are stated here instead, so the first `bun run lint`
   // works before the first `git init`. `openapi.json` and `asyncapi.json` are `pithy contract`'s
   // output: generated, rewritten whenever a route or a frame changes, and never formatted by hand.
+  //
+  // Every excluded directory is anchored to this one. Biome matches a pattern that starts with `**` against the
+  // directories above the project too, so `!**/.worktrees` would exclude every file of a `pithy feature create`
+  // worktree, which lives at `.worktrees/<issue>-<slug>`, and `!**/dist` every file of a project kept under a `dist`.
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/dist", "!**/.wrangler", "!**/.worktrees", "!**/openapi.json", "!**/asyncapi.json"]
+    "includes": [
+      "**",
+      "!.worktrees",
+      "!dist",
+      "!.wrangler",
+      "!apps/**/dist",
+      "!apps/**/.wrangler",
+      "!**/openapi.json",
+      "!**/asyncapi.json"
+    ]
   },
-  // The kit's six lint safeguards, one GritQL rule each in `plugins/`, each scoped to the code it is about.
+  // The kit's seven lint safeguards, one GritQL rule each in `plugins/`, each scoped to the code it is about.
   //
   // `no-console.grit` is the logging gate, on each Worker's own `.ts` source, because that is the code that runs in
   // the Worker, where `c.var.log` and `createWorkerLogger()` exist. A `.tsx` file is the client, and a browser
@@ -25,6 +38,11 @@
   //
   // `no-raw-use-effect.grit` keeps effects in hooks named for what they sync with. Each exclusion is one such hook
   // that `pithy ui add` writes, named for the system it syncs with; tests are outside the rule.
+  //
+  // `no-unerasable-syntax.grit` keeps each config, and each Worker's own `.ts` source, loadable by Node's type
+  // stripping, which is how the CLI reads a config and every module it imports. A module a config imports from outside
+  // these includes is loaded the same way and goes unchecked; widen them to cover it. A test is never imported by a
+  // config, and a `.d.ts` erases whole.
   //
   // Yours to change, like every other line here — narrow them, widen them, or drop an entry and delete its plugin
   // file with it. Every plugin file says the same.
@@ -64,6 +82,10 @@
         // The platform store's (StoreKit / Play Billing) transaction queue, for the app's whole run.
         "!**/apps/*/src/useStoreTransactions.ts"
       ]
+    },
+    {
+      "path": "plugins/no-unerasable-syntax.grit",
+      "includes": ["**/apps/*/src/**/*.ts", "**/pithy.config.ts", "!**/*.test.ts", "!**/*.d.ts"]
     }
   ],
   "formatter": {
