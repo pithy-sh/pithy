@@ -12,6 +12,7 @@
       "optional": true
     }
   ],
+  "testBindings": [{ "kind": "d1", "name": "DB" }, { "kind": "kv", "name": "CONTROL_PLANE" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["audit"],
   "migrationNamespace": "controlplane",

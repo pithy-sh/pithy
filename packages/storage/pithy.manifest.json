@@ -19,6 +19,11 @@
       "optional": true
     }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "r2", "name": "STORAGE_BUCKET" },
+    { "kind": "unbound", "name": "STORAGE_SWEEP" }
+  ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth", "organization"],
   "migrationNamespace": "storage",

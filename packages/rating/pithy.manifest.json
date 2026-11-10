@@ -2,6 +2,7 @@
   "name": "rating",
   "package": "@pithy-sh/rating",
   "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "testBindings": [{ "kind": "d1", "name": "DB" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "controlplane", "audit"],
   "migrationNamespace": "rating",

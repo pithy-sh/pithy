@@ -24,6 +24,12 @@
       "optional": true
     }
   ],
+  "testBindings": [
+    { "kind": "unbound", "name": "VECTORIZE" },
+    { "kind": "unbound", "name": "AI" },
+    { "kind": "d1", "name": "DB" },
+    { "kind": "unbound", "name": "VECTOR_REPROCESS" }
+  ],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth"],
   "migrationNamespace": "vector",

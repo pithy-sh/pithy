@@ -6,6 +6,11 @@
     { "type": "d1", "name": "EMAIL_SUPPRESSIONS", "scope": "global" },
     { "type": "workflow", "name": "EMAIL_SENDER", "job": "send", "className": "EmailSendWorkflow" }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "d1", "name": "EMAIL_SUPPRESSIONS" },
+    { "kind": "unbound", "name": "EMAIL_SENDER" }
+  ],
   "peerCapabilities": ["secrets"],
   "migrationNamespace": "email",
   "devSecrets": [{ "name": "email-link-signing-key", "devValue": "random" }],

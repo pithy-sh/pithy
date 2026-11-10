@@ -12,6 +12,7 @@
       "optional": true
     }
   ],
+  "testBindings": [{ "kind": "d1", "name": "DB" }, { "kind": "r2", "name": "CONSENT_EVIDENCE" }],
   "peerCapabilities": ["auth"],
   "optionalCapabilities": ["email", "audit", "controlplane"],
   "migrationNamespace": "consent",

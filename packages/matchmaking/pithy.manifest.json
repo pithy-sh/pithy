@@ -17,6 +17,12 @@
       "classModule": "@pithy-sh/matchmaking/src/presence/durableObject"
     }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "kv", "name": "MATCHMAKING" },
+    { "kind": "unbound", "name": "QUEUE" },
+    { "kind": "unbound", "name": "PRESENCE" }
+  ],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "rating", "multiplayer"],
   "migrationNamespace": "matchmaking",

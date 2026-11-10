@@ -2,6 +2,7 @@
   "name": "turnstile",
   "package": "@pithy-sh/turnstile",
   "requiredBindings": [],
+  "testBindings": [],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth"],
   "secrets": [

@@ -40,6 +40,14 @@
       "optional": true
     }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "r2", "name": "MEDIA_BUCKET" },
+    { "kind": "unbound", "name": "MEDIA_IMAGE_TO_TEXT" },
+    { "kind": "unbound", "name": "MEDIA_AUDIO_TRANSCRIBE" },
+    { "kind": "unbound", "name": "MEDIA_VIDEO_TRANSCRIBE" },
+    { "kind": "unbound", "name": "MEDIA_DOC_EXTRACT" }
+  ],
   "peerCapabilities": ["secrets"],
   "optionalCapabilities": ["auth", "organization"],
   "migrationNamespace": "media",
