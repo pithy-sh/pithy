@@ -33,7 +33,7 @@ pithy worker unbind --from <worker> (--to <worker> | --binding <NAME>) [--json]
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
 | `--dry-run` | `rename` | `false` | Show the plan and write nothing. Every refusal still applies, the live-script check included |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
-| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron, its D1 names. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
+| `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its D1, KV, R2 and queue bindings, its Workflow bindings, its cron, its service bindings, its D1 names. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all seven | `false` | One line of machine-readable output |
 
 ## What it does
@@ -54,9 +54,11 @@ The first half is the address. A `domains` block names where the Worker answers 
 
 The second half writes the app capability's declared Workflows and cron triggers, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's. `docs/CLI.md` §6.5 has the three rules it works by: the app's entries are replaced rather than merged, an entry carrying a `script_name` belongs to a library capability's provisioner and is never touched, nor is one you wrote for a library job your own Worker hosts (`@pithy-sh/auth`'s purge, `@pithy-sh/payments`' usage pass), `triggers.crons` is set to exactly the declared schedules plus any such job's schedule already there, and the `WorkflowEntrypoint` subclass stays yours to export from the Worker's `main`. Idempotent, comment-preserving, and all-or-nothing.
 
-The third half is the app's service bindings: each declared one written into `services` in every stanza, at the script its target deploys as there, as `bind` writes it. An entry you wrote by hand is left as it is.
+The third half writes every D1, KV, R2 and queue binding the Worker composes, the app's own `requiredBindings` and every library capability's, after the Worker's honored declines, into every stanza that lacks one. Each entry is the one `pithy add` and `pithy provision` write, through the same writer: a D1 entry names the database `pithy provision` will create, and a queue gets its producer and, when it consumes, its `queues.consumers` entry. An entry a stanza already has is left as written. Names come from the `name` in the root `pithy.config.ts`. A Worker with an app capability or an `ownBindings` list is refused without one, before anything is written. A Worker with neither, one that composes only library capabilities, is still synced: its queue entries are skipped and reported, its D1 entries are written with no `database_name`, and the rest are written as usual. A `declinedBindings` block that cannot be read is refused before anything is written, as `pithy upgrade` refuses it, because a decline nobody can read leaves nothing out. `pithy doctor` names this command for any of them a stanza lacks.
 
-The fourth half is the Worker's D1 entries against its `ownBindings`. A binding listed after its entries were written still names the shared database, and one taken out still names the Worker's own, so each entry naming the other of the pair gets the `database_name` `pithy provision` composes for this Worker. An environment stanza that already holds a real `database_id` is left alone, for `pithy provision --repoint` to move, and a name chosen by hand is never rewritten. The top-level stanza, which is local dev's, also gets a `database_id` of its own for an owned binding, and loses it when the entry is taken out, so `pithy dev`, `migrate` and `seed` keep the two databases apart. Only names the kit composed are rewritten: a name you chose is yours, and `pithy doctor` reports it. An environment stanza that already holds a real `database_id` is left for `pithy provision --env <env> --repoint`, because renaming it here would point the name at one database and the id at another. A `scope: "global"` binding of any kind in `ownBindings`, such as support's `SUPPORT_BUCKET` R2 bucket, is refused before anything is written, naming the capability, in a Worker that composes no database as in one that does.
+The fourth half is the app's service bindings: each declared one written into `services` in every stanza, at the script its target deploys as there, as `bind` writes it. An entry you wrote by hand is left as it is.
+
+The fifth half is the Worker's D1 entries against its `ownBindings`. A binding listed after its entries were written still names the shared database, and one taken out still names the Worker's own, so each entry naming the other of the pair gets the `database_name` `pithy provision` composes for this Worker. An environment stanza that already holds a real `database_id` is left alone, for `pithy provision --repoint` to move, and a name chosen by hand is never rewritten. The top-level stanza, which is local dev's, also gets a `database_id` of its own for an owned binding, and loses it when the entry is taken out, so `pithy dev`, `migrate` and `seed` keep the two databases apart. Only names the kit composed are rewritten: a name you chose is yours, and `pithy doctor` reports it. An environment stanza that already holds a real `database_id` is left for `pithy provision --env <env> --repoint`, because renaming it here would point the name at one database and the id at another. A `scope: "global"` binding of any kind in `ownBindings`, such as support's `SUPPORT_BUCKET` R2 bucket, is refused before anything is written, naming the capability, in a Worker that composes no database as in one that does.
 
 **`pithy doctor` and `pithy deploy --env <name>` read the Workflow half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
 
@@ -188,7 +190,7 @@ $ pithy worker rename --from api --to board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[]}
+{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"bindings":[{"env":"dev","written":[{"binding":"DB","type":"d1"}],"skipped":[]}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[]}
 ```
 
 | key | type | meaning |
@@ -202,6 +204,10 @@ $ pithy worker sync --worker api --json
 | `routes[].pattern` | `string` | The hostname the `custom_domain` route now points at |
 | `routes[].baseUrl` | `string` | What `vars.BASE_URL` now holds: `https://<pattern>` |
 | `routes[].changed` | `boolean` | Whether that stanza moved. `false` on a re-run, and nothing is written |
+| `bindings` | `object[]` | One entry per environment, for the D1, KV, R2 and queue bindings the Worker composes. Empty when it composes none |
+| `bindings[].env` | `string` | The environment written. `dev` names the top-level stanza |
+| `bindings[].written` | `object[]` | The entries that stanza lacked and now has, each `{ binding, type }`. Empty on a re-run |
+| `bindings[].skipped` | `object[]` | The entries that stanza lacks and could not be given, each `{ binding, type, reason }` |
 | `runs` | `object[]` | One entry per environment reconciled. Empty when the Worker declares no `app` capability at all; one entry each, binding nothing, when the app declares no Workflows |
 | `runs[].env` | `string` | The environment reconciled. `dev` names the top-level stanza |
 | `runs[].workflows` | `object[]` | The entries that environment's `workflows` table now declares for the app, verbatim as written |
@@ -281,7 +287,7 @@ Could not read api's wrangler.jsonc.
 Fix the file, then run the rename again — this command edits it.
 ```
 
-**Nothing to sync.** `sync` writes what `domains`, an `app` capability and `ownBindings` declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write.
+**Nothing to sync.** `sync` writes what `domains`, an `app` capability, `ownBindings` and the D1, KV, R2 and queue bindings it composes declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write. A Worker that composes only a library capability's resources is synced, not refused.
 
 ```
 api declares neither domains nor an app capability.
@@ -448,10 +454,12 @@ Check anything outside the worker that names it: tsconfig, CI, imports.
 Done.
 ```
 
-Reconcile one environment's Workflow bindings.
+Reconcile one environment: its bindings, its Workflows and its cron.
 
 ```
 $ pithy worker sync --worker api --env prod
+prod: DB, PUBLISHED written.
+Done.
 ```
 
 Write the route for a `domains` block added by hand, then run it again.

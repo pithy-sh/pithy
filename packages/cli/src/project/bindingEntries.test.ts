@@ -108,6 +108,34 @@ describe("a binding's declared naming", () => {
   });
 });
 
+describe("a name already decided in the scope", () => {
+  test("is written as it is, in a stanza the naming scheme refuses and with no project", () => {
+    const named = new Map([
+      ["DB", "acme-f12-fix-db"],
+      ["JOBS", "acme-f12-fix-jobs"],
+    ]);
+    const stanza: WranglerStanza = {};
+    const scope = { env: "feature", capability: "app", named };
+    expect(appendBinding(stanza, BindingSpec.parse({ type: "d1", name: "DB" }), scope)).toEqual({
+      outcome: "written",
+    });
+    expect(appendBinding(stanza, BindingSpec.parse({ type: "queue", name: "JOBS" }), scope)).toEqual({
+      outcome: "written",
+    });
+    expect(stanza.d1_databases).toEqual([{ binding: "DB", database_name: "acme-f12-fix-db" }]);
+    expect(stanza.queues?.producers).toEqual([{ binding: "JOBS", queue: "acme-f12-fix-jobs" }]);
+  });
+
+  test("a queue nobody named and no project can name is skipped, saying so", () => {
+    expect(
+      appendBinding({}, BindingSpec.parse({ type: "queue", name: "JOBS" }), { env: "dev", capability: "app" }),
+    ).toEqual({
+      outcome: "skipped",
+      reason: "no project name is resolved",
+    });
+  });
+});
+
 describe("generatedFieldDrift", () => {
   /** A stanza with one limiter in it, at whatever `namespace_id` the caller says. */
   const stanzaAt = (namespaceId: string): WranglerStanza => ({

@@ -34,6 +34,13 @@
       "optional": true
     }
   ],
+  "testBindings": [
+    { "kind": "d1", "name": "DB" },
+    { "kind": "r2", "name": "AUDIT_CHECKPOINTS" },
+    { "kind": "unbound", "name": "AUDIT_CHECKPOINT" },
+    { "kind": "unbound", "name": "AUDIT_SHIP" },
+    { "kind": "unbound", "name": "AUDIT_SHIP_DLQ" }
+  ],
   "migrationNamespace": "audit",
   "whenToEnable": "A queryable, tamper-evident audit trail of security-relevant actions \u2014 logins, token refreshes, entitlement grants, admin config changes. Records who did what, when, and whether it succeeded, attributed to the right actor. Other capabilities emit through the core seam; auth needs it the moment it lands.",
   "configOptions": [

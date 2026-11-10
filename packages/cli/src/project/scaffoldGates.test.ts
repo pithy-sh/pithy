@@ -243,6 +243,33 @@ describe("after pithy add secrets", () => {
     const { code, output } = await run(dir, biome(dir), ["check", "."]);
     expect({ code, output }).toMatchObject({ code: 0 });
   }, 60_000);
+
+  test("passes a Workers test that sends a request through the Worker's fetch", async () => {
+    // The first request checks every binding the composition requires, so this fails with
+    // `Missing required bindings` unless `pithy add` wrote the test bindings secrets declares.
+    const probe = join(dir, "apps", WORKER, "src", "fetch.workers.test.ts");
+    await writeFile(
+      probe,
+      [
+        'import { createExecutionContext, env } from "cloudflare:test";',
+        'import { expect, test } from "vitest";',
+        'import worker from "./index";',
+        "",
+        'test("the Worker answers its first request", async () => {',
+        '  const response = await worker.fetch(new Request("http://localhost/health"), env, createExecutionContext());',
+        '  expect(await response.text()).not.toContain("Missing required bindings");',
+        "  expect(response.status).toBe(200);",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const { code, output } = await run(dir, vitest(dir), ["run", "--project=workers", "fetch"]);
+      expect({ code, output }).toMatchObject({ code: 0 });
+    } finally {
+      await rm(probe, { force: true });
+    }
+  }, 180_000);
 });
 
 describe("after pithy ui add react", () => {

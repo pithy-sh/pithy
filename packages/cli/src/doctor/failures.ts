@@ -15,7 +15,14 @@ import { isFixable, repointableIds } from "./bindingScope";
 import { describeCloudflareAccess } from "./cloudflare";
 import { describeDevPreferences } from "./devPreferences";
 import { describeEnvironmentDrift } from "./environments";
-import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
+import {
+  capabilityReachFix,
+  DoctorFix,
+  localMigrationFix,
+  missingBindingFix,
+  prerequisiteFix,
+  upgradeFix,
+} from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeHostBinding } from "./hostBindings";
 import { describeProjectName } from "./projectName";
@@ -131,7 +138,7 @@ function workerFailures(
   for (const binding of checks.bindings.missing) {
     add(
       `${binding.name} (${binding.type}) is missing from wrangler.jsonc in ${binding.envs.join(", ")}`,
-      upgradeFix(directory),
+      missingBindingFix(directory, binding),
     );
   }
   for (const className of checks.bindings.missingExports) {

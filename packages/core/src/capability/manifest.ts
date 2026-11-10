@@ -7,6 +7,7 @@ import { NAMESPACE_PATTERN } from "../migrations/registry";
 import { BindingSpec } from "./bindings";
 import { DevSecret } from "./devSecret";
 import { DeclaredSecret } from "./secretOrigin";
+import { TestBinding } from "./testBinding";
 import { manifestRecord } from "./vanishingKey";
 
 /**
@@ -57,16 +58,12 @@ const PrintableNumber = z.number().refine(isPrintableNumber, {
  * takes strings from a flag or a prompt, and neither can carry an object.
  *
  * Objects and arrays are here for the options a scalar cannot express: one the capability's config type
- * **requires** and whose contents only the adopter can write. `SecretsConfig` requires a `registry`; a
- * manifest could not state one, so `pithy add secrets` rendered every option but that and left a
- * `pithy.config.ts` failing `tsc` with TS2741 on a project nobody had touched yet (#161).
+ * **requires** and whose contents only the adopter can write, such as `SecretsConfig`'s `registry`. Left
+ * out, the generated `pithy.config.ts` fails `tsc` with TS2741.
  *
- * #161 admitted only the **empty** literal, which is right for a registry — an empty registry is a legal
- * registry. It is wrong everywhere the collection is required to be non-empty. `ledger.currencies`,
- * `leaderboard.boards` and `multiplayer.games` each carry `.min(1)` with a message saying why, so an
- * empty seed typechecks and then throws `too_small` on the first config load — and `pithy upgrade`
- * reports that as "Could not load pithy.config.ts", naming the wrong cause (#168). So a default may now
- * be a **complete, minimal, working example**: one currency, one board, one game. The option's
+ * An empty literal is right where an empty collection is legal, as a registry is. Where the config requires
+ * a non-empty one (`ledger.currencies`, `leaderboard.boards`, `multiplayer.games`, each `.min(1)`), the
+ * default is a **complete, minimal, working example**: one currency, one board, one game. The option's
  * `describe`, rendered as the comment directly above it, is what tells the adopter to replace it.
  *
  * `null` stays out. `typeof null === "object"`, and the CLI reads exactly that to decide an option is
@@ -81,7 +78,7 @@ const PrintableNumber = z.number().refine(isPrintableNumber, {
  * here instead, at the one door a manifest comes through. The alternative was to teach the renderer
  * Biome's quote-preference heuristic and its numeric-literal normalizer, and then keep both in step with
  * a formatter that is free to change either — for inputs no worked example should carry. A manifest
- * default is an *example*; one that needs a quote inside a string is already too clever (#171).
+ * default is an *example*; one that needs a quote inside a string is already too clever.
  */
 export type ConfigOptionValue = string | number | boolean | ConfigOptionValue[] | { [key: string]: ConfigOptionValue };
 
@@ -111,7 +108,7 @@ const BARE_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /**
  * The characters that end a `//` comment. All four are line terminators to a JavaScript parser, so a
  * `describe` carrying one puts everything after it into `pithy.config.ts` as bare code — Biome's first
- * report on the generated file is a parse error, not a lint (#174). U+2028 and U+2029 are here because
+ * report on the generated file is a parse error, not a lint. U+2028 and U+2029 are here because
  * they really do terminate the comment; that was measured with Biome, not assumed.
  */
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
@@ -121,7 +118,7 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
  *
  * Two things break it, and only two. A line terminator ends the comment, so the rest of the `describe`
  * lands as code. And trailing whitespace parses fine and then fails `biome format`, which is a diff on a
- * file the adopter never opened — the same failure mode #171 closed for values.
+ * file the adopter never opened.
  *
  * Everything else stays legal, each one checked by running Biome over the rendered comment: leading
  * whitespace, an interior tab, a block-comment terminator, `${x}`, non-ASCII, and a line of any length.
@@ -164,7 +161,7 @@ function renderNumber(value: number): string {
  * would have printed. `JSON.stringify` is not: it quotes every key, and Biome's `quoteProperties`
  * default rewrites `{"code":"chips"}` to `{ code: "chips" }`, failing the lint gate on a project the
  * adopter has not touched. This prints Biome's shape directly — bare keys wherever they are legal,
- * spaces inside braces, `, ` between entries, `{}` and `[]` for the empty literals #161 relies on.
+ * spaces inside braces, `, ` between entries, `{}` and `[]` for the empty literals.
  *
  * **Total over what {@link ConfigOptionValue} *parses*, which is narrower than what it types.** The two
  * shapes the schema refuses — a string carrying `"` or `${`, a number no plain decimal spells — are
@@ -173,10 +170,8 @@ function renderNumber(value: number): string {
  * refusal at the command beats a config file that fails the adopter's first `bun run lint`.
  *
  * One line, always. Biome breaks any literal past {@link CONFIG_LINE_WIDTH}, and a broken literal is a
- * `biome check` failure on a project the adopter has not touched — #161 and #168 both. That rule used to
- * be this sentence and nothing else, with multiplayer's seed sitting at 98 columns of 120; it is now a
- * test over every shipped manifest default, rendered by {@link renderConfigOptionLine} at the indent the
- * writers really use (#171).
+ * `biome check` failure on a project the adopter has not touched. A test holds every shipped manifest
+ * default to it, rendered by {@link renderConfigOptionLine} at the indent the writers really use.
  */
 export function renderConfigValue(value: ConfigOptionValue): string {
   if (typeof value === "string") return renderString(value);
@@ -213,9 +208,6 @@ export const CONFIG_OPTION_INDENT = "      ";
  *
  * `pithy add` renders a whole registration and `pithy upgrade` splices keys into an existing one, but the
  * line itself is this — so neither command can drift from the other by rendering a default its own way.
- * That drift was real and shipped: `upgrade` called `JSON.stringify` where `add` called
- * {@link renderConfigValue}, so one manifest produced `{"code":"chips"}` from one command and
- * `{ code: "chips" }` from the other, and only the second survived `biome check` (#171).
  *
  * The comment above the line is not measured against {@link CONFIG_LINE_WIDTH}: Biome never reflows a
  * comment, so an option's `describe` may run as long as it needs to.
@@ -263,9 +255,8 @@ export function renderConfigOptionLine(
  * The comment line both writers put above an option: its `describe`, verbatim, as a `//` comment.
  *
  * The rationale is the whole reason the generated config documents itself, and it comes out of a manifest
- * read from `node_modules` — third-party text reaching generated source. Both writers used to build this
- * line themselves, which is the arrangement that let `pithy add` and `pithy upgrade` disagree about the
- * line *below* it (#171); they now share this, so a rule stated here holds for both.
+ * read from `node_modules` — third-party text reaching generated source. Both writers share this, so a
+ * rule stated here holds for both.
  *
  * Total over what {@link ConfigOption} parses, exactly as {@link renderConfigOptionLine} is: a manifest
  * cannot reach the throw, because every manifest is parsed before it is rendered.
@@ -306,8 +297,7 @@ export function renderConfigSeamLine(seam: ConfigSeam, indent: string): string {
  * The same shape a config option's key is held to, and for the same reason: it is written **bare**, and
  * twice — as the binding of the import statement (`import { auth } from …`) and as the registration call
  * (`auth(),`). Neither position quotes anything, so a name that is not an identifier is not a syntax
- * error in a string, it is a hole. `audit }) ; evil(` closed the capabilities array and opened a call
- * (#183).
+ * error in a string, it is a hole: `audit }) ; evil(` would close the capabilities array and open a call.
  *
  * It is also the leaf of the fork directory `pithy add --eject` writes (`./capabilities/<name>`), so the
  * same rule keeps a name from carrying a path separator or a `..`.
@@ -322,8 +312,8 @@ const CAPABILITY_NAME = BARE_KEY;
  * in it", so that is what is stated: an optional `@scope/`, then a name starting alphanumeric and made of
  * letters, digits, `.`, `_` and `-`. Uppercase is admitted because npm still serves the legacy names that
  * carry it; everything npm forbids outright — a leading `.` or `_`, a space, a second `/`, a quote — is
- * out, and with it the escape `@pithy-sh/audit"; evil(); //` used to close the specifier and append a
- * statement (#183).
+ * out, and with it an escape like `@pithy-sh/audit"; evil(); //` that would close the specifier and append
+ * a statement.
  *
  * 214 is npm's own length cap, checked separately so the refusal can say which rule was broken.
  */
@@ -357,11 +347,9 @@ function requireCapabilityName(name: string): void {
 /**
  * The one import line a capability's wiring is written as.
  *
- * Both halves are interpolated raw, and both used to be `z.string().min(1)`: `pithy add` wrote
- * `import { audit }) ; evil( } from "@pithy-sh/audit/src/index";` from a manifest that parsed, and
- * reported `Done.` (#183). The line has one producer now, for the same reason
- * {@link renderConfigOptionLine} does — a rule stated at one call site is a rule the next call site does
- * not have.
+ * Both halves are interpolated raw, so both are refused here unless they are the shapes the schema
+ * admits. One producer, for the same reason {@link renderConfigOptionLine} has one — a rule stated at one
+ * call site is a rule the next call site does not have.
  *
  * Total over what {@link CapabilityManifest} parses. A parsed manifest cannot reach either throw; the
  * fork path `pithy add --eject` composes can, which is why the specifier is checked rather than assumed.
@@ -400,8 +388,8 @@ export interface CapabilityRegistration {
  * The registration both writers put in `pithy.config.ts` for one capability — `auth(),` with no options,
  * the block form with them.
  *
- * The name is the only thing here that comes from a manifest, and it is the thing that reached generated
- * source unchecked (#183). One producer, so the rule holds for `pithy add`'s whole-entry write and for
+ * The name is the only thing here that comes from a manifest, and it is checked before it reaches generated
+ * source. One producer, so the rule holds for `pithy add`'s whole-entry write and for
  * `pithy upgrade`'s conversion of a one-liner into a block alike.
  */
 export function renderCapabilityRegistration({
@@ -425,23 +413,21 @@ export function renderCapabilityRegistration({
  *
  * **Every option the capability's config type requires belongs here.** The manifest is the only thing
  * `pithy add` reads, so an option it omits is an option the generated config omits — see
- * {@link ConfigOptionValue} for the one that got away.
+ * {@link ConfigOptionValue}.
  *
- * **All three fields are narrowed to what the renderer can print, not just the value.** #171 held
- * `default` to shapes Biome prints unchanged and left `key` and `describe` as `z.string().min(1)`, so a
- * manifest could still state `content-type` — rendered `content-type: "x",`, which is not TypeScript at
- * all — or a `describe` with a newline in it, whose second line landed in `pithy.config.ts` as bare code.
- * A manifest is third-party data read from `node_modules`, and an option key is that data interpolated
- * into generated source; `}) ; evil(` is the shape that makes the point. Narrowing here is what lets
- * {@link renderConfigOptionLine} and {@link renderConfigOptionComment} guarantee the whole line rather
- * than its right-hand side (#174).
+ * **All three fields are narrowed to what the renderer can print, not just the value.** A key like
+ * `content-type` renders as `content-type: "x",`, which is not TypeScript, and a `describe` with a newline
+ * puts its second line into `pithy.config.ts` as bare code. A manifest is third-party data read from
+ * `node_modules`, and an option key is that data interpolated into generated source; `}) ; evil(` is the
+ * shape that makes the point. Narrowing here is what lets {@link renderConfigOptionLine} and
+ * {@link renderConfigOptionComment} guarantee the whole line rather than its right-hand side.
  */
 /**
  * The constants a scaffolded `pithy.config.ts` defines, that a manifest option may name instead of
  * stating a literal — identifier by key, so the manifest carries a **name from a closed set** and never
  * an expression.
  *
- * That is the whole security argument, and it is the same one #183 settled for a capability's name: a
+ * That is the whole security argument, and it is the same one {@link CAPABILITY_NAME} rests on: a
  * manifest is third-party data read out of `node_modules` and written into the adopter's TypeScript, so
  * anything it states unquoted must come from a list this package controls. An `expression` field would
  * put arbitrary code in the adopter's config on the strength of a package they installed.
@@ -474,10 +460,9 @@ export interface ConfigSeamSpec {
  * The seams `pithy add` knows how to scaffold — a capability option whose value is **behavior**, named
  * from a closed set exactly as {@link CONFIG_CONSTANTS} names an identifier.
  *
- * A missing *value* has always been scaffoldable: `pithy add secrets` writes an empty registry and the
- * project still loads, because an empty registry is a valid empty state. A missing *behavior* was not,
- * so `payments`' `billingSubject: "organization"` was refused outright — and its remedy routed through
- * `--set billingSubject=user`, a value that is untrue for every project that wanted the other one (#500).
+ * A missing *value* is scaffoldable: `pithy add secrets` writes an empty registry and the project still
+ * loads, because an empty registry is a valid empty state. A missing *behavior*, such as the resolver
+ * `payments`' `billingSubject: "organization"` needs, is scaffolded as a module the adopter fills in.
  *
  * What makes the behavior scaffoldable is that the scaffold is **not a stub that answers**. A resolver
  * returning nothing composes cleanly and then denies every gate, which is indistinguishable from a
@@ -627,11 +612,9 @@ export type ConfigOption = z.infer<typeof ConfigOption>;
  * manifest's bindings are normalized (and rejected) exactly like a capability's own.
  *
  * **The invariant, stated here rather than at the writers: every string a manifest states that reaches
- * generated source is constrained to what the renderer can print.** Three rounds got there one field at a
- * time — #171 narrowed an option's `default`, #174 its `key` and `describe`, #183 the capability's own
- * `name` and `package` — because each time the rule lived at the call site that had just been fixed. It
- * lives here now, and `manifest.test.ts` walks this schema and fails the build on a string field that is
- * neither constrained nor declared prose the CLI only ever prints.
+ * generated source is constrained to what the renderer can print.** `manifest.test.ts` walks this schema
+ * and fails the build on a string field that is neither constrained nor declared prose the CLI only ever
+ * prints.
  */
 export const CapabilityManifest = z
   .object({
@@ -653,6 +636,12 @@ export const CapabilityManifest = z
     requiredBindings: z
       .array(BindingSpec)
       .describe("Bindings the CLI must wire into wrangler.jsonc (normalized via BindingSpec)."),
+    testBindings: z
+      .array(TestBinding)
+      .default([])
+      .describe(
+        "How a Workers test config provides each binding this capability requires. `pithy add` writes them into `vitest.workers.config.ts`, and `pithy doctor` names one that is missing.",
+      ),
     peerCapabilities: z
       .array(
         z.string().regex(CAPABILITY_NAME, {

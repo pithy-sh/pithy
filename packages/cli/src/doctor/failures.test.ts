@@ -431,7 +431,7 @@ describe("each gating check is one entry, with its fix", () => {
 });
 
 describe("project health, one entry per failing check", () => {
-  test("a missing peer names add for that Worker; drift and a missing binding name upgrade for it", async () => {
+  test("a missing peer names add for that Worker; drift and a missing binding name what writes them", async () => {
     const report = await healthyWith({
       buildPlan: planStub(
         plan({
@@ -441,17 +441,22 @@ describe("project health, one entry per failing check", () => {
               name: "media",
               missingConfigKeys: [{ key: "bucket", source: "default" } as never],
               missingEntryExports: ["MediaRoom"],
-              missingBindings: [{ env: "staging", name: "MEDIA_BUCKET", type: "r2" }],
+              missingBindings: [
+                { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
+                { env: "staging", name: "MEDIA_ROOM", type: "durable_object" },
+              ],
             },
           ],
         }),
       ),
     });
-    expect(failuresOf(report).map((failure) => failure.fix)).toEqual([
-      "pithy add email --worker api --with-prerequisites",
-      "pithy upgrade --worker api",
-      "pithy upgrade --worker api",
-      "pithy upgrade --worker api",
+    expect(failuresOf(report).map((failure) => [failure.detail, failure.fix])).toEqual([
+      [expect.stringContaining("requires email"), "pithy add email --worker api --with-prerequisites"],
+      [expect.stringContaining("missing media options"), "pithy upgrade --worker api"],
+      // A resource binding is written by `worker sync`, composed for the environment that lacks it; every other kind by `upgrade`.
+      [expect.stringContaining("MEDIA_BUCKET (r2)"), "pithy worker sync --worker api --env staging"],
+      [expect.stringContaining("MEDIA_ROOM (durable_object)"), "pithy upgrade --worker api"],
+      [expect.stringContaining("MediaRoom"), "pithy upgrade --worker api"],
     ]);
   });
 
@@ -980,6 +985,12 @@ describe("every finding in every block carries fix", () => {
         state: "unconnected",
         findings: ["Cursor, nothing in /home/u/.cursor/mcp.json — pithy docs connect --client cursor"],
         clients: [{ client: "cursor", label: "Cursor", paths: ["/home/u/.cursor/mcp.json"] }],
+      }),
+      checkTestBindings: async () => ({
+        state: "missing",
+        missing: [
+          { capability: "secrets", workers: ["api"], bindings: ["SECRETS"], fix: "pithy add secrets --worker api" },
+        ],
       }),
       checkServiceBindings: async () => ({
         state: "faulty",

@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
@@ -12,6 +14,8 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { DatabaseRun } from "../migrations/run";
+import { WORKERS_TEST_CONFIG, withTestBindings } from "../project/workersTestConfig";
+import { WORKERS_TEST_ENV, withEnvBindings } from "../project/workersTestEnv";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { addCapability } from "./add";
 import {
@@ -465,6 +469,8 @@ describe("removeCapability", () => {
       },
       workersRegistering: over.workersRegistering ?? (async () => []),
       deleteOwnHosts: over.deleteOwnHosts ?? (async () => []),
+      removeTestBindings: over.removeTestBindings ?? (async () => []),
+      testConfigImports: over.testConfigImports ?? (async () => false),
     };
     return { s, calls };
   }
@@ -1076,6 +1082,238 @@ describe("removeCapability", () => {
     expect(events).toEqual([
       expect.objectContaining({ action: "capability/removed", outcome: "failure", severity: "warning" }),
     ]);
+  });
+
+  test("takes the capability's test bindings out, against what the Worker still composes", async () => {
+    await fixture();
+    const asked: string[][] = [];
+    const { s } = steps({
+      loadCapabilities: async () => [cap("turnstile"), cap("audit")],
+      removeTestBindings: async (capability, others) => {
+        asked.push([capability, ...others.map((other) => other.name)]);
+        return ["TURNSTILE_KEYS"];
+      },
+    });
+
+    const result = await removeCapability({ workerDir: worker, capability: "turnstile", steps: s });
+
+    expect(asked).toEqual([["turnstile", "audit"]]);
+    expect(result.removedTestBindings).toEqual(["TURNSTILE_KEYS"]);
+  });
+
+  test("keeps the package while the Workers test config still imports it", async () => {
+    await fixture();
+    const { s, calls } = steps({ testConfigImports: async (pkg) => pkg === "@pithy-sh/turnstile" });
+
+    const result = await removeCapability({ workerDir: worker, capability: "turnstile", steps: s });
+
+    expect(calls.uninstall).toEqual([]);
+    expect(result.keptForTests).toBe(true);
+    expect(result.packageManager).toBeUndefined();
+  });
+
+  describe("with the real Workers test config", () => {
+    const template = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../../../templates/starter", WORKERS_TEST_CONFIG),
+      "utf8",
+    );
+    const secrets = manifest({
+      name: "secrets",
+      requiredBindings: [
+        { type: "d1", name: "SECRETS", optional: false },
+        { type: "secret", name: "SECRETS_ENCRYPTION_KEYS", optional: false },
+      ],
+      testBindings: [
+        { kind: "d1", name: "SECRETS" },
+        {
+          kind: "value",
+          name: "SECRETS_ENCRYPTION_KEYS",
+          module: "@pithy-sh/secrets/src/test-utils/devEncryptionKeys",
+          export: "devEncryptionKeys",
+        },
+      ],
+    });
+
+    async function project(): Promise<void> {
+      await fixture({ capName: "secrets" });
+      const pkg = join(dir, "node_modules", "@pithy-sh", "secrets");
+      await mkdir(pkg, { recursive: true });
+      await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@pithy-sh/secrets", version: "0.0.0" }));
+      await writeFile(join(pkg, "pithy.manifest.json"), JSON.stringify(secrets));
+      await writeFile(join(dir, WORKERS_TEST_CONFIG), withTestBindings(template, secrets.testBindings).source);
+    }
+
+    /** Install another capability's manifest beside secrets. */
+    async function install(other: CapabilityManifest): Promise<void> {
+      const pkg = join(dir, "node_modules", "@pithy-sh", other.name);
+      await mkdir(pkg, { recursive: true });
+      await writeFile(join(pkg, "package.json"), JSON.stringify({ name: other.package, version: "0.0.0" }));
+      await writeFile(join(pkg, "pithy.manifest.json"), JSON.stringify(other));
+    }
+
+    /** A capability that shares secrets' D1 and declares nothing else. */
+    const vault = manifest({
+      name: "vault",
+      requiredBindings: [{ type: "d1", name: "SECRETS", optional: false }],
+      testBindings: [{ kind: "d1", name: "SECRETS" }],
+    });
+
+    function removal(uninstalled: string[], composed: Capability[] = [cap("secrets")]) {
+      const real = defaultRemoveSteps({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        loadCapabilities: async () => composed,
+        project: "acme",
+      });
+      return {
+        ...real,
+        packageInstalled: async () => true,
+        uninstall: async (pkg: string) => {
+          uninstalled.push(pkg);
+          return { packageManager: "bun", uninstalled: true };
+        },
+      };
+    }
+
+    test("the last Worker to drop secrets leaves the config as it was scaffolded, and uninstalls", async () => {
+      await project();
+      const uninstalled: string[] = [];
+
+      const result = await removeCapability({ workerDir: worker, capability: "secrets", steps: removal(uninstalled) });
+
+      expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(template);
+      expect(result.removedTestBindings).toEqual(["SECRETS", "SECRETS_ENCRYPTION_KEYS"]);
+      expect(uninstalled).toEqual(["@pithy-sh/secrets"]);
+    });
+
+    test("takes them off the Worker's Env declaration too, keeping what a kept capability declares", async () => {
+      await project();
+      await install(vault);
+      const envTemplate = readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "../../../../templates/starter", "apps/api", WORKERS_TEST_ENV),
+        "utf8",
+      );
+      await mkdir(join(worker, "src"), { recursive: true });
+      await writeFile(join(worker, WORKERS_TEST_ENV), withEnvBindings(envTemplate, secrets.testBindings));
+
+      await removeCapability({
+        workerDir: worker,
+        capability: "secrets",
+        steps: removal([], [cap("secrets"), cap("vault")]),
+      });
+
+      expect(await readFile(join(worker, WORKERS_TEST_ENV), "utf8")).toBe(
+        withEnvBindings(envTemplate, vault.testBindings),
+      );
+    });
+
+    test("a sibling still composing secrets keeps its test bindings", async () => {
+      await project();
+      await fixture({ capName: "secrets", workerDir: join(dir, "apps", "web") });
+      const before = await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8");
+
+      const result = await removeCapability({ workerDir: worker, capability: "secrets", steps: removal([]) });
+
+      expect(result.removedTestBindings).toEqual([]);
+      expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(before);
+    });
+
+    test("a capability this Worker keeps holds the binding it declares too, by name", async () => {
+      await project();
+      await install(vault);
+
+      const result = await removeCapability({
+        workerDir: worker,
+        capability: "secrets",
+        steps: removal([], [cap("secrets"), cap("vault")]),
+      });
+
+      expect(result.removedTestBindings).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+      const config = await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8");
+      expect(config).toContain('d1Databases: ["DB", "SECRETS"],');
+      expect(config).not.toContain("SECRETS_ENCRYPTION_KEYS");
+    });
+
+    test("a capability a sibling Worker registers holds the binding it declares too", async () => {
+      await project();
+      await install(vault);
+      await fixture({ capName: "vault", workerDir: join(dir, "apps", "web") });
+
+      const result = await removeCapability({ workerDir: worker, capability: "secrets", steps: removal([]) });
+
+      expect(result.removedTestBindings).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+      expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toContain('d1Databases: ["DB", "SECRETS"],');
+    });
+
+    test("a kept capability holds an optional binding only while its composition requires it", async () => {
+      await project();
+      // Declares secrets' D1 as optional: required only by a composition that pushes it.
+      const archive = manifest({
+        name: "archive",
+        requiredBindings: [{ type: "d1", name: "SECRETS", optional: true }],
+        testBindings: [{ kind: "d1", name: "SECRETS" }],
+      });
+      await install(archive);
+
+      const unneeded = await removeCapability({
+        workerDir: worker,
+        capability: "secrets",
+        steps: removal([], [cap("secrets"), cap("archive")]),
+      });
+      expect(unneeded.removedTestBindings).toEqual(["SECRETS", "SECRETS_ENCRYPTION_KEYS"]);
+
+      await project();
+      const needing = cap("archive", { requiredBindings: [{ type: "d1", name: "SECRETS", optional: false }] });
+      const needed = await removeCapability({
+        workerDir: worker,
+        capability: "secrets",
+        steps: removal([], [cap("secrets"), needing]),
+      });
+      expect(needed.removedTestBindings).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    });
+
+    test("takes out an optional binding the removed composition required, and leaves one it did not", async () => {
+      const controlplane = manifest({
+        name: "controlplane",
+        requiredBindings: [{ type: "kv", name: "CONTROL_PLANE", optional: true }],
+        testBindings: [{ kind: "kv", name: "CONTROL_PLANE" }],
+      });
+      await fixture({ capName: "controlplane" });
+      await install(controlplane);
+      const written = withTestBindings(template, controlplane.testBindings).source;
+
+      await writeFile(join(dir, WORKERS_TEST_CONFIG), written);
+      const kv = cap("controlplane", { requiredBindings: [{ type: "kv", name: "CONTROL_PLANE", optional: false }] });
+      const asKv = await removeCapability({ workerDir: worker, capability: "controlplane", steps: removal([], [kv]) });
+      expect(asKv.removedTestBindings).toEqual(["CONTROL_PLANE"]);
+      expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(template);
+
+      await fixture({ capName: "controlplane" });
+      await writeFile(join(dir, WORKERS_TEST_CONFIG), written);
+      const asD1 = await removeCapability({
+        workerDir: worker,
+        capability: "controlplane",
+        steps: removal([], [cap("controlplane")]),
+      });
+      expect(asD1.removedTestBindings).toEqual([]);
+      expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(written);
+    });
+
+    test("a hand-written import of the package holds the uninstall", async () => {
+      await project();
+      const config = join(dir, WORKERS_TEST_CONFIG);
+      await writeFile(
+        config,
+        `import { devEncryptionKeys as keys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";\n${await readFile(config, "utf8")}`,
+      );
+      const uninstalled: string[] = [];
+
+      const result = await removeCapability({ workerDir: worker, capability: "secrets", steps: removal(uninstalled) });
+
+      expect(uninstalled).toEqual([]);
+      expect(result.keptForTests).toBe(true);
+    });
   });
 });
 

@@ -27,7 +27,7 @@ defineCapability({
 });
 ```
 
-At runtime that is the whole of the wiring: `defineCapability` adds the `PRESENCE_ROOMS` Durable Object binding and the room socket, `createBackend` mounts the routes under `basePath`, and the control-plane manifest lists the kind. The CLI does not read your code, though. A kit capability's `pithy.manifest.json` must list the binding in `requiredBindings` exactly as `PRESENCE_ROOMS_BINDING_SPEC` gives it, beside the `presence-ticket-key` entry in `devSecrets`, because that manifest is what `pithy add` and `pithy upgrade` wire. Leave it out and `pithy add` writes no binding, no class migration and no entry export, and the Worker has no room to open. Only your own `app` capability, which has no manifest, is wired from its composition by `pithy upgrade`.
+At runtime that is the whole of the wiring: `defineCapability` adds the `PRESENCE_ROOMS` Durable Object binding and the room socket, `createBackend` mounts the routes under `basePath`, and the control-plane manifest lists the kind. The CLI does not read your code, though. A kit capability's `pithy.manifest.json` must list the binding in `requiredBindings` exactly as `PRESENCE_ROOMS_BINDING_SPEC` gives it, beside the `presence-ticket-key` entry in `devSecrets`, because that manifest is what `pithy add` and `pithy upgrade` wire. Leave that `requiredBindings` entry out and `pithy add` writes no binding, no class migration and no entry export, and the Worker has no room to open. Its `testBindings` declares the same binding as `unbound`, since the project-wide `vitest.workers.config.ts` does not load the Worker's entry that exports the class, so `pithy add` names it in `notes` rather than writing it. Only your own `app` capability, which has no manifest, is wired from its composition by `pithy upgrade`.
 
 ```json
 "requiredBindings": [
@@ -37,7 +37,8 @@ At runtime that is the whole of the wiring: `defineCapability` adds the `PRESENC
     "className": "PresenceRoom",
     "classModule": "@pithy-sh/core/src/presence/durableObject"
   }
-]
+],
+"testBindings": [{ "kind": "unbound", "name": "PRESENCE_ROOMS" }]
 ```
 
 - **Tickets.** A management client mints one at `POST /control-plane/presence/tickets` with the kind's own scope. A signed-in user mints one at `POST {basePath}/presence/tickets`, when `session` admits them. Single use, 60 seconds, one room, one participant.

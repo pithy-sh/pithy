@@ -2,6 +2,7 @@
   "name": "artifacts",
   "package": "@pithy-sh/artifacts",
   "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "artifacts", "name": "ARTIFACTS" }],
+  "testBindings": [{ "kind": "d1", "name": "DB" }, { "kind": "unbound", "name": "ARTIFACTS" }],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "organization", "audit"],
   "migrationNamespace": "artifacts",

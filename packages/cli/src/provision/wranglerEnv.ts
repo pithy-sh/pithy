@@ -3,6 +3,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
@@ -12,6 +13,8 @@ import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { featureNamespaceId } from "../feature/ratelimits";
 import { type AppOwnedWorkflow, applyAppWorkflows, planAppWorkflows } from "../project/appWorkflows";
+import { appendBinding, type WranglerStanza } from "../project/bindingEntries";
+import { declaredBindingSpecs } from "../project/declaredBindings";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -21,16 +24,12 @@ import { absolutizePaths, featureConfigPath, provisionConfigPath } from "./featu
 import type { SecretStoreBinding } from "./secretBindings";
 
 /**
- * After provisioning stands up an environment's D1/KV/R2 resources, their ids must land in each
- * Worker's `wrangler.jsonc` under `env.<name>` — that is exactly where the shared `migrate`/`seed`
- * remote drivers, and `wrangler deploy --env <name>`, read each binding's id from. This writes them
- * there, upserting by binding name and preserving every comment in the JSONC (a `pithy.config` output,
- * per CLAUDE.md).
+ * After provisioning stands up an environment's D1, KV, R2 and queue resources, their ids land in each
+ * Worker's `wrangler.jsonc` under `env.<name>`, where the remote `migrate` and `seed` drivers and
+ * `wrangler deploy --env <name>` read them. Upserted by binding name, every comment in the JSONC kept.
  *
- * **One writer, taking the scope.** The stanza key is `scope.stanza` and every name is the same
- * scope's, so the file this writes into and the names it writes cannot come from two different
- * decisions — which is how a feature-named resource could once be written into a declared environment's
- * stanza.
+ * **One writer, taking the scope.** The stanza key is `scope.stanza` and every name is the same scope's, so
+ * the file written and the names written in it come from one decision.
  */
 
 /** One binding-id entry keyed by binding, plus the id field that resource kind uses in wrangler.jsonc. */
@@ -50,11 +49,10 @@ export interface ServiceEntry {
 /**
  * **This scope's script name for a Worker of this project, or `undefined` when the name is not one of them.**
  *
- * The same resolution `services` already goes through — `resolveServiceTarget` then `scope.worker(...)`, in
- * `provision/environment.ts` — handed here as a function so a `durable_objects` entry pointing at a sibling
- * Worker reaches that sibling's copy in this scope rather than being dropped (#650 review). It answers
- * `undefined` rather than throwing, because unlike a `service` target — which an adopter writes as an
- * `apps/<name>` and must exist — a DO `script_name` may legitimately name a Worker this project does not own.
+ * The resolution `services` goes through — `resolveServiceTarget` then `scope.worker(...)`, in
+ * `provision/environment.ts` — handed here so a `durable_objects` entry pointing at a sibling Worker reaches that
+ * sibling's copy in this scope. It answers `undefined` rather than throwing: a DO `script_name` may name a Worker
+ * this project does not own.
  */
 export type ScopedScript = (target: string) => string | undefined;
 
@@ -82,7 +80,7 @@ interface EnvBindings {
   secrets_store_secrets?: SecretStoreBinding[];
   /**
    * Both shapes: a kit host's cross-script entry ({@link HostedWorkflowEntry}) and the app's own same-script
-   * one ({@link AppOwnedWorkflow}), which is exactly how `appWorkflows.ts` tells them apart (#650).
+   * one ({@link AppOwnedWorkflow}), which is how `appWorkflows.ts` tells them apart.
    */
   workflows?: (AppOwnedWorkflow & { script_name?: string })[];
   durable_objects?: { bindings?: DurableObjectEntry[] };
@@ -96,21 +94,9 @@ interface EnvBindings {
 }
 
 /**
- * Upsert a binding's fields into a binding array **in place**, so comment-json's array-internal
- * comments (stored as symbol-keyed properties on the array object) survive — a `filter()` would return
- * a plain array and silently drop them. A matching binding's fields are updated on the existing entry;
- * otherwise the entry is pushed.
- */
-function upsertByBinding(entries: BindingEntry[], binding: string, fields: Record<string, string>): void {
-  const existing = entries.find((entry) => entry.binding === binding);
-  if (existing) Object.assign(existing, fields);
-  else entries.push({ binding, ...fields });
-}
-
-/**
  * Upsert the `secrets_store_secrets` entries provisioning owns into a stanza already being edited, by
  * binding — an adopter's hand-added entry is left where it is. A mutation rather than an edit of its own,
- * so the writer that owns the rest of the stanza does it in the same edit (#592).
+ * so the writer that owns the rest of the stanza does it in the same edit.
  */
 function upsertSecretBindings(stanza: EnvBindings, entries: readonly SecretStoreBinding[]): void {
   stanza.secrets_store_secrets ??= [];
@@ -122,50 +108,48 @@ function upsertSecretBindings(stanza: EnvBindings, entries: readonly SecretStore
 }
 
 /**
- * The wrangler array and the fields provisioning owns for each resource kind.
+ * The wrangler array and the fields provisioning owns for each resource kind. The entry itself is created by
+ * {@link appendBinding}, the writer `pithy add`, `pithy upgrade` and `pithy worker sync` use; these are the
+ * fields stamped onto it once the resource exists.
  *
- * **D1 carries its name as well as its id**, and that is not decoration: `pithy add` proposes a
- * `database_name` offline, before any account has been reached, and provisioning is the step that makes
- * the proposal true. Writing only the id would leave a stanza asserting one name while addressing a
- * database that may carry another — the two must be written by the same step or they drift.
+ * **D1 carries its name as well as its id.** `pithy add` proposes a `database_name` offline, and provisioning
+ * makes the proposal true: a stanza with only the id would assert one name while addressing a database that may
+ * carry another.
  *
- * **A queue's array is `queues.producers`, one level down (#662).** A producer names its queue by name, not by
- * id, so the name this scope created it under is what is written; the consumers beside it are left alone.
+ * **A queue's array is `queues.producers`, one level down.** A producer names its queue by name, not by id, so
+ * the name this scope created it under is what is written; the consumers beside it are left alone.
  */
 const KIND_TO_WRANGLER: Record<
   FeatureResource["kind"],
-  { array: (stanza: EnvBindings) => BindingEntry[]; fields: (r: FeatureResource) => Record<string, string> }
+  { array: (stanza: EnvBindings) => BindingEntry[] | undefined; fields: (r: FeatureResource) => Record<string, string> }
 > = {
-  d1: {
-    array: (stanza) => {
-      stanza.d1_databases ??= [];
-      return stanza.d1_databases;
-    },
-    fields: (r) => ({ database_name: r.name, database_id: r.id }),
-  },
-  kv: {
-    array: (stanza) => {
-      stanza.kv_namespaces ??= [];
-      return stanza.kv_namespaces;
-    },
-    fields: (r) => ({ id: r.id }),
-  },
-  r2: {
-    array: (stanza) => {
-      stanza.r2_buckets ??= [];
-      return stanza.r2_buckets;
-    },
-    fields: (r) => ({ bucket_name: r.id }),
-  },
-  queue: {
-    array: (stanza) => {
-      stanza.queues ??= {};
-      stanza.queues.producers ??= [];
-      return stanza.queues.producers;
-    },
-    fields: (r) => ({ queue: r.name }),
-  },
+  d1: { array: (stanza) => stanza.d1_databases, fields: (r) => ({ database_name: r.name, database_id: r.id }) },
+  kv: { array: (stanza) => stanza.kv_namespaces, fields: (r) => ({ id: r.id }) },
+  r2: { array: (stanza) => stanza.r2_buckets, fields: (r) => ({ bucket_name: r.id }) },
+  queue: { array: (stanza) => stanza.queues?.producers, fields: (r) => ({ queue: r.name }) },
 };
+
+/**
+ * Stamp the fields provisioning owns onto a resource's entry, in place so comment-json keeps the array's
+ * comments. Nothing is written when the stanza has no entry for the binding yet.
+ *
+ * A producer moved onto this scope's queue takes the consumer of the queue it left with it, settings and all,
+ * so the Worker never sends to one queue while reading another environment's. A stanza that already consumes
+ * this scope's queue keeps that consumer, and the other is left alone.
+ */
+function stampProvisioned(stanza: EnvBindings, resource: FeatureResource): void {
+  const { array, fields } = KIND_TO_WRANGLER[resource.kind];
+  const entry = array(stanza)?.find((candidate) => candidate.binding === resource.binding);
+  if (entry === undefined) return;
+  if (resource.kind === "queue" && entry.queue !== undefined && entry.queue !== resource.name) {
+    const consumers = (stanza.queues?.consumers ?? []) as { queue?: unknown }[];
+    const left = consumers.find((consumer) => consumer.queue === entry.queue);
+    if (left !== undefined && !consumers.some((consumer) => consumer.queue === resource.name)) {
+      left.queue = resource.name;
+    }
+  }
+  Object.assign(entry, fields(resource));
+}
 
 /**
  * Write one Worker's whole `env.<scope.stanza>` stanza: the resource ids it declares, the script name it
@@ -176,8 +160,8 @@ const KIND_TO_WRANGLER: Record<
  * creator of a stanza for an environment declared after the project was scaffolded — and creating one is
  * why it goes through `stanzaFor` rather than `config.env[key] ??= {}`: an `env.<name>` stanza inherits
  * none of `vars`, `version_metadata` or their forty-odd siblings from the top level, so a stanza that
- * holds nothing but ids deploys without every one of them (#581). Idempotent, and every comment in the
- * file survives the round trip.
+ * holds nothing but ids deploys without every one of them. Idempotent, and every comment in the file
+ * survives the round trip.
  */
 async function editStanza(
   workerDir: string,
@@ -192,20 +176,16 @@ async function editStanza(
   source: boolean,
   mutate: (stanza: EnvBindings, top: Record<string, unknown>) => void,
 ): Promise<string> {
-  // Through the one reader, so a config that will not open is a refusal naming it, never node's own errno (#697).
+  // Through the one reader, so a config that will not open is a refusal naming it, never node's own errno.
   const config = (await readWranglerConfig(workerDir)) as Record<string, unknown>;
 
-  // Through the one stanza reader (#581), never `config.env[key] ??= {}`. A stanza this creates — and for
-  // `feature` it always creates one, since `env.feature` is unwritable in a tracked config — starts with
-  // everything the top level declares that an environment does not inherit. Filling in ids on an otherwise
-  // empty stanza is what shipped every feature deploy with no `vars` at all.
+  // A stanza this creates — and for `feature` it always creates one, since `env.feature` is unwritable in a
+  // tracked config — starts with everything the top level declares that an environment does not inherit.
   const stanza = stanzaFor(config, stanzaKey) as EnvBindings;
 
   mutate(stanza, config);
 
-  // One resolver for "which file?", shared with what the command reports (#251). A run states where it
-  // wrote and whether that file is committed; a report computing the path a second time is a sentence
-  // that can disagree with the write it describes.
+  // One resolver for "which file?", shared with what the command reports.
   const destination = provisionConfigPath(workerDir, source);
   if (!source) {
     // Generated, so every path in it is rewritten against the directory it came from — wrangler
@@ -216,11 +196,9 @@ async function editStanza(
     return destination;
   }
 
-  // Through the one JSONC printer (#249), never a raw `stringify`. `comment-json` puts every array
-  // element on its own line; the project's own scaffolded Biome collapses a short one — so a config
-  // written the other way fails the pre-commit hook this CLI installed. `writeJsonc` also keeps an
-  // adopter's hand-expanded objects expanded, which matters most here: this file is edited in place on
-  // every provision, and a two-line change buried in a whole-file reformat is a change nobody reviewed.
+  // Through the one JSONC printer, never a raw `stringify`: `comment-json` puts every array element on its own
+  // line, which the project's scaffolded Biome refuses, and `writeJsonc` keeps an adopter's hand-expanded
+  // objects expanded so an edit in place stays a small diff.
   await writeJsonc(destination, config);
   return destination;
 }
@@ -231,8 +209,7 @@ async function editStanza(
  * Separate from {@link applyProvisionedEnv} because two commands reach it for different reasons.
  * `pithy provision` writes the whole stanza in either mode; `pithy secrets provision`
  * writes only this, for a project whose resources are already in place and whose store entries have
- * just been created — the five cases `ensureSecretsStoreId` cannot resolve at `add` time, and every
- * project that predates the stanza existing at all.
+ * just been created.
  *
  * **Only the entries it owns.** An adopter's hand-added binding this registry does not declare is left
  * exactly where it is.
@@ -249,7 +226,7 @@ export async function applySecretBindings(
 }
 
 /**
- * **A feature's stanza states no route (#643).** `routes: []`, written, because wrangler inherits a top-level
+ * **A feature's stanza states no route.** `routes: []`, written, because wrangler inherits a top-level
  * `routes` (or `route`) into every environment that does not set its own. Inherited, a branch deploy would take
  * the project's custom domain — whatever production or `dev` routes to — and with routes and no `workers_dev`,
  * wrangler gives it no `workers.dev` address at all, so the address stamped for it would answer nothing. An empty
@@ -262,9 +239,9 @@ export async function applySecretBindings(
  * provision a branch.
  */
 function stripFeatureRoutes(stanza: EnvBindings, top: Record<string, unknown>): string[] {
-  // What wrangler would have deployed the feature on, said back to the operator before it goes (F4 of #643's
-  // review): a route declared on purpose under a tracked `env.feature` must not vanish without a word. The
-  // stanza's own when it has one, else the top level's it would inherit.
+  // What wrangler would have deployed the feature on, said back to the operator before it goes: a route declared
+  // on purpose under a tracked `env.feature` must not vanish without a word. The stanza's own when it has one,
+  // else the top level's it would inherit.
   const own = stanza.route !== undefined || stanza.routes !== undefined;
   const dropped = routePatterns(own ? stanza : (top as EnvBindings));
   delete stanza.route;
@@ -295,18 +272,15 @@ function entryName(entry: unknown): unknown {
 }
 
 /**
- * **A feature binds every carried entry the top level declares, a tracked `env.feature` included (#643, #662).**
+ * **A feature binds every carried entry the top level declares, a tracked `env.feature` included.**
  *
  * `stanzaFor` carries every `carry` and `branch` kind's entries into a stanza it creates. A tracked `env.feature`
  * is not one it creates — it is the adopter's, handed back untouched — so an entry added to the top level after it
- * was written reached no feature: a tracked stanza without `ratelimits` deployed a Worker with no
- * `AUTH_RATE_LIMITER`, and auth refused every request; one without `send_email` read `env.NOTIFY` as `undefined`.
- * Every key in {@link CARRIED_INTO_FEATURE} is refilled here, by binding name, and an entry the stanza already
- * binds is the adopter's and is kept.
+ * was written would reach no feature. Every key in {@link CARRIED_INTO_FEATURE} is refilled here, by binding name,
+ * and an entry the stanza already binds is the adopter's and is kept.
  *
- * **One function, the policy's rather than a kind's.** `send_email` had a bespoke rescue of its own here (#650
- * review), and the next kind to go missing would have needed another. A key is in the list because its kind's `seedPolicy`
- * says a feature inherits it; nothing here knows what any one of them is.
+ * **One function, the policy's rather than a kind's.** A key is in the list because its kind's `seedPolicy` says
+ * a feature inherits it; nothing here knows what any one of them is.
  *
  * Object-shaped kinds (`ai`, `browser`, `images`) are one binding per Worker, so the stanza's own is kept whole and
  * the top level's is copied only where the stanza has none.
@@ -330,7 +304,7 @@ function featureCarried(stanza: Record<string, unknown>, top: Record<string, unk
 }
 
 /**
- * **A feature's rate limiters each take a namespace of their own (#643).**
+ * **A feature's rate limiters each take a namespace of their own.**
  *
  * {@link featureCarried} has already given the stanza every limiter the top level declares. **Every entry is then
  * given the feature namespace for its limiter**, the copied ones and any declared under a tracked `env.feature`
@@ -348,7 +322,7 @@ function featureRatelimits(stanza: Record<string, unknown>): void {
  * **Retarget one entry's `script_name` at this scope's copy of the Worker it names, or say it has to go.**
  *
  * The one rule both `durable_objects` and hand-written `services` answer to, because they are one piece of
- * wiring said twice (#650 review): each names a *script*, and in a feature the script a sibling Worker deploys
+ * wiring said twice: each names a *script*, and in a feature the script a sibling Worker deploys
  * under is that sibling's feature copy.
  *
  * **A name no Worker of this project deploys under is stripped, never written.** It reaches a live Worker
@@ -366,29 +340,26 @@ function retargetScript(what: string, script: string, scopedScript: ScopedScript
 
 /**
  * **A feature binds every Durable Object namespace the top level declares, each in this feature's copy of the
- * Worker that hosts it (#650).**
+ * Worker that hosts it.**
  *
- * The second kind the feature stanza lost, and it is lost the same way the Workflows were: `durable_objects` is
- * one of the keys an environment does not inherit, `stanzaFor` empties the lists in a stanza it seeds, and
- * nothing puts a feature's back. A Worker composing `multiplayer` therefore deployed with no `ROOM` and answered
- * `Missing required bindings: durable_object:ROOM` on every request.
+ * `durable_objects` is one of the keys an environment does not inherit and `stanzaFor` empties the lists in a
+ * stanza it seeds, so this puts a feature's back.
  *
  * **Three cases, and the third is nobody's to bind.**
  *
  * - **No `script_name`** — the class is in this Worker's own `main`. The entry is `{ name, class_name }`, names
  *   no Cloudflare resource, and is identical in dev, staging and a branch, so it is **copied**: there is nothing
- *   for a feature to rename. That is the whole difference from the Workflows beside it, which are derived.
+ *   for a feature to rename.
  * - **A `script_name` naming one of this project's Workers** — a sibling, or this Worker itself. It is
  *   **retargeted** at this scope's copy of that Worker ({@link retargetScript}). A `script_name` names another
  *   *Worker*, not another environment, and the feature deploys its own copy of it.
  * - **A `script_name` naming a Worker outside this project** — **stripped**, and said out loud. See
  *   {@link retargetScript}.
  *
- * **Every entry is read, the top level's and the stanza's own (#650 review).** `featureRatelimits` rewrites a
- * tracked `env.feature`'s entries for exactly this reason: a stanza an adopter wrote by hand still names `dev`'s
- * sibling script, and leaving it there was a feature binding the namespace its own developers' dev Worker runs.
- * The adopter's *choice* — which binding, which class — is theirs and is never overwritten; the script it
- * resolves to in this environment is not a choice, it is this run's answer.
+ * **Every entry is read, the top level's and the stanza's own.** A stanza an adopter wrote by hand still names
+ * `dev`'s sibling script, and left there it binds the namespace the developers' dev Worker runs. The adopter's
+ * *choice* — which binding, which class — is theirs and is never overwritten; the script it resolves to in this
+ * environment is not a choice, it is this run's answer.
  */
 function featureDurableObjects(
   stanza: EnvBindings,
@@ -420,15 +391,12 @@ function featureDurableObjects(
 }
 
 /**
- * **A feature binds every `services` entry the top level declares, each at this scope's copy of the callee
- * (#650 review).**
+ * **A feature binds every `services` entry the top level declares, each at this scope's copy of the callee.**
  *
- * The same rule as the Durable Objects above, and it is the same rule on purpose: one sibling Worker, reached by
- * two keys, must be reached by both or by neither. A capability's `service` binding was already retargeted — by
- * the caller, out of the resolved Worker set — and a *hand-written* one was emptied with the rest of the stanza
- * and never put back, so an adopter who wired two of their own Workers together got the Durable Object and not
- * the RPC. **Retarget both** rather than drop both: the wiring is the adopter's declaration, a feature deploys
- * its own copy of every Worker in the project, and the binding is meaningful there.
+ * The same rule as the Durable Objects above, on purpose: one sibling Worker, reached by two keys, must be reached
+ * by both or by neither. A capability's `service` binding is retargeted by the caller, out of the resolved Worker
+ * set; a hand-written one is retargeted here, because the wiring is the adopter's declaration and a feature
+ * deploys its own copy of every Worker in the project.
  *
  * An entry the stanza already declares is left alone here — the caller upserts the capability-declared ones over
  * the top of this — and one naming a script outside the project is stripped and reported, as above.
@@ -452,7 +420,7 @@ function featureServices(
   if (!entries) return;
   const kept = entries.filter((entry) => {
     // A declared binding the caller resolved for this scope is written over the top of this one, kit Worker
-    // targets included (#617) — so it is neither retargeted nor reported as a stranger's script.
+    // targets included — so it is neither retargeted nor reported as a stranger's script.
     if (resolved.has(entry.binding)) return true;
     const scoped = retargetScript(`service ${entry.binding}`, entry.service, scopedScript, dropped);
     if (scoped === null) return false;
@@ -464,7 +432,7 @@ function featureServices(
 }
 
 /**
- * **Every stanza binds every Artifacts entry the top level declares, each naming this scope's namespace (#673).**
+ * **Every stanza binds every Artifacts entry the top level declares, each naming this scope's namespace.**
  *
  * `artifacts` is array-shaped and its kind's `seedPolicy` is `provision`, so `stanzaFor` empties it in a stanza it
  * creates: the top level's entry names `dev`'s namespace, and staging bound to it would put staging's repos beside a
@@ -486,7 +454,7 @@ function scopedArtifacts(stanza: EnvBindings, top: Record<string, unknown>, name
 }
 
 /**
- * **A feature states its own cron schedule, empty included (#650 review).**
+ * **A feature states its own cron schedule, empty included.**
  *
  * `triggers` is one of the keys wrangler *does* inherit, so a feature stanza that says nothing takes the top
  * level's crons — `dev`'s, or whatever an adopter runs in production. `setCrons` in `project/appWorkflows.ts`
@@ -495,13 +463,11 @@ function scopedArtifacts(stanza: EnvBindings, top: Record<string, unknown>, name
  * clear a schedule nobody asked to clear.
  *
  * A feature has no deployed schedule to preserve. Its config is generated whole on every run, so the only thing
- * an absent `crons` can mean here is *inherit somebody else's* — which is how a branch came to fire the
- * project's production schedule.
+ * an absent `crons` can mean here is *inherit somebody else's*, and a branch would fire the project's production
+ * schedule.
  *
- * **Only when nothing else has stated one.** This fills a gap; it does not settle the question. The app's own
- * declaration has already been written by `applyAppWorkflows`, and a schedule an adopter wrote into a tracked
- * `env.feature` is theirs — the rule this module states everywhere else, and one this used to break by writing
- * an empty list over a cron they deliberately wrote there.
+ * **Only when nothing else has stated one.** The app's own declaration has already been written by
+ * `applyAppWorkflows`, and a schedule an adopter wrote into a tracked `env.feature` is theirs and is kept.
  */
 function featureCrons(stanza: EnvBindings): void {
   stanza.triggers ??= {};
@@ -534,7 +500,7 @@ function stampFeatureAddress(stanza: EnvBindings, top: Record<string, unknown>, 
 /**
  * Write one Worker's stanza, and hand back **the path that was written** — the tracked `wrangler.jsonc`
  * or the generated artifact, as the scope decided. The caller reports it, so what a run says it wrote is
- * what the writer wrote rather than a second computation of the same rule (#251).
+ * what the writer wrote rather than a second computation of the same rule.
  */
 export async function applyProvisionedEnv(options: {
   /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
@@ -542,7 +508,7 @@ export async function applyProvisionedEnv(options: {
   /**
    * The Worker's two names — its `apps/<app>` directory and its deploy name — which `scope.worker` turns
    * into this scope's script name. Both, because a declared environment builds on the deploy name and a
-   * feature on the directory (#587); `provisionWorkerNames` in `./environment` is where they are read.
+   * feature on the directory; `provisionWorkerNames` in `./environment` is where they are read.
    */
   worker: ProvisionWorkerNames;
   /** The scope: both the stanza written into and the names written in. */
@@ -554,8 +520,8 @@ export async function applyProvisionedEnv(options: {
   /**
    * The `secrets_store_secrets` entries this Worker's own registry declares, named for this scope.
    *
-   * This is the stanza `pithy add` deliberately could not write and nothing came back for (#238, #239).
-   * It is complete by construction — every entry carries its `store_id` and `secret_name` — because a
+   * `pithy add` cannot write these: the store entries do not exist until provisioning. It is complete by
+   * construction — every entry carries its `store_id` and `secret_name` — because a
    * partial one does not degrade: wrangler refuses the whole config.
    */
   secrets: readonly SecretStoreBinding[];
@@ -569,18 +535,17 @@ export async function applyProvisionedEnv(options: {
    * control plane dispatches through the runtime instead.
    *
    * **Written here, from `stanza.name`, rather than composed by the caller.** The binding has to name the
-   * script the stanza deploys as, and this writer is where that string is decided (one line up). Composing
-   * it anywhere else is a second producer of one address, which is the shape #580 and #587 both closed —
-   * and the shape that fails silently, because a binding pointing at a script nobody deploys provisions
-   * clean and refuses at runtime. A feature environment is covered by construction: its stanza is
-   * regenerated from the tracked file on every run, so a hand-written entry could never have survived one.
+   * script the stanza deploys as, and this writer is where that string is decided. Composing it anywhere else
+   * is a second producer of one address, and a binding pointing at a script nobody deploys provisions clean and
+   * refuses at runtime. A feature's stanza is regenerated from the tracked file on every run, so it gets the
+   * entry the same way.
    */
   administersItself: boolean;
   /**
    * The account's `workers.dev` subdomain, looked up by the caller — or `null` for an account with none, or
    * omitted when nobody asked. Read for a feature scope only, where it is how the stanza gets an address.
    *
-   * **A feature's `vars.BASE_URL` is stamped from it (#643).** A feature Worker answers on
+   * **A feature's `vars.BASE_URL` is stamped from it.** A feature Worker answers on
    * `https://<script>.<subdomain>.workers.dev`, and the Worker cannot ask Cloudflare what the subdomain is. So
    * the address is derived here, through `resolveWorkerAddress`, from the `name` this same edit settles, and
    * written where `originFor` reads it inside the deployment. An account with no subdomain gets no address,
@@ -589,15 +554,12 @@ export async function applyProvisionedEnv(options: {
    */
   subdomain?: string | null;
   /**
-   * **This Worker's own app capability — what its `workflows` table is derived from (#650).**
+   * **This Worker's own app capability — what its `workflows` table is derived from.**
    *
    * A feature's stanza is regenerated from the tracked file on every run and every binding array it seeds is
-   * emptied, so the app's own Workflows had to be re-derived for it or the Worker deployed with none: the
-   * feature answered `Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP` on
-   * every request, `/health` included. The names come from {@link planAppWorkflows} against
-   * `scope.workflowHost` — the same derivation `pithy worker sync` writes staging's and prod's with, handed
-   * the scope rather than an environment string, so a feature's table and a declared environment's cannot
-   * come to mean different things by "the app's own".
+   * emptied, so the app's own Workflows are re-derived for it. The names come from {@link planAppWorkflows}
+   * against `scope.workflowHost` — the derivation `pithy worker sync` writes staging's and prod's with, handed
+   * the scope rather than an environment string.
    *
    * **Read for a feature scope only.** A declared environment's table lives in the tracked `wrangler.jsonc`,
    * written by `pithy worker sync` and reviewed in a pull request; provisioning writing it too would be a
@@ -615,29 +577,32 @@ export async function applyProvisionedEnv(options: {
    */
   scopedScript?: ScopedScript;
   /**
-   * Told the bindings a feature stanza gave up (#650 review) — a `durable_objects` or `services` entry naming a
+   * What this Worker composes. A resource's entry is written from the spec of the capability declaring its binding,
+   * so it carries that spec's `consumer` and `remote` exactly as `pithy add` and `pithy worker sync` write them. A
+   * resource no capability here declares is written from its kind and binding alone.
+   */
+  capabilities?: readonly Capability[];
+  /**
+   * Told the bindings a feature stanza gave up — a `durable_objects` or `services` entry naming a
    * script this project does not own. A feature has no copy of that Worker to point at, and binding a
    * stranger's live namespace is worse than binding nothing, so the entry is stripped and the run says so.
    */
   onBindingsDropped?: (bindings: string[]) => void;
   /**
-   * Told the route patterns a feature stanza gave up (#643) — the ones it declared, or would have inherited. A
+   * Told the route patterns a feature stanza gave up — the ones it declared, or would have inherited. A
    * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
   onRoutesDropped?: (routes: string[]) => void;
 }): Promise<string> {
-  // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
-  // every edit, so this was two edits for as long as the secrets were a second one: the second started
-  // from a stanza with no name, no ids and no services, and kept only the secrets. The Worker deployed
-  // as wrangler's `<script>-feature` — a script nothing records and teardown never deletes.
+  // **One edit, holding everything.** A feature's config is regenerated from the tracked file on every edit,
+  // so a second edit would start from a stanza with no name, no ids and no services.
   return editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza, top) => {
-    // The scope decides, and it is handed what the stanza already says (#580). A declared environment
-    // reads a name it finds and composes one only when there is none; a feature ignores it, because a
-    // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
-    // writer, which is how one used to get it wrong.
+    // The scope decides, handed what the stanza already says. A declared environment reads a name it finds
+    // and composes one only when there is none; a feature ignores it, because a feature's name is recomputed
+    // on teardown.
     stanza.name = options.scope.worker(options.worker, stanza.name);
     // A feature's address, from the name just settled. Never a declared environment's: its address is
-    // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
+    // declared, and `workers.dev` can be disabled per account and commonly is in production.
     if (!options.scope.source) {
       const routes = stripFeatureRoutes(stanza, top);
       if (routes.length > 0) options.onRoutesDropped?.(routes);
@@ -645,25 +610,37 @@ export async function applyProvisionedEnv(options: {
       featureCarried(stanza as Record<string, unknown>, top);
       featureRatelimits(stanza as Record<string, unknown>);
       // One resolver and one list for both keys that name a sibling script, so a feature cannot bind the
-      // Durable Object and drop the RPC to the same Worker (#650 review).
+      // Durable Object and drop the RPC to the same Worker.
       const scopedScript = options.scopedScript ?? (() => undefined);
       const dropped: string[] = [];
       featureDurableObjects(stanza, top, scopedScript, dropped);
       featureServices(stanza, top, scopedScript, dropped, new Set(options.services.map((entry) => entry.binding)));
       if (dropped.length > 0) options.onBindingsDropped?.(dropped);
       // The app's own Workflows, named for this scope — see `app` above for why only here, and
-      // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from (#650).
+      // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from.
       if (options.app) applyAppWorkflows(stanza, planAppWorkflows(options.app, options.scope.workflowHost));
       featureCrons(stanza);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     scopedArtifacts(stanza, top, () => options.scope.artifactsNamespace);
+    const named = new Map(options.resources.map((resource) => [resource.binding, resource.name]));
+    const declared = new Map(
+      declaredBindingSpecs(options.capabilities ?? []).map((binding) => [binding.spec.name, binding]),
+    );
     for (const resource of options.resources) {
-      const { array, fields } = KIND_TO_WRANGLER[resource.kind];
-      // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
-      // mutate in place — never replace it with a filtered plain array, which would strip
-      // comment-json's symbols.
-      upsertByBinding(array(stanza), resource.binding, fields(resource));
+      const binding = declared.get(resource.binding);
+      // Stamped before the writer runs as well as after, so a consumer it adds is for this scope's queue.
+      stampProvisioned(stanza, resource);
+      appendBinding(
+        stanza as WranglerStanza,
+        binding?.spec ?? BindingSpec.parse({ type: resource.kind, name: resource.binding }),
+        {
+          env: options.scope.stanza,
+          capability: binding?.capability.name ?? "provision",
+          named,
+        },
+      );
+      stampProvisioned(stanza, resource);
     }
     // The self binding last, so it is written from the `name` this edit has already settled and so the
     // kit's own constant wins over anything else that claimed it. Nothing is written for a project that
@@ -684,7 +661,7 @@ export async function applyProvisionedEnv(options: {
 }
 
 /**
- * **Bind a feature's app Worker to the kit hosts that deployed, and to no other (#643, F2 of the review)** — and
+ * **Bind a feature's app Worker to the kit hosts that deployed, and to no other** — and
  * to the indexes the feature created for it.
  *
  * Written after the hosts' deploy rather than with the stanza, so a host that failed to deploy leaves no binding
@@ -694,7 +671,7 @@ export async function applyProvisionedEnv(options: {
  * the binding a previous run wrote with it. Each index is upserted by binding, as the feature's own.
  *
  * An edit of the **generated** config in place, not a regeneration from the tracked file: that is what the stanza
- * write above does, and a second regeneration would drop everything the first one wrote (#592). Nothing is
+ * write above does, and a second regeneration would drop everything the first one wrote. Nothing is
  * written for a Worker whose generated config does not exist yet.
  */
 export async function bindFeatureHosts(options: {

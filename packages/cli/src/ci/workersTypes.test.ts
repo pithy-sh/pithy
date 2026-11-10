@@ -50,8 +50,8 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  *
  * **The sweep reads every workspace member, and that is the whole of its worth.** A sweep over the two in
  * {@link DECLARED_ONLY} would report `{}` over a tree with ambient names elsewhere, and a gate whose population is
- * a subset of the rule's is worse than none, because its green is read as the rule holding. {@link AMBIENT} is
- * empty and the sweep is what keeps it that way. Empty is the assertion, not the absence of one.
+ * a subset of the rule's is worse than none, because its green is read as the rule holding. {@link AMBIENT} holds
+ * no reach and the sweep is what keeps it that way. That is the assertion, not the absence of one.
  */
 
 /** `packages/cli/src/ci` → the repository. */
@@ -145,7 +145,8 @@ const IMPORTERS: Record<string, number> = {
  * its own `tsconfig.json` was true of every package here, so it read as an all-clear while carrying no
  * claim at all.
  *
- * **It is empty, and that is a finding rather than a default.** Nineteen files across eight packages were
+ * **It holds no reach, and that is a finding rather than a default.** Its one entry is text the CLI writes, kept
+ * here so the sweep stays a sweep over code and strings alike. Nineteen files across eight packages were
  * fixed in the change that measured them — the names are imported, and the packages are declared like
  * every other importer. What stays behind is the sweep. A package that stops importing a name it still
  * uses lands back here and fails, which is the only reason emptiness is worth asserting.
@@ -160,7 +161,11 @@ const IMPORTERS: Record<string, number> = {
  * Files, not lines. A line number is stale the next time anything above it moves, and a record that has
  * gone stale in a way nobody notices is what this exists to stop.
  */
-const AMBIENT: Record<string, Record<string, readonly string[]>> = {};
+const AMBIENT: Record<string, Record<string, readonly string[]>> = {
+  // Not a reach at all: the names are string literals `pithy add` writes into an adopter's
+  // `src/cloudflare-test.d.ts`, which the sweep reads as code because it blanks comments and not strings.
+  "packages/cli": { "packages/cli/src/project/workersTestEnv.ts": ["D1Database", "KVNamespace", "R2Bucket"] },
+};
 
 /**
  * Every module specifier a source imports or re-exports, static and dynamic alike.
@@ -259,8 +264,7 @@ function importers(directory: string): string[] {
  * The derived half is every binding some shipped source imports by name from `WORKERS_TYPES`, anywhere in
  * the tree. It grows on its own, which is what makes the scan below more than a spot check.
  *
- * The cited half is every name {@link AMBIENT} claims as evidence, and it is empty today because the
- * record is. It is kept because derivation alone has a floor: a name no shipped source imports anywhere
+ * The cited half is every name {@link AMBIENT} claims as evidence. It is kept because derivation alone has a floor: a name no shipped source imports anywhere
  * is in no import list to be read off, so a package reaching it ambiently is invisible. `D1Meta` was
  * exactly that until this change imported it, and `D1Result` was found only once a sibling file's import
  * put it in reach. A future entry citing a name nothing imports widens the vocabulary the same way, and

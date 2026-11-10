@@ -854,6 +854,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       worker: provisionWorkerNames(worker),
       scope,
       resources: written,
+      capabilities: worker.capabilities,
       secrets: workerSecrets.bound,
       // The project's declaration, carried through untouched. The entry itself is composed by the writer,
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
