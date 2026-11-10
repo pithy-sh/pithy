@@ -10,6 +10,7 @@ import {
   docsConnectFix,
   healthWithFixes,
   migrationFix,
+  missingBindingFix,
   prerequisiteFix,
   secretBindingFix,
   strandedTurnstileFix,
@@ -260,7 +261,7 @@ describe("healthWithFixes", () => {
       "pithy add email --worker api --with-prerequisites",
     ]);
     expect(api.config.drift.map((entry) => entry.fix)).toEqual(["pithy upgrade --worker api"]);
-    expect(api.bindings.missing.map((entry) => entry.fix)).toEqual(["pithy upgrade --worker api"]);
+    expect(api.bindings.missing.map((entry) => entry.fix)).toEqual(["pithy worker sync --worker api --env staging"]);
   });
 
   test("a scope gate nothing opens carries no command — which caller to trust is the adopter's decision", () => {
@@ -389,5 +390,27 @@ describe("healthWithFixes, on the findings whose remedy is an edit or a decision
   test("a capability its Workers resolve at two versions carries fix: null", () => {
     const projected = healthWithFixes(healthOf([]), []) as { capabilityReach: { split: { fix: unknown }[] } };
     expect(projected.capabilityReach.split.map((entry) => entry.fix)).toEqual([null]);
+  });
+});
+
+describe("missingBindingFix", () => {
+  test("names worker sync for a resource binding and upgrade for every other kind", () => {
+    const api = dirOf("api");
+    for (const type of ["d1", "kv", "r2", "queue"]) {
+      expect(missingBindingFix(api, { type, envs: ["dev", "prod"] })).toBe("pithy worker sync --worker api");
+    }
+    for (const type of ["durable_object", "ratelimit", "workflow", "ai"]) {
+      expect(missingBindingFix(api, { type, envs: ["prod"] })).toBe("pithy upgrade --worker api");
+    }
+  });
+
+  test("a binding dev does not lack is synced from the composition of an environment that does", () => {
+    // Without --env, worker sync composes for dev, and dev may not compose this binding at all.
+    expect(missingBindingFix(dirOf("api"), { type: "r2", envs: ["prod"] })).toBe(
+      "pithy worker sync --worker api --env prod",
+    );
+    expect(missingBindingFix(dirOf("api"), { type: "r2", envs: ["staging", "prod"] })).toBe(
+      "pithy worker sync --worker api --env staging",
+    );
   });
 });
