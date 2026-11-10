@@ -103,7 +103,7 @@ describe("planAppWorkflows", () => {
   });
 
   /**
-   * **A feature is an environment, and the app's own Workflows take its names (#650).**
+   * **A feature is an environment, and the app's own Workflows take its names.**
    *
    * `<project>-feature-<capability>-<job>` would be one Workflow every open branch deployed over every
    * other's — Workflow names are account-wide. The feature's own head is what `featureScope.workflowHost`
@@ -163,12 +163,12 @@ describe("planAppWorkflows", () => {
 });
 
 /**
- * **The preflight and the writer must mean one thing by "cannot be hosted" (#650 review).**
+ * **The preflight and the writer must mean one thing by "cannot be hosted".**
  *
  * `feature/provision.ts` asks this before a feature run creates anything; `planAppWorkflows` refuses the same
  * declaration when the stanza is written. Two readings of one rule is a branch that passes the preflight and
- * then throws with its resources already on the account — the exact defect the preflight exists to close — so
- * the two are held together here rather than each tested alone.
+ * then throws with its resources already on the account, so the two are held together here rather than each
+ * tested alone.
  */
 describe("unhostableAppJobs", () => {
   test("names the job planAppWorkflows refuses, and nothing else", () => {
@@ -190,11 +190,11 @@ describe("unhostableAppJobs", () => {
   });
 
   /**
-   * **A class-less job that declares itself optional is a legal declaration (#650 review, defect 3).**
+   * **A class-less job that declares itself optional is a legal declaration.**
    * `WorkflowSpec.className` says so — "Omit only for a job whose host config is hand-maintained" — and
    * `workflowBinding` carries `optional` straight through, so the binding `createBackend` derives is optional
-   * and the Worker boots without it. Refusing it made `pithy provision --feature` reject a branch whose project
-   * `pithy provision --env staging` provisions without a word.
+   * and the Worker boots without it. `pithy provision --feature` accepts it as `pithy provision --env staging`
+   * does.
    */
   test("an optional class-less job is not a fault, and the plan simply has no entry for it", () => {
     const handMaintained = defineCapability({
@@ -251,6 +251,21 @@ describe("reconcileAppWorkflows", () => {
       "acme-prod-dashboard-reindex",
     ]);
     expect(config.env?.staging?.triggers?.crons).toEqual(["0 3 * * *"]);
+  });
+
+  test("a stanza with no workflows key takes one beside its other bindings, not at its end", async () => {
+    await writeFile(
+      join(dir, "wrangler.jsonc"),
+      fixture.replace(
+        '"d1_databases": [{ "binding": "DB" }]\n    },',
+        '"d1_databases": [{ "binding": "DB" }],\n      "workers_dev": false\n    },',
+      ),
+    );
+    await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability() });
+
+    const config = (await read()) as unknown as Record<string, unknown> & { env: Record<string, object> };
+    expect(Object.keys(config)).toEqual(["name", "main", "d1_databases", "workflows", "env", "triggers"]);
+    expect(Object.keys(config.env.staging as object)).toEqual(["d1_databases", "workflows", "workers_dev", "triggers"]);
   });
 
   test("--env narrows to one environment and leaves the rest alone", async () => {
@@ -364,11 +379,7 @@ describe("reconcileAppWorkflows", () => {
     expect(await readFile(join(dir, "wrangler.jsonc"), "utf8")).toBe(fixture);
   });
 
-  /**
-   * The last job dropped from `pithy.config.ts`. This used to return before the file was opened, so the
-   * binding and the cron stayed behind with no command that would remove them — and #267's reader would
-   * have reported a fault naming `pithy worker sync`, which was the one thing that could not fix it.
-   */
+  /** The last job dropped from `pithy.config.ts`: `pithy worker sync` is the command that takes both out. */
   test("dropping the last job takes its binding and its cron out", async () => {
     await reconcileAppWorkflows({ workerDir: dir, project: PROJECT, app: appCapability(), env: "staging" });
 
@@ -401,9 +412,9 @@ describe("reconcileAppWorkflows", () => {
 
 /**
  * A library capability's job the adopter's own Worker hosts — `@pithy-sh/auth`'s purge, `@pithy-sh/payments`'
- * usage pass (#622). Its class is the adopter's, so its `workflows` entry and its cron are theirs too, written by
- * hand from the capability's docs. `pithy worker sync` must leave both where they are: replacing every same-script
- * entry with the app's own table stripped them, and with them the purge, which then never ran and said nothing.
+ * usage pass. Its class is the adopter's, so its `workflows` entry and its cron are theirs too, written by hand
+ * from the capability's docs. `pithy worker sync` must leave both where they are: replacing them with the app's own
+ * table would take the purge with them, and it would never run and say nothing.
  */
 function purgingCapability(): Capability {
   return defineCapability({
@@ -418,7 +429,7 @@ function purgingCapability(): Capability {
   });
 }
 
-describe("adopterHostedJobs (#622)", () => {
+describe("adopterHostedJobs", () => {
   test("names the bindings and schedules of every composed library job with no class", () => {
     const kept = adopterHostedJobs([purgingCapability()]);
     expect([...kept.bindings].sort()).toEqual(["AUTH_PURGE", "AUTH_PURGE_DUE"]);
@@ -432,7 +443,7 @@ describe("adopterHostedJobs (#622)", () => {
   });
 });
 
-describe("reconcileAppWorkflows leaves a library's adopter-hosted entries alone (#622)", () => {
+describe("reconcileAppWorkflows leaves a library's adopter-hosted entries alone", () => {
   const PURGE = { binding: "AUTH_PURGE", name: "acme-staging-auth-purge", class_name: "AuthPurgeWorkflow" };
   const PURGE_DUE = {
     binding: "AUTH_PURGE_DUE",

@@ -36,10 +36,10 @@ describe("main", () => {
     expect(Object.keys(worker.subCommands ?? {})).toEqual(expect.arrayContaining(["add", "list", "remove", "sync"]));
   });
 
-  test("worker sync is agent-drivable — --worker, --env, and --json, no prompt required", async () => {
+  test("worker sync is agent-drivable — --worker, --env, --dry-run and --json, no prompt required", async () => {
     const worker = await subcommand("worker");
     const sync = (worker.subCommands as Record<string, CommandDef>).sync;
-    expect(Object.keys(sync?.args ?? {})).toEqual(["worker", "env", "json"]);
+    expect(Object.keys(sync?.args ?? {})).toEqual(["worker", "env", "dry-run", "json"]);
   });
 
   test("the new commands are agent-drivable — every one supports --json", async () => {
@@ -133,7 +133,7 @@ describe("main", () => {
   test("payments reconcile can be driven headlessly — every narrowing is a flag", async () => {
     // The support path is "reconcile one holder in production and tell me what changed", and an agent has to
     // be able to run it with no prompt. Every field of the pass's params that a human would want is a flag
-    // here. `--subject` is one flag rather than a type/id pair because half a holder names nobody (#412).
+    // here. `--subject` is one flag rather than a type/id pair because half a holder names nobody.
     const payments = await subcommand("payments");
     const reconcile = (payments.subCommands as Record<string, CommandDef>).reconcile;
     expect(Object.keys(reconcile?.args ?? {})).toEqual(

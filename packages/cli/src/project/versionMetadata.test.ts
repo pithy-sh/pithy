@@ -44,6 +44,16 @@ describe("applyVersionMetadata", () => {
     expect(written.name).toBe("acme-api");
   });
 
+  it("writes the binding beside the Worker's other bindings, ahead of its env block", async () => {
+    const dir = await worker(
+      '{\n  "name": "acme-api",\n  "main": "src/index.ts",\n  "d1_databases": [{ "binding": "DB" }],\n  "env": { "staging": {} }\n}\n',
+    );
+
+    expect(await applyVersionMetadata(dir)).toBe(true);
+    const written = JSON.parse(await readFile(path.join(dir, "wrangler.jsonc"), "utf8"));
+    expect(Object.keys(written)).toEqual(["name", "main", "d1_databases", VERSION_METADATA_KEY, "env"]);
+  });
+
   it("is idempotent — a second run changes nothing", async () => {
     const dir = await worker('{\n  "name": "acme-api"\n}\n');
 

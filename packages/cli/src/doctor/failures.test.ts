@@ -1003,6 +1003,10 @@ describe("every finding in every block carries fix", () => {
           },
         ],
       }),
+      checkDuplicateCapabilities: async () => ({
+        state: "duplicated",
+        duplicates: [{ package: "@pithy-sh/secrets", members: [".", "apps/api"] }],
+      }),
       checkServiceBindings: async () => ({
         state: "faulty",
         faults: [{ kind: "missing-target", worker: "api", binding: "APP_Z", target: "app-z", path: null }],

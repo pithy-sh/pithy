@@ -64,6 +64,12 @@ import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { checkDocsMcp, DOCS_MCP_ACTION, type DocsMcpCheck, describeDocsMcp } from "../doctor/docsMcp";
 import {
+  checkDuplicateCapabilities,
+  DUPLICATE_CAPABILITIES_ACTION,
+  type DuplicateCapabilitiesCheck,
+  describeDuplicateCapabilities,
+} from "../doctor/duplicateCapabilities";
+import {
   checkEnvironmentConfigs,
   describeEnvironmentConfigs,
   type EnvironmentConfigsCheck,
@@ -420,6 +426,12 @@ export interface DoctorReport {
    * project, and `could-not-check` when the check threw. A finding prints in both forms and never fails the exit.
    */
   rootImports: RootImportsCheck | null;
+  /**
+   * Whether the project root declares a capability as a runtime dependency beside a Worker that declares it. `null`
+   * outside a project, and `could-not-check` when the check threw. A finding prints in both forms and never fails
+   * the exit.
+   */
+  duplicateCapabilities: DuplicateCapabilitiesCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares, and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -923,6 +935,8 @@ export interface DoctorReportOptions {
   }) => Promise<TestBindingsCheck>;
   /** Root-import seam; defaults to {@link checkRootImports}. Reads files only. */
   checkRootImports?: (projectDir: string) => Promise<RootImportsCheck>;
+  /** Duplicate-capability seam; defaults to {@link checkDuplicateCapabilities}. Reads files only. */
+  checkDuplicateCapabilities?: (projectDir: string) => Promise<DuplicateCapabilitiesCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -1129,6 +1143,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeTestBindings = options.checkTestBindings ?? checkTestBindings;
   const probeRootImports = options.checkRootImports ?? checkRootImports;
+  const probeDuplicateCapabilities = options.checkDuplicateCapabilities ?? checkDuplicateCapabilities;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1805,6 +1820,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       })
     : null;
 
+  // A capability the root declares at runtime beside a Worker that declares it. Files only.
+  const duplicateCapabilities = inProject
+    ? await probed<DuplicateCapabilitiesCheck>(() => probeDuplicateCapabilities(options.projectDir), {
+        state: "could-not-check",
+        duplicates: [],
+      })
+    : null;
+
   // One copy of each shared runtime, or several. Cheap — it resolves rather than reading a directory —
   // and it answers a question whose natural symptom is a TypeScript error naming neither the package
   // nor the duplication, which is the kind of thing this command exists to say out loud.
@@ -1864,6 +1887,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     localDelivery,
     testBindings,
     rootImports,
+    duplicateCapabilities,
     sharedRuntimes,
     devSecretsFile,
     devVarsLocal,
@@ -3733,6 +3757,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // A capability the root declares beside a Worker. Printed in both forms.
+  if (report.duplicateCapabilities?.state === "duplicated") {
+    blocks.push(
+      [
+        "Capabilities declared twice:",
+        ...describeDuplicateCapabilities(report.duplicateCapabilities).map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${DUPLICATE_CAPABILITIES_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -4004,6 +4039,18 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             fix: null,
           })),
           findings: describeRootImports(report.rootImports),
+        }
+      : null,
+    duplicateCapabilities: report.duplicateCapabilities
+      ? {
+          state: report.duplicateCapabilities.state,
+          duplicates: report.duplicateCapabilities.duplicates.map((entry) => ({
+            ...entry,
+            detail: describeDuplicateCapabilities({ state: "duplicated", duplicates: [entry] }).join(" "),
+            // An edit to the root package.json, which no `pithy` command makes.
+            fix: null,
+          })),
+          findings: describeDuplicateCapabilities(report.duplicateCapabilities),
         }
       : null,
     selfBinding: report.selfBinding
@@ -4594,6 +4641,27 @@ const DoctorPayload = z
         .describe("One entry per package, in import order."),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per package."),
     }),
+    duplicateCapabilities: Check(
+      "Capabilities the project root declares as a runtime dependency beside a Worker that declares them, or `null`.",
+      {
+        state: State("`ok`, `duplicated`, `could-not-check`"),
+        duplicates: z
+          .array(
+            z
+              .object({
+                package: z.string().describe("The capability's npm package."),
+                members: z
+                  .array(z.string().describe("A workspace member, from the project root: `.` for the root."))
+                  .describe("The root, then each Worker declaring it in `dependencies`."),
+                detail: z.string().describe("The sentence."),
+                fix: DoctorFix,
+              })
+              .describe("One capability declared twice."),
+          )
+          .describe("One entry per capability, in the root's declaration order."),
+        findings: z.array(z.string().describe("One finding.")).describe("One sentence per capability."),
+      },
+    ),
     biomeIncludes: Check("Biome exclusions that would skip every file of a checkout, or `null` outside a project.", {
       state: State("`ok`, `unanchored`, `could-not-check`"),
       findings: z

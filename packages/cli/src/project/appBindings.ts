@@ -7,6 +7,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
+import { bindingSlot } from "./bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { stanzaFor } from "./wranglerInheritance";
 
@@ -136,12 +137,10 @@ export async function applyAppBindings(projectDir: string, env: string, bindings
   const stanza = stanzaFor(config, env) as AppBindingStanza;
 
   if (bindings.workflows?.length) {
-    stanza.workflows ??= [];
-    upsertByBinding(stanza.workflows, bindings.workflows);
+    upsertByBinding(bindingSlot(stanza, "workflows", []), bindings.workflows);
   }
   if (bindings.vectorize?.length) {
-    stanza.vectorize ??= [];
-    upsertByBinding(stanza.vectorize, bindings.vectorize);
+    upsertByBinding(bindingSlot(stanza, "vectorize", []), bindings.vectorize);
   }
 
   // Never write a config wrangler will not load. A hand-edited entry that lost a field lands here too,

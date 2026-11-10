@@ -8,6 +8,7 @@ import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { stringify } from "comment-json";
 import { hostOwnerFor, hostWorkerFor } from "../capabilities/hostRegistry";
+import { bindingSlot } from "./bindingEntries";
 import type { ServiceDeclaration } from "./configBindingSource";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { stanzaFor } from "./wranglerInheritance";
@@ -176,10 +177,10 @@ export async function planServiceStanzas(options: ReconcileServiceStanzasOptions
       stanza.services.push(...kept);
     }
     for (const entry of entries) {
-      stanza.services ??= [];
-      const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
+      const services = bindingSlot(stanza, "services", []);
+      const existing = services.find((candidate) => candidate.binding === entry.binding);
       if (existing) existing.service = entry.service;
-      else stanza.services.push({ ...entry });
+      else services.push({ ...entry });
     }
     runs.push({ env, services: entries, changed: stringify(stanza) !== stanzaBefore });
   }

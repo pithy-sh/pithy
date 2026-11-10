@@ -124,6 +124,19 @@ describe("reconcileServiceStanzas", () => {
     expect(config.env.prod?.services).toEqual([{ binding: "EMAIL", service: "acme-prod-app-a---email" }]);
   });
 
+  test("a stanza with no services key takes one beside its other bindings, ahead of its routes", async () => {
+    await writeFile(
+      join(appA.dir, "wrangler.jsonc"),
+      '{ "name": "acme-app-a", "d1_databases": [], "routes": [], "workers_dev": false, "env": {} }\n',
+    );
+    await reconcileServiceStanzas({
+      workerDir: appA.dir,
+      services: [{ binding: "APP_B", target: "app-b" }],
+      scripts: await serviceScripts("acme", [appA, appB]),
+    });
+    expect(Object.keys(await stanzas())).toEqual(["name", "d1_databases", "services", "routes", "workers_dev", "env"]);
+  });
+
   test("a second run changes nothing and writes nothing", async () => {
     const options = {
       workerDir: appA.dir,

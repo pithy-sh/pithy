@@ -82,6 +82,20 @@ describe("pithy worker sync writes the app's own resource bindings", () => {
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(written);
   });
 
+  test("a bucket lands beside the stanza's other bindings in every stanza, never after its environments", async () => {
+    await runCaptured("worker sync", ["--worker", "board", "--json"]);
+    const config = (await read()) as unknown as Record<string, unknown> & { env: Record<string, object> };
+    for (const stanza of [config, ...Object.values(config.env)]) {
+      const keys = Object.keys(stanza);
+      expect(keys.slice(keys.indexOf("d1_databases"), keys.indexOf("d1_databases") + 3)).toEqual([
+        "d1_databases",
+        "kv_namespaces",
+        "r2_buckets",
+      ]);
+    }
+    expect(Object.keys(config).at(-1)).toBe("env");
+  });
+
   test("says which bindings each environment gained", async () => {
     const lines = (await runCaptured("worker sync", ["--worker", "board", "--env", "staging"])).join("");
     expect(lines).toContain("staging: DB, PUBLISHED written.");

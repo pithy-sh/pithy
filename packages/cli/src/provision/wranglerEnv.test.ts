@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { FeatureResource } from "../feature/manifest";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
-import { applyProvisionedEnv, bindFeatureHosts } from "./wranglerEnv";
+import { applyProvisionedEnv, applySecretBindings, bindFeatureHosts } from "./wranglerEnv";
 
 interface Stanza {
   name?: string;
@@ -1390,6 +1390,33 @@ describe("a feature stanza's carried bindings", () => {
     expect(stanza.browser).toEqual({ binding: "BROWSER" });
   });
 
+  test("writes a carried kind a tracked env.feature lacks beside its other bindings, ahead of its routes", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        d1_databases: [{ binding: "DB", database_name: "replay-dev-db", database_id: "dev-id" }],
+        hyperdrive: [{ binding: "HYPERDRIVE", id: "top-level-id" }],
+        browser: { binding: "BROWSER" },
+        artifacts: [{ binding: "ARTIFACTS", namespace: "replay-dev" }],
+        env: {
+          feature: {
+            name: "replay-board-feature",
+            d1_databases: [{ binding: "DB", database_name: "replay-feature-db" }],
+            routes: [{ pattern: "replay-feature.example.com", custom_domain: true }],
+            workers_dev: false,
+          },
+        },
+      }),
+    );
+    await provision();
+    const keys = Object.keys(await generated());
+    for (const key of ["hyperdrive", "browser", "artifacts"]) {
+      expect(keys.indexOf(key), key).toBeGreaterThan(keys.indexOf("d1_databases"));
+      expect(keys.indexOf(key), key).toBeLessThan(keys.indexOf("routes"));
+    }
+  });
+
   test("writes a feature's own queue into its producer entry, and never dev's", async () => {
     await writeFile(
       wranglerPath,
@@ -1584,5 +1611,46 @@ describe("bindFeatureHosts", () => {
     await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
     await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
     expect((await workflows()).vectorize).toEqual([{ binding: "VECTORIZE", index_name: index.name }]);
+  });
+});
+
+describe("applySecretBindings", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-secret-bindings-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a stanza with no store entries takes them beside its other bindings, ahead of its routes", async () => {
+    await writeFile(
+      join(dir, "wrangler.jsonc"),
+      `{
+  "name": "stats-api",
+  "env": {
+    "staging": {
+      "name": "stats-staging-api",
+      "d1_databases": [{ "binding": "DB", "database_name": "stats-staging-db" }],
+      "r2_buckets": [{ "binding": "PUBLISHED", "bucket_name": "stats-staging-published" }],
+      "routes": [{ "pattern": "stats-staging.pithy.sh", "custom_domain": true }],
+      "workers_dev": false
+    }
+  }
+}
+`,
+    );
+    await applySecretBindings(dir, "staging", [
+      { binding: "GITHUB_TOKEN", store_id: "s", secret_name: "stats-global-github-token" },
+    ]);
+    const parsed = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as Parsed;
+    expect(Object.keys(parsed.env.staging ?? {})).toEqual([
+      "name",
+      "d1_databases",
+      "r2_buckets",
+      "secrets_store_secrets",
+      "routes",
+      "workers_dev",
+    ]);
   });
 });
