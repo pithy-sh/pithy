@@ -8,7 +8,7 @@ import type { Logger } from "../logger/logger";
 import { noopLogger } from "../logger/logger";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { type LoopbackFetch, loopbackWorkflowBinding } from "./loopback";
-import type { WorkflowBinding, WorkflowRegistry } from "./spec";
+import type { RegisteredWorkflow, WorkflowBinding, WorkflowRegistry } from "./spec";
 
 /**
  * Dispatch: start a registered job by its `<capability>/<job>` key.
@@ -34,8 +34,35 @@ export interface WorkflowDispatcher<Params extends Record<string, unknown> = Rec
    * Start an instance of one job. Resolves once Cloudflare has accepted the instance; it does not
    * wait for the Workflow to finish. Instance status and termination are deliberately not on this
    * seam — a Workflow is durable precisely so the caller need not hold its progress.
+   *
+   * `options.id` names the instance; without it the spec's `instanceId` does, and without that
+   * Cloudflare generates one. A taken id rejects.
    */
-  trigger<Key extends keyof Params & string>(key: Key, params: Params[Key]): Promise<void>;
+  trigger<Key extends keyof Params & string>(
+    key: Key,
+    params: Params[Key],
+    options?: WorkflowTriggerOptions,
+  ): Promise<void>;
+}
+
+/** What a manual trigger may say about the instance it starts. */
+export interface WorkflowTriggerOptions {
+  /** The instance id, over the spec's `instanceId`. At most 100 characters of `[A-Za-z0-9_-]`. */
+  id?: string;
+}
+
+/** How one start was asked for: a manual trigger's chosen id, or the cron fire that scheduled it. */
+export interface WorkflowStart extends WorkflowTriggerOptions {
+  /**
+   * Present for a start a cron fired. A scheduled start whose id is taken is logged as already started and
+   * resolves, so a cron that fires twice for one name runs the job once.
+   */
+  schedule?: {
+    /** The cron expression that fired, verbatim. */
+    cron?: string;
+    /** The scheduled time of the fire. */
+    firedAt: Date;
+  };
 }
 
 /**
@@ -82,19 +109,17 @@ function stringVar(env: Record<string, unknown>, name: string): string | undefin
  *
  * A deployed app Worker starts a capability's Workflow through a **cross-script** binding pointing at
  * `<project>-<env>-email`. `pithy dev` runs no script under that name, so locally that binding cannot
- * work — it is absent, or it is present and every `create` on it fails — and every dispatch it carried
- * went nowhere (pithy-sh/pithy#410). What *does* exist locally is the capability host itself, on a
- * pinned port, with its address in this Worker's own vars as `<STEM>_ORIGIN`. So the seam is filled
- * rather than left empty, and the call site — `enqueueEmail`, the cron handler, `c.var.workflows` — is
- * byte-identical either way.
+ * work — it is absent, or it is present and every `create` on it fails. What *does* exist locally is the
+ * capability host itself, on a pinned port, with its address in this Worker's own vars as
+ * `<STEM>_ORIGIN`. So the seam is filled rather than left empty, and the call site — `enqueueEmail`, the
+ * cron handler, `c.var.workflows` — is byte-identical either way.
  *
  * ## Three rules, and each of them is a refusal
  *
- * **In `dev`, a published origin wins over the binding.** The deliberate order, and the one that
- * closes #410 whatever wrangler decides to hand a local Worker for a script it is not running: a
- * binding that is present but cannot reach anything is indistinguishable at runtime from one that
- * works, so preferring it would leave the silence in place and depend on a wrangler behavior nothing
- * here controls. Preferring the origin costs nothing, because a published origin is not something a
+ * **In `dev`, a published origin wins over the binding**, whatever wrangler hands a local Worker for a
+ * script it is not running: a binding that is present but cannot reach anything is indistinguishable
+ * at runtime from one that works, so preferring it would dispatch into nothing and depend on a wrangler
+ * behavior nothing here controls. Preferring the origin costs nothing, because a published origin is not something a
  * composition can have by accident — see the next rule.
  *
  * **A published origin names a host `pithy dev` is running.** The orchestrator writes one `--var` per
@@ -141,7 +166,7 @@ export function resolveWorkflowBinding(
 /**
  * Start one registered job. The single dispatch path — `createBackend`'s per-request dispatcher and
  * `createEntrypoint`'s cron handler both route through here, so a scheduled run and a manual one
- * validate identically.
+ * validate and name their instances identically.
  */
 export async function triggerWorkflow(
   env: Record<string, unknown>,
@@ -149,6 +174,7 @@ export async function triggerWorkflow(
   key: string,
   params: unknown,
   log: Logger = noopLogger,
+  start: WorkflowStart = {},
 ): Promise<void> {
   const entry = registry[key];
   if (!entry) {
@@ -183,11 +209,8 @@ export async function triggerWorkflow(
     log,
   });
   if (!binding) {
-    // An optional job is one whose host may not be provisioned yet. Throwing would take down a
-    // request path that works perfectly well without the job — `@pithy-sh/media` finalizes an upload
-    // and merely skips enrichment. So it degrades instead. It degrades *loudly*, though: the previous
-    // shape of this (an `?.create()` in media) made a whole capability silently do nothing, with no
-    // error and no log, which is the harder failure to diagnose by far.
+    // An optional job is one whose host may not be provisioned yet, on a request path that works without
+    // it, so it degrades instead of throwing. Always with a warning: a skipped job must never be silent.
     if (entry.spec.optional) {
       log.warn("workflow skipped", {
         workflow: key,
@@ -205,17 +228,17 @@ export async function triggerWorkflow(
     });
   }
 
+  const id = instanceIdFor(entry, start, parsed.data);
   try {
-    await binding.create({ params: parsed.data });
+    await binding.create(id === undefined ? { params: parsed.data } : { id, params: parsed.data });
   } catch (error) {
-    // **An optional job degrades on the dispatch too, not only on the binding.** `optional` is a
-    // promise about the caller's request path — it works without this job — and a binding that is
-    // there and will not start anything is the same fact to that path as one that is absent.
-    //
-    // Under `pithy dev` this is the ordinary case rather than the exotic one: the loopback stand-in is
-    // composed the moment `<STEM>_ORIGIN` is published, so the binding is never *absent*, and a host
-    // that has not matched its ready signal yet would otherwise turn a media finalize into a 502.
-    // Loudly, like the other half: the reason is logged, so a skipped job is never silent.
+    if (start.schedule && id !== undefined && (await instanceExists(binding, id))) {
+      log.info("workflow already started", { workflow: key, id });
+      return;
+    }
+    // A binding that is there and will not start anything is the same fact to an optional job's caller as
+    // one that is absent. Under `pithy dev` the loopback stand-in is never absent, so a host still starting
+    // reaches here.
     if (!entry.spec.optional) throw error;
     log.warn("workflow skipped", {
       workflow: key,
@@ -223,6 +246,33 @@ export async function triggerWorkflow(
       reason: messageOf(error),
     });
   }
+}
+
+/**
+ * The id one start asks for: the caller's, else the spec's `instanceId` over the fire time, the cron and the
+ * parsed params, else none. A manual trigger fires now.
+ */
+export function instanceIdFor(entry: RegisteredWorkflow, start: WorkflowStart, params: unknown): string | undefined {
+  if (start.id !== undefined) return start.id;
+  const name = entry.spec.instanceId;
+  if (!name) return undefined;
+  return name({
+    firedAt: start.schedule?.firedAt ?? new Date(),
+    ...(start.schedule?.cron === undefined ? {} : { cron: start.schedule.cron }),
+    params,
+  });
+}
+
+/**
+ * Whether the binding holds an instance under `id`. False when it cannot look one up, so a stand-in without
+ * `get` never turns a refusal into a success.
+ */
+async function instanceExists(binding: WorkflowBinding, id: string): Promise<boolean> {
+  if (typeof binding.get !== "function") return false;
+  return binding.get(id).then(
+    () => true,
+    () => false,
+  );
 }
 
 /**
@@ -235,6 +285,6 @@ export function buildWorkflowDispatcher<Params extends Record<string, unknown> =
   log: Logger = noopLogger,
 ): WorkflowDispatcher<Params> {
   return {
-    trigger: (key, params) => triggerWorkflow(env, registry, key, params, log),
+    trigger: (key, params, options) => triggerWorkflow(env, registry, key, params, log, { id: options?.id }),
   };
 }
