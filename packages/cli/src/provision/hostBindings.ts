@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { OwnedHostedWorkflowEntry } from "../feature/hosts";
+import { bindingSlot } from "../project/bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 
 /**
@@ -39,8 +40,7 @@ export async function bindHostWorkflows(
   };
   const stanza = config.env?.[env];
   if (stanza === undefined) return false;
-  stanza.workflows ??= [];
-  const workflows = stanza.workflows;
+  const workflows = bindingSlot(stanza, "workflows", []);
   let changed = false;
   for (const { binding, name, class_name, script_name } of entries) {
     const next = { binding, name, class_name, script_name };

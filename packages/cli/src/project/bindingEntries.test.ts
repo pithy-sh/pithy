@@ -3,18 +3,22 @@
 
 import { BindingSpec, BindingType, isWrittenBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import {
   appendBinding,
   appendDeletedClassMigration,
   appendDurableObjectMigrations,
+  bindingSlot,
   generatedFieldDrift,
   liveDurableObjectClasses,
+  placeBinding,
   rateLimitNamespaceId,
   stanzaHasBinding,
   WRANGLER_KEYS,
   type WranglerStanza,
 } from "./bindingEntries";
+import { formatJsonc } from "./jsonc";
 
 /**
  * The generated half of a binding entry: the value the writer derives, and the comparison that notices
@@ -573,5 +577,109 @@ describe("a workflow binding into a capability host", () => {
         }),
       ).toThrow(/two owns AUDIT_DB but shares AUDIT_CHECKPOINTS/);
     });
+  });
+});
+
+/** A stanza the way the starter scaffolds one: identity, vars, two binding arrays, then the environments. */
+const SCAFFOLDED = `{
+  "name": "replay-board",
+  "vars": { "ENVIRONMENT": "dev" },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "d1_databases": [],
+  "kv_namespaces": [],
+  // Staging serves test users.
+  "env": {
+    "staging": {
+      "name": "replay-staging-board",
+      "d1_databases": [],
+      "kv_namespaces": [],
+      "routes": [{ "pattern": "staging.example.com", "custom_domain": true }],
+      "workers_dev": false
+    }
+  }
+}`;
+
+describe("placeBinding", () => {
+  test("a new key lands right after the last binding the stanza holds", () => {
+    const stanza = parse(SCAFFOLDED) as unknown as Record<string, unknown>;
+    placeBinding(stanza, "r2_buckets", []);
+    expect(Object.keys(stanza)).toEqual([
+      "name",
+      "vars",
+      "version_metadata",
+      "d1_databases",
+      "kv_namespaces",
+      "r2_buckets",
+      "env",
+    ]);
+  });
+
+  test("a key moved past keeps its comment", () => {
+    const stanza = parse(SCAFFOLDED) as unknown as Record<string, unknown>;
+    placeBinding(stanza, "r2_buckets", [{ binding: "PUBLISHED" }]);
+    const printed = formatJsonc(stanza, SCAFFOLDED);
+    expect(printed).toContain(
+      `"kv_namespaces": [],\n  "r2_buckets": [{ "binding": "PUBLISHED" }],\n  // Staging serves test users.\n  "env": {`,
+    );
+  });
+
+  test("a stanza holding no binding takes the key before its environments", () => {
+    const stanza: Record<string, unknown> = { name: "a", vars: {}, env: {} };
+    placeBinding(stanza, "r2_buckets", []);
+    expect(Object.keys(stanza)).toEqual(["name", "vars", "r2_buckets", "env"]);
+  });
+
+  test("a stanza holding neither takes the key at its end", () => {
+    const stanza: Record<string, unknown> = { name: "a", workers_dev: false };
+    placeBinding(stanza, "ai", { binding: "AI" });
+    expect(Object.keys(stanza)).toEqual(["name", "workers_dev", "ai"]);
+  });
+
+  test("a key the stanza already holds is replaced where it stands", () => {
+    const stanza: Record<string, unknown> = { ai: { binding: "OLD" }, d1_databases: [], routes: [] };
+    placeBinding(stanza, "ai", { binding: "AI" });
+    expect(Object.keys(stanza)).toEqual(["ai", "d1_databases", "routes"]);
+    expect(stanza.ai).toEqual({ binding: "AI" });
+  });
+});
+
+describe("bindingSlot", () => {
+  test("returns the array the stanza holds, the same one", () => {
+    const buckets = [{ binding: "PUBLISHED" }];
+    const stanza: WranglerStanza = { r2_buckets: buckets };
+    expect(bindingSlot(stanza, "r2_buckets", [])).toBe(buckets);
+  });
+
+  test("places the initial value beside the other bindings when the stanza holds none", () => {
+    const stanza = { d1_databases: [], routes: [] } as WranglerStanza;
+    bindingSlot(stanza, "r2_buckets", []).push({ binding: "PUBLISHED" });
+    expect(Object.keys(stanza)).toEqual(["d1_databases", "r2_buckets", "routes"]);
+    expect(stanza.r2_buckets).toEqual([{ binding: "PUBLISHED" }]);
+  });
+});
+
+describe("appendBinding places a kind the stanza lacks beside its other bindings", () => {
+  const R2 = BindingSpec.parse({ type: "r2", name: "PUBLISHED" });
+
+  test.each([
+    ["the top level, ahead of its environments", (config: WranglerStanza) => config],
+    ["an environment, ahead of its routes", (config: WranglerStanza) => config.env?.staging as WranglerStanza],
+  ])("in %s", (_where, pick) => {
+    const config = parse(SCAFFOLDED) as unknown as WranglerStanza;
+    const stanza = pick(config);
+    expect(appendBinding(stanza, R2, SCOPE)).toEqual({ outcome: "written" });
+    const keys = Object.keys(stanza);
+    expect(keys[keys.indexOf("kv_namespaces") + 1]).toBe("r2_buckets");
+  });
+
+  test.each([
+    ["kv", "kv_namespaces"],
+    ["ai", "ai"],
+    ["email", "send_email"],
+    ["ratelimit", "ratelimits"],
+  ] as const)("a %s binding too", (type, key) => {
+    const stanza = { d1_databases: [], routes: [], workers_dev: false } as unknown as WranglerStanza;
+    appendBinding(stanza, BindingSpec.parse({ type, name: "B" }), SCOPE);
+    expect(Object.keys(stanza)).toEqual(["d1_databases", key, "routes", "workers_dev"]);
   });
 });

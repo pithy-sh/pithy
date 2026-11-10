@@ -8,6 +8,7 @@ import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { stringify } from "comment-json";
 import { incompleteBindings } from "./appBindings";
+import { placeBinding } from "./bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { stanzaFor } from "./wranglerInheritance";
 
@@ -54,7 +55,7 @@ export interface AppWorkflowPlan {
 
 /**
  * The identity an app-declared Workflow's name is composed from — **the scope's own
- * {@link ProvisionScope.workflowHost}, for any environment a project has (#650).**
+ * {@link ProvisionScope.workflowHost}, for any environment a project has.**
  *
  * `Omit<WorkflowHostNameParts, "capability">` rather than two hand-written fields, because that is exactly
  * what a {@link ProvisionScope} carries: a caller with a scope passes `scope.workflowHost` and cannot
@@ -85,7 +86,7 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
     project: parts.project,
     capability: app.name,
     env: parts.env,
-    // **A feature's names are the feature's own (#650).** `env` stays `feature` — that is what the Worker's
+    // **A feature's names are the feature's own.** `env` stays `feature` — that is what the Worker's
     // `ENVIRONMENT` var says — and only the names change, exactly as they do for a kit host's Workflows.
     // Carried rather than branched on, so the app's jobs and a capability's are named by one function.
     ...(parts.feature ? { feature: parts.feature } : {}),
@@ -107,12 +108,11 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
  * against whatever script does host the class, and a cross-script entry is exactly the shape `isAppOwned`
  * leaves alone.
  *
- * **But only when the binding it derives is optional (#650 review).** `workflowBinding` carries `optional`
- * straight from the spec, and `createBackend` derives a required `workflow` binding from a job that does not
- * declare itself optional — so quietly skipping a *required* one ships a Worker that deploys and then answers
- * `Missing required bindings` on its first request. That one is a declaration to fix. This is the whole of the
- * correction to what the first cut of this file said: it called every class-less job a fault, which refused a
- * branch whose project `pithy provision --env staging` provisions without complaint.
+ * **But only when the binding it derives is optional.** `workflowBinding` carries `optional` straight from the
+ * spec, and `createBackend` derives a required `workflow` binding from a job that does not declare itself
+ * optional — so quietly skipping a *required* one ships a Worker that deploys and then answers
+ * `Missing required bindings` on its first request. That one is a declaration to fix, and
+ * {@link unhostableAppJobs} names it.
  */
 function isHandMaintained(spec: { className?: string; optional?: boolean }): boolean {
   return spec.className === undefined && spec.optional === true;
@@ -132,13 +132,12 @@ function derivableWorkflows(app: Capability): ReturnType<typeof composeWorkflows
 
 /**
  * **Every job the app declares that cannot be hosted and is not allowed to be — the dispatch keys
- * {@link planAppWorkflows} would refuse (#650 review).**
+ * {@link planAppWorkflows} would refuse.**
  *
  * A class-less job whose binding is **required** is a declaration nothing can satisfy: no `workflows` entry can
  * be written for it, and `createBackend` will demand the binding on the first request. `pithy worker sync`
  * refuses the same declaration and `pithy doctor` reports it as `unwritable-declaration`, so this says the same
- * thing one step earlier — the refusal used to arrive from the stanza writer, after a feature run had created
- * every database, namespace, bucket and store entry.
+ * thing before a feature run creates any database, namespace, bucket or store entry.
  *
  * A class-less job that declares itself **optional** is not one of these. See {@link isHandMaintained}.
  *
@@ -152,7 +151,7 @@ export function unhostableAppJobs(app: Capability): string[] {
 }
 
 /**
- * **The jobs a composed library capability leaves to the adopter's own Worker (#622)** — the bindings and the
+ * **The jobs a composed library capability leaves to the adopter's own Worker** — the bindings and the
  * schedules of every library job that carries no `className`.
  *
  * `WorkflowSpec.className` says what its absence means: a job whose host config is hand-maintained. For a library
@@ -160,8 +159,8 @@ export function unhostableAppJobs(app: Capability): string[] {
  * only their Worker has — `@pithy-sh/auth`'s purge runs every composed capability's contribution, the adopter's
  * own among them, and `@pithy-sh/payments`' usage pass calls their `resolveQuantity`. Its `workflows` entry and
  * its cron are written by hand from that capability's docs, and they are same-script, so by the rule below they
- * looked like the app's own: `pithy worker sync` replaced them away and the deploy gate refused the stanza that
- * carried them. Neither is this table's to write — there is no class name to write — so both are left alone.
+ * would read as the app's own and be replaced away. Neither is this table's to write — there is no class name to
+ * write — so both are left alone.
  *
  * Read from the composed **library** capabilities, never the app: an app's own class-less job is the
  * hand-maintained case {@link isHandMaintained} already answers, and its entry points at another script.
@@ -242,7 +241,7 @@ export interface ReconcileAppWorkflowsOptions {
   env?: string;
   /**
    * The Worker's composed library capabilities, whose adopter-hosted jobs' entries and crons are left where the
-   * adopter wrote them (#622) — see {@link AdopterHostedJobs}. Omitted, every same-script entry is the app's.
+   * adopter wrote them — see {@link AdopterHostedJobs}. Omitted, every same-script entry is the app's.
    */
   capabilities?: readonly Capability[];
 }
@@ -290,7 +289,7 @@ function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan, kept
     stanza.workflows.length = 0;
     stanza.workflows.push(...next);
   } else if (next.length > 0) {
-    stanza.workflows = next;
+    placeBinding(stanza, "workflows", next);
   }
 }
 
@@ -309,7 +308,7 @@ function replaceOwnWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan, kept
  * alone, because a `triggers` block a project never had is noise in every config whose jobs all dispatch.
  */
 function setCrons(stanza: WorkflowStanza, crons: string[], kept: AdopterHostedJobs): void {
-  // A schedule an adopter wrote for a library's job they host stays, after the app's own (#622). Kept only when
+  // A schedule an adopter wrote for a library's job they host stays, after the app's own. Kept only when
   // it is already there: a cron nobody wrote is not this table's to add, for the same reason its entry is not.
   const theirs = (stanza.triggers?.crons ?? []).filter((cron) => kept.schedules.has(cron) && !crons.includes(cron));
   const next = [...crons, ...theirs];
@@ -319,8 +318,7 @@ function setCrons(stanza: WorkflowStanza, crons: string[], kept: AdopterHostedJo
 }
 
 /**
- * **Write one scope's plan into one stanza — the single application of {@link planAppWorkflows}'s answer
- * (#650).**
+ * **Write one scope's plan into one stanza — the single application of {@link planAppWorkflows}'s answer.**
  *
  * Two files carry an app's own Workflow table and they are written by two commands: the tracked
  * `wrangler.jsonc`, by `pithy worker sync` through {@link reconcileAppWorkflows}, and the generated
@@ -349,13 +347,11 @@ export function applyAppWorkflows(
  * behind. An app that declares no Workflows writes nothing at all — including no empty `workflows` key,
  * which wrangler reads as a declaration.
  *
- * **An app that declares none is still reconciled**, and that is not the same statement. It used to
- * return before the file was opened, which made "the declaration is the truth" false in the one case
- * where it matters most: drop the last job from `pithy.config.ts` and the binding and the cron stayed in
- * `wrangler.jsonc` forever, with no command that would take them out and — since #267 — a doctor fault
- * naming a command that could not answer it. The empty declaration is a declaration. What it writes is
- * still nothing at all where there was nothing: `replaceOwnWorkflows` creates no `workflows` key and
- * `setCrons` creates no `triggers` block, so a project that never had either is byte-identical after.
+ * **An app that declares none is still reconciled**, and that is not the same statement: drop the last job from
+ * `pithy.config.ts` and this takes its binding and its cron out of `wrangler.jsonc`. The empty declaration is a
+ * declaration. What it writes is still nothing at all where there was nothing: `replaceOwnWorkflows` creates no
+ * `workflows` key and `setCrons` creates no `triggers` block, so a project that never had either is
+ * byte-identical after.
  */
 export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOptions): Promise<AppWorkflowRun[]> {
   const { workerDir, project, app, env } = options;
@@ -367,9 +363,8 @@ export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOption
   const runs: AppWorkflowRun[] = [];
   for (const target of environmentsOf(config, env)) {
     const plan = planAppWorkflows(app, { project, env: target });
-    // The one reader (#581): `dev` is the top-level stanza and an `env.<name>` this creates carries what
-    // an environment does not inherit. This module had written that `dev` branch out for itself, which is
-    // three lines each of four writers had, and the one place the seeding rule could be skipped.
+    // The one reader: `dev` is the top-level stanza and an `env.<name>` this creates carries what an
+    // environment does not inherit.
     const stanza = stanzaFor(config, target) as WorkflowStanza;
     const stanzaBefore = stringify(stanza);
 

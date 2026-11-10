@@ -3270,6 +3270,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--dry-run": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
       "--json": {
         "type": "boolean",
         "required": false,

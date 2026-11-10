@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
@@ -14,7 +14,8 @@ import { honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { withContract } from "../contract/commandContract";
 import { FeatureResource } from "../feature/manifest";
 import { describeStaleAutostartRoots, StaleAutostartRoot } from "../feature/ports";
-import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
+import { DRY_RUN_ARG, emptyPlan, type Plan, PlanKey, planText } from "../plan/plan";
+import { inShadow } from "../plan/shadow";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
@@ -150,6 +151,7 @@ const WorkerUnbindPayload = z
 const WorkerSyncPayload = z
   .object({
     command: z.literal("worker.sync").describe('`"worker.sync"`.'),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was written when it is `true`."),
     ...WorkerIdentity.shape,
     routes: z
       .array(
@@ -250,8 +252,9 @@ const WorkerSyncPayload = z
           .describe("One field one D1 entry changed."),
       )
       .describe("What `ownBindings` changed in the Worker's D1 entries: its own names, and its own local store."),
+    plan: PlanKey,
   })
-  .describe("What `pithy worker sync` wrote.");
+  .describe("What `pithy worker sync` wrote, or under `--dry-run` would.");
 
 const add = withContract(
   defineCommand({
@@ -683,6 +686,208 @@ function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDo
   };
 }
 
+/** What one `pithy worker sync` run wrote, or in the copy a dry run makes, would write. */
+interface WorkerSyncReport {
+  target: Awaited<ReturnType<typeof targetWorker>>;
+  routes: Awaited<ReturnType<typeof applyDomains>>;
+  bindings: Awaited<ReturnType<typeof reconcileDeclaredBindings>>;
+  runs: Awaited<ReturnType<typeof reconcileAppWorkflows>>;
+  serviceRuns: Awaited<ReturnType<typeof reconcileServiceStanzas>>;
+  ownedBindings: Awaited<ReturnType<typeof reconcileOwnedDatabases>>;
+  /** How many bindings the Worker's `pithy.worker.jsonc` lists in `ownBindings`. */
+  owned: number;
+}
+
+/** Reconcile one Worker's `wrangler.jsonc` in `projectDir` with what its `pithy.config.ts` declares. */
+async function syncWorker(options: {
+  projectDir: string;
+  worker: string | undefined;
+  env: string | undefined;
+  interactive: boolean;
+}): Promise<WorkerSyncReport> {
+  const { projectDir, worker, env, interactive } = options;
+  // Composed for `--env` when one is named. Without it every environment is reconciled from the
+  // composition for dev: a `domains` or `app` declaration that differs by environment is written from
+  // dev's value into every stanza. That is this command's limit, not a composition for none.
+  const target = await targetWorker(env ?? LOCAL_ENVIRONMENT, {
+    projectDir,
+    interactive,
+    ...(worker === undefined ? {} : { worker }),
+  });
+
+  // The address, validated first and separately from the app capability — a malformed declaration must
+  // name the field here, not produce a route Cloudflare rejects at deploy.
+  const domains = loadWorkerDomains(target.config);
+
+  const app = target.config.app;
+  // The D1 names `ownBindings` implies — and, for an entry taken out, the ones it no longer does. Asked of
+  // every Worker composing a database, because the second half has nothing listed to trigger it, and of
+  // every Worker listing an owned binding, because a global one of any kind is refused there.
+  const ownBindings = target.target.ownBindings ?? [];
+  const composesDatabase = target.capabilities.some((capability) =>
+    capability.requiredBindings.some((binding) => binding.type === "d1"),
+  );
+  // Every D1, KV, R2 and queue binding the Worker composes is written below, so a Worker composing one reads
+  // the project name for the names those entries carry, and writes what needs none without it.
+  const composesResources = declaredBindingSpecs(target.capabilities).length > 0;
+  // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
+  // once deployed, so a guessed project would name a Workflow another owns. A script name and a database
+  // name are the same.
+  // A Worker owning nothing has nothing to reconcile without a project name, so only the app or an owned
+  // binding makes the name required.
+  const project =
+    app || ownBindings.length > 0
+      ? await loadProject(projectDir).then(requireProjectName)
+      : composesResources
+        ? await loadProject(projectDir)
+            .then(requireProjectName)
+            .catch(() => undefined)
+        : undefined;
+  const manifests =
+    composesResources || (project && ownBindings.length > 0)
+      ? (await composedManifests(projectDir, target.dir)).manifests
+      : [];
+  const declarations = bindingDeclarations(manifests, target.config.app);
+  const owning =
+    project && (composesDatabase || ownBindings.length > 0)
+      ? { workerDir: target.dir, project, capabilities: target.capabilities, declarations, ownBindings }
+      : undefined;
+  // Before any write: a global binding in `ownBindings` fails the command with wrangler.jsonc untouched.
+  if (owning) refuseOwnedGlobals(owning);
+  // Before any write too: a declaration nobody can read leaves nothing out, so every optional binding it
+  // meant to decline would be written into every stanza.
+  const declines = composesResources
+    ? workerDeclines({ manifests, capabilities: target.capabilities, workerConfig: target.config })
+    : undefined;
+  if (declines?.state === "invalid") {
+    throw new ValidationError({
+      message: "This Worker's `declinedBindings` declaration is not valid.",
+      action: `Fix \`declinedBindings\` in ${target.name}'s pithy.config.ts. Each entry is a binding name mapped to a one-line reason. ${declines.problem}`,
+    });
+  }
+
+  // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
+  // and a Worker with no `app` block still answers somewhere.
+  const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
+
+  // Ahead of the `ownBindings` rewrite, so an entry written here is already named for its owner.
+  const bindings = composesResources
+    ? await reconcileDeclaredBindings({
+        workerDir: target.dir,
+        ...(project === undefined ? {} : { project }),
+        capabilities: target.capabilities,
+        declarations,
+        declined: declines === undefined ? new Set() : honoredNames(declines),
+        ownBindings,
+        ...(env === undefined ? {} : { env }),
+      })
+    : [];
+  const ownedBindings = owning
+    ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
+    : [];
+  if (!app && domains === undefined && !composesResources && ownBindings.length === 0 && ownedBindings.length === 0) {
+    throw new NotFoundError({
+      message: `${target.name} declares neither domains nor an app capability.`,
+      action:
+        "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
+    });
+  }
+
+  const runs =
+    app && project
+      ? await reconcileAppWorkflows({
+          workerDir: target.dir,
+          project,
+          app,
+          // Their adopter-hosted jobs' entries and crons are the adopter's, and stay.
+          capabilities: target.config.capabilities,
+          ...(env === undefined ? {} : { env }),
+        })
+      : [];
+  // The app's service bindings, each at the script its target deploys as per environment.
+  const declared = (app?.requiredBindings ?? []).flatMap((binding) =>
+    binding.type === "service" && binding.service !== undefined
+      ? [{ binding: binding.name, target: binding.service }]
+      : [],
+  );
+  const serviceRuns =
+    project && declared.length > 0
+      ? await reconcileServiceStanzas({
+          workerDir: target.dir,
+          services: declared,
+          from: basename(target.dir),
+          scripts: await serviceScripts(
+            project,
+            (await serviceWorkerNames(projectDir)).map((names) =>
+              names.dir === target.dir ? { ...names, composed: target.config.capabilities } : names,
+            ),
+          ),
+          ...(env === undefined ? {} : { env }),
+        })
+      : [];
+  return { target, routes, bindings, runs, serviceRuns, ownedBindings, owned: ownBindings.length };
+}
+
+/** One sentence per change a sync report holds, as the text output and a dry run's plan both say it. */
+function syncChanges(report: WorkerSyncReport): string[] {
+  const lines: string[] = [];
+  for (const route of report.routes) {
+    if (route.changed) lines.push(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.`);
+  }
+  for (const run of report.bindings) {
+    if (run.written.length > 0)
+      lines.push(`${run.env}: ${run.written.map((entry) => entry.binding).join(", ")} written.`);
+    for (const entry of run.skipped) lines.push(`${run.env}: ${entry.binding} not written: ${entry.reason}.`);
+  }
+  for (const run of report.runs) {
+    if (!run.changed) continue;
+    const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
+    // `nothing` rather than an empty gap: a run that moved to an empty table took a job's binding
+    // out, and a line reading ": . no cron." says that as badly as it can be said.
+    const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
+    lines.push(`${run.env}: ${bound} bound. ${crons}.`);
+  }
+  for (const run of report.serviceRuns) {
+    if (!run.changed) continue;
+    lines.push(`${run.env}: ${run.services.map((entry) => `${entry.binding} to ${entry.service}`).join(", ")}.`);
+  }
+  for (const change of report.ownedBindings) {
+    lines.push(
+      change.to === undefined
+        ? `${change.env}: ${change.binding} ${change.field} removed.`
+        : `${change.env}: ${change.binding} ${change.field} ${change.to}.`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * {@link syncWorker} in a private copy of the project, and the plan of what it changed there. The Worker's
+ * `wrangler.jsonc` entry carries the run's own sentences as its `changes`. A run that changed no file still has
+ * sentences when it skipped a binding, and those go in the plan's `notes`, so the plan says everything the run prints.
+ */
+async function planWorkerSync(
+  projectDir: string,
+  options: { worker: string | undefined; env: string | undefined; interactive: boolean },
+): Promise<{ report: WorkerSyncReport; plan: Plan }> {
+  const { result, files, notes } = await inShadow(projectDir, async (shadow) => {
+    const report = await syncWorker({ ...options, projectDir: shadow.root });
+    return { report, wrangler: relative(shadow.root, join(report.target.dir, "wrangler.jsonc")).split(sep).join("/") };
+  });
+  const changes = syncChanges(result.report);
+  const planned = files.some((file) => file.path === result.wrangler);
+  return {
+    report: result.report,
+    plan: {
+      ...emptyPlan(),
+      files: files.map((file) =>
+        file.path === result.wrangler ? { ...file, changes: [...file.changes, ...changes] } : file,
+      ),
+      notes: planned ? notes : [...changes, ...notes],
+    },
+  };
+}
+
 /**
  * `pithy worker sync` — write what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`: the
  * route and `vars.BASE_URL` its `domains` block implies, every D1, KV, R2 and queue binding it composes, the app
@@ -697,7 +902,8 @@ function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDo
  * D1, KV, R2 or queue binding the Worker composes and the stanza lacks.
  *
  * It writes config and nothing else — no Cloudflare call, no deploy — so it is safe to run on any branch,
- * at any time, as often as you like. A second run reports "already in sync" and touches no file.
+ * at any time, as often as you like. A second run reports "already in sync" and touches no file. `--dry-run` makes the
+ * same writes in a copy of the project and plans the difference, so the plan is the bytes the real run writes.
  */
 const sync = withContract(
   defineCommand({
@@ -709,6 +915,7 @@ const sync = withContract(
     args: {
       worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
       env: optionalEnvArg("Reconcile just this environment (omit for every one the worker declares)"),
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -716,137 +923,22 @@ const sync = withContract(
         // First, before any config is loaded: an illegal environment must cost nothing.
         const env = args.env === undefined ? undefined : requireEnvironment(args.env);
         const projectDir = process.cwd();
-        const interactive = mayPrompt(args.json);
-        // Composed for `--env` when one is named. Without it every environment is reconciled from the
-        // composition for dev: a `domains` or `app` declaration that differs by environment is written from
-        // dev's value into every stanza. That is this command's limit, not a composition for none.
-        const target = await targetWorker(env ?? LOCAL_ENVIRONMENT, {
-          projectDir,
-          interactive,
-          ...(args.worker === undefined ? {} : { worker: args.worker }),
-        });
-
-        // The address, validated first and separately from the app capability — a malformed declaration must
-        // name the field here, not produce a route Cloudflare rejects at deploy.
-        const domains = loadWorkerDomains(target.config);
-
-        const app = target.config.app;
-        // The D1 names `ownBindings` implies — and, for an entry taken out, the ones it no longer does. Asked of
-        // every Worker composing a database, because the second half has nothing listed to trigger it, and of
-        // every Worker listing an owned binding, because a global one of any kind is refused there.
-        const ownBindings = target.target.ownBindings ?? [];
-        const composesDatabase = target.capabilities.some((capability) =>
-          capability.requiredBindings.some((binding) => binding.type === "d1"),
-        );
-        // Every D1, KV, R2 and queue binding the Worker composes is written below, so a Worker composing one reads
-        // the project name for the names those entries carry, and writes what needs none without it.
-        const composesResources = declaredBindingSpecs(target.capabilities).length > 0;
-        // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and stable forever
-        // once deployed, so a guessed project would name a Workflow another owns. A script name and a database
-        // name are the same.
-        // A Worker owning nothing has nothing to reconcile without a project name, so only the app or an owned
-        // binding makes the name required.
-        const project =
-          app || ownBindings.length > 0
-            ? await loadProject(projectDir).then(requireProjectName)
-            : composesResources
-              ? await loadProject(projectDir)
-                  .then(requireProjectName)
-                  .catch(() => undefined)
-              : undefined;
-        const manifests =
-          composesResources || (project && ownBindings.length > 0)
-            ? (await composedManifests(projectDir, target.dir)).manifests
-            : [];
-        const declarations = bindingDeclarations(manifests, target.config.app);
-        const owning =
-          project && (composesDatabase || ownBindings.length > 0)
-            ? { workerDir: target.dir, project, capabilities: target.capabilities, declarations, ownBindings }
-            : undefined;
-        // Before any write: a global binding in `ownBindings` fails the command with wrangler.jsonc untouched.
-        if (owning) refuseOwnedGlobals(owning);
-        // Before any write too: a declaration nobody can read leaves nothing out, so every optional binding it
-        // meant to decline would be written into every stanza.
-        const declines = composesResources
-          ? workerDeclines({ manifests, capabilities: target.capabilities, workerConfig: target.config })
-          : undefined;
-        if (declines?.state === "invalid") {
-          throw new ValidationError({
-            message: "This Worker's `declinedBindings` declaration is not valid.",
-            action: `Fix \`declinedBindings\` in ${target.name}'s pithy.config.ts. Each entry is a binding name mapped to a one-line reason. ${declines.problem}`,
-          });
-        }
-
-        // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
-        // and a Worker with no `app` block still answers somewhere.
-        const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
-
-        // Ahead of the `ownBindings` rewrite, so an entry written here is already named for its owner.
-        const bindings = composesResources
-          ? await reconcileDeclaredBindings({
-              workerDir: target.dir,
-              ...(project === undefined ? {} : { project }),
-              capabilities: target.capabilities,
-              declarations,
-              declined: declines === undefined ? new Set() : honoredNames(declines),
-              ownBindings,
-              ...(env === undefined ? {} : { env }),
-            })
-          : [];
-        const ownedBindings = owning
-          ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
-          : [];
-        if (
-          !app &&
-          domains === undefined &&
-          !composesResources &&
-          ownBindings.length === 0 &&
-          ownedBindings.length === 0
-        ) {
-          throw new NotFoundError({
-            message: `${target.name} declares neither domains nor an app capability.`,
-            action:
-              "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
-          });
-        }
-
-        const runs =
-          app && project
-            ? await reconcileAppWorkflows({
-                workerDir: target.dir,
-                project,
-                app,
-                // Their adopter-hosted jobs' entries and crons are the adopter's, and stay.
-                capabilities: target.config.capabilities,
-                ...(env === undefined ? {} : { env }),
-              })
-            : [];
-        // The app's service bindings, each at the script its target deploys as per environment.
-        const declared = (app?.requiredBindings ?? []).flatMap((binding) =>
-          binding.type === "service" && binding.service !== undefined
-            ? [{ binding: binding.name, target: binding.service }]
-            : [],
-        );
-        const serviceRuns =
-          project && declared.length > 0
-            ? await reconcileServiceStanzas({
-                workerDir: target.dir,
-                services: declared,
-                from: basename(target.dir),
-                scripts: await serviceScripts(
-                  project,
-                  (await serviceWorkerNames(projectDir)).map((names) =>
-                    names.dir === target.dir ? { ...names, composed: target.config.capabilities } : names,
-                  ),
-                ),
-                ...(env === undefined ? {} : { env }),
-              })
-            : [];
-
+        const options = { worker: args.worker, env, interactive: mayPrompt(args.json) };
+        const dryRun = args["dry-run"] === true;
+        // Under --dry-run, the real reconcile in a copy of the project: the plan is the bytes the run would write.
+        const { report, plan } = dryRun
+          ? await planWorkerSync(projectDir, options)
+          : { report: await syncWorker({ ...options, projectDir }), plan: undefined };
+        const { target, routes, bindings, runs, serviceRuns, ownedBindings, owned } = report;
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings })}\n`,
+            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, plan })}\n`,
           );
+          return;
+        }
+        if (plan !== undefined) {
+          for (const line of planText(plan)) process.stdout.write(`${line}\n`);
+          process.stdout.write("Dry run. Nothing written.\n");
           return;
         }
         // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
@@ -864,7 +956,7 @@ const sync = withContract(
           const nothing =
             routes.length === 0 &&
             bindings.length === 0 &&
-            ownBindings.length === 0 &&
+            owned === 0 &&
             serviceRuns.length === 0 &&
             runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
           process.stdout.write(
@@ -873,38 +965,7 @@ const sync = withContract(
           process.stdout.write(`${formatDone()}\n`);
           return;
         }
-        for (const route of routes) {
-          if (!route.changed) continue;
-          process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
-        }
-        for (const run of bindings) {
-          if (run.written.length > 0) {
-            process.stdout.write(`${run.env}: ${run.written.map((entry) => entry.binding).join(", ")} written.\n`);
-          }
-          for (const entry of run.skipped) {
-            process.stdout.write(`${run.env}: ${entry.binding} not written: ${entry.reason}.\n`);
-          }
-        }
-        for (const run of runs) {
-          if (!run.changed) continue;
-          const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
-          // `nothing` rather than an empty gap: a run that moved to an empty table took a job's binding
-          // out, and a line reading ": . no cron." says that as badly as it can be said.
-          const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
-          process.stdout.write(`${run.env}: ${bound} bound. ${crons}.\n`);
-        }
-        for (const run of serviceRuns) {
-          if (!run.changed) continue;
-          const bound = run.services.map((entry) => `${entry.binding} to ${entry.service}`).join(", ");
-          process.stdout.write(`${run.env}: ${bound}.\n`);
-        }
-        for (const change of ownedBindings) {
-          process.stdout.write(
-            change.to === undefined
-              ? `${change.env}: ${change.binding} ${change.field} removed.\n`
-              : `${change.env}: ${change.binding} ${change.field} ${change.to}.\n`,
-          );
-        }
+        for (const line of syncChanges(report)) process.stdout.write(`${line}\n`);
         // Cloudflare resolves class_name in the script the binding names, and that script is this one.
         const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
         if (classes.length > 0) {

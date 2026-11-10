@@ -219,6 +219,41 @@ export const WRANGLER_KEYS: Readonly<Record<BindingType, string>> = {
   artifacts: "artifacts",
 };
 
+/** Every key a stanza holds a binding under: each kind's, and the version metadata binding. */
+const BINDING_KEYS: ReadonlySet<string> = new Set([...Object.values(WRANGLER_KEYS), "version_metadata"]);
+
+/**
+ * Set `stanza[key]` to `value`, beside the stanza's other bindings: a key the stanza already holds is replaced where
+ * it stands, and a new one lands right after the last binding key the stanza holds, else just before its `env`, else
+ * at its end. The keys after it are re-added in order, so a comment-json comment on one stays with it.
+ */
+export function placeBinding(stanza: object, key: string, value: unknown): void {
+  const record = stanza as Record<string, unknown>;
+  if (Object.hasOwn(record, key)) {
+    record[key] = value;
+    return;
+  }
+  const keys = Object.keys(record);
+  const lastBinding = keys.reduce((last, existing, index) => (BINDING_KEYS.has(existing) ? index : last), -1);
+  const at = lastBinding === -1 ? (keys.includes("env") ? keys.indexOf("env") : keys.length) : lastBinding + 1;
+  const moved = keys.slice(at).map((existing) => [existing, record[existing]] as const);
+  for (const [existing] of moved) delete record[existing];
+  record[key] = value;
+  for (const [existing, kept] of moved) record[existing] = kept;
+}
+
+/** `stanza[key]`, first set to `initial` by {@link placeBinding} when the stanza holds nothing there. */
+export function bindingSlot<S extends object, K extends keyof S & string>(
+  stanza: S,
+  key: K,
+  initial: NonNullable<S[K]>,
+): NonNullable<S[K]> {
+  const existing = stanza[key];
+  if (existing !== undefined && existing !== null) return existing;
+  placeBinding(stanza, key, initial);
+  return initial;
+}
+
 /** The array-shaped carried kinds, each an entry of `binding` plus the field its `target` is written as. */
 type CarriedArrayKind =
   | "hyperdrive"
@@ -635,11 +670,11 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
 
   switch (binding.type) {
     case "d1": {
-      stanza.d1_databases ??= [];
+      const databases = bindingSlot(stanza, "d1_databases", []);
       const name = proposeName(scope, binding, "d1");
       // An owned database's local store is its own: Miniflare keys a D1 store on `database_id`, else the binding.
       const local = scope.topLevel === true && name !== undefined && ownerIn(scope, binding) !== undefined;
-      stanza.d1_databases.push(
+      databases.push(
         withRemote(
           {
             binding: binding.name,
@@ -652,37 +687,35 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       return { outcome: "written" };
     }
     case "kv": {
-      stanza.kv_namespaces ??= [];
-      stanza.kv_namespaces.push(withRemote({ binding: binding.name }, binding));
+      bindingSlot(stanza, "kv_namespaces", []).push(withRemote({ binding: binding.name }, binding));
       const name = proposeName(scope, binding, "kv");
       return name
         ? { outcome: "written", proposed: { binding: binding.name, env: scope.env, name } }
         : { outcome: "written" };
     }
     case "r2":
-      stanza.r2_buckets ??= [];
-      stanza.r2_buckets.push(withRemote({ binding: binding.name }, binding));
+      bindingSlot(stanza, "r2_buckets", []).push(withRemote({ binding: binding.name }, binding));
       return { outcome: "written" };
     case "ai":
       // A Worker gets exactly one Workers AI binding, so `ai` is an object rather than an array. An
       // existing one is left alone by the presence check above: it is either this capability's
       // (idempotency) or an adopter's deliberate choice of binding name, and clobbering either would
       // break their Worker.
-      stanza.ai = withRemote({ binding: binding.name }, binding);
+      placeBinding(stanza, "ai", withRemote({ binding: binding.name }, binding));
       return { outcome: "written" };
-    case "durable_object":
+    case "durable_object": {
       // `BindingSpec` refuses a classless DO binding at define and at manifest parse, so this is the
       // second wall rather than the first. It still says why, because a writer that returns nothing
       // teaches its caller to report the plan.
       if (binding.className === undefined)
         return { outcome: "skipped", reason: `${binding.name} declares no className` };
-      stanza.durable_objects ??= { bindings: [] };
-      stanza.durable_objects.bindings ??= [];
-      stanza.durable_objects.bindings.push(withRemote({ name: binding.name, class_name: binding.className }, binding));
+      const objects = bindingSlot(stanza, "durable_objects", { bindings: [] });
+      objects.bindings ??= [];
+      objects.bindings.push(withRemote({ name: binding.name, class_name: binding.className }, binding));
       return { outcome: "written" };
+    }
     case "ratelimit":
-      stanza.ratelimits ??= [];
-      stanza.ratelimits.push({
+      bindingSlot(stanza, "ratelimits", []).push({
         name: binding.name,
         namespace_id: rateLimitNamespaceId(binding.name),
         simple: { limit: RATE_LIMIT_REQUESTS, period: RATE_LIMIT_PERIOD_SECONDS },
@@ -691,8 +724,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "workflow": {
       const entry = workflowEntry(scope, binding);
       if ("reason" in entry) return { outcome: "skipped", reason: entry.reason };
-      stanza.workflows ??= [];
-      stanza.workflows.push(entry);
+      bindingSlot(stanza, "workflows", []).push(entry);
       return { outcome: "written" };
     }
     case "queue": {
@@ -706,17 +738,16 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
             : `the naming scheme does not accept the environment "${scope.env}"`;
         return { outcome: "skipped", reason };
       }
-      stanza.queues ??= {};
-      stanza.queues.producers ??= [];
+      const queues = bindingSlot(stanza, "queues", {});
+      queues.producers ??= [];
       // The producer the adopter already wrote is kept, and its queue is the one a consumer is added for.
-      const producer = stanza.queues.producers.find((entry) => entry.binding === binding.name);
-      if (producer === undefined)
-        stanza.queues.producers.push(withRemote({ binding: binding.name, queue: name }, binding));
+      const producer = queues.producers.find((entry) => entry.binding === binding.name);
+      if (producer === undefined) queues.producers.push(withRemote({ binding: binding.name, queue: name }, binding));
       if (binding.consumer !== undefined) {
         const consumed = producer?.queue ?? name;
-        stanza.queues.consumers ??= [];
-        if (!stanza.queues.consumers.some((entry) => entry.queue === consumed)) {
-          stanza.queues.consumers.push(queueConsumer(scope, binding, consumed));
+        queues.consumers ??= [];
+        if (!queues.consumers.some((entry) => entry.queue === consumed)) {
+          queues.consumers.push(queueConsumer(scope, binding, consumed));
         }
       }
       return { outcome: "written" };
@@ -724,8 +755,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "email":
       // The binding and nothing else. `destination_address` and `allowed_*` are where this environment's mail
       // may go, which is the adopter's to state per environment — `seedPolicy`'s `branch`, from the other end.
-      stanza.send_email ??= [];
-      stanza.send_email.push(withRemote({ name: binding.name }, binding));
+      bindingSlot(stanza, "send_email", []).push(withRemote({ name: binding.name }, binding));
       return { outcome: "written" };
     case "artifacts": {
       // `{ binding, namespace }`, and the namespace is this environment's, `<project>-<env>`. An entry with
@@ -734,8 +764,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       if (!isValidEnvironment(scope.env)) {
         return { outcome: "skipped", reason: `the naming scheme does not accept the environment "${scope.env}"` };
       }
-      stanza.artifacts ??= [];
-      stanza.artifacts.push(
+      bindingSlot(stanza, "artifacts", []).push(
         withRemote(
           { binding: binding.name, namespace: resourceNames(scope.project).env(scope.env).artifactsNamespace() },
           binding,
@@ -754,7 +783,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
           reason: `this Worker already binds ${binding.type} as ${existing.binding}, and a Worker takes one`,
         };
       }
-      stanza[binding.type] = withRemote({ binding: binding.name }, binding);
+      placeBinding(stanza, binding.type, withRemote({ binding: binding.name }, binding));
       return { outcome: "written" };
     }
     case "hyperdrive":
@@ -762,8 +791,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "pipelines":
     case "mtls_certificates":
     case "dispatch_namespaces": {
-      stanza[binding.type] ??= [];
-      stanza[binding.type]?.push(carriedEntry(binding, binding.type));
+      bindingSlot(stanza, binding.type, []).push(carriedEntry(binding, binding.type));
       return { outcome: "written" };
     }
     default:

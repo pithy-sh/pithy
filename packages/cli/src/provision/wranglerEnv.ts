@@ -13,7 +13,7 @@ import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { featureNamespaceId } from "../feature/ratelimits";
 import { type AppOwnedWorkflow, applyAppWorkflows, planAppWorkflows } from "../project/appWorkflows";
-import { appendBinding, type WranglerStanza } from "../project/bindingEntries";
+import { appendBinding, bindingSlot, placeBinding, type WranglerStanza } from "../project/bindingEntries";
 import { declaredBindingSpecs } from "../project/declaredBindings";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
@@ -99,11 +99,11 @@ interface EnvBindings {
  * so the writer that owns the rest of the stanza does it in the same edit.
  */
 function upsertSecretBindings(stanza: EnvBindings, entries: readonly SecretStoreBinding[]): void {
-  stanza.secrets_store_secrets ??= [];
+  const secrets = bindingSlot(stanza, "secrets_store_secrets", []);
   for (const entry of entries) {
-    const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+    const existing = secrets.find((candidate) => candidate.binding === entry.binding);
     if (existing) Object.assign(existing, entry);
-    else stanza.secrets_store_secrets.push({ ...entry });
+    else secrets.push({ ...entry });
   }
 }
 
@@ -290,7 +290,7 @@ function featureCarried(stanza: Record<string, unknown>, top: Record<string, unk
     const declared = top[key];
     if (declared === undefined) continue;
     if (!Array.isArray(declared)) {
-      if (stanza[key] === undefined) stanza[key] = structuredClone(declared);
+      if (stanza[key] === undefined) placeBinding(stanza, key, structuredClone(declared));
       continue;
     }
     const own = Array.isArray(stanza[key]) ? (stanza[key] as unknown[]) : undefined;
@@ -299,7 +299,7 @@ function featureCarried(stanza: Record<string, unknown>, top: Record<string, unk
     if (missing.length === 0) continue;
     // In place when the array is there, so comment-json keeps the adopter's comments on it.
     if (own) own.push(...missing);
-    else stanza[key] = missing;
+    else placeBinding(stanza, key, missing);
   }
 }
 
@@ -375,7 +375,7 @@ function featureDurableObjects(
   if (missing.length > 0) {
     if (own) own.push(...missing);
     else if (stanza.durable_objects) stanza.durable_objects.bindings = missing;
-    else stanza.durable_objects = { bindings: missing };
+    else placeBinding(stanza, "durable_objects", { bindings: missing });
   }
   const entries = stanza.durable_objects?.bindings;
   if (!entries) return;
@@ -414,7 +414,7 @@ function featureServices(
   const missing = declared.filter((entry) => !bound.has(entry.binding)).map((entry) => structuredClone(entry));
   if (missing.length > 0) {
     if (own) own.push(...missing);
-    else stanza.services = missing;
+    else placeBinding(stanza, "services", missing);
   }
   const entries = stanza.services;
   if (!entries) return;
@@ -449,7 +449,7 @@ function scopedArtifacts(stanza: EnvBindings, top: Record<string, unknown>, name
   const missing = declared.filter((entry) => !bound.has(entry.binding)).map((entry) => structuredClone(entry));
   // In place where the array is there, so comment-json keeps the adopter's comments on it.
   if (own) own.push(...missing);
-  else stanza.artifacts = missing;
+  else placeBinding(stanza, "artifacts", missing);
   for (const entry of stanza.artifacts ?? []) entry.namespace = namespace();
 }
 
@@ -649,11 +649,11 @@ export async function applyProvisionedEnv(options: {
       ? [...options.services, { binding: SELF_BINDING, service: stanza.name }]
       : options.services;
     if (services.length > 0) {
-      stanza.services ??= [];
+      const bound = bindingSlot(stanza, "services", []);
       for (const entry of services) {
-        const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
+        const existing = bound.find((candidate) => candidate.binding === entry.binding);
         if (existing) existing.service = entry.service;
-        else stanza.services.push({ ...entry });
+        else bound.push({ ...entry });
       }
     }
     if (options.secrets.length > 0) upsertSecretBindings(stanza, options.secrets);
@@ -702,13 +702,13 @@ export async function bindFeatureHosts(options: {
     stanza.workflows.length = 0;
     stanza.workflows.push(...next);
   } else if (next.length > 0) {
-    stanza.workflows = next;
+    placeBinding(stanza, "workflows", next);
   }
   for (const index of options.indexes) {
-    stanza.vectorize ??= [];
-    const existing = stanza.vectorize.find((entry) => entry.binding === index.binding);
+    const indexes = bindingSlot(stanza, "vectorize", []);
+    const existing = indexes.find((entry) => entry.binding === index.binding);
     if (existing) existing.index_name = index.name;
-    else stanza.vectorize.push({ binding: index.binding, index_name: index.name });
+    else indexes.push({ binding: index.binding, index_name: index.name });
   }
   await writeJsonc(path, config);
 }

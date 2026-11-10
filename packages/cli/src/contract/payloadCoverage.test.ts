@@ -111,6 +111,7 @@ const OPEN_SUBTREES = [
   "doctor: $.devVarsLocal|0",
   "doctor: $.devVars|0",
   "doctor: $.docsMcp|0",
+  "doctor: $.duplicateCapabilities|0",
   "doctor: $.environmentConfigs|0",
   "doctor: $.environmentConfigs|0.unresolved[]",
   "doctor: $.environmentInheritance|0",

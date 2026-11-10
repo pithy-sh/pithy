@@ -11,7 +11,7 @@ import { planSlots } from "../test-utils/planSlots";
 import { DRY_RUN_ARG, Plan, PlanKey } from "./plan";
 
 /**
- * **Every `--dry-run --json` payload shares one plan schema (#697).**
+ * **Every `--dry-run --json` payload shares one plan schema.**
  *
  * The property is only true as a set, so this asks it of the whole tree: every command that takes
  * `--dry-run` declares it as {@link DRY_RUN_ARG}, and its published payload carries `dryRun` and a `plan`
@@ -53,7 +53,7 @@ function dryRunKeys(schema: z.ZodType): boolean[] {
 }
 
 describe("--dry-run, across the tree", () => {
-  test("the commands that plan, by path: all thirteen that mutate", () => {
+  test("the commands that plan, by path: all fourteen that mutate", () => {
     expect(planning.map(pathOf).sort()).toEqual([
       "add",
       "deploy",
@@ -67,6 +67,7 @@ describe("--dry-run, across the tree", () => {
       "ui add",
       "upgrade",
       "worker rename",
+      "worker sync",
       "workflow trigger",
     ]);
   });

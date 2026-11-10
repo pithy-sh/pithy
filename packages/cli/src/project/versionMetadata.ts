@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { VERSION_METADATA_BINDING } from "@pithy-sh/core/src/worker/identity";
+import { placeBinding } from "./bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 
 /**
@@ -69,9 +70,9 @@ export async function applyVersionMetadata(workerDir: string): Promise<boolean> 
   }
   if (config.version_metadata !== undefined) return false;
 
-  // Assign the whole block rather than mutating in place: the key is absent, so there is no existing
-  // object carrying comment-json's symbol-keyed comments to preserve.
-  config.version_metadata = { binding: VERSION_METADATA_BINDING };
+  // A new block, beside the Worker's other bindings: the key is absent, so there is no existing object
+  // carrying comment-json's symbol-keyed comments to preserve.
+  placeBinding(config, "version_metadata", { binding: VERSION_METADATA_BINDING });
   await writeWranglerConfig(workerDir, config);
   return true;
 }
