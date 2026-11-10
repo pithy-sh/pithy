@@ -26,6 +26,7 @@
         "$<#1>.capability": "string",
         "$<#1>.package": "string",
         "$<#1>.packageManager": "string",
+        "$<#1>.alreadyWired": "boolean",
         "$<#1>.databases": "array",
         "$<#1>.databases[]": "object",
         "$<#1>.databases[].database": "string",

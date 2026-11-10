@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { runAdd } from "../capabilities/flow";
 import { Plan } from "../plan/plan";
 import { scaffoldProject } from "../project/scaffold";
 import { recorder } from "../test-utils/cloudflareRecorder";
@@ -86,6 +87,61 @@ describe("pithy add --dry-run", () => {
     expect(lines[0]).toBe("Would wire audit into api.");
     expect(lines).toContain("Would edit apps/api/pithy.config.ts.");
     expect(lines.at(-1)).toBe("Dry run. Nothing written.");
+    expect(await snapshotTree(dir)).toEqual(before);
+  });
+
+  /**
+   * The Worker once the real add has run: audit registered, and declared where the install declares it. The
+   * package gains the source its registration imports, because the command composes the Worker's config.
+   */
+  async function wireAudit(): Promise<void> {
+    const src = join(dir, "node_modules", "@pithy-sh", "audit", "src");
+    await mkdir(src, { recursive: true });
+    await writeFile(
+      join(src, "index.ts"),
+      [
+        'import { defineCapability } from "@pithy-sh/core/src/capability/capability";',
+        'export const audit = () => defineCapability({ name: "audit", requiredBindings: [{ type: "d1", name: "DB" }] });',
+        "",
+      ].join("\n"),
+    );
+    const declared = join(dir, "apps", "api", "package.json");
+    const doc = JSON.parse(await readFile(declared, "utf8")) as { dependencies?: Record<string, string> };
+    doc.dependencies = { ...doc.dependencies, "@pithy-sh/audit": "^0.4.0" };
+    await writeFile(declared, `${JSON.stringify(doc, null, 2)}\n`);
+    await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: join(dir, "apps", "api"),
+      project: "acme",
+      capability: "audit",
+      install: async () => ({ packageManager: "bun" }),
+      migrate: async () => [],
+      bootstrap: async () => [],
+    });
+  }
+
+  test("on a Worker already composing it: said so, and no edit that would leave a file as it is", async () => {
+    await wireAudit();
+    const before = await snapshotTree(dir);
+    const lines = (await runCaptured("add", ["audit", "--dry-run"])).join("").trimEnd().split("\n");
+    expect(lines[0]).toBe("audit is already wired into api.");
+    expect(lines.filter((line) => line.startsWith("Would "))).toEqual([]);
+    expect(lines).toContain(
+      "Runs npm install @pithy-sh/audit for apps/api/package.json. It leaves that file and the lockfile as they are while 0.4.0 is the newest release of @pithy-sh/audit, and moves both to a newer one if it is out.",
+    );
+    expect(lines.at(-1)).toBe("Dry run. Nothing written.");
+    expect(await snapshotTree(dir)).toEqual(before);
+  });
+
+  test("--json on a Worker already composing it: alreadyWired, and no file in the plan", async () => {
+    await wireAudit();
+    const before = await snapshotTree(dir);
+    const written = await runCaptured("add", ["audit", "--dry-run", "--json"]);
+    await expectConforms("add", written);
+    const payload = JSON.parse(written.join(""));
+    expect(payload).toMatchObject({ dryRun: true, alreadyWired: true });
+    expect(Plan.parse(payload.plan).files).toEqual([]);
     expect(await snapshotTree(dir)).toEqual(before);
   });
 });

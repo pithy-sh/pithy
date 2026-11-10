@@ -304,16 +304,26 @@ export function addPrompts(interactive: boolean): Pick<RunAddOptions, "prompt" |
   return interactive ? { prompt: promptConfigValues, askPrerequisites: promptPrerequisites } : {};
 }
 
+/** What a dry run and a real run both say of a Worker whose config already registers the capability. */
+function alreadyWiredLine(capability: string, worker: string): string {
+  return `${capability} is already wired into ${worker}.`;
+}
+
 /**
  * `pithy add --dry-run`, for a person: the prerequisites it would compose, the plan, and what the
- * capability needs that only provisioning supplies — the same notes the real add prints.
+ * capability needs that only provisioning supplies — the same notes the real add prints. A Worker that already
+ * composes the capability is told so in place of the wiring, and the plan under it is only what would still change.
  */
 export function addPlanText(planned: AddPlan): string[] {
   const lines: string[] = [];
   if (planned.prerequisites.length > 0) {
     lines.push(`Would compose ${planned.prerequisites.join(", ")} into ${planned.worker} first.`);
   }
-  lines.push(`Would wire ${planned.capability} into ${planned.worker}.`);
+  lines.push(
+    planned.alreadyWired
+      ? alreadyWiredLine(planned.capability, planned.worker)
+      : `Would wire ${planned.capability} into ${planned.worker}.`,
+  );
   lines.push(...planText(planned.plan), ...planned.notes, "Dry run. Nothing written.");
   return lines;
 }
@@ -354,6 +364,11 @@ const AddPayload = z
         capability: z.string().describe("The capability's name, from its manifest."),
         package: z.string().describe("The npm package the capability ships in."),
         packageManager: z.string().describe("The project's package manager: `npm`, `pnpm`, `yarn` or `bun`."),
+        alreadyWired: z
+          .boolean()
+          .describe(
+            "Whether the Worker's `pithy.config.ts` registered the capability before this add. When `true` nothing new is wired, and `plan.files` lists only what would still change.",
+          ),
         databases: z
           .array(DatabaseRun)
           .describe("The dev migration run, one entry per database touched. Empty under `--dry-run`, which runs none."),
@@ -500,7 +515,9 @@ export default withContract(
             `Composed ${result.prerequisites.join(", ")} into ${result.worker} first — ${result.capability} requires ${result.prerequisites.length === 1 ? "it" : "them"}.\n`,
           );
         }
-        process.stdout.write(`Wired ${result.capability} into ${result.worker}.\n`);
+        process.stdout.write(
+          `${result.alreadyWired ? alreadyWiredLine(result.capability, result.worker) : `Wired ${result.capability} into ${result.worker}.`}\n`,
+        );
         for (const run of result.databases) {
           process.stdout.write(`${describeRun(run)}\n`);
         }
