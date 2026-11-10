@@ -67,6 +67,65 @@ describe("runPackageStep", () => {
     expect(run.calls).toEqual([["bun", ["install"], dir]]);
   });
 
+  test("a held entry reports the version installed after the install, not the one before it", async () => {
+    const result = await runPackageStep({
+      projectDir: dir,
+      latest: false,
+      dryRun: false,
+      fetch: registry(),
+      runInstall: fakeInstall(),
+    });
+    expect(result.report.held.map((entry) => [entry.manifest, entry.installed, entry.latest])).toEqual([
+      ["package.json", "0.2.3", "0.3.1"],
+      ["apps/board/package.json", "0.2.3", "0.3.1"],
+    ]);
+  });
+
+  test("a held entry whose declaration moved in the same run reports the range now declared", async () => {
+    await writeFile(
+      join(dir, "apps", "board", "package.json"),
+      `${JSON.stringify({ name: "board", dependencies: { "@pithy-sh/kv": "~1.2.0" } }, null, 2)}\n`,
+    );
+    const result = await runPackageStep({
+      projectDir: dir,
+      latest: false,
+      dryRun: false,
+      fetch: fakeRegistry({
+        "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0"]),
+        "@pithy-sh/core": fakePackument("@pithy-sh/core", ["0.7.2"]),
+        "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["0.9.4"]),
+        "@pithy-sh/kv": fakePackument("@pithy-sh/kv", ["1.2.0", "1.2.5", "1.3.0"]),
+      }),
+      runInstall: fakeInstall(),
+    });
+    expect(await readFile(join(dir, "apps", "board", "package.json"), "utf8")).toContain('"@pithy-sh/kv": "~1.2.5"');
+    expect(result.report.held.map((entry) => [entry.name, entry.range, entry.installed, entry.reason])).toEqual([
+      ["@pithy-sh/kv", "~1.2.5", "1.2.5", "outside-range"],
+    ]);
+  });
+
+  test("a dry run's held entry reports the range declared now", async () => {
+    const result = await runPackageStep({
+      projectDir: dir,
+      latest: false,
+      dryRun: true,
+      fetch: registry(),
+      runInstall: fakeInstall(),
+    });
+    expect(result.report.held.map((entry) => entry.range)).toEqual(["^0.2.0", "^0.2.0"]);
+  });
+
+  test("a dry run's held entry reports what is installed now", async () => {
+    const result = await runPackageStep({
+      projectDir: dir,
+      latest: false,
+      dryRun: true,
+      fetch: registry(),
+      runInstall: fakeInstall(),
+    });
+    expect(result.report.held.map((entry) => entry.installed)).toEqual(["0.2.0", "0.2.0"]);
+  });
+
   test("a dry run writes nothing and never calls the installer", async () => {
     const run = fakeInstall();
     const result = await runPackageStep({

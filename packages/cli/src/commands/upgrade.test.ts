@@ -1160,8 +1160,8 @@ describe("runUpgrade --packages", () => {
       {
         name: "@pithy-sh/auth",
         manifest: "package.json",
-        range: "^0.2.0",
-        installed: "0.2.0",
+        range: "^0.2.3",
+        installed: "0.2.3",
         latest: "0.3.1",
         reason: "breaking",
         command: "pithy upgrade --packages --latest",
@@ -1169,8 +1169,8 @@ describe("runUpgrade --packages", () => {
       {
         name: "@pithy-sh/auth",
         manifest: "apps/board/package.json",
-        range: "^0.2.0",
-        installed: "0.2.0",
+        range: "^0.2.3",
+        installed: "0.2.3",
         latest: "0.3.1",
         reason: "breaking",
         command: "pithy upgrade --packages --latest",
@@ -1201,8 +1201,8 @@ describe("runUpgrade --packages", () => {
     expect(upgradeText(run, false)).toEqual([
       "Packages:",
       "  @pithy-sh/auth  ^0.2.0 → ^0.2.3  (package.json, apps/board/package.json)",
-      "  @pithy-sh/auth  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.",
-      "  @pithy-sh/ui-react  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.",
+      "  @pithy-sh/auth  0.3.1 held, 0.2.3 installed. A new 0.x minor crosses a breaking boundary. Run pithy upgrade --packages --latest.",
+      "  @pithy-sh/ui-react  0.3.1 held, 0.2.0 installed. A new 0.x minor crosses a breaking boundary. Run pithy upgrade --packages --latest.",
       "Templates (@pithy-sh/ui-react 0.2.0 → 0.3.1, held):",
       "  Templates come from the CLI's @pithy-sh/ui-react. The copies are the project's; nothing here rewrites them.",
       "  board:",
@@ -1210,6 +1210,7 @@ describe("runUpgrade --packages", () => {
       "    src/routes/pithy/choose-organization.tsx  new in 0.3.1. Not in this Worker.",
       "board:",
       "  Nothing to upgrade.",
+      "Held back: @pithy-sh/auth 0.3.1, @pithy-sh/ui-react 0.3.1. Run pithy upgrade --packages --latest to take them.",
       "Done.",
     ]);
     // Held is not a failure: the run did what it was asked, and said what it would not do.
@@ -1282,9 +1283,17 @@ describe("runUpgrade --packages", () => {
       runInstall: fakeInstall(),
       resolveWorkers: board,
     });
-    const { installed: _dry, ...dryPlan } = dry.packages ?? {};
-    const { installed: _real, ...realPlan } = real.packages ?? {};
-    expect(dryPlan).toEqual(realPlan);
+    // The two differ only in what is declared and installed: the real run rewrote and installed what its held
+    // entries resolve.
+    const planOf = (run: UpgradeRun) => {
+      const { installed: _installed, held = [], ...rest } = run.packages ?? {};
+      return { ...rest, held: held.map(({ installed: _held, range: _range, ...entry }) => entry) };
+    };
+    expect(planOf(dry)).toEqual(planOf(real));
+    expect(dry.packages?.held.map((entry) => entry.installed)).toEqual(["0.2.0", "0.2.0", "0.2.0"]);
+    expect(real.packages?.held.map((entry) => entry.installed)).toEqual(["0.2.3", "0.2.3", "0.2.0"]);
+    expect(dry.packages?.held.map((entry) => entry.range)).toEqual(["^0.2.0", "^0.2.0", "^0.2.0"]);
+    expect(real.packages?.held.map((entry) => entry.range)).toEqual(["^0.2.3", "^0.2.3", "^0.2.0"]);
     expect(dry.packages?.reconciled).toBe(true);
     const text = upgradeText(dry, true);
     expect(text).toContain("  Reconciled against the current install. The moves above are not installed.");
@@ -1334,6 +1343,50 @@ describe("runUpgrade --packages", () => {
     });
     expect(upgradeFailed(run)).toBe(true);
     expect(upgradeText(run, false)).toContain("  @pithy-sh/auth  expected 0.2.3 in package.json. Installed: 0.2.0.");
+  });
+
+  test("a CLI moved inside its range and held past it closes on both: the reconcile, then the hold", async () => {
+    const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    root.devDependencies = { "@pithy-sh/cli": "^0.9.4" };
+    await writeFile(join(dir, "package.json"), `${JSON.stringify(root, null, 2)}\n`);
+    const fetch = fakeRegistry({
+      "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0"]),
+      [UI]: fakePackument(UI, ["0.2.0"]),
+      "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["0.9.4", "0.9.5", "0.10.0"], "0.10.0", {
+        "0.9.5": { [UI]: "^0.2.0" },
+        "0.10.0": { [UI]: "^0.2.0" },
+      }),
+    });
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: fetch,
+      runInstall: fakeInstall(),
+      resolveWorkers: board,
+    });
+    const text = upgradeText(run, false);
+    expect(text).toContain(
+      "  @pithy-sh/cli  0.10.0 held, 0.9.5 installed. A new 0.x minor crosses a breaking boundary. Run pithy upgrade --packages --latest.",
+    );
+    expect(text.slice(-3)).toEqual([
+      "@pithy-sh/cli moved to 0.9.5. Run bun x pithy upgrade to reconcile with it.",
+      "Held back: @pithy-sh/cli 0.10.0. Run pithy upgrade --packages --latest to take it.",
+      "Done.",
+    ]);
+    expect(JSON.parse(upgradeJsonLine(run, "dev", false)).packages.held).toEqual([
+      {
+        name: "@pithy-sh/cli",
+        manifest: "package.json",
+        range: "^0.9.5",
+        installed: "0.9.5",
+        latest: "0.10.0",
+        reason: "breaking",
+        command: "pithy upgrade --packages --latest",
+      },
+    ]);
+    await expectConforms("upgrade", () => upgradeJsonLine(run, "dev", false));
   });
 
   test("a moved CLI stops the run before the reconcile, and says to run the new one", async () => {

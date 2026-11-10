@@ -52,9 +52,12 @@ export interface PackageMove {
 export interface PackageHeld {
   name: string;
   manifest: string;
-  /** The range as declared. */
+  /** The range as declared. After a real run's install, the range that run wrote, when it moved this declaration. */
   range: string;
-  /** The version installed where this manifest resolves it, or `null` when nothing is. */
+  /**
+   * The version installed where this manifest resolves it, or `null` when nothing is. After a real run's install,
+   * the version that install left.
+   */
   installed: string | null;
   /**
    * The newest version a move may land on: `dist-tags.latest` when it is stable, published and not

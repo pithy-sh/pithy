@@ -3565,7 +3565,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // CLI version.
   const cliLines = [`${cliAtVersion(report.cli.installed)} (installed via ${report.cli.installer})`];
   if (report.cli.state === "outdated" && report.cli.latest) {
-    cliLines.push(`Update available: ${report.cli.latest}`);
+    const boundary = crossesBreakingBoundary(report.cli.installed, report.cli.latest)
+      ? ". Crosses a breaking boundary."
+      : "";
+    cliLines.push(`Update available: ${report.cli.latest}${boundary}`);
     cliLines.push(`Run: ${report.cli.upgradeCommand}`);
   } else if (report.cli.state === "unknown") {
     // Same distinction the capabilities line draws, and it is drawn here first because this is the line
@@ -4500,7 +4503,11 @@ const DoctorPayload = z
         latest: z.string().nullable().describe("The latest known version, or `null` when none could be read."),
         installer: z.string().describe("How the CLI was installed — `brew`, `npm`, `bun`, …"),
         state: z.string().describe("Where the installed version stands against the latest."),
-        upgradeCommand: z.string().describe("The command that upgrades it, for that installer."),
+        upgradeCommand: z
+          .string()
+          .describe(
+            "The command that upgrades it. For a CLI in the project's own `node_modules` that `pithy upgrade --packages` moves, the project's package command (`pithy upgrade --packages`, `pithy upgrade --packages --latest`, or `<package manager> install`); otherwise the installer's.",
+          ),
       })
       .describe("The CLI itself."),
     shell: z.string().nullable().describe("The detected shell, `null` when none was."),

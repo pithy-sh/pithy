@@ -1215,7 +1215,7 @@ Distinct from CLI updates. When run inside a Pithy project, the doctor command r
 | To update... | Run... |
 |---|---|
 | The Pithy CLI binary | The installer-specific command (e.g., `npm i -g @pithy-sh/cli`, `brew upgrade pithy`) |
-| Project capabilities | `pithy upgrade --packages` |
+| Project capabilities | `pithy upgrade --packages`, or `pithy upgrade --packages --latest` when the declared range does not admit the newest release |
 
 These are intentionally separate. The CLI binary version is one concept; a project's capability versions are another. Conflating them would confuse the upgrade story and produce ambiguous commands.
 
