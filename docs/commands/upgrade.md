@@ -96,7 +96,8 @@ Without it, `upgrade` never moves a version. It reads the manifests installed an
 $ pithy upgrade --packages
 Packages:
   @pithy-sh/auth  ^0.6.3 → ^0.6.5  (package.json, apps/board/package.json)
-  @pithy-sh/ui-react  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.
+  @pithy-sh/ui-react  0.3.1 held, 0.2.0 installed. A new 0.x minor crosses a breaking boundary. Run pithy upgrade --packages --latest.
+  @pithy-sh/ui-react  0.3.1 held, 0.3.0 installed. Outside the declared range 0.3.0. Run pithy upgrade --packages --latest.
   @pithy-sh/x  workspace:* left alone. Not a registry range.
 Templates (@pithy-sh/ui-react 0.2.0, 0.3.0 → 0.3.1, held):
   Templates come from the CLI's @pithy-sh/ui-react. The copies are the project's; nothing here rewrites them.
@@ -106,8 +107,11 @@ Templates (@pithy-sh/ui-react 0.2.0, 0.3.0 → 0.3.1, held):
     src/routes/pithy/choose-organization.tsx  new in 0.3.1. Not in this Worker.
 board:
   Nothing to upgrade.
+Held back: @pithy-sh/ui-react 0.3.1. Run pithy upgrade --packages --latest to take it.
 Done.
 ```
+
+**Every hold is named twice.** Under `Packages:`, one line per package held the same way: the newest release, the version installed where its manifest resolves it (`nothing installed` when nothing is), why, and the command that takes it. The reason is `A new major crosses a breaking boundary.`, `A new 0.x minor crosses a breaking boundary.`, or `Outside the declared range <range>.`. Then, last before `Done.`, one `Held back:` line names every package held with its newest release, and the command once, so a run that moved everything it could still ends on what it did not take. A run that holds nothing prints neither. On a real run the range and the version installed are read after the install, so a declaration that moved within its range and held the next minor reports the range it was rewritten to and the version it moved to: `~1.2.0` moved to `~1.2.5` and holding 1.3.0 reads `1.3.0 held, 1.2.5 installed. Outside the declared range ~1.2.5.`
 
 **One install, at the root.** The rewritten manifests and the lockfile are one rollback scope: an install that fails puts every `package.json` and a text lockfile back byte for byte, and the run ends there. `bun.lockb` is binary and is not restored; `bun install` settles it. After the install, every moved package is read back from where its manifest resolves it. A package manager that resolved something else is a mismatch, named, and the run exits 1.
 
@@ -143,12 +147,12 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","schemaVersion":2,"env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null},"plan":{"files":[{"path":"AGENTS.md","action":"edit","changes":["Refreshes the Pithy block. Nothing outside it changes."]}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["board: 1 migration pending on dev. pithy upgrade --worker board --env dev --migrate applies them."]}}
+{"command":"upgrade","schemaVersion":3,"env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null},"plan":{"files":[{"path":"AGENTS.md","action":"edit","changes":["Refreshes the Pithy block. Nothing outside it changes."]}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["board: 1 migration pending on dev. pithy upgrade --worker board --env dev --migrate applies them."]}}
 ```
 
 ```
 $ pithy upgrade --json
-{"command":"upgrade","schemaVersion":2,"env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"unchanged","reason":null}}
+{"command":"upgrade","schemaVersion":3,"env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"unchanged","reason":null}}
 ```
 
 ### The envelope
@@ -191,7 +195,7 @@ A Worker that could not be planned, or was refused, contributes nothing to `plan
 | `packages.installed` | boolean | Whether the install ran. `false` on a dry run, when nothing moves, and when `unavailable` |
 | `packages.reconciled` | boolean | Whether the Workers were reconciled afterwards. `false` when `@pithy-sh/cli` itself moved, and `workers` is then empty |
 | `packages.moves` | array | One entry per declaration rewritten, each with `name`, `manifest` (relative to the root), `field` (`dependencies` or `devDependencies`), `from` and `to` (the ranges), and `target` (the version the new range installs) |
-| `packages.held` | array | One entry per declaration whose `latest` is outside its range, each with `name`, `manifest`, `range`, `installed` (or `null`), `latest`, `reason` (`"breaking"` \| `"outside-range"`) and `command`, the command that moves it |
+| `packages.held` | array | One entry per declaration whose `latest` is outside its range, each with `name`, `manifest`, `range` (the range declared: the one the run wrote when it moved that declaration on a real run, the one before it on a dry run), `installed` (the version its manifest resolves, or `null`: read after the install on a real run, before it on a dry run), `latest` (the newest release a move may land on), `reason` (`"breaking"` across a new major or a new 0.x minor \| `"outside-range"` for any other gap) and `command`, the command that moves it. Empty when nothing was held |
 | `packages.leftAlone` | array | One entry per declaration not moved, each with `name`, `manifest`, `spec` and `reason` (`"not-a-registry-range"` \| `"linked"`) |
 | `packages.mismatches` | array | Moves whose target is not what the install left, each with `name`, `manifest`, `expected` and `installed` (or `null`). Non-empty exits 1 |
 | `packages.templates` | array | At most two sections: the target this run installs (`applied: true`) and the one only `--latest` would (`applied: false`). Empty when no template-bearing package moves |
