@@ -7,17 +7,17 @@ import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { assertWorkerName, ensureEmptyTarget, environmentWorkerName, kitRange, workerNamespace } from "./scaffold";
+import { varsBlockText } from "./stanzaVars";
 
 /**
  * The wrangler every producer of a Worker manifest pins.
  *
  * Three write it: this file, `templates/starter/apps/api/package.json`, and the React stub `pithy ui add`
- * merges into a Worker. `scaffoldParity.test.ts` held it between the first two only, so the third could
- * drift from both unnoticed — a Worker whose front end and whose server deploy through different wrangler
- * majors. Exported and imported rather than restated, so there is one literal and one test holding it to
- * the template on disk.
+ * merges into a Worker. Exported and imported rather than restated, so there is one literal, and
+ * `scaffoldParity.test.ts` holds it to the template on disk: a Worker whose front end and whose server
+ * deployed through different wrangler majors would fail in neither half alone.
  *
- * **An exact version, not a range (#738).** Every wrangler since 4.148.0 pins one exact miniflare from the
+ * **An exact version, not a range.** Every wrangler since 4.148.0 pins one exact miniflare from the
  * 5 line, a prerelease, and a semver range cannot follow one prerelease to the next — so a caret here let a
  * new project resolve a wrangler whose miniflare differs from the one `@pithy-sh/cli` pins, and install two
  * workerds. `ci/miniflarePins.test.ts` holds this release, through the starter, to the kit's own wrangler;
@@ -31,7 +31,7 @@ export const WRANGLER_RANGE = "4.151.0";
 /**
  * The `@cloudflare/vite-plugin` release `pithy ui add react` writes, and the wrangler that release pins.
  *
- * **Exact, and it moves with {@link WRANGLER_RANGE} (#738).** Every vite-plugin release depends on one
+ * **Exact, and it moves with {@link WRANGLER_RANGE}.** Every vite-plugin release depends on one
  * exact wrangler and one exact miniflare, and peers `^4.<that wrangler>`. A caret beside the exact
  * wrangler above resolves the plugin's next release, whose peer the pinned wrangler no longer satisfies:
  * npm refuses the install, and bun nests a second wrangler with a second miniflare and workerd. The
@@ -46,32 +46,29 @@ export const CLOUDFLARE_VITE_PLUGIN = { version: "1.64.0", wrangler: "4.151.0" }
  *
  * The deploy name is `<project>-<name>`, the same shape `scaffoldProject` gives the first Worker — a Worker
  * script name is an account-flat Cloudflare name (CLAUDE.md §Resource naming), so the project segment is
- * the only thing keeping two projects apart. Stamping the bare directory name meant two projects that each
- * ran `pithy worker add admin` deployed to one script called `admin`, and the second `wrangler deploy`
- * silently replaced the first's live Worker.
+ * the only thing keeping two projects apart. Under the bare directory name, two projects that each ran
+ * `pithy worker add admin` would deploy to one script called `admin`, and the second `wrangler deploy` would
+ * silently replace the first's live Worker.
  */
 function workerFiles(name: string, project: string, environments: readonly string[]): Record<string, string> {
   // Built before the template rather than inside it: one stanza per declared environment, in declaration
   // order. `env.<name>.vars` REPLACES the top-level block, so every stanza repeats all three vars — and
-  // each stanza names the script it deploys under, `<project>-<env>-<worker>` (#580), rather than letting
+  // each stanza names the script it deploys under, `<project>-<env>-<worker>`, rather than letting
   // wrangler suffix the top-level name. The same shape `pithy init` stamps into the first Worker;
   // `scaffoldParity.test.ts` holds the two producers to it.
   //
-  // `version_metadata` repeats for the same reason `vars` does and not a different one (#581): wrangler
-  // does not inherit it into an environment either, so a stanza without it deploys with no
-  // `CF_VERSION_METADATA` binding and leaves `pithy deploy`'s post-deploy version check permanently
-  // inconclusive there. `observability` above is inherited and is deliberately not repeated.
-  // `pithy doctor` reports any stanza that goes without something the top level declares.
+  // `version_metadata` repeats for the same reason `vars` does: wrangler does not inherit it into an
+  // environment either, so a stanza without it deploys with no `CF_VERSION_METADATA` binding and leaves
+  // `pithy deploy`'s post-deploy version check permanently inconclusive there. `observability` above is
+  // inherited and is deliberately not repeated. `pithy doctor` reports any stanza that goes without
+  // something the top level declares.
+  const identity = (environment: string) => ({ ENVIRONMENT: environment, PROJECT: project, WORKER: name });
   const envStanzas = environments
     .map((environment) =>
       [
         `    "${environment}": {`,
         `      "name": "${environmentWorkerName(project, environment, name)}",`,
-        `      "vars": {`,
-        `        "ENVIRONMENT": "${environment}",`,
-        `        "PROJECT": "${project}",`,
-        `        "WORKER": "${name}"`,
-        `      },`,
+        `${varsBlockText(identity(environment), "      ")},`,
         `      "version_metadata": { "binding": "CF_VERSION_METADATA" }`,
         `    }`,
       ].join("\n"),
@@ -102,11 +99,7 @@ function workerFiles(name: string, project: string, environments: readonly strin
   // Stream asset this Worker mints, since those stores are account-flat and key assets by their own id.
   // \`WORKER\` is this Worker's own apps/<name> directory. The runtime tells a script nothing about
   // itself, and Workers sharing a binding share one database, so this is what tells their events apart.
-  "vars": {
-    "ENVIRONMENT": "dev",
-    "PROJECT": "${project}",
-    "WORKER": "${name}"
-  },
+${varsBlockText(identity("dev"), "  ")},
   "env": {
 ${envStanzas}
   }
@@ -144,9 +137,9 @@ ${envStanzas}
       type: "module",
       // Every field below is held equal to the starter template's by `scaffoldParity.test.ts`. This file
       // and that template are the project's two Worker producers, and only one of them is ever the file
-      // somebody remembers to edit — which is how the pins here fell a major version behind.
+      // somebody remembers to edit, so the test is what keeps their pins on one version.
       engines: { node: ">=22" },
-      // **`--config wrangler.jsonc`, and it is not decoration (#579).** `vite build` writes a
+      // **`--config wrangler.jsonc`, and it is not decoration.** `vite build` writes a
       // `.wrangler/deploy/config.json` that redirects the next `wrangler deploy` to its flattened output,
       // and wrangler searches for that file **upwards** from the Worker's directory — so
       // `bun run build && bun run deploy:staging` shipped a dev-composed Worker as staging, and even a
@@ -157,7 +150,7 @@ ${envStanzas}
       // output landed. `pithy deploy --env <name>` is what ships that Worker — it builds what it
       // deploys, and refuses anything that is not the environment asked for.
       //
-      // **`--experimental-provision=false`, because a deploy is not a provision (#589).** wrangler's default
+      // **`--experimental-provision=false`, because a deploy is not a provision.** wrangler's default
       // creates any D1, KV or bucket a binding names and it cannot find, so `bun run deploy:staging` before
       // `pithy provision` made resources nobody reviewed. With it, an unprovisioned binding fails the deploy.
       scripts: {
@@ -167,7 +160,7 @@ ${envStanzas}
         "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod --experimental-provision=false",
       },
       // `zod`, `kysely` and `hono` beside the kit, because every capability declares them as
-      // `peerDependencies` — one copy is one type (#477) — and a peer is a requirement the *consumer*
+      // `peerDependencies` — one copy is one type — and a peer is a requirement the *consumer*
       // satisfies. npm installs one at the top; bun, for a workspace member, does not, so a Worker that
       // does not declare them cannot resolve them and `@pithy-sh/core` fails to load inside the project.
       // `templates/starter/apps/api/package.json` states the same three, and `scaffoldParity.test.ts`
@@ -316,28 +309,25 @@ export async function scaffoldWorker(options: {
   name: string;
   project: string;
   /**
-   * The project's declared environments (#241). Defaults to {@link DEFAULT_ENVIRONMENTS} for a caller
-   * with no config in hand; `addWorker` passes what the root `pithy.config.ts` says, so a second Worker
-   * declares the same environments as the first rather than the pair this file used to hardcode.
+   * The project's declared environments. Defaults to {@link DEFAULT_ENVIRONMENTS} for a caller with no
+   * config in hand; `addWorker` passes what the root `pithy.config.ts` says, so a second Worker declares
+   * the same environments as the first.
    */
   environments?: readonly string[];
 }): Promise<{ dir: string }> {
   const environments = options.environments ?? DEFAULT_ENVIRONMENTS;
-  // The one judge of a worker name, imported rather than restated. It was restated here and in
-  // `renameWorker`, which is how a rule added to it — the reserved capability-host names of #580 —
-  // reached one producer out of three.
+  // The one judge of a worker name, imported rather than restated, so a rule added to it — the reserved
+  // capability-host names among them — reaches every producer of a Worker at once.
   assertWorkerName(options.name);
 
   // The gate runs **before** the directory is made, not after. A symlink anywhere between the project and
   // `apps/<name>` is refused rather than created through (see `ensureScaffoldPath`), and a *dangling* one
   // is ENOENT to a recursive `mkdir` — a raw node:fs error escaping the PithyError contract
-  // `withErrorReporting` prints from. Nothing created also means `addWorker` has nothing to roll back,
-  // which is the other half of #147's fix.
+  // `withErrorReporting` prints from. Nothing created also means `addWorker` has nothing to roll back.
   //
-  // The project directory is what bounds the walk, and passing it is the whole of #152 here: the gate used
-  // to be handed `apps/<name>` alone, so it lstat'd that one path and never looked at `apps`. A link there
-  // carried every file of the worker outside the project while the command printed the in-project path and
-  // exited 0 — `pithy init` already refused that shape, `worker add` did not.
+  // The project directory is what bounds the walk: every component from it down to `apps/<name>` is
+  // lstat'd, `apps` included. A link at `apps` would carry every file of the Worker outside the project
+  // while the command printed the in-project path and exited 0.
   const dir = join(options.projectDir, "apps", options.name);
   await ensureEmptyTarget(options.projectDir, dir);
   await mkdir(dir, { recursive: true });

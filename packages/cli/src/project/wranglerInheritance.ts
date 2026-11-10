@@ -6,9 +6,10 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import { WRANGLER_KEYS } from "./bindingEntries";
+import { setStanzaVar, stanzaVarsOf } from "./stanzaVars";
 
 /**
- * **What an `env.<name>` stanza does not inherit from the top level of a `wrangler.jsonc`** (#581).
+ * **What an `env.<name>` stanza does not inherit from the top level of a `wrangler.jsonc`**.
  *
  * Most of a `wrangler.jsonc` flows down: declare `compatibility_date`, `observability` or `triggers` once
  * at the top and every environment has it. A minority does not. Those keys are taken from the stanza
@@ -24,11 +25,8 @@ import { WRANGLER_KEYS } from "./bindingEntries";
  * own `notInheritable(…)` call sites and to its `EnvironmentNonInheritable` interface, and fails when they
  * diverge.
  *
- * **That gate is the point, not an accessory to it.** #581 was opened with a hand-written four-name list
- * read off a wrangler warning, and two of the four names were wrong — `observability` and `triggers` are
- * both inherited, and the real list is 41 names. The error survived a day, an issue body, and a commit in
- * the kit's first adopter. Enumerating from memory is exactly the shape this repo keeps being bitten by;
- * the fix is not a better memory, it is a comparison that runs.
+ * **That gate is the point, not an accessory to it.** A list read off a wrangler warning gets names wrong —
+ * `observability` and `triggers` are both inherited — and only a comparison that runs keeps it right.
  *
  * ## Why the kit repeats these rather than teaching around them
  *
@@ -193,7 +191,7 @@ export function topLevelKeysToRepeat(config: unknown): Record<string, unknown> {
  * Every non-inherited key this config declares at the top level and one of its stanzas does not repeat.
  *
  * **Stanzas, not the project's declared environments.** An environment the project declares and the Worker
- * has no stanza for is `checkEnvironments`' finding (#241) and gets its own line there; reporting it again
+ * has no stanza for is `checkEnvironments`' finding and gets its own line there; reporting it again
  * here, once per non-inherited key, would bury that one sentence under forty.
  *
  * A stanza *mentioning* the key is enough — repeating it with a different value is the whole point, and
@@ -237,11 +235,14 @@ export function describeUnrepeatedKey(found: UnrepeatedKey): string {
  * The fallback, and only the fallback. A key a {@link BindingType} lives in takes its kind's {@link seedPolicy}
  * instead ({@link CARRIED_WHOLE}, {@link CARRIED_INTO_FEATURE}), because what an entry names is a fact about the
  * kind, not about the JSON shape wrangler gives it: `analytics_engine_datasets` is an array and names an
- * account-level dataset every environment shares, and was emptied by this rule until #662. For a key the kit does
+ * account-level dataset every environment shares, which this rule would empty. For a key the kit does
  * not model, a shape is still the only thing there is to read.
  *
  * Repeating a key is not the same as duplicating its value, and the difference is the whole of this function.
- * `vars` and `version_metadata` say the same thing in every environment, so they come down verbatim. A
+ * `vars` and `version_metadata` come down verbatim: `version_metadata` says the same thing in every environment, and
+ * a var whose environments differ is rewritten after the seed by whatever owns it, `ENVIRONMENT` by
+ * {@link stanzaFor} below and a var declared with `defineVars` by `applyDeclaredVars` (`project/workerVars.ts`), which
+ * `pithy worker sync` runs on every tracked stanza and provisioning on the stanza it writes, a feature's included. A
  * `d1_databases` entry does not: it names one Cloudflare database by id, and carrying dev's id into a stanza for
  * `staging` would point staging at the database dev writes to. That is a *worse* defect than the absent binding
  * this module exists to fix — an absent binding fails loudly on the first request, a shared one corrupts quietly —
@@ -268,14 +269,12 @@ function keysWithPolicy(...policies: SeedPolicy[]): readonly string[] {
 }
 
 /**
- * **The non-inherited keys whose entries are the same in every environment — carried into every new stanza whole
- * (#643, #662).**
+ * **The non-inherited keys whose entries are the same in every environment — carried into every new stanza whole.**
  *
  * Derived, never listed: the keys of every kind whose {@link seedPolicy} is `carry`, through {@link WRANGLER_KEYS}.
- * It held one hand-written name, `ratelimits`, added after auth refused every request in a feature (#650), and a
- * table of names is a table that misses the next kind — `analytics_engine_datasets`, `mtls_certificates` and
- * `dispatch_namespaces` all name account-level resources, were all emptied by {@link seedValue}'s shape rule, and
- * all failed silently, because no capability's `requiredBindings` named them.
+ * A table of names misses the next kind — `analytics_engine_datasets`, `mtls_certificates` and
+ * `dispatch_namespaces` all name account-level resources that {@link seedValue}'s shape rule would empty, and each
+ * would fail silently, because no capability's `requiredBindings` names them.
  *
  * A rate limiter is the model. `pithy add` derives its `namespace_id` from its binding name alone, identical in
  * every environment, and its `simple` policy is the adopter's, stated once. Nothing in the entry names a resource
@@ -287,12 +286,12 @@ function keysWithPolicy(...policies: SeedPolicy[]): readonly string[] {
 export const CARRIED_WHOLE: readonly string[] = keysWithPolicy("carry");
 
 /**
- * **What a feature's stanza carries whole: every `carry` key and every `branch` one (#662).**
+ * **What a feature's stanza carries whole: every `carry` key and every `branch` one.**
  *
  * A feature is a branch of `dev`, so it takes dev's decisions the way it takes `vars` — where its mail goes
  * included, and the database and sink dev reads and writes. A declared environment is not, so a `branch` key starts
- * empty there: seeding `env.prod` from the top level once wrote the address on a developer's laptop into
- * production's first stanza (#650 review), and would have pointed production at dev's Postgres (#662).
+ * empty there: seeding `env.prod` from the top level would write the address on a developer's laptop into
+ * production's first stanza, and point production at dev's Postgres.
  * `provision/wranglerEnv.ts` reads this too, to refill a tracked `env.feature` that predates an entry.
  */
 export const CARRIED_INTO_FEATURE: readonly string[] = keysWithPolicy("carry", "branch");
@@ -306,23 +305,19 @@ interface StanzaHost {
 /**
  * **The one way to get at an environment's stanza — and the only place a stanza is created.**
  *
- * #581 taught two of the kit's stanza writers to repeat what an environment does not inherit and missed
- * the third, `provision/wranglerEnv.ts`, which is the one every `pithy provision` and every feature deploy
- * goes through. Its stanzas repeated nothing, so a feature's Worker deployed with no `vars` at all — and
- * four more modules had the same three lines. Six writers of one thing is the defect; this is the one
- * thing, and `ci/envStanzaWriters.test.ts` is what keeps a seventh from being written.
+ * Every writer that creates a stanza comes through here, so each new stanza repeats what an environment does not
+ * inherit; `ci/envStanzaWriters.test.ts` fails on a writer that does not.
  *
- * A stanza that is already there is handed back untouched — **an adopter's stanza is theirs** (#142), and a
+ * A stanza that is already there is handed back untouched — **an adopter's stanza is theirs**, and a
  * key they deliberately left out is a decision, not an omission. `pithy doctor` reports it; nothing here
  * writes over it. Only a stanza that did not exist a moment ago is seeded, because that one has no author
  * to disagree with.
  *
  * **`dev` is the top level.** Wrangler has no `env.dev` — the local environment *is* the outer object
  * ({@link LOCAL_ENVIRONMENT}) — so this hands it back, and a caller that loops over every environment a
- * project has needs no branch of its own. Three writers had spelled that branch out for themselves; the
- * fourth would have got it wrong.
+ * project has needs no branch of its own.
  *
- * **What a seeded stanza starts with is its binding kinds' {@link seedPolicy}** (#662): a `carry` kind's entries
+ * **What a seeded stanza starts with is its binding kinds' {@link seedPolicy}**: a `carry` kind's entries
  * whole, a `provision` kind's emptied for the provisioner to refill, and a `branch` kind's whole in a feature and
  * emptied in a declared environment. A key no kind lives in falls back to {@link seedValue}'s shape rule.
  *
@@ -331,7 +326,7 @@ interface StanzaHost {
  * — repeating the key while breaking the thing it is read for. Where an adopter stamps no `ENVIRONMENT`,
  * none is invented.
  *
- * Mutates `config` and returns the live stanza, so the caller goes on writing into it as it always did.
+ * Mutates `config` and returns the live stanza, so the caller goes on writing into it.
  */
 export function stanzaFor(config: unknown, env: string): Record<string, unknown> {
   const host = asRecord(config) as StanzaHost | null;
@@ -344,17 +339,16 @@ export function stanzaFor(config: unknown, env: string): Record<string, unknown>
   if (env === LOCAL_ENVIRONMENT) return host;
   host.env ??= {};
   // `asRecord`, not `!== undefined`: a hand-edited `"staging": null` is a stanza in name only, and handing
-  // it back would put every caller's `stanza.vars ??= {}` on a null. It is treated as the absence it is.
+  // it back would hand every caller a null to write into. It is treated as the absence it is.
   const existing = asRecord(host.env[env]);
   if (existing !== null) return existing;
-  // A feature carries `branch` keys too; a declared environment carries `carry` keys alone (#662).
+  // A feature carries `branch` keys too; a declared environment carries `carry` keys alone.
   const carried = env === FEATURE_ENVIRONMENT ? CARRIED_INTO_FEATURE : CARRIED_WHOLE;
   const seeded: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(topLevelKeysToRepeat(host))) {
     seeded[key] = carried.includes(key) ? value : seedValue(value);
   }
-  const vars = asRecord(seeded.vars);
-  if (vars !== null && typeof vars[ENVIRONMENT_VAR] === "string") vars[ENVIRONMENT_VAR] = env;
+  if (typeof stanzaVarsOf(seeded)?.[ENVIRONMENT_VAR] === "string") setStanzaVar(seeded, ENVIRONMENT_VAR, env);
   host.env[env] = seeded;
   return seeded;
 }

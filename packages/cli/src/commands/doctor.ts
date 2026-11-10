@@ -5,7 +5,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
-import { cliAtVersion, commandName, commandNameOf, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
+import {
+  cliAtVersion,
+  commandName,
+  commandNameOf,
+  pithyCommand,
+  type WorkerDir,
+  workerDirOf,
+} from "@pithy-sh/core/src/cli/command";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -183,6 +190,7 @@ import {
   type TurnstileSitekeysCheck,
   type TurnstileSitekeysOptions,
 } from "../doctor/turnstileSitekeys";
+import { checkVarStanzas, describeVarStanzas, VAR_STANZAS_ACTION, type VarStanzasCheck } from "../doctor/varStanzas";
 import {
   checkWorkerNames,
   describeReservedWorkerName,
@@ -432,6 +440,12 @@ export interface DoctorReport {
    * the exit.
    */
   duplicateCapabilities: DuplicateCapabilitiesCheck | null;
+  /**
+   * Whether every stanza of every Worker's `wrangler.jsonc` sets each var the top level sets or the Worker declares,
+   * at a value its declaration takes. `null` outside a project, and `could-not-check` when the check threw. A finding
+   * prints in both forms and never fails the exit.
+   */
+  varStanzas: VarStanzasCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares, and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -937,6 +951,8 @@ export interface DoctorReportOptions {
   checkRootImports?: (projectDir: string) => Promise<RootImportsCheck>;
   /** Duplicate-capability seam; defaults to {@link checkDuplicateCapabilities}. Reads files only. */
   checkDuplicateCapabilities?: (projectDir: string) => Promise<DuplicateCapabilitiesCheck>;
+  /** Var-stanza seam; defaults to {@link checkVarStanzas}. Reads files, and each Worker's `pithy.config.ts`. */
+  checkVarStanzas?: (projectDir: string) => Promise<VarStanzasCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -1144,6 +1160,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeTestBindings = options.checkTestBindings ?? checkTestBindings;
   const probeRootImports = options.checkRootImports ?? checkRootImports;
   const probeDuplicateCapabilities = options.checkDuplicateCapabilities ?? checkDuplicateCapabilities;
+  const probeVarStanzas = options.checkVarStanzas ?? ((projectDir: string) => checkVarStanzas(projectDir));
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1828,6 +1845,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       })
     : null;
 
+  // Each stanza's vars against the top level's and the Worker's declaration.
+  const varStanzas = inProject
+    ? await probed<VarStanzasCheck>(() => probeVarStanzas(options.projectDir), {
+        state: "could-not-check",
+        findings: [],
+      })
+    : null;
+
   // One copy of each shared runtime, or several. Cheap — it resolves rather than reading a directory —
   // and it answers a question whose natural symptom is a TypeScript error naming neither the package
   // nor the duplication, which is the kind of thing this command exists to say out loud.
@@ -1888,6 +1913,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     testBindings,
     rootImports,
     duplicateCapabilities,
+    varStanzas,
     sharedRuntimes,
     devSecretsFile,
     devVarsLocal,
@@ -3768,6 +3794,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // A var a stanza drops, or holds a value its declaration refuses. Printed in both forms.
+  if (report.varStanzas?.state === "faulty") {
+    blocks.push(
+      [
+        "Worker vars:",
+        ...describeVarStanzas(report.varStanzas).map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${VAR_STANZAS_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -4051,6 +4088,21 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             fix: null,
           })),
           findings: describeDuplicateCapabilities(report.duplicateCapabilities),
+        }
+      : null,
+    varStanzas: report.varStanzas
+      ? {
+          state: report.varStanzas.state,
+          vars: report.varStanzas.findings.map((entry) => ({
+            ...entry,
+            detail: describeVarStanzas({ state: "faulty", findings: [entry] }).join(" "),
+            // A declared var is what `worker sync` writes; any other is an edit to wrangler.jsonc.
+            fix:
+              (entry.kind === "missing" && entry.declared) || entry.kind === "copied"
+                ? pithyCommand("worker sync", { flags: { "--worker": workerDirOf({ dir: entry.worker }) } })
+                : null,
+          })),
+          findings: describeVarStanzas(report.varStanzas),
         }
       : null,
     selfBinding: report.selfBinding
@@ -4660,6 +4712,41 @@ const DoctorPayload = z
           )
           .describe("One entry per capability, in the root's declaration order."),
         findings: z.array(z.string().describe("One finding.")).describe("One sentence per capability."),
+      },
+    ),
+    varStanzas: Check(
+      "Vars a Worker's wrangler.jsonc stanza drops, holds at a value its declaration refuses, or holds at the top level's value where its declaration gives that environment its own, or `null` outside a project.",
+      {
+        state: State("`ok`, `faulty`, `could-not-check`"),
+        vars: z
+          .array(
+            z
+              .object({
+                worker: z.string().describe("The Worker's `apps/<name>` directory."),
+                kind: z
+                  .enum(["missing", "invalid", "copied"])
+                  .describe(
+                    "`missing` when the stanza lacks the var, `invalid` when its value is refused, `copied` when it holds the top level's value in place of its environment's own.",
+                  ),
+                stanza: z.string().describe("`vars` for the top level, `env.<name>` for an environment."),
+                name: z.string().describe("The var."),
+                declared: z
+                  .boolean()
+                  .optional()
+                  .describe("Whether the Worker or a capability it composes declares it. On `missing` only."),
+                line: z
+                  .string()
+                  .optional()
+                  .describe("The line to set in the stanza's `vars`. On `missing` and `copied`."),
+                value: z.unknown().optional().describe("The value the stanza holds. On `invalid` and `copied`."),
+                problem: z.string().optional().describe("Why the declaration refuses it. On `invalid` only."),
+                detail: z.string().describe("The sentence."),
+                fix: DoctorFix,
+              })
+              .describe("One var one stanza lacks or holds wrongly."),
+          )
+          .describe("One entry per finding, each Worker's top level first, then each environment."),
+        findings: z.array(z.string().describe("One finding.")).describe("One sentence per finding."),
       },
     ),
     biomeIncludes: Check("Biome exclusions that would skip every file of a checkout, or `null` outside a project.", {

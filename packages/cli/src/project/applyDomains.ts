@@ -2,20 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { DOMAIN_ENVIRONMENTS, domainFor, originFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { BASE_URL_VAR } from "@pithy-sh/core/src/worker/identity";
+import { setStanzaVar } from "./stanzaVars";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { stanzaFor } from "./wranglerInheritance";
 
 /**
  * Generate a Worker's `routes` and `vars.BASE_URL` from its `domains` declaration.
  *
- * One declaration in, two derived wrangler values out, per environment. Nothing is hand-maintained: the
- * whole point of #89 Part 1 is that an adopter states the address once and everything downstream of it is
- * computed, so a route and a `BASE_URL` can no longer disagree with each other or with the declaration.
+ * One declaration in, two derived wrangler values out, per environment. An adopter states the address once
+ * and both are computed from it, so a route and a `BASE_URL` cannot disagree with each other or with the
+ * declaration.
  *
- * `BASE_URL` stays a wrangler var rather than moving into the declaration alone, because the **Worker
- * reads it at runtime** — `@pithy-sh/email` builds tracking and unsubscribe links against it, and the
- * email Workflow host has it stamped into its own config at provision time. What changed is that it is
- * derived rather than hand-set.
+ * `BASE_URL` is a wrangler var because the **Worker reads it at runtime** — `@pithy-sh/email` builds
+ * tracking and unsubscribe links against it. It is written through `stanzaVars.ts`, the one writer of a
+ * stanza's `vars`.
  *
  * ## Per environment, always
  *
@@ -122,12 +123,8 @@ function closeWorkersDev(stanza: DomainStanza): void {
  * is left completely alone — never cleared, because an adopter may have written a route by hand and this
  * must not delete it just because they have not adopted the declaration for that environment.
  *
- * **This is the only thing that writes a route, and until #264 the only way to reach it was a prompt.**
- * Its one caller was `writeDomains`, called only from an interactive `pithy init` or `pithy worker add` —
- * and `askDomains` returns nothing at all when a session is not interactive. So a `--json` scaffold, a CI
- * run, and every adopter who added `domains` to a `pithy.config.ts` by hand got a declaration with no route
- * behind it, and nothing downstream ever noticed. `pithy worker sync` is the second caller, and the
- * non-interactive one: the declaration goes in the config, the command writes what it implies.
+ * **This is the only thing that writes a route.** `pithy init` and `pithy worker add` call it when a domain is
+ * named at a prompt; `pithy worker sync` is the non-interactive caller, for a declaration written by hand.
  */
 export async function applyDomains(workerDir: string, domains: WorkerDomains): Promise<AppliedDomain[]> {
   const config = (await readWranglerConfig(workerDir)) as DomainWrangler;
@@ -143,18 +140,14 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
     const before = JSON.stringify(config.env?.[env] ?? null);
     // `dev` is never in `DOMAIN_ENVIRONMENTS`, so this only ever reaches an `env.<name>` stanza — which is
     // also the only place the values would be read from, since env stanzas replace the top level. Through
-    // the one reader, so a stanza this creates carries what an environment does not inherit (#581): a
-    // Worker that first got a route here would otherwise be published with no `vars` and no version
-    // binding, from a stanza holding a route and nothing else.
+    // the one reader, so a stanza this creates carries what an environment does not inherit.
     const stanza = stanzaFor(config, env) as DomainStanza;
 
     upsertRoute(stanza, domain.pattern, domain.zone);
-    stanza.vars ??= {};
     // Through `originFor`, never `baseUrlFor` directly — the same call an adopter's `pithy.config.ts`
-    // makes to hand a capability its origin (#256). That is what makes "`vars.BASE_URL` and the
-    // capability configs cannot disagree" a property of the code rather than a thing to remember.
+    // makes to hand a capability its origin, so `vars.BASE_URL` and the capability configs cannot disagree.
     const baseUrl = originFor(env, domains);
-    stanza.vars.BASE_URL = baseUrl;
+    setStanzaVar(stanza, BASE_URL_VAR, baseUrl);
     closeWorkersDev(stanza);
 
     applied.push({ env, pattern: domain.pattern, baseUrl, changed: before !== JSON.stringify(stanza) });

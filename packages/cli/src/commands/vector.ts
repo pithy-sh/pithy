@@ -17,6 +17,7 @@ import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from 
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { setStanzaVar } from "../project/stanzaVars";
 import { workerDirName } from "../project/workerIdentity";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
@@ -156,12 +157,6 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   };
 }
 
-/** The `wrangler.jsonc` slice the provisioning record is written into. */
-interface WranglerVarsConfig {
-  vars?: Record<string, string>;
-  env?: Record<string, { vars?: Record<string, string> } | undefined>;
-}
-
 /**
  * Write what provisioning observed into the app's `wrangler.jsonc`, as the `VECTOR_PROVISIONED` var for this
  * environment. The Worker compares its declared filterable fields against it at boot and refuses to serve on
@@ -184,12 +179,10 @@ async function recordProvisioned(
   const { toProvisionRecord, VECTOR_PROVISIONED_VAR } = await loadVector(projectDir);
   const value = JSON.stringify(toProvisionRecord(result));
 
-  const config = (await readWranglerConfig(workerDir)) as WranglerVarsConfig;
+  const config = await readWranglerConfig(workerDir);
   // The one reader. `dev` comes back as the top level, and an `env.<name>` it creates carries what
   // an environment does not inherit — so the drift record never lands in a stanza that holds it alone.
-  const stanza = stanzaFor(config, env) as { vars?: Record<string, string> };
-  stanza.vars ??= {};
-  stanza.vars[VECTOR_PROVISIONED_VAR] = value;
+  setStanzaVar(stanzaFor(config, env), VECTOR_PROVISIONED_VAR, value);
   await writeWranglerConfig(workerDir, config);
 }
 

@@ -346,6 +346,15 @@ export interface WorkerConfig {
    * Typed `unknown` and read through {@link readPinnedBindings} for the same reason its neighbor is.
    */
   pinnedBindings?: unknown;
+  /**
+   * The wrangler vars this Worker declares, built with `defineVars` from `@pithy-sh/core/src/worker/vars`: each var's
+   * description, schema, default and per-environment values. `pithy worker sync` writes them into every stanza of
+   * `wrangler.jsonc`, and `pithy doctor` names a stanza that drops one.
+   *
+   * Typed `unknown` and read through `declaredWorkerVars` in `./workerVars.ts`, which refuses one `defineVars` did
+   * not build.
+   */
+  vars?: unknown;
 }
 
 /**

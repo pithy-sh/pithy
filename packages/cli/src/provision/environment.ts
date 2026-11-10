@@ -29,6 +29,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
 import type { KitWorkerDeploy } from "../project/deployKit";
 import { workerDirName } from "../project/workerIdentity";
+import { declaredWorkerVars } from "../project/workerVars";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { addProvisionedHosts, bindHostWorkflows, type ProvisionedHost } from "./hostBindings";
@@ -865,6 +866,8 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // appends the app to the libraries and the array cannot say which one it was, so a guess here would
       // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
       ...(worker.config?.app ? { app: worker.config.app } : {}),
+      // Every var this Worker declares, so the stanza written here deploys with this scope's value of each.
+      vars: declaredWorkerVars(worker.config ?? {}, worker.capabilities),
       ...(subdomain !== undefined ? { subdomain } : {}),
       // Deploy name to this scope's script name, handed to the writer so a `durable_objects` or hand-written
       // `services` entry naming a sibling Worker reaches this scope's copy of it.

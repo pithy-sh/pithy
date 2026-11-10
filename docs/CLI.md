@@ -827,6 +827,54 @@ The comparison covers only values the kit owns. A limiter's `limit` and `period`
 **An environment absent from `domains` resolves to `http://localhost`, never to another environment's origin.** An undeclared environment is an unpublished one, and the only unpublished environment is the local one — so the fallback fails closed: a link that goes nowhere, which is useless rather than harmful. A *deployed* environment must never keep it, and it cannot: `pithy deploy --env <name>` refuses an environment whose config declares no origin, and `pithy doctor` reports it first.
 
 **One origin deliberately does not derive: `controlplane.issuer`.** It is an identity, not an address. A connection stores the issuer it was created with and verification checks that stored value, so a per-environment issuer would make a connection minted in staging unverifiable in production. That may well be the better isolation, but it is a decision about trust rather than about reachability — write it, do not derive it.
+
+#### Declaring a Worker's vars
+
+A plain wrangler var — a tunable, a feed address, a threshold — is declared with `defineVars` from `@pithy-sh/core/src/worker/vars` and set as `vars` in the Worker's `pithy.config.ts`, beside `domains` and `capabilities`. Declare it in a module of its own, so the Worker's code imports the declaration without importing its config:
+
+```ts
+// apps/stats/src/vars.ts
+import { defineVars } from "@pithy-sh/core/src/worker/vars";
+import { z } from "zod";
+
+export const VARS = defineVars({
+  READY_AFTER_MINUTES: {
+    description: "Minutes after the cron the next file is ready.",
+    schema: z.coerce.number().int().min(0),
+    default: 15,
+    environments: { prod: 30 },
+  },
+});
+```
+
+```ts
+// apps/stats/pithy.config.ts
+import { VARS } from "./src/vars";
+
+const config = {
+  domains: DOMAINS,
+  capabilities: [ … ],
+  vars: VARS,
+  app,
+};
+```
+
+Each var takes four things. **`description`** is one line saying what it is, and it is required: the type refuses a var without one, and so does `defineVars` for a config the compiler never saw. **`schema`** is the Zod schema its value parses under. **`default`** is the value every environment gets that names none of its own. **`environments`** is optional, keyed by environment: `dev` is the top-level stanza, and `staging`, `prod` or any environment the root `pithy.config.ts` declares is that `env.<name>`. The default and every environment value are held to the schema when the declaration is built, and a value must be JSON, because that is what wrangler stores. A name is letters, digits and underscores, and never one every object already has, like `constructor` or `toString`.
+
+**The Worker reads them typed.** `VARS.read(env)` parses each var out of the Worker's `env` and returns the values typed by their schemas, with the default in place of one that is missing or does not parse, so no app code parses a var or falls back by hand:
+
+```ts
+import { VARS } from "./vars";
+
+const { READY_AFTER_MINUTES } = VARS.read(env); // number
+```
+
+A value that arrives as text, the way a `.dev.vars` line does, is tried as JSON when it does not parse as it is.
+
+**A capability declares the vars it reads the same way**, as the `vars` option of its `defineCapability` call, built with `defineVars`. That is the `Capability` object the CLI loads, not `pithy.manifest.json`: a `vars` key in the manifest file is never read. They are written into every stanza of every Worker composing it, beside the Worker's own. A name two sources declare — the Worker and a capability, or two capabilities — is refused by `pithy worker sync` before anything is written, naming both.
+
+`pithy worker sync` writes every declared var into the top-level `vars` and every `env.<name>.vars` (§6.5), `pithy provision` writes them into the stanza it provisions, a feature's generated one included ([`commands/provision.md`](commands/provision.md)), and `pithy doctor`'s `Worker vars:` block names a stanza that drops one ([`commands/doctor.md`](commands/doctor.md)). Secrets are not vars: they stay in the Secrets Store.
+
 ### 3.7 One pinned region, for one command
 
 **§3.1's rule holds everywhere but one place.** `pithy dev` renders a live roster at the foot of a real terminal — a repainting region beneath the session's own output. It is the only command with one, and the exception is written down here rather than left as something a reader has to notice.
@@ -1285,6 +1333,8 @@ Three rules govern what it writes:
 - **The app's entries are replaced, not merged.** A job renamed or dropped leaves — including the last one, so an app that declares no Workflows still has its stale bindings and crons taken out. An entry carrying a `script_name` belongs to a library capability's provisioner and is never touched. Neither is an entry the adopter wrote for a library capability's job their own Worker hosts — a job declared with no class, like `@pithy-sh/auth`'s purge or `@pithy-sh/payments`' usage pass, whose class only the adopter's entry can export. `pithy doctor` and `pithy deploy` do not count it against the app's declaration either.
 - **`triggers.crons` is set to the declared schedules.** A Worker has one `scheduled` handler, and it starts the jobs whose `schedule` is the cron that fired, matched as written — so an expression nothing declares starts nothing, and a declared one this list lacks never fires. A schedule an adopter-hosted library job declares is kept when it is already there, and never added.
 - **The class stays yours.** Cloudflare resolves `class_name` in the script the binding names, so the `WorkflowEntrypoint` subclass has to be exported from the Worker's `main`. That is five lines written once; the command names the classes it expects.
+
+**It writes every var the Worker declares** with `defineVars`, its own and each composed capability's (§3.6, "Declaring a Worker's vars"), into the top-level `vars` and every `env.<name>.vars`, at that environment's value or else the default. A stanza that already holds a value that parses under the var's schema keeps it: that value is yours. One that does not parse is reported, by name, value and reason, and left as it is. A var nobody declared is never written or deleted. The one value it rewrites is a copy of the top level's in an environment the declaration gives a value of its own: every command that creates an `env.<name>` stanza seeds its `vars` from the top level, so a new `env.prod` starts at dev's value. `vars` in `--json` says what each stanza got.
 
 **It writes every D1, KV, R2 and queue binding the Worker composes**, the app's own `requiredBindings` and every library capability's, after the Worker's honored declines: the set `pithy provision` creates a resource for. Each entry is written into every stanza that lacks it, through the one writer `pithy add` and `pithy provision` use, so the entry is the one they would write: a D1 entry with the `database_name` provisioning will create, a queue's producer and, for a consuming queue, its `queues.consumers` entry. A binding a stanza already declares is left as written. Those names come from the `name` in the root `pithy.config.ts`. Without one, a Worker with an app capability or an `ownBindings` list is refused before anything is written (`core/precondition_failed`). A Worker with neither, one that composes only library capabilities, is still synced: a queue's entry is skipped and reported, a D1 entry is written with no `database_name`, and the rest are written as usual. A `declinedBindings` block that cannot be read is refused before anything is written, as `pithy upgrade` refuses it. `bindings` in `--json` says what each stanza got.
 

@@ -5,7 +5,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
+import { SELF_BINDING, WORKER_VAR } from "@pithy-sh/core/src/worker/identity";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
@@ -27,6 +27,7 @@ import { retargetServiceBindings } from "./configBindingSource";
 import { formatJsonc } from "./jsonc";
 import { detectPackageManager, runPackageManager } from "./packageManager";
 import { assertWorkerName, ensureScaffoldPath, pathExists, removeScaffoldPath } from "./scaffold";
+import { setStanzaVar, stanzaVarsOf } from "./stanzaVars";
 import { bindersOf, boundRefusal, readServiceProject } from "./workerBind";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { scaffoldWorker } from "./workerScaffold";
@@ -57,13 +58,8 @@ const defaultInstall: WorkspaceInstall = async (projectDir) => {
 /**
  * The current branch name, e.g. `feature/73-cli-commands` — the port registry's key for a worktree.
  *
- * Delegates to `feature/worktree.ts`, which is where every other git lookup in this package lives. It
- * was a third copy of one `rev-parse` until #548 needed a fourth; `dev/orchestrator.ts` had the second.
- *
- * `?? "HEAD"` keeps this caller's contract exactly as it was — the shared resolver reports a detached
- * HEAD as `null`, and the raw command reported the literal string `HEAD`. Both are equally poor registry
- * keys and neither is this change's business to improve, so the behavior is preserved rather than
- * quietly altered underneath `worker add`.
+ * Delegates to `feature/worktree.ts`, which is where every git lookup in this package lives. A detached HEAD,
+ * which the shared resolver reports as `null`, is keyed as the literal `HEAD`.
  */
 async function currentBranch(git: GitRunner, cwd: string): Promise<string> {
   return (await sharedCurrentBranch(git, cwd)) ?? "HEAD";
@@ -84,7 +80,7 @@ interface WorkerContext {
    *
    * A seam so a test never reads or writes the developer's real one — the same reason `feature/sync.ts`
    * takes it. Without it `listWorkers` could not be tested at all against a branch that has turned a
-   * worker off, which is the state #548 exists to produce.
+   * worker off.
    */
   registryPath?: string;
 }
@@ -117,7 +113,7 @@ export interface AddWorkerReport extends WorkerIdentity {
    * One sentence per Worker whose `.dev.vars` this run did not generate — a file pithy did not write, or
    * a directory it may not write into. This command regenerates *every* Worker it discovers, not just the
    * new one, so a sibling that will not get its bindings is a fact about the project the adopter has to
-   * be told. `pithy dev` names it on every run; the command that adds the Worker used to say nothing.
+   * be told. `pithy dev` names it on every run, and so does the command that adds the Worker.
    */
   devVarsRefused: string[];
 }
@@ -133,10 +129,8 @@ export interface AddWorkerOptions extends WorkerContext {
  * Everything `pithy worker add` does once `apps/<name>/` exists: generate the Worker's `.dev.vars`, take a
  * port when there is a block to take one from, relink the workspace, and report what it could not write.
  *
- * **The install goes last.** It used to run first, and it is the one step here that reaches the network —
- * so when it threw, the `.dev.vars` step below it never ran and every worker after the first came out
- * without the file `pithy init` promises every worker has. Ordering fixes that outright: by the time an
- * install can fail, there is nothing left for it to skip.
+ * **The install goes last.** It is the one step here that reaches the network, so by the time it can fail,
+ * the `.dev.vars` every worker is promised has already been written and there is nothing left for it to skip.
  */
 async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<AddWorkerReport> {
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
@@ -151,19 +145,16 @@ async function wireAddedWorker(options: AddWorkerOptions, dir: string): Promise<
     const branch = options.branch ?? (await currentBranch(options.git ?? defaultGit, options.projectDir));
     const report = await syncFeatureDevConfig({ mainRoot, worktreePath: options.projectDir, branch, discoverWorkers });
     // **Keyed on `deployedAs`, because that is what the registry is keyed on.** `dev.workers` is built
-    // from `WorkerTarget.name` — `<project>-<worker>` for anything pithy scaffolded — and this looked the
-    // new Worker up by the `apps/<dir>` basename the adopter typed. Those cannot match, so inside a
-    // feature worktree the port came back `null` beside `reconciled: true`, and `worker add` then told
-    // the adopter to run `pithy feature sync` to assign the port it had just assigned. #229.
+    // from `WorkerTarget.name` — `<project>-<worker>` for anything pithy scaffolded — never the `apps/<dir>`
+    // basename the adopter typed.
     port = report.dev.workers[identity.deployedAs]?.port ?? null;
     reconciled = true;
   }
 
-  // Generated, not linked (#154). The new Worker needs a `.dev.vars` beside it because that is where
-  // wrangler reads one; every sibling is regenerated in the same pass because generation is idempotent by
-  // content and a run that changes nothing writes no bytes. The refusals come back because `SyncReport`
-  // does not carry them, and dropping that list was how a Worker with no bindings went unmentioned by the
-  // command that made it.
+  // Generated, not linked. The new Worker needs a `.dev.vars` beside it because that is where wrangler reads
+  // one; every sibling is regenerated in the same pass because generation is idempotent by content and a run
+  // that changes nothing writes no bytes. The refusals come back because `SyncReport` does not carry them, so a
+  // Worker with no bindings is still named by the command that made it.
   const devVars = await generateDevVars({
     projectDir: options.projectDir,
     workerDirs: workers.map((worker) => worker.dir),
@@ -197,9 +188,8 @@ async function addedIdentity(workers: readonly WorkerTarget[], dir: string): Pro
  * links `.dev.vars`; ports are assigned when `pithy feature create`/`sync` runs.
  *
  * **All-or-nothing.** Anything that fails after the directory is made rolls it back, so the same command
- * works on the retry. It used to leave the half-made `apps/<name>` behind, and `scaffoldWorker` refuses a
- * directory holding anything at all — so the failure blocked its own retry, and `rm -rf` by hand was the
- * only way forward. Rolled back rather than resumed, deliberately: `apps/<name>` is a directory pithy owns
+ * works on the retry: `scaffoldWorker` refuses a directory holding anything at all, so a half-made
+ * `apps/<name>` left behind would block its own retry. Rolled back rather than resumed, deliberately: `apps/<name>` is a directory pithy owns
  * outright and fills in one pass, so nothing in it is ever the adopter's and removing it destroys nothing
  * they wrote. Resuming would mean deciding whether a non-empty `apps/<name>` is our half-made worker or
  * their directory — and after they have opened an editor in it, those look identical. Guessing wrong there
@@ -218,8 +208,8 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   // cannot mint an attributable upload.
   const config = await loadProject(options.projectDir);
   const project = requireProjectName(config);
-  // The environments the project declares, so the second Worker's stanzas are the first Worker's set —
-  // two Workers in one project disagreeing about which environments exist is the fault #241 named.
+  // The environments the project declares, so the second Worker's stanzas are the first Worker's set: two
+  // Workers in one project never disagree about which environments exist.
   const environments = loadProjectEnvironments(config);
   const { dir } = await scaffoldWorker({ projectDir: options.projectDir, name: options.name, project, environments });
 
@@ -229,7 +219,7 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
     // Only `dir`, and only the one this call just created — never a sibling, and never a path that was
     // there before `scaffoldWorker` ran, which it would have refused.
     //
-    // Gated even here (#158): a rollback is still a recursive delete of a path built out of a name, and
+    // Gated even here: a rollback is still a recursive delete of a path built out of a name, and
     // "we made it a moment ago" is an assumption about a tree that another process shares. A refusal is
     // swallowed rather than thrown, because it would replace the failure being reported with a second
     // one — and `scaffoldWorker` already refused every layout this gate catches, so a refusal at this
@@ -242,10 +232,9 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
 /**
  * The three keys this listing reads the registry under, or `null` when the machine cannot answer them.
  *
- * Resolved once because two reads now need them — this branch's own answers, and the dead roots holding
- * somebody's orphaned ones (#685). Two derivations of *which key are my answers under* is the defect
- * `registryRootFor`'s own docblock is about: `pithy dev` and `pithy doctor` each had one, and on a
- * machine with no `git` they disagreed about whose blocks were whose.
+ * Resolved once because two reads need them — this branch's own answers, and the dead roots holding
+ * somebody's orphaned ones. One derivation of *which key are my answers under*, as `registryRootFor`'s
+ * docblock requires.
  */
 async function registryKeys(
   options: WorkerContext,
@@ -267,12 +256,10 @@ async function registryKeys(
  *
  * A listing is a read-only report and must survive a broken machine: no repository, no config directory,
  * a registry somebody hand-edited. Each of those means *nothing local was said*, which is the same thing
- * an empty registry means and produces a listing identical to the one this command gave before #548.
+ * an empty registry means.
  *
- * **That reasoning is still right, and it is also what #685 is the cost of.** *Nothing was said* and
- * *what was said is filed under a path nothing looks up any more* arrive here as the same `{}`, so the
- * listing cannot tell them apart from this read alone. {@link staleAutostart} is the other half; this
- * one keeps meaning exactly what it has always meant.
+ * *Nothing was said* and *what was said is filed under a path nothing looks up any more* arrive here as the
+ * same `{}`, so this read alone cannot tell them apart. {@link staleAutostart} is the other half.
  */
 async function localAutostart(keys: Awaited<ReturnType<typeof registryKeys>>): Promise<Record<string, boolean>> {
   if (keys === null) return {};
@@ -306,7 +293,7 @@ export interface WorkerListing extends WorkerIdentity {
   /** Whether `pithy dev` on this branch starts it: `true` unless this branch has said otherwise. */
   autostart: boolean;
   /**
-   * What *this* branch says on *this* machine, when it has said anything (#548).
+   * What *this* branch says on *this* machine, when it has said anything.
    *
    * `null` is the ordinary case and means nothing local was set, so {@link autostart} is the answer.
    * Kept beside the manifest's value rather than replacing it, because `pithy worker list` is the
@@ -321,15 +308,14 @@ export interface WorkerListing extends WorkerIdentity {
 
 /** What {@link listWorkers} answers: the rows, and anything about the registry the rows cannot say. */
 export interface WorkerListingReport {
-  /** The discovered workers, in discovery order. Exactly the array this function used to return. */
+  /** The discovered workers, in discovery order. */
   workers: WorkerListing[];
   /**
-   * Checkout roots that are gone from disk and still hold autostart answers (#685).
+   * Checkout roots that are gone from disk and still hold autostart answers.
    *
    * **Beside the rows rather than folded into them, because it is not a fact about any worker.** An
    * answer orphaned by a move is filed under a key nothing looks up, so it cannot change what any row
-   * says — every row reads exactly as it did before. What it changes is whether the reader knows why a
-   * worker they parked is starting again.
+   * says. What it changes is whether the reader knows why a worker they parked is starting again.
    *
    * Always present, `[]` when nothing is stale. The convention every payload in this package follows: a
    * consumer reads a field, never the absence of one.
@@ -341,11 +327,9 @@ export interface WorkerListingReport {
  * List the discovered workers with their autostart state and pinned dev port — the logic behind
  * `pithy worker list` — and say when an answer was recorded under a checkout that has since gone.
  *
- * A report rather than the bare array it used to be (#685), on this file's own idiom: `AddWorkerReport`
- * and `RemoveWorkerReport` are the same shape, for the same reason. The alternative was a second
- * exported function and a second resolution of the registry keys at the command, which is the
- * divergence `registryKeys` exists to prevent — a test redirecting `registryPath` into this function
- * would not have reached a detector the command called for itself.
+ * A report, on this file's own idiom: `AddWorkerReport` and `RemoveWorkerReport` are the same shape. The stale
+ * roots are found here rather than by the command, so the registry keys are resolved once, by `registryKeys`,
+ * and a test redirecting `registryPath` into this function reaches both reads.
  */
 export async function listWorkers(options: WorkerContext): Promise<WorkerListingReport> {
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
@@ -359,9 +343,7 @@ export async function listWorkers(options: WorkerContext): Promise<WorkerListing
     workers: workers.map((worker) => ({
       ...workerIdentity(worker),
       dir: worker.dir,
-      // One source now (#548). The manifest key is gone, so there is no second opinion left to disagree
-      // with — which is what this comment used to be about, when an absent `dev` block and a `dev` block
-      // omitting the key meant opposite things.
+      // The branch's local answer is the only source: the manifest carries no autostart key.
       autostart: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? true) : true,
       autostartLocal: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? null) : null,
       hasWrangler: worker.hasWrangler !== false,
@@ -408,7 +390,7 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
     });
   }
 
-  // **Not while another Worker binds it (#617).** Its service binding would name a script nothing deploys, and
+  // **Not while another Worker binds it.** Its service binding would name a script nothing deploys, and
   // the binder would provision clean and fail its first call. Asked before anything is deleted.
   const binders = bindersOf(
     await readServiceProject({ projectDir: options.projectDir, discoverWorkers }),
@@ -416,9 +398,8 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
   );
   if (binders.length > 0) throw boundRefusal(basename(target.dir), binders);
 
-  // Gated, and the gate is stricter than the one a write gets (#158). `target.dir` is `apps/<name>`,
-  // composed from a name and handed to a recursive delete: a symlink at `apps` carried that delete onto a
-  // canary tree outside the project, reproduced with the real CLI, and the command said "Done."
+  // Gated, and the gate is stricter than the one a write gets. `target.dir` is `apps/<name>`, composed from a
+  // name and handed to a recursive delete, so a symlink at `apps` would carry that delete outside the project.
   await removeScaffoldPath(options.projectDir, target.dir);
 
   const { mainRoot, inWorktree } = await resolveRoots(options);
@@ -435,7 +416,7 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
  * environment stanza, and the self binding's target. Everything else in the file belongs to the adopter
  * and is left exactly as it is.
  *
- * **`services` is here for one entry and no other (#616).** A capability's service binding names another
+ * **`services` is here for one entry and no other.** A capability's service binding names another
  * Worker, which this rename does not move; the self binding names *this* Worker's own script, composed by
  * provisioning from the very `name` being rewritten two lines below. Leaving it behind points a
  * self-administering deployment at the orphan this command's own `--force` message says stays live.
@@ -454,8 +435,7 @@ interface RenamableWrangler {
  * `scaffoldWorker` writes `<project>-<worker>`, so the worker is the trailing segment and only that
  * segment moves. A name that does not end in it (`my-service`, brought in from a Worker that predates the
  * project) was never composed from the worker's name, so there is nothing here to recompute: renaming it
- * would rename a Worker the adopter named themselves, and — deployed — strand it under a name pithy
- * invented.
+ * would rename a Worker the adopter named themselves, and, deployed, strand it under a name pithy invented.
  */
 function renamedScript(declared: string, from: string, to: string): string | null {
   if (declared === from) return to;
@@ -543,7 +523,7 @@ export interface RenameWorkerReport extends WorkerIdentity {
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
   /**
-   * The other `apps/` Workers whose service bindings named the renamed one, now pointed at its new name (#617).
+   * The other `apps/` Workers whose service bindings named the renamed one, now pointed at its new name.
    * Their binding names are unchanged, because their code reads them.
    */
   rebound: string[];
@@ -587,9 +567,8 @@ export interface RenameWorkerOptions extends WorkerContext {
  */
 export async function renameWorker(options: RenameWorkerOptions): Promise<RenameWorkerReport> {
   // The same rule `scaffoldWorker` holds a new worker to, **called** rather than restated: a name this
-  // refuses is a directory `pithy worker add` could not have created in the first place. It used to be a
-  // second copy of the regex, so the reserved capability-host names of #580 would have been refused at
-  // `worker add` and waved through here — the one path that renames a worker onto a name after the fact.
+  // refuses is a directory `pithy worker add` could not have created, the reserved capability-host names
+  // included.
   assertWorkerName(options.to);
 
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
@@ -612,18 +591,15 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
   const to = join(appsDir, options.to);
   // **Both ends of the move, and the source is the one that was missing.** A rename reads its source path
   // as well as writing its destination, and `rename` on a symlink moves the *link* — so a link at
-  // `apps/<from>` arrived at `apps/<to>` still pointing outside the project, and the `wrangler.jsonc` and
-  // `package.json` rewrites below then went through it. Reproduced against a canary: `worker rename api
-  // board` left `apps/board` a link and rewrote the canary's two files, reporting success. #164.
+  // `apps/<from>` would arrive at `apps/<to>` still pointing outside the project, and the `wrangler.jsonc` and
+  // `package.json` rewrites below would go through it.
   //
   // The source is gated as a `move` rather than a `write`: nothing is scaffolded here, and telling an
-  // adopter "the files would land outside the project" about a directory being moved is the same false
-  // sentence a delete borrowing the write wording used to print.
+  // adopter "the files would land outside the project" about a directory being moved would be false.
   await ensureScaffoldPath(options.projectDir, target.dir, "move");
   // Safe first, then free. `ensureScaffoldPath` refuses a link at `apps` or at `apps/<to>` — `rename` onto
-  // one is ENOTDIR, and this function had its own `exists()` over `access`, which follows the link and so
-  // read a dangling one as "nothing there". The gate cleared, `rename` threw, and a raw node:fs stack trace
-  // came out of a command whose `--json` callers parse `{"error":{…}}`. Reproduced against the real CLI.
+  // one is ENOTDIR, and a check that follows the link reads a dangling one as "nothing there", so `rename`
+  // would throw a raw node:fs error at a command whose `--json` callers parse `{"error":{…}}`.
   await ensureScaffoldPath(options.projectDir, to);
   // Then existence, checked against the filesystem rather than the discovered set: a directory holding
   // neither manifest nor `wrangler.jsonc` is not a worker, and moving a worker on top of it would still
@@ -758,7 +734,7 @@ function renameConfig(config: RenamableWrangler, from: string, to: string): { fr
     }
     // Set, never added: a stanza that declares no `WORKER` declares nothing this rename can invalidate,
     // and inventing the var would put a binding-shaped opinion into a config that never asked for one.
-    if (stanza.vars?.WORKER !== undefined) stanza.vars.WORKER = to;
+    if (stanzaVarsOf(stanza)?.[WORKER_VAR] !== undefined) setStanzaVar(stanza, WORKER_VAR, to);
     // The self binding follows the script it names, by the same rule and through the same helper — a
     // target that does not carry the worker segment is one this rename has no claim on.
     const self = stanza.services?.find((entry) => entry.binding === SELF_BINDING);
@@ -782,7 +758,7 @@ interface Rebind {
 }
 
 /**
- * **Every other Worker's service binding to the renamed one, pointed at its new name (#617).**
+ * **Every other Worker's service binding to the renamed one, pointed at its new name.**
  *
  * Two places name it. The app's declaration in `pithy.config.ts` names the Worker by its directory, `from`, or by
  * the name it deployed as, `deployedAs`, and either becomes `to`; the binding name stays, because the app's code reads it. Each stanza of the sibling's
@@ -840,7 +816,7 @@ interface RenameDecided {
 }
 
 /**
- * **`pithy worker rename --dry-run` (#697)**: the report the run would give, and the plan of what it would
+ * **`pithy worker rename --dry-run`**: the report the run would give, and the plan of what it would
  * write — the move, the two edits as diffs, and the feature's dev config inside a worktree. Every refusal
  * the run makes has already been made by the time this is called, the live-script check included.
  */
