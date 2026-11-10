@@ -218,6 +218,7 @@ describe("runAdd", () => {
       deployedAs: DEFAULT_WORKER,
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases,
       // auth declares no KV binding here, so there is nothing to propose a name for.
       kvNamespaces: [],

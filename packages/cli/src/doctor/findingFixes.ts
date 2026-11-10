@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
+import { type Command, pithyCommand, type WorkerDir, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { FEATURE_RESOURCE_KINDS } from "@pithy-sh/core/src/naming/feature";
 import { z } from "zod";
@@ -15,6 +15,7 @@ import type { EnvironmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
 import type { MissingSecretBinding } from "./secretBindings";
 import type { StrandedSitekeyVarFinding, UnrenderedTurnstile } from "./turnstileSitekeys";
+import type { VarStanzaFinding } from "./varStanzas";
 
 /**
  * **The command that rights one `pithy doctor` finding, gated or not.**
@@ -145,6 +146,16 @@ export function localMigrationFix(
  */
 export function secretBindingFix(entry: MissingSecretBinding): Command | null {
   return entry.provisionable ? null : supplyStoreEntryCommand(entry);
+}
+
+/**
+ * A var a stanza lacks or holds wrongly: `pithy worker sync` writes a declared var a stanza lacks, and rewrites one
+ * held at the top level's value where the declaration gives the environment its own. A value the declaration
+ * refuses is the adopter's, which sync keeps, and nothing declares an undeclared var's value: both are edits.
+ */
+export function varStanzaFix(finding: VarStanzaFinding): Command | null {
+  const synced = (finding.kind === "missing" && finding.declared) || finding.kind === "copied";
+  return synced ? pithyCommand("worker sync", { flags: { "--worker": workerDirOf({ dir: finding.worker }) } }) : null;
 }
 
 /** An AI client detected here with no docs-server entry. */
