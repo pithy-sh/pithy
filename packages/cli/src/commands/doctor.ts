@@ -5,14 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
-import {
-  cliAtVersion,
-  commandName,
-  commandNameOf,
-  pithyCommand,
-  type WorkerDir,
-  workerDirOf,
-} from "@pithy-sh/core/src/cli/command";
+import { cliAtVersion, commandName, commandNameOf, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -106,6 +99,7 @@ import {
   strandedTurnstileFix,
   unrenderedTurnstileFix,
   upgradeFix,
+  varStanzaFix,
 } from "../doctor/findingFixes";
 import {
   buildProjectHealth,
@@ -443,7 +437,8 @@ export interface DoctorReport {
   /**
    * Whether every stanza of every Worker's `wrangler.jsonc` sets each var the top level sets or the Worker declares,
    * at a value its declaration takes. `null` outside a project, and `could-not-check` when the check threw. A finding
-   * prints in both forms and never fails the exit.
+   * prints in both forms. **A finding about a declared var fails the exit**; an undeclared var a stanza drops never
+   * does, since nothing declares what it should be.
    */
   varStanzas: VarStanzasCheck | null;
   /**
@@ -4096,11 +4091,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           vars: report.varStanzas.findings.map((entry) => ({
             ...entry,
             detail: describeVarStanzas({ state: "faulty", findings: [entry] }).join(" "),
-            // A declared var is what `worker sync` writes; any other is an edit to wrangler.jsonc.
-            fix:
-              (entry.kind === "missing" && entry.declared) || entry.kind === "copied"
-                ? pithyCommand("worker sync", { flags: { "--worker": workerDirOf({ dir: entry.worker }) } })
-                : null,
+            fix: varStanzaFix(entry),
           })),
           findings: describeVarStanzas(report.varStanzas),
         }
@@ -4999,7 +4990,9 @@ export default withContract(
     // 6: `failures[].check` takes `hostBindings`, where a Workflow binding into the wrong kit host fails the exit.
     // 7: `biomeIncludes`, and `failures[].check` takes it, where a Biome exclusion that skips every file of a checkout
     //    fails the exit.
-    schemaVersion: 7,
+    // 8: `failures[].check` takes `varStanzas`, where a declared Worker var a stanza lacks, holds at the top level's
+    //    value, or holds at a value its schema refuses fails the exit.
+    schemaVersion: 8,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

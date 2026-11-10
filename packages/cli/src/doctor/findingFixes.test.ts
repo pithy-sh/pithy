@@ -15,6 +15,7 @@ import {
   secretBindingFix,
   strandedTurnstileFix,
   unrenderedTurnstileFix,
+  varStanzaFix,
 } from "./findingFixes";
 import type { ProjectHealth, WorkerHealth } from "./health";
 import type { MissingSecretBinding } from "./secretBindings";
@@ -181,6 +182,16 @@ describe("the rest", () => {
         fix: "pithy add payments --worker api",
       },
     ]);
+  });
+
+  test("a declared var a stanza lacks, or holds as the top level's copy, names the sync; any other var is an edit", () => {
+    const sync = "pithy worker sync --worker api";
+    const base = { worker: "api", stanza: "env.prod", name: "READY_AFTER_MINUTES" };
+    expect(varStanzaFix({ ...base, kind: "missing", declared: true, line: "x" })).toBe(sync);
+    expect(varStanzaFix({ ...base, kind: "copied", value: 15, line: "x" })).toBe(sync);
+    // Sync keeps a value the adopter wrote, refused or not, and nothing declares an undeclared var's value.
+    expect(varStanzaFix({ ...base, kind: "invalid", value: "soon", problem: "p" })).toBeNull();
+    expect(varStanzaFix({ ...base, kind: "missing", declared: false, line: "x" })).toBeNull();
   });
 
   test("the schema takes a command or null, and refuses an empty string", () => {
