@@ -22,8 +22,26 @@ import type { z } from "zod";
  * object literal — the same posture `@pithy-sh/media` already takes for its AI binding.
  */
 export interface WorkflowBinding {
-  /** Start a new instance. `params` is the validated payload the Workflow receives as `event.payload`. */
+  /**
+   * Start a new instance. `params` is the validated payload the Workflow receives as `event.payload`. `id`
+   * names the instance; Cloudflare holds one instance per id and refuses a second `create` under a taken one.
+   */
   create(options?: { id?: string; params?: unknown }): Promise<unknown>;
+  /**
+   * Look an instance up by id, resolving when it exists. The real binding has it; a stand-in may not. Dispatch
+   * uses it only to tell a scheduled start refused for a taken id from any other refusal.
+   */
+  get?(id: string): Promise<unknown>;
+}
+
+/** What a {@link WorkflowSpec.instanceId} names an instance from. */
+export interface WorkflowInstanceContext {
+  /** When the start was asked for: the scheduled time of the cron that fired, or now for a manual trigger. */
+  firedAt: Date;
+  /** The cron expression that fired, verbatim. Absent for a manual trigger. */
+  cron?: string;
+  /** The params the instance starts with, already parsed through the spec's schema. */
+  params: unknown;
 }
 
 /**
@@ -50,6 +68,16 @@ export interface WorkflowSpec<Params extends z.ZodType = z.ZodType> {
    * on demand is untestable.
    */
   schedule?: string;
+  /**
+   * Name each instance. Used for every scheduled start, and for a manual `trigger` whose caller passes no `id`.
+   * Absent means Cloudflare generates a random id.
+   *
+   * A deterministic name makes a start idempotent: `({ firedAt }) => firedAt.toISOString().slice(0, 10)` runs
+   * the job once per UTC day, because a second start that day asks for an id that is taken. A scheduled start
+   * refused that way is logged as already started rather than failing the cron. The id must be at most 100
+   * characters of `[A-Za-z0-9_-]`.
+   */
+  instanceId?: (context: WorkflowInstanceContext) => string;
   /**
    * The exported `WorkflowEntrypoint` subclass in the host worker that runs this job — the
    * `class_name` the CLI writes into the host's `workflows` array. Omit only for a job whose host

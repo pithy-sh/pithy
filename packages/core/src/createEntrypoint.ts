@@ -38,6 +38,9 @@ export interface PithyEntrypoint {
    * and the hourly one must not run an extra time at the daily job's minute. An event that names
    * no cron, or one no job declares, starts nothing.
    *
+   * A job with an `instanceId` starts under the id it names from `controller.scheduledTime` and the cron.
+   * A fire whose id is already taken is logged as already started and counts as no failure.
+   *
    * **Present only when at least one job carries a cron.** The reason differs from `email`'s: an
    * inert `email()` silently *drops* mail, which is a correctness bug, whereas an inert `scheduled()`
    * is merely harmless. It is omitted anyway so that the export tracks the composition: a Worker
@@ -69,6 +72,15 @@ function firedCron(controller: unknown): string | undefined {
   if (typeof controller !== "object" || controller === null) return undefined;
   const cron = (controller as { cron?: unknown }).cron;
   return typeof cron === "string" ? cron : undefined;
+}
+
+/** When a `scheduled` event was scheduled for, off `controller.scheduledTime`, or now when the event carries none. */
+function firedAt(controller: unknown): Date {
+  const time =
+    typeof controller === "object" && controller !== null
+      ? (controller as { scheduledTime?: unknown }).scheduledTime
+      : undefined;
+  return typeof time === "number" && Number.isFinite(time) ? new Date(time) : new Date();
 }
 
 /**
@@ -131,6 +143,8 @@ export function createEntrypoint<
   if (scheduled.length > 0) {
     entrypoint.scheduled = async (controller, env) => {
       const cron = firedCron(controller);
+      const schedule = { cron, firedAt: firedAt(controller) };
+      const log = createWorkerLogger({ name: "scheduled" });
       const failures: unknown[] = [];
       for (const entry of scheduled) {
         if (entry.spec.schedule !== cron) continue;
@@ -139,7 +153,7 @@ export function createEntrypoint<
         // can never receive on a schedule therefore fails loudly here, which is the author's bug and
         // is exactly what should surface.
         try {
-          await triggerWorkflow(withLocalServices(env), registry, entry.key, {});
+          await triggerWorkflow(withLocalServices(env), registry, entry.key, {}, log, { schedule });
         } catch (error) {
           failures.push(error);
         }
