@@ -355,6 +355,7 @@ describe("pithy add --json conforms to its published payload", () => {
       deployedAs: "acme-api",
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases: [
         {
           database: "app",
@@ -383,6 +384,7 @@ describe("pithy add --json conforms to its published payload", () => {
       deployedAs: "acme-api",
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases: [
         {
           database: "app",
@@ -419,6 +421,7 @@ describe("pithy add --json conforms to its published payload", () => {
       deployedAs: "acme-api",
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases: [],
       kvNamespaces: [],
       notes: [],
@@ -443,6 +446,7 @@ describe("pithy add --json conforms to its published payload", () => {
       deployedAs: "acme-api",
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases: [],
       kvNamespaces: [],
       notes: [],
@@ -468,6 +472,7 @@ describe("pithy add --json conforms to its published payload", () => {
       deployedAs: "acme-api",
       package: "@pithy-sh/auth",
       packageManager: "bun",
+      alreadyWired: false,
       databases: [],
       kvNamespaces: [],
       notes: [],
@@ -480,6 +485,25 @@ describe("pithy add --json conforms to its published payload", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  test("in text, a re-run into a Worker that already composes it says so, as its dry run does", async () => {
+    await project();
+    flow.result = {
+      capability: "auth",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      alreadyWired: true,
+      databases: [],
+      kvNamespaces: [],
+      notes: [],
+      prerequisites: [],
+    } satisfies AddResult;
+    const lines = (await runCaptured("add", ["auth"])).join("").split("\n");
+    expect(lines[0]).toBe("auth is already wired into api.");
+    expect(lines.some((line) => line.startsWith("Wired"))).toBe(false);
+  });
 });
 
 /**
@@ -488,13 +512,14 @@ describe("pithy add --json conforms to its published payload", () => {
  */
 describe("addPlanText", () => {
   /** A planned add of `auth` into `api`, with the prerequisites and notes each case sets. */
-  function planned(prerequisites: string[]): AddPlan {
+  function planned(prerequisites: string[], alreadyWired = false): AddPlan {
     const plan = emptyPlan();
     plan.files.push({ path: "apps/api/pithy.config.ts", action: "edit", changes: ["Composes auth()."] });
     plan.notes.push("Plan note.");
     return {
       capability: "auth",
       worker: "api",
+      alreadyWired,
       prerequisites,
       notes: ["Run pithy provision --env staging for the Workflow."],
       plan,
@@ -518,5 +543,12 @@ describe("addPlanText", () => {
     expect(lines.some((line) => line.startsWith("Would compose"))).toBe(false);
     expect(lines[0]).toBe("Would wire auth into api.");
     expect(lines.at(-1)).toBe("Dry run. Nothing written.");
+  });
+
+  test("on a Worker already composing it, it says so instead of planning the wiring, and still lists a real edit", () => {
+    const lines = addPlanText(planned([], true));
+    expect(lines[0]).toBe("auth is already wired into api.");
+    expect(lines.some((line) => line.startsWith("Would wire"))).toBe(false);
+    expect(lines).toContain("Would edit apps/api/pithy.config.ts.");
   });
 });

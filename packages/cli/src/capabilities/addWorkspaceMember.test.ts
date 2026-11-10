@@ -128,9 +128,11 @@ describe("pithy add, a capability in a workspace member", () => {
     const changed = [...after.keys()].filter((path) => after.get(path) !== before.get(path)).sort();
     expect(changed).toEqual(plan.files.map((file) => file.path));
     expect(plan.files.map((file) => file.path)).not.toContain("package.json");
-    expect(plan.files.find((file) => file.path === "apps/board/package.json")?.changes).toEqual([
-      `Runs bun add ${PKG} here, which also writes the lockfile.`,
-    ]);
+    // Declared already, so the install leaves the declaration as it is and is no edit. The file still changes,
+    // through the declaration of what the package needs beside it, and its diff says how.
+    const member = plan.files.find((file) => file.path === "apps/board/package.json");
+    expect(member?.changes).toEqual([]);
+    expect(member?.diff).toBeDefined();
     for (const file of plan.files.filter((entry) => entry.diff !== undefined)) {
       const text = await readFile(join(dir, file.path), "utf8");
       const added = (file.diff ?? "").split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++"));
