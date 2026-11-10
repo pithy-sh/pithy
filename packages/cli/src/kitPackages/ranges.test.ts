@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   admits,
+  breakingBoundary,
   candidateVersions,
   crossesBreakingBoundary,
   type DeclaredSpec,
@@ -135,6 +136,20 @@ describe("crossesBreakingBoundary", () => {
 
   test("an unparseable pair crosses nothing", () => {
     expect(crossesBreakingBoundary("workspace:*", "2.0.0")).toBe(false);
+  });
+});
+
+describe("breakingBoundary", () => {
+  test("names which boundary is crossed: a new major, or a new minor under 0.x", () => {
+    expect(breakingBoundary("1.9.0", "2.0.0")).toBe("major");
+    expect(breakingBoundary("0.24.2", "1.0.0")).toBe("major");
+    expect(breakingBoundary("0.24.2", "0.25.0")).toBe("minor");
+  });
+
+  test("names none for a patch, a minor past 1.0, or an unparseable pair", () => {
+    expect(breakingBoundary("0.2.0", "0.2.3")).toBeNull();
+    expect(breakingBoundary("1.2.0", "1.3.0")).toBeNull();
+    expect(breakingBoundary("workspace:*", "2.0.0")).toBeNull();
   });
 });
 

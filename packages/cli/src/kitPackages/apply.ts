@@ -190,6 +190,17 @@ export async function runPackageStep(options: {
   });
   report.installed = true;
   report.mismatches = await mismatches(options.projectDir, read.plan.moves);
+  // A move beside a hold rewrites the held declaration's range and what it resolves, so both are read again.
+  report.held = await Promise.all(
+    read.plan.held.map(async (entry) => ({
+      ...entry,
+      range:
+        read.plan.moves.find(
+          (move) => move.name === entry.name && move.manifest === entry.manifest && move.from === entry.range,
+        )?.to ?? entry.range,
+      installed: await installedVersionFrom(join(options.projectDir, dirname(entry.manifest)), entry.name),
+    })),
+  );
   const cli = read.plan.moves.filter((move) => move.name === "@pithy-sh/cli").map((move) => move.target);
   return { report, cliMoved: cli[0] ?? null };
 }

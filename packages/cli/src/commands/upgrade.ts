@@ -30,6 +30,7 @@ import {
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
 import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
+import { heldLines, heldSummary } from "../kitPackages/held";
 import type { RegistryFetch } from "../kitPackages/registry";
 import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
 import { establishedPending } from "../migrations/pendingCount";
@@ -709,10 +710,6 @@ function grouped<T>(entries: readonly T[], key: (entry: T) => string): [string, 
   return [...groups];
 }
 
-const HELD_REASON = {
-  breaking: "Crosses a breaking boundary.",
-  "outside-range": "Outside the declared range.",
-} as const;
 const LEFT_ALONE_REASON = {
   "not-a-registry-range": "Not a registry range.",
   linked: "Linked from a checkout.",
@@ -732,11 +729,7 @@ function packageLines(report: PackagesReport, dryRun: boolean): string[] {
     if (!first) continue;
     lines.push(`${first.name}  ${first.from} → ${first.to}  (${moves.map((move) => move.manifest).join(", ")})`);
   }
-  for (const [, held] of grouped(report.held, (entry) => `${entry.name}\0${entry.latest}\0${entry.reason}`)) {
-    const [first] = held;
-    if (!first) continue;
-    lines.push(`${first.name}  ${first.latest} held. ${HELD_REASON[first.reason]} Run ${first.command}.`);
-  }
+  lines.push(...heldLines(report.held));
   lines.push(...leftAloneLines(report));
   for (const miss of report.mismatches) {
     lines.push(
@@ -857,6 +850,9 @@ export function upgradeText(
       `@pithy-sh/cli moved to ${cli.target}. Run ${reconcileCommand(run.packages, caller)} to reconcile with it.`,
     );
   }
+  // Last before the closing line, so a release held back is the thing read on the way out.
+  const held = run.packages?.state === "read" ? heldSummary(run.packages.held) : null;
+  if (held !== null) lines.push(held);
   lines.push(dryRun ? "Dry run. Nothing written." : formatDone());
   return lines;
 }
@@ -929,6 +925,104 @@ export function upgradeJsonLine(
   });
 }
 
+/** One declaration `--packages` held below its newest release. */
+const HeldPackage = z
+  .object({
+    name: z.string().describe("The package: `@pithy-sh/core`."),
+    manifest: z.string().describe("The manifest that declares it, relative to the project root."),
+    range: z.string().describe("The range as declared."),
+    installed: z
+      .string()
+      .nullable()
+      .describe("The version installed where the manifest resolves it, after this run's install, or `null`."),
+    latest: z.string().describe("The newest release a move may land on, which `--latest` moves to."),
+    reason: z
+      .enum(["breaking", "outside-range"])
+      .describe(
+        "`breaking` across a new major, or a new minor under 0.x; `outside-range` for any other gap past the range.",
+      ),
+    command: z.string().describe("The command that takes it: `pithy upgrade --packages --latest`."),
+  })
+  .describe("A declaration whose newest release is outside its range, and not moved there without `--latest`.");
+
+/** One declaration `--packages` rewrote. */
+const MovedPackage = z
+  .object({
+    name: z.string().describe("The package."),
+    manifest: z.string().describe("The manifest that declares it, relative to the project root."),
+    field: z.enum(["dependencies", "devDependencies"]).describe("The field that declares it."),
+    from: z.string().describe("The range as it was."),
+    to: z.string().describe("The range as it is written."),
+    target: z.string().describe("The version the new range installs."),
+  })
+  .describe("A declaration rewritten.");
+
+/** One declaration `--packages` does not touch. */
+const LeftAlonePackage = z
+  .object({
+    name: z.string().describe("The package."),
+    manifest: z.string().describe("The manifest that declares it, relative to the project root."),
+    spec: z.string().describe("The spec as written."),
+    reason: z
+      .enum(["not-a-registry-range", "linked"])
+      .describe("`not-a-registry-range` for a spec this step does not move; `linked` for a checkout linked in."),
+  })
+  .describe("A declaration this step does not touch.");
+
+/** One move the install did not land. */
+const PackageMismatch = z
+  .object({
+    name: z.string().describe("The package."),
+    manifest: z.string().describe("The manifest that declares it, relative to the project root."),
+    expected: z.string().describe("The version the rewritten range was expected to install."),
+    installed: z.string().nullable().describe("What is installed there now, or `null` when nothing is."),
+  })
+  .describe("A move whose target is not what its manifest resolves after the install.");
+
+/** One copied template file whose upstream changed. */
+const TemplateFindingPayload = z
+  .object({
+    worker: z.string().describe("The workspace member holding the copy."),
+    path: z.string().describe("The file, relative to that member."),
+    change: z.enum(["changed", "added", "removed"]).describe("What happened upstream."),
+    copy: z.enum(["untouched", "edited", "absent", "present"]).describe("What the member holds."),
+    from: z.string().optional().describe("For an untouched copy, the version it is a copy of."),
+  })
+  .describe("A copied template file whose upstream changed.");
+
+/** One target version's template report. */
+const TemplateSectionPayload = z
+  .object({
+    state: z
+      .enum(["checked", "unchecked", "unavailable"])
+      .describe("`unchecked` when nothing is installed to compare from; `unavailable` when the target would not read."),
+    package: z.string().describe("The package the templates come from."),
+    from: z.array(z.string()).describe("The installed versions compared from, ascending."),
+    to: z.string().nullable().describe("The version compared to, or `null` when it could not be resolved."),
+    applied: z.boolean().describe("Whether this run installs `to`, as opposed to reporting what `--latest` would."),
+    files: z.array(TemplateFindingPayload).describe("Every copied file whose template changed."),
+  })
+  .describe("The template report for one target version.");
+
+/** The `packages` block of `pithy upgrade --json`. */
+const PackagesPayload = z
+  .object({
+    state: z.enum(["read", "unavailable"]).describe("`unavailable` when any packument would not read."),
+    packageManager: z.enum(["bun", "pnpm", "yarn", "npm"]).describe("The package manager that ran the install."),
+    installed: z.boolean().describe("Whether the install ran."),
+    reconciled: z.boolean().describe("Whether the Workers were reconciled afterwards."),
+    moves: z.array(MovedPackage).describe("Every declaration rewritten."),
+    held: z.array(HeldPackage).describe("Every declaration held below its newest release. Empty when none was."),
+    leftAlone: z.array(LeftAlonePackage).describe("Every declaration this step does not touch."),
+    mismatches: z.array(PackageMismatch).describe("Every move the install did not land."),
+    templates: z.array(TemplateSectionPayload).describe("The template report, one section per target version."),
+    uncompared: z
+      .array(z.string())
+      .optional()
+      .describe("Apps with a React Native front end, whose templates are not compared."),
+  })
+  .describe("What `--packages` moved, held, and reinstalled.");
+
 /** `pithy upgrade --json`. `docs/commands/upgrade.md`. */
 const UpgradePayload = z
   .object({
@@ -950,10 +1044,9 @@ const UpgradePayload = z
       )
       .describe("One entry per Worker, in fan-out order."),
     manifestFaults: z.array(ManifestFault).describe("Installed packages whose manifest is present and unusable."),
-    packages: z
-      .looseObject({})
-      .optional()
-      .describe("What `--packages` moved and reinstalled. Present only when `--packages` was passed."),
+    packages: PackagesPayload.optional().describe(
+      "What `--packages` moved and reinstalled. Present only when `--packages` was passed.",
+    ),
     agents: InstructionsFile.optional().describe(
       "`AGENTS.md`, and what happened to the Pithy block in it. Absent only when `--packages` moved `@pithy-sh/cli` and the reconcile was left to the new one.",
     ),
@@ -1019,7 +1112,8 @@ export default withContract(
   {
     output: "document",
     // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates.
-    schemaVersion: 2,
+    // 3: `packages` names its keys, where every key under it was untyped.
+    schemaVersion: 3,
     payload: UpgradePayload,
     mutates: true,
     idempotent: true,

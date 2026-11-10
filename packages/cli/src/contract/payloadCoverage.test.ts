@@ -202,7 +202,6 @@ const OPEN_SUBTREES = [
   "testers status: $.cohort.reconciliation",
   "testers status: $.cohort.trend",
   "turnstile provision: $.sitekeys",
-  "upgrade: $.packages",
   "upgrade: $.workers[]",
 ];
 

@@ -120,15 +120,20 @@ export function newestAdmitted(range: ManagedRange, candidates: readonly string[
 }
 
 /**
- * Whether going from `from` to `to` crosses a breaking boundary: a new major, or a new minor while the
- * major is 0. An unparseable pair crosses nothing — there is nothing to measure.
+ * Which breaking boundary going from `from` to `to` crosses: `major` for a new major, `minor` for a new minor
+ * while the major is 0, or `null` for none. An unparseable pair crosses nothing — there is nothing to measure.
  */
-export function crossesBreakingBoundary(from: string, to: string): boolean {
+export function breakingBoundary(from: string, to: string): "major" | "minor" | null {
   const a = parseVersion(from);
   const b = parseVersion(to);
-  if (!a || !b) return false;
-  if (a.major !== b.major) return true;
-  return a.major === 0 && a.minor !== b.minor;
+  if (!a || !b) return null;
+  if (a.major !== b.major) return "major";
+  return a.major === 0 && a.minor !== b.minor ? "minor" : null;
+}
+
+/** Whether going from `from` to `to` crosses a breaking boundary, by {@link breakingBoundary}. */
+export function crossesBreakingBoundary(from: string, to: string): boolean {
+  return breakingBoundary(from, to) !== null;
 }
 
 /** The same range with its floor moved to `version`. The operator is kept, so a pin stays a pin. */
