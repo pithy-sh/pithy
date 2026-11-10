@@ -339,18 +339,26 @@ describe("a builder used at run time never throws on a production consequence", 
     ...(commandFlag(path, "--yes") === undefined ? {} : { "--yes": true as const }),
     ...(commandFlag(path, "--worker") === undefined ? {} : { "--worker": api }),
   });
+  // A required positional is a value the caller supplied, so each is given one: `workflow trigger` takes its job.
+  const argsFor = (path: string): string[] =>
+    (COMMANDS[path as keyof typeof COMMANDS].positionals as readonly { name: string; required: boolean }[])
+      .filter((one) => one.required)
+      .map((one) => one.name);
 
   for (const env of ["prod", "production"]) {
     for (const path of productionPaths) {
       test(`remedy, at run time, for ${path} --env ${env}`, () => {
-        const one = remedy(path, { flags: flagsFor(path, env) }, { runtime: true });
+        const one = remedy(path, { args: argsFor(path), flags: flagsFor(path, env) }, { runtime: true });
         expect(one.fix).toBeUndefined();
         expect(one.say((command) => command)).toContain("a person's decision");
       });
 
       test(`rerunRemedy, for ${path} --env ${env}`, () => {
         const worker = commandFlag(path, "--worker") === undefined ? {} : { flags: { "--worker": api } };
-        const one = rerunRemedy(callerOf(path as keyof typeof PRODUCTION_CONFIRMS, { env, yes: true }), worker);
+        const one = rerunRemedy(callerOf(path as keyof typeof PRODUCTION_CONFIRMS, { env, yes: true }), {
+          ...worker,
+          args: argsFor(path),
+        });
         expect(one.fix).toBeUndefined();
         expect(one.say((command) => command)).toContain("a person's decision");
       });

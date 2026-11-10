@@ -53,7 +53,7 @@ function dryRunKeys(schema: z.ZodType): boolean[] {
 }
 
 describe("--dry-run, across the tree", () => {
-  test("the commands that plan, by path: all twelve that mutate", () => {
+  test("the commands that plan, by path: all thirteen that mutate", () => {
     expect(planning.map(pathOf).sort()).toEqual([
       "add",
       "deploy",
@@ -67,6 +67,7 @@ describe("--dry-run, across the tree", () => {
       "ui add",
       "upgrade",
       "worker rename",
+      "workflow trigger",
     ]);
   });
 

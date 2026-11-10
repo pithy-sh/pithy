@@ -44,6 +44,8 @@ export const WORKER_SCOPED = [
   "vector reprocess",
   "vector reset",
   "worker sync",
+  "workflow status",
+  "workflow trigger",
 ] as const;
 
 /** A command that acts on one Worker. */
@@ -79,6 +81,7 @@ export const WORKER_NARROWS = [
   "seed",
   "support deprovision",
   "upgrade",
+  "workflow list",
 ] as const;
 
 /**
@@ -207,6 +210,7 @@ export const PRODUCTION_CONFIRMS = {
   "secrets provision": null,
   "testers provision": null,
   "vector provision": null,
+  "workflow trigger": "--confirm",
 } as const satisfies Readonly<Record<string, string | null>>;
 
 /** A command whose production run is a person's decision. */

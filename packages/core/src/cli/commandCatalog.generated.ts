@@ -3311,6 +3311,106 @@ export const COMMANDS = {
         ]
       }
     ]
+  },
+  "workflow list": {
+    "positionals": [],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "workflow status": {
+    "positionals": [
+      {
+        "name": "job",
+        "required": true,
+        "variadic": false
+      },
+      {
+        "name": "instance",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "workflow trigger": {
+    "positionals": [
+      {
+        "name": "job",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--params": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--id": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--confirm": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--dry-run": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
   }
 } as const;
 
@@ -3347,5 +3447,6 @@ export const GROUPS = [
   "turnstile",
   "ui",
   "vector",
-  "worker"
+  "worker",
+  "workflow"
 ] as const;
