@@ -83,7 +83,7 @@ export async function checkTestBindings(options: {
           addPlan({
             capability: name,
             workers: [workerDirOf(worker)],
-            factsFor: projectAddFacts(options.projectDir),
+            factsFor: projectAddFacts(options.projectDir, worker.dir),
             composed: new Set(worker.capabilities.map((capability) => capability.name)),
             answered: new Set(manifest.configOptions.map((option) => option.key)),
           }).fix ?? null;
