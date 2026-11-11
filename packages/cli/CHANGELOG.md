@@ -1,5 +1,11 @@
 # @pithy-sh/cli
 
+## 0.27.1
+
+### Patch Changes
+
+- [#1017](https://github.com/pithy-sh/pithy/pull/1017) [`e91605e`](https://github.com/pithy-sh/pithy/commit/e91605e81c347b644e6de6e4997e702d0c533bba) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` treats a checkout nothing has set up as not set up rather than failing, so CI runs it without `pithy setup`.
+
 ## 0.27.0
 
 ### Minor Changes
