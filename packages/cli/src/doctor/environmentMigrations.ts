@@ -1,49 +1,49 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { MigrationTarget } from "@pithy-sh/core/src/migrations/runner";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ReadLedger } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { localDevStorePath } from "../devSecrets/store";
 import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
 import { composeFor } from "../project/composeFor";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 
 /**
- * **One environment's migration state, answered for that environment and no other (#586).**
+ * **One environment's migration state, answered for that environment and no other.**
  *
- * `pithy doctor` used to report one environment's ledger — `dev`'s, from a composition built for none —
- * and print it under whatever the reader believed they had asked about. It took an `--env` it did not
- * declare, silently, so `pithy doctor --env prod` printed `2 pending — run: pithy migrate --env dev` on a
- * project whose prod had no database at all. The count could not have been prod's.
- *
- * Doctor sweeps every environment rather than taking a flag, as its secret checks already do: `dev`, and
- * every one the root `pithy.config.ts` declares. Each is answered here, and each answer is one of four
- * things that are true of that environment:
+ * Doctor sweeps every environment rather than taking a flag, as its secret checks do: `dev`, and every one
+ * the root `pithy.config.ts` declares. Each is answered here, and each answer is one of five things that are
+ * true of that environment:
  *
  * 1. **`checked`** — composed for it, its databases resolved, and its ledger read. The ledger carries its
- *    own `read`, `partial` and `unavailable`, because a read can come up short (#371).
+ *    own `read`, `partial` and `unavailable`, because a read can come up short.
  * 2. **`not-composed`** — its `pithy.config.ts` threw when evaluated for it, or another Worker's did, whose
  *    databases this one's may share. There is no migration set to compare, so nothing is read, and never
  *    the set of the Workers that did compose: a shared database's ledger holds the missing Worker's rows,
  *    which would read as undeclared. What it threw is `Environment configs:`'s line, not this one's.
  * 3. **`not-provisioned`** — the databases it migrates have no `database_id` in its stanza. Read from files,
  *    so it is true offline too. Never a count: there is nothing there to count against.
- * 4. **`skipped`** — a deployed read that was not attempted, because the run is offline or holds no
+ * 4. **`not-set-up`** — `dev` only: the Worker migrates a database and the checkout holds no local store at
+ *    all, as a fresh clone and a CI runner do. Nothing is read, because opening Miniflare would create the
+ *    store and the next run would count every migration as pending. It reports, and `pithy setup` is its fix.
+ * 5. **`skipped`** — a deployed read that was not attempted, because the run is offline or holds no
  *    Cloudflare credentials. Said, so a missing line is never mistaken for a clean one.
  *
  * **Composed for the environment, and read for it, by one function.** {@link environmentMigrations} is
  * where every {@link EnvironmentMigrations} is made. It composes through `composeFor`, so the config
- * is evaluated under that environment's `ENVIRONMENT` (#595), and the ledger seam it calls is handed that
+ * is evaluated under that environment's `ENVIRONMENT`, and the ledger seam it calls is handed that
  * same environment and that same composition. Nothing falls back: an environment that cannot be answered
- * says which of the three reasons it is, and never borrows a neighbor's number.
+ * says which state it is in, and never borrows a neighbor's number.
  */
 
 /** Why a deployed environment's ledger was not read. */
 export type RemoteSkip = "offline" | "no-credentials";
 
-/** One environment's migration state for one Worker — see the module docblock for the four states. */
+/** One environment's migration state for one Worker — see the module docblock for the five states. */
 export type EnvironmentMigrations =
   | {
       /** The environment this answer is about, and the only one it was taken from. */
@@ -66,6 +66,12 @@ export type EnvironmentMigrations =
       state: "not-provisioned";
       /** Each database with no `database_id` in `env`'s stanza. Non-empty. */
       unprovisioned: MigrationTarget[];
+    }
+  | {
+      /** The environment this answer is about: always `dev`. */
+      env: string;
+      /** The Worker migrates a database and the checkout holds no local store, so nothing was read. */
+      state: "not-set-up";
     }
   | {
       /** The environment this answer is about. */
@@ -117,17 +123,29 @@ export interface EnvironmentMigrationsOptions {
   worker: MigrationWorker;
   /** The environment to answer for. */
   env: string;
-  /** The Cloudflare account this project belongs to, or `null` when it names none (#234). */
+  /** The Cloudflare account this project belongs to, or `null` when it names none. */
   account: CloudflareAccountSelection | null;
   /**
    * Why a deployed read will not be attempted this run, or `null` when it will. Never consulted for `dev`,
    * whose store is local and needs neither a network nor an account.
    */
   remoteSkip: RemoteSkip | null;
+  /**
+   * Whether the checkout holds a local D1 store at all. Only consulted for `dev`. Defaults to whether
+   * {@link localDevStorePath} exists; `pithy doctor` decides it once, before any of its reads can create it.
+   */
+  localStore?: boolean;
   /** Composition seam. Defaults to {@link composeWorkerFor}. */
   compose?: ComposeWorker;
   /** Ledger seam. Defaults to {@link readProjectLedger} over this one Worker. */
   readLedger?: ReadLedger;
+}
+
+/** Whether any capability declares migrations for a database: what a local store would have to hold. */
+function migratesADatabase(capabilities: readonly Capability[]): boolean {
+  return capabilities.some((capability) =>
+    Object.values(capability.databases ?? {}).some((spec) => spec.migrations !== undefined),
+  );
 }
 
 /** The default ledger read: the migration fan-out over this one Worker. */
@@ -145,7 +163,8 @@ const defaultReadLedger: ReadLedger = (scope) =>
  *
  * The order is the cheapest honest one. Composition first, because every later step needs to know which
  * databases this environment migrates. Provisioning second, from files, so an unprovisioned environment
- * reads as such offline too. The skip third, before anything reaches for the network. The read last.
+ * reads as such offline too. A local store that does not exist third, and the skip fourth, before anything
+ * reaches for a database. The read last.
  */
 export async function environmentMigrations(options: EnvironmentMigrationsOptions): Promise<EnvironmentMigrations> {
   const { env, worker } = options;
@@ -169,6 +188,13 @@ export async function environmentMigrations(options: EnvironmentMigrationsOption
   }
   if (unprovisioned.length > 0) return { env, state: "not-provisioned", unprovisioned };
 
+  if (
+    env === LOCAL_ENVIRONMENT &&
+    migratesADatabase(capabilities) &&
+    !(options.localStore ?? existsSync(localDevStorePath(options.projectDir)))
+  )
+    return { env, state: "not-set-up" };
+
   if (env !== LOCAL_ENVIRONMENT && options.remoteSkip !== null)
     return { env, state: "skipped", reason: options.remoteSkip };
 
@@ -186,7 +212,7 @@ export async function environmentMigrations(options: EnvironmentMigrationsOption
     // A Worker beside this one did not compose for `env`, so nothing was read: the same answer as this
     // Worker's own config throwing, and not "no database answered".
     if (error instanceof NeighborsNotComposed) return { env, state: "not-composed" };
-    // The guard keeps nothing else of what it caught: a D1 read throws with ids and queries in it (#350).
+    // The guard keeps nothing else of what it caught: a D1 read throws with ids and queries in it.
     ledger = { state: "unavailable" };
   }
   return { env, state: "checked", ledger };

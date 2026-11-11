@@ -1,18 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type Command, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { VaultTableStats } from "@pithy-sh/secrets/src/tables/stats";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { localDevStorePath } from "../devSecrets/store";
 import { unprovisionedDatabases, type WorkerScope } from "../migrations/run";
 import { type DeclaredTable, declaredTablesOf, readVaultTables, secretTablesReport } from "../secretTables/report";
 import type { RemoteSkip } from "./environmentMigrations";
 
 /**
  * **The `Secret tables:` line — which tables the project declares, and whether every row in each
- * environment is on the newest key (#524).**
+ * environment is on the newest key.**
  *
  * A declared secret table (`defineSecretTable`) holds customers' credentials, re-encrypted row by row by the
  * at-rest rotation. A pass that stopped partway across a large table leaves rows on the previous key, and
@@ -46,6 +48,11 @@ export type EnvironmentSecretTables =
     }
   | {
       env: string;
+      /** `dev` only: the checkout holds no local store, so there is nothing to read and nothing was opened. */
+      state: "not-set-up";
+    }
+  | {
+      env: string;
       /** A deployed read that was not attempted. */
       state: "skipped";
       /** Why it was not. */
@@ -53,7 +60,7 @@ export type EnvironmentSecretTables =
     }
   | {
       env: string;
-      /** The read threw. Nothing of what it threw is kept: a D1 read throws with ids and queries in it (#350). */
+      /** The read threw. Nothing of what it threw is kept: a D1 read throws with ids and queries in it. */
       state: "unreadable";
     }
   | {
@@ -88,11 +95,16 @@ export interface SecretTablesOptions {
   environments: readonly string[];
   /** The project's Workers. */
   workers: readonly SecretTablesWorker[];
-  /** The Cloudflare account this project belongs to, or `null` when it names none (#234). */
+  /** The Cloudflare account this project belongs to, or `null` when it names none. */
   account: CloudflareAccountSelection | null;
   /** Why a deployed read will not be attempted this run, or `null` when it will. Never consulted for `dev`. */
   remoteSkip: RemoteSkip | null;
-  /** Composition seam — `pithy doctor` hands in the compositions its report already took (#595). */
+  /**
+   * Whether the checkout holds a local D1 store at all. Only consulted for `dev`, and defaults to whether
+   * {@link localDevStorePath} exists: opening Miniflare over a store that does not exist creates it.
+   */
+  localStore?: boolean;
+  /** Composition seam — `pithy doctor` hands in the compositions its report already took. */
   composeWorker: (worker: SecretTablesWorker, env: string) => Promise<{ capabilities: readonly Capability[] }>;
   /** Vault seam. Defaults to {@link readVaultTables}. */
   readVault?: (env: string, workers: WorkerScope[]) => Promise<VaultTableStats>;
@@ -134,6 +146,10 @@ export async function checkSecretTables(options: SecretTablesOptions): Promise<S
       environments.push({ env, state: "not-provisioned" });
       continue;
     }
+    if (env === LOCAL_ENVIRONMENT && !(options.localStore ?? existsSync(localDevStorePath(options.projectDir)))) {
+      environments.push({ env, state: "not-set-up" });
+      continue;
+    }
     if (env !== LOCAL_ENVIRONMENT && options.remoteSkip !== null) {
       environments.push({ env, state: "skipped", reason: options.remoteSkip });
       continue;
@@ -160,18 +176,19 @@ export async function checkSecretTables(options: SecretTablesOptions): Promise<S
   }
   const state: SecretTablesState = environments.some((answer) => answer.state === "read" && answer.behind > 0)
     ? "findings"
-    : environments.every((answer) => answer.state === "read")
+    : environments.every((answer) => answer.state === "read" || answer.state === "not-set-up")
       ? "ok"
       : "could-not-check";
   return { state, declared: tables, environments };
 }
 
 /**
- * The command that rights one environment's answer, or `null` — `pithy doctor --json`'s `fix` (#697). A table
- * declared and not migrated is what `pithy migrate` closes. A row behind the newest key has no command: the next
- * scheduled at-rest pass is what moves it.
+ * The command that rights one environment's answer, or `null` — `pithy doctor --json`'s `fix`. A table
+ * declared and not migrated is what `pithy migrate` closes, and a checkout with no local store is `pithy setup`'s.
+ * A row behind the newest key has no command: the next scheduled at-rest pass is what moves it.
  */
 export function secretTablesFix(answer: EnvironmentSecretTables): Command | null {
+  if (answer.state === "not-set-up") return pithyCommand("setup");
   if (answer.state !== "read" || answer.notMigrated.length === 0) return null;
   return pithyCommand("migrate", { flags: { "--env": answer.env } });
 }
@@ -212,6 +229,9 @@ export function describeSecretTables(check: SecretTablesCheck): string[] {
         lines.push(`${answer.env}: ${parts.join(" ")}`);
         break;
       }
+      case "not-set-up":
+        lines.push(`${answer.env}: not set up — run: ${pithyCommand("setup")}.`);
+        break;
       case "not-provisioned":
         lines.push(
           `${answer.env}: not provisioned — env.${answer.env} has no SECRETS database_id, so there is nothing to read.`,

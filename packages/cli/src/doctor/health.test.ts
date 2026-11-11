@@ -195,6 +195,32 @@ describe("buildProjectHealth", () => {
     });
   });
 
+  test("dev on a checkout with no local store is not set up, which reports and does not fail the check", async () => {
+    const noop = { up: async () => {}, down: async () => {} };
+    const readLedger = vi.fn(async () => ({ state: "read" as const, pending: 2, undeclared: [] }));
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      composeWorker: async () => ({
+        capabilities: [
+          {
+            name: "app",
+            requiredBindings: [],
+            databases: { app: { binding: "DB", tables: {}, migrationOrder: 1000, migrations: { "0001_init": noop } } },
+          },
+        ],
+      }),
+      localStore: false,
+      workers: [api],
+      readLedger,
+      buildPlan: planStub({ api: clean("api") }),
+    });
+    expect(health.ok).toBe(true);
+    expect(checkedWorker(health).migrations).toEqual({ ok: true, environments: [{ env: "dev", state: "not-set-up" }] });
+    expect(readLedger).not.toHaveBeenCalled();
+  });
+
   test("a deployed environment behind is reported on the check and does not fail it", async () => {
     const health = await buildProjectHealth({
       account: null,

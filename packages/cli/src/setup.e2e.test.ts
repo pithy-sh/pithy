@@ -16,7 +16,7 @@ import { linkKitPackages } from "./test-utils/linkKit";
 import { removeTempDir } from "./test-utils/tempRepo";
 
 /**
- * **`pithy setup` on a fresh clone, run end to end through the real binary (#764).**
+ * **`pithy setup` on a fresh clone, run end to end through the real binary.**
  *
  * One project is created the way its first developer creates it — scaffolded, `pithy add auth` composing
  * `secrets` and `email` with it, committed. Every case then clones it, the way the second developer gets it, and
@@ -222,15 +222,17 @@ describe("pithy setup on a fresh clone", () => {
     expect(existsSync(join(dir, ".wrangler"))).toBe(false);
   }, 300_000);
 
-  test("pithy doctor on a never-set-up clone names pithy setup", async () => {
+  test("pithy doctor on a never-set-up clone says it is not set up, names pithy setup, and exits 0", async () => {
     const { dir, config } = await clone();
 
     const outcome = await pithy(["doctor"], dir, config);
 
-    // Fourteen pending: auth's migrations through `0008_last_active` among them, and email's `0002_job_filters`.
-    expect(outcome.stdout).toContain("dev: 14 pending — run: pithy setup");
+    expect(outcome.stdout).toContain("dev: not set up — run: pithy setup");
+    expect(outcome.stdout).not.toContain("pending — run");
     expect(outcome.stdout).toContain("Run `pithy setup` — it mints one into");
     expect(outcome.stdout).not.toContain("pithy add secrets");
+    expect(outcome.code).toBe(0);
+    expect(existsSync(join(dir, ".wrangler"))).toBe(false);
   }, 300_000);
 });
 

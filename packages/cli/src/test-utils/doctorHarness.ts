@@ -25,7 +25,7 @@ import type { ResolvedWorker } from "../project/workerScope";
  */
 
 /**
- * The nth **checked** Worker in a health report — #371's `WorkerHealth` union narrowed in one place.
+ * The nth **checked** Worker in a health report — the `WorkerHealth` union narrowed in one place.
  *
  * It throws rather than answering `undefined`, so a Worker that silently stopped being checked fails the
  * assertion that was about something else, loudly, instead of passing as an optional-chained skip. The
@@ -84,7 +84,7 @@ export const planStubPer = (plans: Record<string, ReconcilePlan>): BuildPlan =>
  * environment a Worker does not name reads level, which is the state every other suite starts from.
  *
  * It answers from the `env` it is handed and nothing else, so a report that asked the wrong environment
- * gets the wrong environment's number rather than the right one by coincidence (#586).
+ * gets the wrong environment's number rather than the right one by coincidence.
  */
 export const ledgerStubPer = (ledgers: Record<string, Record<string, ProjectLedger>>): ReadLedger =>
   vi.fn(
@@ -148,20 +148,22 @@ export function doctorHarness(): DoctorHarness {
         tokenStatus: "active",
         credentialSplit: null,
       }),
-      // And once more for the AI clients (#652): unstubbed, the check reads the operator's own
+      // And once more for the AI clients: unstubbed, the check reads the operator's own
       // `~/.cursor`, `~/.codex` and the rest, so the report would say something different on every
       // machine — and `mcp/home.ts` refuses the real home under vitest rather than let it. The connected
       // state is the quiet one; the suites about the block override this.
       checkDocsMcp: async () => ({ state: "ok" as const, findings: [], clients: [] }),
       // Same reason: unstubbed, every test here would list the real account's D1 and R2.
       checkProjectName: async () => ({ state: "ok" as const, project: "pithy-app", misnamed: [] }),
+      // A checkout that has been set up and holds a local store, which is the state every report below
+      // describes: a fresh clone names `pithy setup` for its local gaps and reads `dev` as not set up, and
+      // the suites about that override these.
+      checkoutSetUp: () => true,
+      localStore: () => true,
       // And the same again for the machine's port registry: unstubbed, `present` and every row of the
       // listing would depend on which checkouts the machine running the suite happens to hold — a report
       // that differs by machine, and a transcript nobody could pin. One own block, which is the state a
       // developer on their default branch is in; the suites about the other rows override this.
-      // A checkout that has been set up, which is the state every report below describes: a fresh clone
-      // names `pithy setup` for its local gaps instead, and the suites about that override this (#764).
-      checkoutSetUp: () => true,
       checkPortsRegistry: async () => ({
         path: "/home/u/.config/pithy/dev-ports.json",
         present: true,
@@ -193,7 +195,7 @@ export function doctorHarness(): DoctorHarness {
         { name: "@pithy-sh/leaderboard", version: "1.2.0" },
       ],
       // What the root `package.json` declares for them: each at a caret over what is installed, which is
-      // what `pithy add` writes. The command an outdated row names is decided from this (#634).
+      // what `pithy add` writes. The command an outdated row names is decided from this.
       declaredSpecs: async () =>
         [
           ["@pithy-sh/core", "^1.2.0"],

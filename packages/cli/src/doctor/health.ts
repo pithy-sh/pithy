@@ -107,7 +107,8 @@ export interface MigrationHealth {
    * cannot gate CI. Its schema trailing the project is also the ordinary state between a merge and the
    * `pithy migrate --env` a deploy runs — a red over it would be a red on every project mid-release.
    * `dev` is the local store, established on this machine from this checkout, which is the standard every
-   * exit-gating finding in `pithy doctor` meets.
+   * exit-gating finding in `pithy doctor` meets. A checkout with no local store is `not-set-up` and passes:
+   * an absent store is not set up, and only a store that exists and is behind fails.
    */
   ok: boolean;
   /**
@@ -304,6 +305,11 @@ export interface ProjectHealthOptions {
    * the machine defaults to.
    */
   account: CloudflareAccountSelection | null;
+  /**
+   * Whether the checkout holds a local D1 store at all, decided by `doctor` before any read can create one.
+   * Omitted, each Worker's `dev` answer asks the disk.
+   */
+  localStore?: boolean;
   /** The Workers to check, in report order. Doctor resolves them once and passes them in. */
   workers: HealthWorker[];
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
@@ -407,14 +413,16 @@ function mergeEnvironmentPlans(
  */
 function migrationHealth(environments: EnvironmentMigrations[]): MigrationHealth {
   const local = environments.find((entry) => entry.env === LOCAL_ENVIRONMENT);
-  // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
-  // check did not compare, and a check that did not run is not a check that passed — the same standard
-  // `pithy doctor` already applies to a manifest it could not parse.
+  // `ok` on a whole read with nothing on either side of it, or on a checkout with no local store at all. A
+  // `partial` ledger is a database this check did not compare, and a check that did not run is not a check
+  // that passed. A store that does not exist is the opposite case: nothing on this machine is behind, there
+  // is nothing yet to be, and a fresh clone or a CI runner failing on it would gate on a runner's state.
   const ok =
-    local?.state === "checked" &&
-    local.ledger.state === "read" &&
-    local.ledger.pending === 0 &&
-    local.ledger.undeclared.length === 0;
+    local?.state === "not-set-up" ||
+    (local?.state === "checked" &&
+      local.ledger.state === "read" &&
+      local.ledger.pending === 0 &&
+      local.ledger.undeclared.length === 0);
   return { ok, environments };
 }
 
@@ -558,6 +566,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
           env,
           account: options.account,
           remoteSkip: options.remoteSkip,
+          ...(options.localStore === undefined ? {} : { localStore: options.localStore }),
           compose: composed,
           ...(options.readLedger ? { readLedger: options.readLedger } : {}),
         }),

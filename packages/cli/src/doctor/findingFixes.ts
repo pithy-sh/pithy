@@ -113,11 +113,13 @@ export function capabilityReachFix(entry: ReachEntry, projectDir?: string): Comm
  * One environment's migrations, for one Worker. **Pending is `pithy migrate`**, for whatever count was
  * established — `partial` counts what answered — and needs no phrase, production included. **An environment
  * with no database is the provision**, which creates it and migrates, and names none for production, whose
- * provision is a person's (`provisionFixCommand`). An undeclared migration is a local wipe or a person's
+ * provision is a person's (`provisionFixCommand`). **A checkout with no local store is `pithy setup`**, which
+ * creates and migrates it with the rest a fresh clone lacks. An undeclared migration is a local wipe or a person's
  * judgment, and every other state established nothing, so each is `null`.
  */
 export function migrationFix(entry: EnvironmentMigrations, productionEnvironments: readonly string[]): Command | null {
   if (entry.state === "not-provisioned") return provisionFixCommand(entry.env, productionEnvironments);
+  if (entry.state === "not-set-up") return pithyCommand("setup");
   if (entry.state !== "checked") return null;
   return (establishedPending(entry.ledger) ?? 0) > 0
     ? pithyCommand("migrate", { flags: { "--env": entry.env } })
