@@ -66,6 +66,7 @@ function options(overrides: Partial<SecretTablesOptions> = {}): SecretTablesOpti
     workers: [{ name: "api", dir: join(root, "apps", "api") }],
     account: null,
     remoteSkip: null,
+    localStore: true,
     composeWorker: async () => ({ capabilities: composed(true) }),
     readVault: async () => vault({ "4": 10 }),
     ...overrides,
@@ -100,6 +101,24 @@ describe("checkSecretTables", () => {
     expect(describeSecretTables(check)).toContain(
       "prod: 12 rows not on key v4 — the last at-rest rotation did not reach them.",
     );
+  });
+
+  test("dev on a checkout with no local store is not set up, unread, and does not open the verdict", async () => {
+    const readVault = vi.fn(async (_env: string) => vault({ "4": 1 }));
+    const check = await checkSecretTables(options({ localStore: false, readVault }));
+    expect(check.state).toBe("ok");
+    expect(check.environments[0]).toEqual({ env: "dev", state: "not-set-up" });
+    expect(describeSecretTables(check)).toContain("dev: not set up — run: pithy setup.");
+    expect(readVault.mock.calls.map(([env]) => env)).toEqual(["prod"]);
+    expect(secretTablesFix({ env: "dev", state: "not-set-up" })).toBe("pithy setup");
+  });
+
+  test("asks the disk for the local store when the caller does not say", async () => {
+    const readVault = vi.fn(async () => vault({ "4": 1 }));
+    const { localStore: _, ...unsaid } = options({ readVault });
+    expect((await checkSecretTables(unsaid)).environments[0]).toEqual({ env: "dev", state: "not-set-up" });
+    await mkdir(join(root, ".wrangler", "state", "v3", "d1"), { recursive: true });
+    expect((await checkSecretTables(unsaid)).environments[0]?.state).toBe("read");
   });
 
   test("a skipped deployed read says so, and keeps the verdict open", async () => {

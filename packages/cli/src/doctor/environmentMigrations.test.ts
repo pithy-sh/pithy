@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
@@ -15,6 +16,7 @@ import {
   renderDoctorJson,
   renderDoctorText,
 } from "../commands/doctor";
+import { localDevStorePath } from "../devSecrets/store";
 import {
   dropCapabilityTables,
   NeighborsNotComposed,
@@ -27,12 +29,11 @@ import { environmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
 
 /**
- * **No per-environment migration answer is taken from another environment (#586).**
+ * **No per-environment migration answer is taken from another environment.**
  *
- * `pithy doctor` printed `2 pending — run: pithy migrate --env dev` whatever it was asked, and the count
- * under a prod heading was dev's: prod had no database to have anything pending against. Doctor has no
- * `--env`, and citty accepted one silently. It now reports every environment the project has — `dev`,
- * and each one the root `pithy.config.ts` declares — each composed for itself and read for itself.
+ * Doctor takes no `--env`: it reports every environment the project has — `dev`, and each one the root
+ * `pithy.config.ts` declares — each composed for itself and read for itself, so a count under one
+ * environment's name is never another environment's.
  *
  * Every fixture here is a real project on disk with a real `pithy.config.ts` that reads `ENVIRONMENT` at
  * module scope, because the defect is in *which composition answered*, and a seam over the loader cannot
@@ -221,7 +222,7 @@ describe("doctor reports each environment's migrations from that environment", (
       { env: "qa", state: "not-composed" },
     ]);
     // The same answers are what `--json` carries: no second rendering of them substitutes one for another.
-    // Each with its `fix` beside it (#697): pending is migrate, an environment with no database its
+    // Each with its `fix` beside it: pending is migrate, an environment with no database its
     // provision — none for prod, whose provision is a person's — and a config that did not compose, nothing.
     expect(
       (renderDoctorJson(report).project as { health: ProjectHealth }).health.workers.map((worker) =>
@@ -331,12 +332,12 @@ describe("doctor reports each environment's migrations from that environment", (
 });
 
 /**
- * **No part of doctor answers from a composition built for another environment, or for none (#586).**
+ * **No part of doctor answers from a composition built for another environment, or for none.**
  *
- * The migrations check was routed and the rest of doctor was not: it resolved every Worker once, with
- * nothing stamped, and built each Worker's plan, its settings and its extensions from that. Here every
- * composition doctor hands to a check is recorded by the environment its config was evaluated under, and
- * the fixture names every migration after it — so a composition for none reads `none`.
+ * Each Worker's plan, its settings and its extensions are built from a composition for an environment, never
+ * from one resolution with nothing stamped. Here every composition doctor hands to a check is recorded by the
+ * environment its config was evaluated under, and the fixture names every migration after it — so a
+ * composition for none reads `none`.
  */
 describe("every composition doctor reads is for an environment, and for the one it answers", () => {
   /** The environment a composition was evaluated under, read off the migration names it declares. */
@@ -387,13 +388,12 @@ describe("every composition doctor reads is for an environment, and for the one 
 
 /**
  * **A database shared with a Worker that does not compose for the environment is not read as if it were
- * not shared (#586).**
+ * not shared.**
  *
  * Doctor reads one Worker's ledger, and the rest of the project is discovered beside it, because a shared
- * D1's ledger holds every Worker's migrations. That discovery swallowed any failure into "no neighbors", so
- * one Worker whose config throws for staging — the dashboard's prod shape — emptied the whole set. A
- * database `a` shares with the healthy `b` was then grouped with `a`'s migrations alone, `b`'s applied row
- * read as undeclared, and doctor printed `delete its row from pithy_migrations` under staging's name.
+ * D1's ledger holds every Worker's migrations. A neighbor whose config throws for the environment refuses
+ * the read rather than being dropped from the set: grouped without it, a database `a` shares with the
+ * healthy `b` would read `b`'s applied row as undeclared, and doctor would tell an operator to delete it.
  */
 describe("a Worker beside one that does not compose for the environment", () => {
   const noop = "{ up: async () => {}, down: async () => {} }";
@@ -526,5 +526,73 @@ describe("unprovisionedDatabases", () => {
     expect(await unprovisionedDatabases("dev", workers)).toEqual([]);
     // A Worker that migrates nothing has nothing to provision for it.
     expect(await unprovisionedDatabases("prod", [{ name: "api", dir: workerDir, capabilities: [] }])).toEqual([]);
+  });
+});
+
+describe("dev on a checkout with no local store", () => {
+  const noop = { up: async () => {}, down: async () => {} };
+  const migrating = [
+    {
+      name: "app",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: {}, migrationOrder: 1000, migrations: { "0001_init": noop } } },
+    },
+  ];
+  const behind: ProjectLedger = { state: "read", pending: 1, undeclared: [] };
+
+  /** The answer for `env`, with a ledger seam that records whether it was asked. */
+  async function answer(env: string, capabilities: unknown[], localStore?: boolean) {
+    const asked: string[] = [];
+    const result = await environmentMigrations({
+      projectDir: harness.dir,
+      worker: { name: "api", dir: join(harness.dir, "apps", "api") },
+      env,
+      account: null,
+      remoteSkip: null,
+      ...(localStore === undefined ? {} : { localStore }),
+      compose: async () => ({ capabilities: capabilities as never }),
+      readLedger: async (scope) => {
+        asked.push(scope.env);
+        return behind;
+      },
+    });
+    return { result, asked };
+  }
+
+  test("is not set up, and nothing is read or written, when the Worker migrates a database", async () => {
+    const { result, asked } = await answer("dev", migrating);
+    expect(result).toEqual({ env: "dev", state: "not-set-up" });
+    expect(asked).toEqual([]);
+    expect(existsSync(join(harness.dir, ".wrangler"))).toBe(false);
+  });
+
+  test("is read, and its pending count stands, once the store exists", async () => {
+    await mkdir(localDevStorePath(harness.dir), { recursive: true });
+    const { result, asked } = await answer("dev", migrating);
+    expect(result).toEqual({ env: "dev", state: "checked", ledger: behind });
+    expect(asked).toEqual(["dev"]);
+  });
+
+  test("is read when the Worker migrates nothing, since there is no database to set up", async () => {
+    const { result } = await answer("dev", []);
+    expect(result).toEqual({ env: "dev", state: "checked", ledger: behind });
+  });
+
+  test("takes the caller's answer about the store over the disk", async () => {
+    expect((await answer("dev", migrating, true)).result.state).toBe("checked");
+    await mkdir(localDevStorePath(harness.dir), { recursive: true });
+    expect((await answer("dev", migrating, false)).result).toEqual({ env: "dev", state: "not-set-up" });
+  });
+
+  test("leaves a deployed environment's read alone", async () => {
+    const workerDir = join(harness.dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      JSON.stringify({ env: { staging: { d1_databases: [{ binding: "DB", database_id: "staging-id" }] } } }),
+    );
+    const { result, asked } = await answer("staging", migrating, false);
+    expect(result).toEqual({ env: "staging", state: "checked", ledger: behind });
+    expect(asked).toEqual(["staging"]);
   });
 });

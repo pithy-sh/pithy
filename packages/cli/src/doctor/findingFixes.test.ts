@@ -9,6 +9,7 @@ import {
   DoctorFix,
   docsConnectFix,
   healthWithFixes,
+  localMigrationFix,
   migrationFix,
   missingBindingFix,
   prerequisiteFix,
@@ -69,6 +70,11 @@ describe("migrationFix", () => {
     expect(migrationFix(unprovisioned("staging"), [])).toBe("pithy provision --env staging --yes");
     expect(migrationFix(unprovisioned("prod"), [])).toBeNull();
     expect(migrationFix(unprovisioned("live"), ["live"])).toBeNull();
+  });
+
+  test("a checkout with no local store names setup, set up or not by its dev config", () => {
+    expect(migrationFix({ env: "dev", state: "not-set-up" }, [])).toBe("pithy setup");
+    expect(localMigrationFix({ env: "dev", state: "not-set-up" }, [], true)).toBe("pithy setup");
   });
 
   test("a config that would not compose, or a read that was skipped, established nothing to fix", () => {

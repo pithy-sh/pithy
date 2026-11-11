@@ -32,6 +32,7 @@ import {
 import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { pithyOffline } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
+import { localDevStorePath } from "../devSecrets/store";
 import { AgentEndpointHealth } from "../doctor/agentEndpoint";
 import {
   type AuditSinksCheck,
@@ -1006,6 +1007,11 @@ export interface DoctorReportOptions {
   checkPortsRegistry?: (projectDir: string) => Promise<PortsRegistryCheck>;
   /** Seam: whether this checkout has been set up. Defaults to whether its `.dev.config.json` exists. */
   checkoutSetUp?: (projectDir: string) => boolean;
+  /**
+   * Seam: whether this checkout holds a local D1 store at all. Defaults to whether `.wrangler/state/v3/d1`
+   * exists. With none, `dev`'s migrations and secret tables are not set up, and neither is read.
+   */
+  localStore?: (projectDir: string) => boolean;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
   /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
@@ -1134,6 +1140,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Resolved once, here, and handed down. Every consumer of it below is asking the same question, and a
   // report that computed it twice could answer differently in its own two halves.
   const offline = options.offline ?? pithyOffline(env);
+  // Whether the checkout holds a local D1 store, asked before any check runs: opening Miniflare over a store
+  // that does not exist creates it, so a read below would turn this run's answer into the next run's failure.
+  const localStore = (options.localStore ?? ((dir: string) => existsSync(localDevStorePath(dir))))(options.projectDir);
   const probeCloudflare =
     options.checkCloudflare ??
     (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account, offline }));
@@ -1432,6 +1441,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       // function. A doctor that counted pending migrations against one account and named another in the
       // line beside it would be two reports in one.
       account,
+      localStore,
       // Each Worker composed for each environment through the same resolver the set above came from, so a
       // test's resolver answers both. Its ledger read is not narrowed: a shared database holds the sibling's
       // rows, so that read refuses and this line says it could not be checked.
@@ -1616,6 +1626,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
               workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
               account,
               remoteSkip,
+              localStore,
               composeWorker:
                 composeWorkerFor ??
                 (async (worker, environment) => {
@@ -2038,6 +2049,8 @@ function environmentMigrationLines(
         },
       ];
     }
+    case "not-set-up":
+      return [{ first: `${env}: not set up — run: ${pithyCommand("setup")}`, cont: [] }];
     case "skipped":
       return [
         {

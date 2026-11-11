@@ -1408,8 +1408,61 @@ describe("every block of the report gates, or says why it reports only", () => {
     expect(reasons.filter((reason) => !/^[A-Z`].*\.$/.test(reason))).toEqual([]);
   });
 
-  test("the Worker vars block gates", () => {
-    expect(DOCTOR_GATES.varStanzas).toEqual({ gates: "varStanzas" });
+  test("the Worker vars block gates, on committed files alone", () => {
+    expect(DOCTOR_GATES.varStanzas).toEqual({ gates: "varStanzas", whenLocalStateAbsent: null });
+  });
+});
+
+describe("a gating block that reads local dev state reports its absence and does not fail on it", () => {
+  const noop = { up: async () => {}, down: async () => {} };
+  const migrating = [
+    {
+      name: "app",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: {}, migrationOrder: 1000, migrations: { "0001_init": noop } } },
+    },
+  ];
+
+  /**
+   * Each gating block that reads local dev state, on a checkout where that state is absent. The ledger seam
+   * answers behind, so a block that read an absent store anyway fails here.
+   */
+  const ABSENT: Record<string, () => Promise<DoctorReport>> = {
+    project: () =>
+      healthyWith({
+        localStore: () => false,
+        checkoutSetUp: () => false,
+        resolveWorkersFor: async () => [{ name: "api", dir: "/p/apps/api", capabilities: migrating }] as never,
+        readLedger: ledgerStubPer({ api: { dev: { state: "read", pending: 3, undeclared: [] } } }),
+      }),
+    devPreferences: () =>
+      healthyWith({
+        checkDevPreferences: async () => ({ state: "absent", path: "/home/u/.config/pithy/acme/dev.json", user: null }),
+      }),
+  };
+
+  test("every block that reads local dev state says what its absence reports, and has a case here", () => {
+    const local = Object.entries(DOCTOR_GATES).flatMap(([key, gate]) =>
+      "gates" in gate && gate.whenLocalStateAbsent !== null ? [key] : [],
+    );
+    expect(local.sort()).toEqual(Object.keys(ABSENT).sort());
+    const reasons = Object.values(DOCTOR_GATES).flatMap((gate) =>
+      "gates" in gate && gate.whenLocalStateAbsent !== null ? [gate.whenLocalStateAbsent] : [],
+    );
+    expect(reasons.filter((reason) => !/^[A-Z`].*\.$/.test(reason))).toEqual([]);
+  });
+
+  test.each(Object.entries(ABSENT))("%s, absent, fails nothing", async (_, build) => {
+    expect(failuresOf(await build())).toEqual([]);
+  });
+
+  test("the project block names pithy setup for dev when the store is absent", async () => {
+    const report = await ABSENT.project?.();
+    const worker = report?.project?.health.workers[0];
+    expect(worker?.state === "checked" && worker.migrations.environments[0]).toEqual({
+      env: "dev",
+      state: "not-set-up",
+    });
   });
 });
 

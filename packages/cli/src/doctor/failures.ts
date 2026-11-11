@@ -482,8 +482,19 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   return failures;
 }
 
-/** Whether a report block can fail the exit: the check it gates under, or why it only reports. */
-export type DoctorGate = { gates: DoctorCheck } | { reportsOnly: string };
+/**
+ * Whether a report block can fail the exit: the check it gates under, or why it only reports.
+ *
+ * A gating block also says whether it reads this machine's dev state — the local D1 store, `.dev.vars`, the dev
+ * secrets file, `dev.json` — in `whenLocalStateAbsent`: `null` when it reads only the checkout's committed files
+ * or an account that answered, and otherwise what it reports when that state is absent. Absent is a checkout
+ * nothing has set up, as a fresh clone and a CI runner are, and it reports; only local state that exists and is
+ * wrong may fail the exit.
+ */
+export type DoctorGate = { gates: DoctorCheck; whenLocalStateAbsent: string | null } | { reportsOnly: string };
+
+/** A gating block that reads no local dev state. */
+const gatesOn = (check: DoctorCheck): DoctorGate => ({ gates: check, whenLocalStateAbsent: null });
 
 const NOT_A_CHECK = { reportsOnly: "A fact about this machine or this run, which nothing in the project establishes." };
 const UPGRADE_STATE =
@@ -493,7 +504,9 @@ const UPGRADE_STATE =
  * **Every key of the report, and whether it can fail the exit.** A block that finds a fault in the project's own
  * files gates under its {@link DoctorCheck}, with a branch in {@link doctorFailures}; one that does not says why here.
  * The type holds every key of {@link DoctorReport} to an entry, and `failures.test.ts` holds the keys a built report
- * carries to these, so a new block that neither gates nor says why fails both.
+ * carries to these, so a new block that neither gates nor says why fails both. A gating block that reads local dev
+ * state says what its absence reports, and `failures.test.ts` builds that absence for each one and fails on any
+ * failure under it.
  */
 export const DOCTOR_GATES: { readonly [K in keyof DoctorReport]-?: DoctorGate } = {
   cli: NOT_A_CHECK,
@@ -511,25 +524,31 @@ export const DOCTOR_GATES: { readonly [K in keyof DoctorReport]-?: DoctorGate } 
     reportsOnly: "Read to decide whether a provisioning fix stops at a person's `--confirm` phrase. It is not a check.",
   },
   checkoutSetUp: { reportsOnly: "Read to decide which command a local finding names. It is not a check." },
-  project: { gates: "project" },
-  projectLoadError: { gates: "project" },
-  cloudflare: { gates: "cloudflare" },
-  projectName: { gates: "projectName" },
-  workerNames: { gates: "workerNames" },
-  selfBinding: { gates: "selfBinding" },
-  serviceBindings: { gates: "serviceBindings" },
-  hostBindings: { gates: "hostBindings" },
-  featureRatelimitIds: { gates: "featureRatelimitIds" },
-  biomeIncludes: { gates: "biomeIncludes" },
-  varStanzas: { gates: "varStanzas" },
-  environments: { gates: "environments" },
-  environmentConfigs: { gates: "environmentConfigs" },
-  origins: { gates: "origins" },
-  workflows: { gates: "workflows" },
-  supportSearchTriggers: { gates: "supportSearchTriggers" },
-  devPreferences: { gates: "devPreferences" },
-  settings: { gates: "settings" },
-  secretRotations: { gates: "secretRotations" },
+  project: {
+    gates: "project",
+    whenLocalStateAbsent: `With no local D1 store, \`dev\`'s migrations are \`not-set-up\`: unread, and fixed by ${pithyCommand("setup")}.`,
+  },
+  projectLoadError: gatesOn("project"),
+  cloudflare: gatesOn("cloudflare"),
+  projectName: gatesOn("projectName"),
+  workerNames: gatesOn("workerNames"),
+  selfBinding: gatesOn("selfBinding"),
+  serviceBindings: gatesOn("serviceBindings"),
+  hostBindings: gatesOn("hostBindings"),
+  featureRatelimitIds: gatesOn("featureRatelimitIds"),
+  biomeIncludes: gatesOn("biomeIncludes"),
+  varStanzas: gatesOn("varStanzas"),
+  environments: gatesOn("environments"),
+  environmentConfigs: gatesOn("environmentConfigs"),
+  origins: gatesOn("origins"),
+  workflows: gatesOn("workflows"),
+  supportSearchTriggers: gatesOn("supportSearchTriggers"),
+  devPreferences: {
+    gates: "devPreferences",
+    whenLocalStateAbsent: "With no `dev.json`, the check is `absent`: no dev session, and magic links only.",
+  },
+  settings: gatesOn("settings"),
+  secretRotations: gatesOn("secretRotations"),
   declaredNames: {
     reportsOnly: "A hand-chosen resource name may be the one the adopter meant, until they say which.",
   },
