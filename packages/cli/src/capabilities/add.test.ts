@@ -15,6 +15,11 @@ import { incompleteBindings } from "../project/appBindings";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { addCapability } from "./add";
 
+/** `text` with a comma after the last element of every bracket closing on its own line, where no comment ends it. */
+function withTrailingCommas(text: string): string {
+  return text.replace(/^(?!.*\/\/)(.*[^\s,{[])(\n\s*[}\]])/gm, "$1,$2");
+}
+
 /** The wrangler stanza shape these tests read back. */
 interface RichWrangler {
   d1_databases?: { binding: string; database_name?: string }[];
@@ -85,6 +90,28 @@ describe("addCapability", () => {
     await addCapability({ workerDir: worker, manifest });
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(configOnce);
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(wranglerOnce);
+  });
+
+  test("a re-run over a wrangler.jsonc written with trailing commas leaves it byte-identical", async () => {
+    await addCapability({ workerDir: worker, manifest, project: "acme" });
+    const path = join(worker, "wrangler.jsonc");
+    const trailing = withTrailingCommas(await readFile(path, "utf8"));
+    expect(trailing).toMatch(/,\n\s*[}\]]/);
+    await writeFile(path, trailing);
+
+    await addCapability({ workerDir: worker, manifest, project: "acme" });
+    expect(await readFile(path, "utf8")).toBe(trailing);
+  });
+
+  test("an add that has something to write keeps the file's trailing commas", async () => {
+    const path = join(worker, "wrangler.jsonc");
+    const trailing = withTrailingCommas(await readFile(path, "utf8"));
+    await writeFile(path, trailing);
+
+    await addCapability({ workerDir: worker, manifest });
+    const written = await readFile(path, "utf8");
+    expect(written).not.toBe(trailing);
+    expect(written).toBe(withTrailingCommas(written));
   });
 
   test("a hand-edited import specifier is left alone — presence is keyed on the binding", async () => {

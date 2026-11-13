@@ -699,8 +699,6 @@
     "packages/cli/src/project/environmentReadiness.ts": 8,
     "packages/cli/src/project/extensions.ts": 1,
     "packages/cli/src/project/fileLock.ts": 3,
-    "packages/cli/src/project/jsonc.test.ts": 1,
-    "packages/cli/src/project/jsonc.ts": 1,
     "packages/cli/src/project/kitSource.test.ts": 1,
     "packages/cli/src/project/kitSource.ts": 2,
     "packages/cli/src/project/linkView.test.ts": 1,

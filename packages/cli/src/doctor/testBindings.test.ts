@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
+import { WORKERS_TEST_CONFIG, writeTestBindings } from "../project/workersTestConfig";
 import { checkTestBindings, describeTestBindings } from "./testBindings";
 
 const TEMPLATE = readFileSync(
@@ -70,6 +70,7 @@ describe("checkTestBindings", () => {
           capability: "secrets",
           workers: ["api", "admin"],
           bindings: ["SECRETS", "SECRETS_ENCRYPTION_KEYS"],
+          incomplete: [],
           fix: "pithy add secrets --worker api",
         },
       ],
@@ -113,6 +114,55 @@ describe("checkTestBindings", () => {
     });
     expect(kv.missing.map(({ capability, bindings }) => [capability, bindings])).toEqual([
       ["controlplane", ["CONTROL_PLANE"]],
+    ]);
+  });
+
+  test("names a rate limiter stated without a namespace_id, with the add that fills it in, until that add runs", async () => {
+    const auth = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      testBindings: [{ kind: "ratelimit", name: "AUTH_RATE_LIMITER", limit: 100, period: 60 }],
+    });
+    const read = async () => ({ manifests: [auth], faults: [] });
+    const stale = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 100, period: 60 } } },',
+    );
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), stale);
+    const workers = [worker("app-a", ["auth"]), worker("app-b", ["auth"])];
+    const check = await checkTestBindings({ projectDir: dir, workers, readManifests: read });
+    expect(check).toEqual({
+      state: "missing",
+      missing: [
+        {
+          capability: "auth",
+          workers: ["app-a", "app-b"],
+          bindings: [],
+          incomplete: ["AUTH_RATE_LIMITER"],
+          fix: "pithy add auth --worker app-a --with-prerequisites",
+        },
+      ],
+    });
+    expect(describeTestBindings(check)).toEqual([
+      "auth (app-a, app-b): AUTH_RATE_LIMITER in vitest.workers.config.ts has no namespace_id.",
+    ]);
+
+    await writeTestBindings(dir, "auth", auth.testBindings);
+    expect(await checkTestBindings({ projectDir: dir, workers, readManifests: read })).toEqual({
+      state: "ok",
+      missing: [],
+    });
+  });
+
+  test("names a missing binding and an incomplete one in one line", () => {
+    expect(
+      describeTestBindings({
+        state: "missing",
+        missing: [{ capability: "auth", workers: ["api"], bindings: ["DB"], incomplete: ["LIMITER"], fix: null }],
+      }),
+    ).toEqual([
+      "auth (api): DB missing from vitest.workers.config.ts. LIMITER in vitest.workers.config.ts has no namespace_id.",
     ]);
   });
 
