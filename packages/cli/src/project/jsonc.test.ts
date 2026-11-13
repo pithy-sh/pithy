@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "comment-json";
@@ -14,9 +14,8 @@ import { resolveTemplateSource } from "./scaffold";
 /**
  * The printer's own tests, and the one that decides whether it works: **Biome, run over the output.**
  *
- * Every other assertion here is Pithy's opinion about its own bytes. That one is the invariant #249 is
- * about — a file the CLI writes is a file the formatter the CLI scaffolds would print unchanged — and it
- * is checked by asking the formatter rather than by encoding what somebody believed it does.
+ * Every other assertion here is Pithy's opinion about its own bytes. That one is the invariant: a file the CLI
+ * writes is a file the formatter the CLI scaffolds would print unchanged, checked by asking the formatter.
  */
 
 /** The repo root — three up from `packages/cli/src/project`'s parent — and the workspace's Biome. */
@@ -187,5 +186,72 @@ describe("writeJsonc", () => {
     await writeFile(path, '{\n  "wide": {\n    "a": 1\n  }\n}\n');
     await writeJsonc(path, { wide: { a: 1 }, b: 2 });
     expect(await readFile(path, "utf8")).toBe('{\n  "wide": {\n    "a": 1\n  },\n  "b": 2\n}\n');
+  });
+
+  test("a value the file already holds leaves the file byte-identical, trailing commas and all", async () => {
+    const path = join(dir, "unchanged.jsonc");
+    const bytes =
+      '{\n  // The Worker.\n  "name": "app",\n  "kv_namespaces": [\n    { "binding": "SESSIONS" },\n  ],\n  "vars": { "A": "b" },\n}\n';
+    await writeFile(path, bytes);
+    const before = (await stat(path)).mtimeMs;
+    await writeJsonc(path, parse(bytes));
+    expect(await readFile(path, "utf8")).toBe(bytes);
+    expect((await stat(path)).mtimeMs).toBe(before);
+  });
+
+  test("an edit to a file written with trailing commas keeps them", async () => {
+    const path = join(dir, "trailing.jsonc");
+    await writeFile(path, '{\n  "name": "app",\n  "wide": {\n    "a": 1, // one\n  },\n}\n');
+    const value = parse(await readFile(path, "utf8")) as unknown as Record<string, unknown>;
+    value.b = 2;
+    await writeJsonc(path, value);
+    expect(await readFile(path, "utf8")).toBe(
+      '{\n  "name": "app",\n  "wide": {\n    "a": 1, // one\n  },\n  "b": 2,\n}\n',
+    );
+  });
+
+  test("an edit to a tab-indented file keeps its tabs", () => {
+    const previous = '{\n\t"name": "app",\n\t"vars": {\n\t\t"A": "b", // c\n\t},\n}\n';
+    const value = parse(previous) as unknown as { vars: Record<string, string> };
+    value.vars.B = "x";
+    expect(formatJsonc(value, previous)).toBe(
+      '{\n\t"name": "app",\n\t"vars": {\n\t\t"A": "b", // c\n\t\t"B": "x",\n\t},\n}\n',
+    );
+  });
+
+  test("an edit to a file indented by four spaces keeps four", () => {
+    const previous = '{\n    "wide": {\n        "a": 1\n    }\n}\n';
+    expect(formatJsonc({ wide: { a: 1 }, b: 2 }, previous)).toBe(
+      '{\n    "wide": {\n        "a": 1\n    },\n    "b": 2\n}\n',
+    );
+  });
+
+  test("a block-comment header does not set the indent of a tab-indented file", () => {
+    const previous = '/**\n * Header\n */\n{\n\t"name": "a",\n\t"vars": {\n\t\t"A": "1"\n\t}\n}\n';
+    const value = parse(previous) as unknown as { vars: Record<string, string> };
+    value.vars.B = "2";
+    expect(formatJsonc(value, previous)).toBe(
+      '/**\n * Header\n */\n{\n\t"name": "a",\n\t"vars": {\n\t\t"A": "1",\n\t\t"B": "2"\n\t}\n}\n',
+    );
+  });
+
+  test("a block-comment header does not set the indent of a file indented by two spaces", () => {
+    const previous = '/**\n * Header\n */\n{\n  "name": "a",\n  "vars": {\n    "A": "1"\n  }\n}\n';
+    const value = parse(previous) as unknown as { vars: Record<string, string> };
+    value.vars.B = "2";
+    expect(formatJsonc(value, previous)).toBe(
+      '/**\n * Header\n */\n{\n  "name": "a",\n  "vars": {\n    "A": "1",\n    "B": "2"\n  }\n}\n',
+    );
+  });
+
+  test("a comment before the first member does not set the indent", () => {
+    const previous = '{\n    /*\n     * Note\n     */\n    "wide": {\n        "a": 1\n    }\n}\n';
+    expect(formatJsonc({ wide: { a: 1 }, b: 2 }, previous)).toContain('\n    "b": 2\n');
+  });
+
+  test("a file written without trailing commas gains none", () => {
+    expect(formatJsonc({ wide: { a: 1 }, b: 2 }, '{\n  "wide": {\n    "a": 1\n  }\n}\n')).toBe(
+      '{\n  "wide": {\n    "a": 1\n  },\n  "b": 2\n}\n',
+    );
   });
 });

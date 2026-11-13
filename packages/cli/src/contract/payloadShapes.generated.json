@@ -983,6 +983,8 @@
         "$.testBindings.missing[].workers[]": "string",
         "$.testBindings.missing[].bindings": "array",
         "$.testBindings.missing[].bindings[]": "string",
+        "$.testBindings.missing[].incomplete": "array",
+        "$.testBindings.missing[].incomplete[]": "string",
         "$.testBindings.missing[].detail": "string",
         "$.testBindings.missing[].fix": "null | string",
         "$.testBindings.findings": "array",

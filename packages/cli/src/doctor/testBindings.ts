@@ -8,19 +8,20 @@ import { commandName, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { addPlan, projectAddFacts } from "../capabilities/addCommand";
 import { type AvailableManifests, composedManifests } from "../capabilities/manifests";
 import { readOptionalFile } from "../project/readOptionalFile";
-import { missingTestBindings, WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
+import { incompleteTestBindings, missingTestBindings, WORKERS_TEST_CONFIG } from "../project/workersTestConfig";
 
 /**
  * **Does the Workers test config provide every test binding a composed capability declares?**
  *
  * The first request through a Worker's `fetch` checks every binding its composition requires, so a Workers
  * test that sends one fails on a binding the project-root `vitest.workers.config.ts` does not state. `pithy
- * add` writes them; this names the ones a project added before that, or removed by hand, and an optional one a
- * Worker's config came to require after its add. Files only, and a binding a test config cannot provide (`unbound`)
+ * add` writes them; this names the ones a project added before that, or removed by hand, an optional one a
+ * Worker's config came to require after its add, and a rate limiter stated without the `namespace_id` Miniflare
+ * refuses it without. Files only, and a binding a test config cannot provide (`unbound`)
  * is never reported. It prints and never fails the exit: a project may test its Workers some other way.
  */
 
-/** One composed capability whose test bindings the Workers config lacks. */
+/** One composed capability whose test bindings the Workers config lacks, or states incompletely. */
 export interface MissingTestBindings {
   /** The capability's name. */
   capability: string;
@@ -28,14 +29,16 @@ export interface MissingTestBindings {
   workers: string[];
   /** The binding names the config does not provide, in declaration order. */
   bindings: string[];
-  /** `pithy add` for the capability, on the first Worker composing it: a re-run writes the test bindings. */
+  /** The rate limiters the config states without a `namespace_id`, in declaration order. */
+  incomplete: string[];
+  /** `pithy add` for the capability, on the first Worker composing it: a re-run writes and completes them. */
   fix: string | null;
 }
 
 /** What the check established. */
 export interface TestBindingsCheck {
   /**
-   * `missing` when a composed capability's test bindings are absent; `ok` otherwise, or with no Workers test config;
+   * `missing` when a composed capability's test bindings are absent or incomplete; `ok` otherwise, or with no Workers test config;
    * `could-not-check` when reading the config or a manifest threw.
    */
   state: "ok" | "missing" | "could-not-check";
@@ -75,7 +78,8 @@ export async function checkTestBindings(options: {
       if (manifest === undefined) continue;
       const applied = appliedTestBindings(manifest, { requiredBindings: composed.requiredBindings ?? [] });
       const missing = missingTestBindings(source, applied).map((binding) => binding.name);
-      if (missing.length === 0) continue;
+      const incomplete = incompleteTestBindings(source, applied).map((binding) => binding.name);
+      if (missing.length === 0 && incomplete.length === 0) continue;
       const entry = byCapability.get(name);
       if (entry === undefined) {
         // Composed already, so its config answers its options and its prerequisites are there.
@@ -87,7 +91,7 @@ export async function checkTestBindings(options: {
             composed: new Set(worker.capabilities.map((capability) => capability.name)),
             answered: new Set(manifest.configOptions.map((option) => option.key)),
           }).fix ?? null;
-        byCapability.set(name, { capability: name, workers: [worker.name], bindings: missing, fix });
+        byCapability.set(name, { capability: name, workers: [worker.name], bindings: missing, incomplete, fix });
       } else if (!entry.workers.includes(worker.name)) entry.workers.push(worker.name);
     }
   }
@@ -100,11 +104,18 @@ export function describeTestBindings(check: TestBindingsCheck): string[] {
   if (check.state === "could-not-check") {
     return [`Could not check ${WORKERS_TEST_CONFIG} against the composed capabilities' test bindings.`];
   }
-  return check.missing.map(
-    ({ capability, workers, bindings }) =>
-      `${capability} (${workers.join(", ")}): ${bindings.join(", ")} missing from ${WORKERS_TEST_CONFIG}.`,
-  );
+  return check.missing.map(({ capability, workers, bindings, incomplete }) => {
+    const sentences = [
+      ...(bindings.length > 0 ? [`${bindings.join(", ")} missing from ${WORKERS_TEST_CONFIG}.`] : []),
+      ...(incomplete.length > 0
+        ? [
+            `${incomplete.join(", ")} in ${WORKERS_TEST_CONFIG} ${incomplete.length === 1 ? "has" : "have"} no namespace_id.`,
+          ]
+        : []),
+    ];
+    return `${capability} (${workers.join(", ")}): ${sentences.join(" ")}`;
+  });
 }
 
 /** The remedy line under the findings. */
-export const TEST_BINDINGS_ACTION = `Run ${commandName("add")} <capability> again to write them, or add them by hand.`;
+export const TEST_BINDINGS_ACTION = `Run ${commandName("add")} <capability> again to write or complete them, or edit them by hand.`;
