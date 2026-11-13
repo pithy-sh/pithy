@@ -110,6 +110,7 @@ beforeEach(async () => {
   for (const table of [
     "pithy_auth_accounts",
     "pithy_auth_accounts_next",
+    "pithy_auth_attestation_challenges",
     "pithy_auth_devices",
     "pithy_auth_jwks",
     "pithy_auth_rate_limit",

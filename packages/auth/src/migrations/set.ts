@@ -9,6 +9,7 @@ import { auth_0005_purge_once } from "./0005_purge_once";
 import { auth_0006_verification_outcomes } from "./0006_verification_outcomes";
 import { auth_0007_erasure_record } from "./0007_erasure_record";
 import { auth_0008_last_active } from "./0008_last_active";
+import { auth_0009_attestation_challenges } from "./0009_attestation_challenges";
 
 /**
  * Every migration `@pithy-sh/auth` ships, keyed as `pithy migrate` composes them.
@@ -20,7 +21,7 @@ import { auth_0008_last_active } from "./0008_last_active";
  * migration. Adding a `0002` turned all five into a schema one column short of the code, and the symptom
  * was `table pithy_auth_sessions has no column named authenticated_at` in thirteen unrelated tests.
  *
- * `0003` through `0007` appended here and reached every reader, which is the point. `0001_init.workers.test.ts` is deliberately not a reader:
+ * Every later migration is appended here and reaches every reader, which is the point. `0001_init.workers.test.ts` is deliberately not a reader:
  * its subject is that one migration's own `up` and `down`, so it names it directly.
  */
 export const AUTH_MIGRATIONS = {
@@ -32,4 +33,5 @@ export const AUTH_MIGRATIONS = {
   "0006_verification_outcomes": auth_0006_verification_outcomes,
   "0007_erasure_record": auth_0007_erasure_record,
   "0008_last_active": auth_0008_last_active,
+  "0009_attestation_challenges": auth_0009_attestation_challenges,
 } as const;

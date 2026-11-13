@@ -97,7 +97,7 @@ async function seedDevLogin(user: string, userSets: readonly SeedSet[] = [authEx
     // What the CLI hands a checkout with no port block, and what this set reads either way.
     origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
-    // This set seals nothing at creation time, so it asks the run for nothing it just minted (#660).
+    // This set seals nothing at creation time, so it asks the run for nothing it just minted.
     mintedThisRun: () => undefined,
     preferences: { user },
     seeded: collectSeededRows(userSets),
@@ -109,6 +109,7 @@ async function seedDevLogin(user: string, userSets: readonly SeedSet[] = [authEx
 beforeEach(async () => {
   for (const table of [
     "pithy_auth_accounts",
+    "pithy_auth_attestation_challenges",
     "pithy_auth_devices",
     "pithy_auth_jwks",
     "pithy_auth_rate_limit",
@@ -127,7 +128,7 @@ beforeEach(async () => {
 });
 
 /**
- * One user's entry out of the record the seed writes — a record keyed by user id since `#667`.
+ * One user's entry out of the record the seed writes, a record keyed by user id.
  *
  * The tests below are each about one identity's claim, and they say which, so they name the entry rather
  * than taking whichever came first. That the record holds an entry per seeded user is
@@ -141,10 +142,8 @@ function entryFor(prepared: { artifacts?: readonly { contents: string }[] }, use
 }
 
 test("the seeded claim names the user it was minted for", async () => {
-  // **This asserted that the artifact's cookie signed you in, and there is no cookie in it any more —
-  // `#572`.** The artifact carries a claim about *who*; the route is what turns one into a session, and
-  // `http/devLoginRoute.workers.test.ts` is where that end-to-end assertion lives now. What is this
-  // file's to prove is that the seed signs a claim the running secret verifies, naming the right person.
+  // The artifact carries a claim about *who*, not a cookie; the route is what turns one into a session,
+  // and `http/devLoginRoute.workers.test.ts` holds that end-to-end assertion. What is this file's to prove is that the seed signs a claim the running secret verifies, naming the right person.
   const artifact = entryFor(await seedDevLogin(EXAMPLE_ADA.email), EXAMPLE_ADA.id);
 
   expect(artifact.email).toBe(EXAMPLE_ADA.email);
@@ -166,8 +165,8 @@ test("the seeded claim names a user no example set creates", async () => {
 });
 
 test("**the seed writes no session — nothing is in that table until somebody signs in**", async () => {
-  // The whole of `#572` in one assertion. A row here was what the product's own sign-out revoked, and
-  // what every surface built over `pithy_auth_sessions` drew as a device nobody used.
+  // A seeded row would be revoked by the product's own sign-out, and every surface built over
+  // `pithy_auth_sessions` would draw it as a device nobody used.
   await seedDevLogin(EXAMPLE_ADA.email);
 
   const sessions = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
@@ -180,7 +179,7 @@ test("the cookie name matches the one this Better Auth version reads", async () 
 });
 
 /**
- * The invariant, at the seam where it used to be a comment: the name this seed writes is the name the
+ * The invariant, held at the seam: the name this seed writes is the name the
  * running composition reads, computed from one source rather than agreed by hand.
  *
  * The subject is the case that broke — a project whose config holds its real HTTPS production origin,
@@ -206,7 +205,7 @@ test("the same config deployed reads the __Secure- cookie, and the seed's name i
 
 test("a claim signed with the previous secret is refused after a rotation", async () => {
   // Rotating the signing secret invalidates the claim, and reseeding is what mints a fresh one. That is
-  // the cost `#572` accepted deliberately: surviving a rotation would have meant a durable marker, and a
+  // a deliberate cost: surviving a rotation would mean a durable marker, and a
   // marker means a table in every adopter's production schema for a `dev`-only affordance.
   const artifact = entryFor(await seedDevLogin(EXAMPLE_ADA.email), EXAMPLE_ADA.id);
 

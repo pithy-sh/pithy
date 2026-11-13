@@ -105,8 +105,8 @@ let claim = "";
 /**
  * Write the user and mint a dev login, through the same path `pithy seed` takes.
  *
- * **No session row — `#572`.** The seed writes a file; the route mints a session when the link is
- * opened. So this helper leaves `pithy_auth_sessions` empty, which is what the tests below now assume.
+ * No session row: the seed writes a file, and the route mints a session when the link is opened. So this
+ * helper leaves `pithy_auth_sessions` empty, which the tests below assume.
  */
 async function seedDevSession(secret = SECRET, now = new Date()): Promise<void> {
   const db = createDatabase(env.DB, authTables);
@@ -122,6 +122,7 @@ function devLoginHref(presented = claim): string {
 beforeEach(async () => {
   for (const table of [
     "pithy_auth_accounts",
+    "pithy_auth_attestation_challenges",
     "pithy_auth_devices",
     "pithy_auth_jwks",
     "pithy_auth_rate_limit",
@@ -170,7 +171,7 @@ test("redirects to the app root with a cookie Better Auth accepts as a real sess
 });
 
 test("**every seeded identity's own claim signs that identity in, and nobody else**", async () => {
-  // `#667` mints a claim per seeded user, so the route now answers for several. Each claim is a signature
+  // The seed mints a claim per seeded user, so the route answers for several. Each claim is a signature
   // over one user id, which is what makes handing somebody a link a way in as *them*: the session the
   // route mints is that user's, and presenting one identity's claim can never yield another's.
   const db = createDatabase(env.DB, authTables);
@@ -212,7 +213,7 @@ test("says there is nothing seeded, and names the command that seeds one", async
   expect(response.status).toBe(404);
   const body = (await response.json()) as { error?: { message?: string; action?: string } };
   expect(body.error?.message).toContain("No dev login has been seeded");
-  // In `message`. `action` is the operator's field and never crosses the wire (#344) — this route's
+  // In `message`. `action` is the operator's field and never crosses the wire — this route's
   // caller happens to be the operator, so the command is said where the caller can read it.
   expect(body.error?.message).toContain("pithy seed");
   expect(body.error?.action).toBeUndefined();
@@ -253,9 +254,8 @@ test("no route means no handler: a staging composition 404s with nothing mounted
 });
 
 test("survives a sign-out, because what the link carries is not the session it hands over", async () => {
-  // **The defect this route was rebuilt for — `#572`.** Signing out is an ordinary thing to do while
-  // developing a product that has sign-out in it, and it revoked the one seeded session the route had to
-  // give. From then on the dev login 404'd and the only way back in was a reseed, in another terminal.
+  // Signing out is an ordinary thing to do while developing a product that has sign-out in it. The link
+  // carries a claim, not a session, so sign-out cannot revoke it and the next open signs in again.
   await seedDevSession();
 
   const first = await devApp().request(devLoginHref(), {}, env);

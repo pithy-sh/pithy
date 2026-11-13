@@ -18,6 +18,8 @@ import {
 } from "@pithy-sh/turnstile/src/config/config";
 import type { Context } from "hono";
 import { z } from "zod";
+import { AttestationConfig } from "./attestation/config";
+import type { AttestationVerifiers } from "./attestation/verifier";
 import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
@@ -188,6 +190,9 @@ export const AuthConfig = z
       .describe(
         "Which account-lifecycle emails are sent. All four send by default, through `@pithy-sh/email`; switch one off by setting it to false.",
       ),
+    attestation: AttestationConfig.prefault({}).describe(
+      "Native app attestation on the email send routes, per environment. An environment with a block takes an attestation in the `x-pithy-attestation` header in place of a Turnstile token, and requires one when turnstile is not composed. This release verifies the test assertion only. See the README's attestation section.",
+    ),
     plugins: z
       .array(AuthPlugin)
       .default([])
@@ -225,6 +230,11 @@ export interface AuthWiring {
   enqueueEmail: EmailCapability["enqueue"] | undefined;
   /** The turnstile login gate, when the turnstile capability is composed. Set by `compose`. */
   turnstile: TurnstileLoginGate | undefined;
+  /**
+   * The verifier for each platform's real attestations. Absent means the ones this release ships,
+   * `PLATFORM_VERIFIERS`; a harness passes its own.
+   */
+  attestationVerifiers?: AttestationVerifiers | undefined;
   /**
    * The adopter's session-revoked listener, or absent. See {@link AuthOptions.onSessionRevoked}.
    *
@@ -554,7 +564,7 @@ export function auth(options: AuthOptions): AuthCapability {
         });
       }
       wiring.enqueueEmail = email.enqueue;
-      // Auto-wire turnstile onto the login routes when it is composed (Jim's requirement: zero config).
+      // Turnstile gates the send routes whenever it is composed, with no config on auth's side.
       wiring.turnstile = turnstileLoginGate(capabilities.find(isTurnstileCapability));
       // And the one collision `auth()` could not see. A plugin's tables carry the plugin's own names —
       // `organization`, `member`, `invitation` — with no `pithy_auth_` prefix to keep them out of an

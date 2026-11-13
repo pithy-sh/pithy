@@ -14,7 +14,7 @@ import { type AuthEmailMessage, makeAuth } from "./auth";
 import { NO_SOCIAL_PROVIDERS } from "./providers";
 
 /**
- * The whole claim of #271, end to end inside the Workers runtime: an adopter composes a plugin the kit
+ * Composed plugins, end to end inside the Workers runtime: an adopter composes a plugin the kit
  * does not ship, `pithy migrate` creates the tables that plugin needs, and **its routes answer** — a
  * real organization is created, and it is in a real D1 table.
  *
@@ -27,6 +27,7 @@ const PLUGINS = [organization()];
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

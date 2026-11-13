@@ -34,6 +34,7 @@ import { createAuthRoutes } from "./routes";
 const SECRET = "test-secret-please-rotate-0000000000";
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -57,8 +58,8 @@ const REGISTRY = { ...authSecretsRegistry, ...turnstileSecretsRegistry };
  * Every secret the suite provisions, seeded as encrypted rows before each case.
  *
  * All five auth entries are seeded even though most cases read one — as a fixture that keeps every case
- * on the healthy path, not because it is required. A held failure belongs to its own secret (#170) and
- * an enabled provider that will not resolve costs that provider alone (#381), so an omission here would
+ * on the healthy path, not because it is required. A held failure belongs to its own secret and
+ * an enabled provider that will not resolve costs that provider alone, so an omission here would
  * be a case's own plant rather than a suite-wide break. `http/providerResolution.workers.test.ts` is
  * where the omissions live.
  */
@@ -350,7 +351,7 @@ describe("auth HTTP routes", () => {
   test("unlinking is refused on a stale authentication, through the real route", async () => {
     // Better Auth guards this endpoint itself — but against `session.createdAt`, which `/token/rotate`
     // restamps, so its guard is reset by ordinary refreshing. This asserts the kit's own gate is what
-    // answers, and that it answers before Better Auth sees the request (#566).
+    // answers, and that it answers before Better Auth sees the request.
     const { token } = await signIn(DEVICE_HEADERS);
     const app = buildApp(buildWiring());
 
@@ -394,7 +395,7 @@ describe("auth HTTP routes", () => {
     // **The fact the link-freshness gate rests on, and the defect it was written for.** `createSession`
     // stamps `created_at` with the moment of the call, so session age is reset by every rotation —
     // ordinary on the bearer path, and available on demand to anyone holding a stolen refresh token. If
-    // this value moved with it, the gate would be two requests from open (#558).
+    // this value moved with it, the gate would be two requests from open.
     const { token } = await signIn(DEVICE_HEADERS);
     const app = buildApp(buildWiring());
 
@@ -623,8 +624,8 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(400);
-    // The route-line `validate("json", RevokeDeviceBody)` now rejects it, so the code is the shared
-    // validation code rather than the hand-rolled `validation/invalid_input` the handler used to throw.
+    // The route-line `validate("json", RevokeDeviceBody)` rejects it, so the code is the shared validation
+    // code.
     expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
   });
 
@@ -724,7 +725,7 @@ describe("auth HTTP routes", () => {
     expect(job?.template).toBe("otp");
   });
 
-  test("a real send's ledger row carries the id of the email job that carried it (#829)", async () => {
+  test("a real send's ledger row carries the id of the email job that carried it", async () => {
     const app = buildApp(buildWiring());
     const sends: [string, Record<string, string>][] = [
       ["/auth/email-otp/send-verification-otp", { email: "ledger-otp@test.com", type: "sign-in" }],
@@ -781,16 +782,15 @@ describe("auth HTTP routes", () => {
 });
 
 /**
- * A refused sign-in reaches the audit trail (#449).
+ * A refused sign-in reaches the audit trail.
  *
- * **The call this covers had never run.** `onAPIError: { throw: true }` reads as though an endpoint's
- * `APIError` reaches `handleBetterAuth`'s `catch`, and it does not — better-auth re-raises it into
- * better-call's own catch, which renders it as a Response. So the `emitDenied` that was gated on
- * catching one recorded nothing, ever: no failed one-time code, no bad magic link, no refused OAuth
- * callback, which is the largest class of security event this capability has.
+ * `onAPIError: { throw: true }` reads as though an endpoint's `APIError` reaches `handleBetterAuth`'s
+ * `catch`, and it does not: better-auth re-raises it into better-call's own catch, which renders it as a
+ * Response. An `emitDenied` gated on catching one would record nothing: no failed one-time code, no bad
+ * magic link, no refused OAuth callback, which is the largest class of security event this capability has.
  *
- * `errors.test.ts` could not catch that, because it hands `apiErrorToPithy` an `APIError` it built
- * itself — proving the function and never the wiring. These drive real refusals through the mounted
+ * `errors.test.ts` cannot catch that, because it hands `apiErrorToPithy` an `APIError` it built itself,
+ * proving the function and never the wiring. These drive real refusals through the mounted
  * stack and read the emit seam.
  */
 describe("a refused sign-in", () => {
@@ -861,7 +861,7 @@ describe("a refused sign-in", () => {
 });
 
 /**
- * Better Auth's refusals, in the reader's language (#452).
+ * Better Auth's refusals, in the reader's language.
  *
  * The last English sentences on an otherwise translated screen, and met by the most ordinary mistake
  * there is. `@better-auth/i18n` substitutes the message server-side for a code it has words for, which

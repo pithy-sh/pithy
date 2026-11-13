@@ -18,6 +18,7 @@ import { establishedPending } from "../migrations/pendingCount";
 import { planMigrateProject, readProjectLedger } from "../migrations/run";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { type DeployPrivacy, deployPrivacy, unverifiableGateLine } from "../privacy/deployGate";
+import { assertAttestationDeployable } from "../project/attestationMode";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import {
   deployFailureExit,
@@ -378,6 +379,9 @@ export default withContract(
           // origins gate rather than inside it for the same reason that one is beside the binding gate: a
           // different question with a different fix, and a feature environment is exempt from this one too.
           if (gateApps && env) await assertWorkflowsBound(projectDir, env);
+          // And a production environment whose auth sets attestation to test. The Worker accepts the test assertion
+          // only in dev, staging or feature; this refuses the configuration before it ships.
+          if (gateApps && env) await assertAttestationDeployable(projectDir, env);
 
           const account = await projectCloudflareAccount(projectDir);
           // **The account is settled here, before anything best-effort runs.** `pendingFor` swallows

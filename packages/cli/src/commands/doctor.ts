@@ -210,6 +210,12 @@ import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from 
 import { classifyBump } from "../notifier/version";
 import { readRcFile } from "../platform/rc";
 import { aliasRcPaths, detectShell, type ShellInfo } from "../platform/shell";
+import {
+  type AttestationCheck,
+  type AttestationModeOptions,
+  checkAttestation,
+  describeTestAttestation,
+} from "../project/attestationMode";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck, originDriftFix } from "../project/domains";
@@ -551,6 +557,11 @@ export interface DoctorReport {
    * fails, no log line appears and no probe goes red to say so.
    */
   workflows: WorkflowsCheck | null;
+  /**
+   * Every production environment whose auth sets attestation to `test`, which accepts the documented test
+   * assertion. `null` outside a project. Production is `prod` and each name in `seed.productionEnvironments`.
+   */
+  attestation: AttestationCheck | null;
   /**
    * What an adopter plugged into a capability — a Better Auth plugin composed through the auth
    * capability's config is the first. `null` outside a readable project, on the same
@@ -995,6 +1006,8 @@ export interface DoctorReportOptions {
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
   checkWorkflows?: (projectDir: string) => Promise<WorkflowsCheck>;
+  /** Attestation-mode seam; defaults to {@link checkAttestation}. Reads each composition — no account call. */
+  checkAttestation?: (options: AttestationModeOptions) => Promise<AttestationCheck>;
   /**
    * Dev-login preference seam; defaults to {@link checkDevPreferences} resolved against the same `homedir`
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
@@ -1176,6 +1189,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeRetention = options.checkRetention ?? checkRetention;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
+  const probeAttestation = options.checkAttestation ?? checkAttestation;
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -1717,6 +1731,30 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
           { state: "could-not-check", sinks: [], secrets: [] },
         )
       : null;
+  // A production environment whose auth accepts the documented test assertion, read off each composition.
+  const attestation =
+    inProject && workersResolved
+      ? await probed<AttestationCheck>(
+          () =>
+            probeAttestation({
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              environments: declaredEnvironments,
+              productionEnvironments,
+              composeWorker: async (worker, environment) => {
+                const match =
+                  composeResolvedFor !== undefined
+                    ? await composeResolvedFor(worker, environment)
+                    : (await resolve(environment, { projectDir: options.projectDir, worker: worker.name })).find(
+                        (candidate) => candidate.dir === worker.dir,
+                      );
+                if (match === undefined)
+                  throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                return { capabilities: match.capabilities };
+              },
+            }),
+          { state: "could-not-check", findings: [] },
+        )
+      : null;
   // How long each Worker keeps what it keeps, and every legal hold standing, on the same `remoteSkip`.
   const retention =
     inProject && workersResolved
@@ -1906,6 +1944,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     environmentConfigs,
     origins,
     workflows,
+    attestation,
     extensions,
     devPreferences,
     portsRegistry,
@@ -3126,6 +3165,10 @@ function originsBlock(check: OriginsCheck): string {
  * block adds no trailing remedy of its own, because the other fault has a different one: a declaration
  * that cannot be reduced to a stanza is fixed in `pithy.config.ts`, and no command can write it.
  */
+function attestationBlock(check: AttestationCheck): string {
+  return ["Attestation:", ...check.findings.map((finding) => `  ${describeTestAttestation(finding)}`)].join("\n");
+}
+
 function workflowsBlock(check: WorkflowsCheck): string {
   const lines = ["Workflows:"];
   for (const worker of [...new Set(check.drift.map((drift) => drift.worker))]) {
@@ -3486,6 +3529,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // symptom is that nothing happens, so a terse report over it would be the toolchain agreeing that
   // nothing is wrong.
   const workflowsOk = !report.workflows || report.workflows.drift.length === 0;
+  const attestationOk = report.attestation?.state !== "findings";
   // A dev login is optional, so having none is a pass — the terse report is for the developer who has
   // nothing to fix, and "you could have a dev login" is not something to fix. Only the two faults speak up.
   const devPreferencesState = report.devPreferences?.state;
@@ -3544,6 +3588,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
+    attestationOk &&
     devPreferencesOk &&
     devSecretsOk &&
     secretBindingsOk &&
@@ -3879,6 +3924,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // the origins block for the same reason that one sits beside the environments block: the same argument
   // about the same environment, one declaration further in.
   if (report.workflows && report.workflows.drift.length > 0) blocks.push(workflowsBlock(report.workflows));
+  if (report.attestation?.state === "findings") blocks.push(attestationBlock(report.attestation));
 
   // And what an adopter plugged into a capability. Beside the blocks above because it is the same
   // subject — what this project actually composes — and unlike them it prints when there is nothing
@@ -4285,6 +4331,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...drift,
             detail: describeWorkflowDrift(drift),
             fix: workflowDriftFix(drift),
+          })),
+        }
+      : null,
+    attestation: report.attestation
+      ? {
+          state: report.attestation.state,
+          findings: report.attestation.findings.map((finding) => ({
+            ...finding,
+            detail: describeTestAttestation(finding),
+            fix: null,
           })),
         }
       : null,
@@ -4866,6 +4922,10 @@ const DoctorPayload = z
       state: State("`ok`, `drifted`, `could-not-check`"),
       drift: Fixed("Worker-and-environment whose table disagrees"),
     }),
+    attestation: Check("Production environments whose auth sets attestation to `test`, or `null` outside a project.", {
+      state: State("`ok`, `findings`, `could-not-check`"),
+      findings: Fixed("Worker-and-environment set to test"),
+    }),
     extensions: Check("The capability extensions each Worker composes, or `null`.", {
       extensions: Findings("extension"),
     }),
@@ -5005,7 +5065,9 @@ export default withContract(
     //    fails the exit.
     // 8: `failures[].check` takes `varStanzas`, where a declared Worker var a stanza lacks, holds at the top level's
     //    value, or holds at a value its schema refuses fails the exit.
-    schemaVersion: 8,
+    // 9: `attestation`, and `failures[].check` takes it, where a production environment whose auth sets attestation
+    //    to `test` fails the exit.
+    schemaVersion: 9,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

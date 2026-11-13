@@ -225,6 +225,13 @@ describe("each gating check is one entry, with its fix", () => {
     expect(failuresOf(report).map((failure) => failure.fix)).toEqual(["pithy worker sync --worker api --env prod"]);
   });
 
+  test("a production environment set to test fails under attestation, with no command to run", async () => {
+    const report = await healthyWith({
+      checkAttestation: async () => ({ state: "findings", findings: [{ worker: dirOf("api"), environment: "prod" }] }),
+    });
+    expect(failuresOf(report).map(({ check, fix }) => ({ check, fix }))).toEqual([{ check: "attestation", fix: null }]);
+  });
+
   test("a support index nothing maintains names the provision for the Worker read", async () => {
     const report = await healthyWith({
       checkSupportSearchTriggers: async () => ({
@@ -1173,6 +1180,7 @@ describe("every finding in every block carries fix", () => {
           },
         ],
       }),
+      checkAttestation: async () => ({ state: "findings", findings: [{ worker: dirOf("api"), environment: "prod" }] }),
       checkSupportSearchTriggers: async () => ({
         state: "findings",
         environments: [{ env: "prod", worker: "api", directory: dirOf("api"), state: "drift", triggers: "none" }],

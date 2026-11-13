@@ -118,6 +118,7 @@ export const EXIT_CLASS_BY_CODE = {
   "support/unparseable_message": "usage",
   "testers/invalid_token": "usage",
   "turnstile/missing_token": "usage",
+  "auth/attestation_missing": "usage",
   "validation/invalid_input": "usage",
   "vector/dimension_mismatch": "usage",
   "vector/filter_too_large": "usage",
@@ -221,6 +222,7 @@ export const EXIT_CLASS_BY_CODE = {
   "testers/roster_full": "precondition",
   "testers/withdrawn": "precondition",
   "turnstile/failed": "precondition",
+  "auth/attestation_failed": "precondition",
   "vector/index_not_found": "precondition",
   // Upstream or transient (4): a service the kit does not control failed or asked us to slow down. Three
   // are 500s by status and upstream by cause — enrichment, multipart assembly and classification each fail
@@ -260,6 +262,7 @@ export const EXIT_CLASS_BY_CODE = {
   "secrets/crypto_failed": "failed",
   "testers/not_configured": "failed",
   "turnstile/config": "failed",
+  "auth/attestation_config": "failed",
   "vector/metadata_index_drift": "failed",
 } as const satisfies Record<KitErrorCode, ExitClass>;
 

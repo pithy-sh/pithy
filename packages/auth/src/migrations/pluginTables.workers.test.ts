@@ -34,6 +34,7 @@ function provider(plugins: Parameters<typeof authPluginPlan>[0]): MigrationProvi
 
 const KIT_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -45,9 +46,12 @@ const KIT_TABLES = [
   "pithy_auth_verifications",
 ];
 
-/** What stands once a rollback has stepped back past `0004` and `0006`, the two tables they created. */
+/** What stands once a rollback has stepped back past `0004`, `0006` and `0009`, the tables they created. */
 const KIT_TABLES_BEFORE_0004 = KIT_TABLES.filter(
-  (table) => table !== "pithy_auth_user_lifecycle" && table !== "pithy_auth_verification_outcomes",
+  (table) =>
+    table !== "pithy_auth_user_lifecycle" &&
+    table !== "pithy_auth_verification_outcomes" &&
+    table !== "pithy_auth_attestation_challenges",
 );
 
 const PLUGIN_TABLES = ["organization", "member", "invitation"];
@@ -78,23 +82,19 @@ beforeEach(async () => {
 });
 
 /**
- * Step back to, and including, the plugin's own migration.
+ * Step back to, and including, the most recent plugin migration.
  *
- * The kit's `0002_session_authenticated_at`, `0003_account_issuer_nullable`, `0004_user_lifecycle`,
- * `0005_purge_once`, `0006_verification_outcomes`, `0007_erasure_record` and `0008_last_active` sort after a generated `0002_plugin_*` key, so they are the tip and a `rollbackMigration`
- * undoes them before the plugin's.
- * These cases are about what a *plugin's* down does, so they step past the kit's first and assert on the
- * step they are about.
+ * Every kit migration after `0001_init` sorts after a generated `0002_plugin_*` key, so they are the tip and a
+ * `rollbackMigration` undoes them before the plugin's. These cases are about what a *plugin's* down does, so they
+ * step past the kit's first, however many there are, and answer the step that undid the plugin.
  */
 async function rollbackToPlugin(p: MigrationProvider): Promise<Awaited<ReturnType<typeof rollbackMigration>>> {
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  await rollbackMigration(env.DB, p);
-  return await rollbackMigration(env.DB, p);
+  for (;;) {
+    const results = await rollbackMigration(env.DB, p);
+    if (results.length === 0 || results.some((result) => result.migrationName.includes("_0002_plugin_"))) {
+      return results;
+    }
+  }
 }
 
 describe("a plugin's tables through pithy migrate", () => {
@@ -114,6 +114,7 @@ describe("a plugin's tables through pithy migrate", () => {
       ["0300_auth_0006_verification_outcomes", "Success"],
       ["0300_auth_0007_erasure_record", "Success"],
       ["0300_auth_0008_last_active", "Success"],
+      ["0300_auth_0009_attestation_challenges", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
     // The half that is not a table: the plugin writes the active organization onto the session.
@@ -202,9 +203,10 @@ describe("a plugin's tables through pithy migrate", () => {
       "0300_auth_0006_verification_outcomes",
       "0300_auth_0007_erasure_record",
       "0300_auth_0008_last_active",
+      "0300_auth_0009_attestation_challenges",
     ]);
 
-    // Eight steps back: past the kit's own seven, then the organization plugin's. `admin`'s stays applied,
+    // Back past the kit's own, then the organization plugin's. `admin`'s stays applied,
     // which is the point — one step back must not unwind a plugin nobody asked about.
     await rollbackToPlugin(p);
     expect(await tables()).toEqual(KIT_TABLES_BEFORE_0004);

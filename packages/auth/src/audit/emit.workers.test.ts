@@ -6,9 +6,9 @@
  *
  * The question this trail exists to answer is *which providers can sign in as this account today, and
  * when did that change*. So every case here asserts the event **and** `pithy_auth_accounts` in the same
- * breath: a row emitted while the table disagrees is the defect (#627), not a passing test. That is also
+ * breath: a row emitted while the table disagrees is the defect, not a passing test. That is also
  * why nothing here stubs `emitAfterRequest` or any other emitter — a spy proves a function ran, and what
- * was wrong before was *when* it ran, which a spy cannot see.
+ * matters is *when* it ran, which a spy cannot see.
  *
  * Both writes go through `internalAdapter` and therefore through Better Auth's `account` database hooks,
  * which is where the kit listens: `createAccount`/`linkAccount` both call `createWithHooks(…, "account")`
@@ -47,6 +47,7 @@ const SECRET = "test-secret-please-rotate-0000000000";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -412,11 +413,10 @@ describe("the provider-link trail", () => {
   });
 
   test("a first social sign-up is a link, and the trail says so", async () => {
-    // **A decision, pinned rather than left to the reading.** The code #627 replaced refused to map
-    // `/callback/:id` because "mapping it here would mislabel every first sign-up as a link" — true of a
-    // *path*, which cannot tell a sign-up from a link. From the row it stops mattering: `oauth_linked`
-    // claims a provider can now sign in as this user, and a first social sign-up is exactly when that
-    // becomes true. So the first account row a brand-new user ever gets emits it, like any other.
+    // A decision, pinned. The event is read off the account row, not the `/callback/:id` path, which
+    // cannot tell a sign-up from a link. `oauth_linked` claims a provider can now sign in as this user,
+    // and a first social sign-up is exactly when that becomes true, so the first account row a brand-new
+    // user gets emits it, like any other.
     const { emit, events } = capturingEmit();
     const ctx = await instance(emit).auth.$context;
     const user = await ctx.internalAdapter.createUser(
@@ -586,7 +586,7 @@ describe("who the trail says did it", () => {
 
     // The cascade happened…
     expect(await accountRows()).toHaveLength(0);
-    // …and the trail records it, which it did not before #627.
+    // …and the trail records it.
     const unlinked = events.filter((e) => e.action === "auth/oauth_unlinked");
     expect(unlinked).toHaveLength(1);
     expect(unlinked[0]).toMatchObject({
@@ -872,8 +872,8 @@ describe("a refusal expressed as a success", () => {
 
   test("an address nobody registered is declined, and a decline is not a send", async () => {
     // Better Auth's user-enumeration guard: no user, and `sign-in` is not the type, so the OTP row is
-    // deleted and the caller is told `success`. Nothing was queued, and `auth/otp_sent outcome=success`
-    // was the lie — recorded for a send the endpoint had refused to make.
+    // deleted and the caller is told `success`. Nothing is queued, so `auth/otp_sent outcome=success`
+    // would record a send the endpoint refused to make.
     const { emit, events } = capturingEmit();
     const answer = await send(buildApp(emit), { email: "nobody@test.com", type: "email-verification" });
 

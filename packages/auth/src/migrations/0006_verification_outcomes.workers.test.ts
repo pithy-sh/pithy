@@ -3,11 +3,12 @@
 
 import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
-import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
 import { VerificationOutcome } from "../data/verificationOutcome";
+import { rollbackThrough } from "../test-utils/rollbackThrough";
 import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { AUTH_MIGRATIONS } from "./set";
 
@@ -42,6 +43,7 @@ describe("auth_0006_verification_outcomes", () => {
   beforeEach(async () => {
     for (const table of [
       "pithy_auth_accounts",
+      "pithy_auth_attestation_challenges",
       "pithy_auth_devices",
       "pithy_auth_jwks",
       "pithy_auth_rate_limit",
@@ -114,10 +116,7 @@ describe("auth_0006_verification_outcomes", () => {
 
   test("down drops the table, leaving everything before it intact", async () => {
     await runMigrations(env.DB, provider());
-    // `0008` and `0007` sit above it in the chain, so they come down first.
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
+    await rollbackThrough(env.DB, provider(), "0006_verification_outcomes");
     expect(await tableExists(TABLE)).toBe(false);
     expect(await tableExists("pithy_auth_users")).toBe(true);
     expect(await tableExists("pithy_auth_user_lifecycle")).toBe(true);
@@ -125,9 +124,7 @@ describe("auth_0006_verification_outcomes", () => {
 
   test("down, then up again, is clean — the inverse is exact", async () => {
     await runMigrations(env.DB, provider());
-    // `0008` and `0007` sit above it in the chain, so they come down first.
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
+    await rollbackThrough(env.DB, provider(), "0006_verification_outcomes");
     await runMigrations(env.DB, provider());
     expect(await tableExists(TABLE)).toBe(true);
   });

@@ -17,14 +17,12 @@ import { authSchemaOptions } from "./pluginTables";
 import { AUTH_MIGRATIONS } from "./set";
 
 /**
- * The shipped migration chain holds exactly what Better Auth writes to the kit's own tables (#451, #787).
+ * The shipped migration chain holds exactly what Better Auth writes to the kit's own tables.
  *
- * **This is the gate that was missing, and its absence cost a silent break.** `@pithy-sh/auth` declared
- * `better-auth: ^1.6.29` while `1.7.1` was published, so an adopter installing the package resolved a
- * version nothing here had ever run. 1.7's `jwt` plugin added `alg` and `crv` to its `jwks` model;
- * `0001_init` did not have them; and every sign-in that minted a signing key died on
- * `table pithy_auth_jwks has no column named alg` — twenty-two suites at once, none of which could say
- * why, because no test compared what Better Auth asks for against what this package creates.
+ * `better-auth` is a caret range, so an adopter can resolve a version nothing here has run. A model that
+ * gains a column the chain lacks — `jwks.alg` and `jwks.crv` are the case below — breaks every insert into
+ * that table, and only a comparison of what Better Auth asks for against what this package creates says
+ * why.
  *
  * The comparison is cheap and nothing else does it. `pluginSchemaDelta` asks `getSchema` the same
  * question for an *adopter's* plugin, subtracting the kit baseline to find what to `ALTER TABLE` — so
@@ -32,13 +30,11 @@ import { AUTH_MIGRATIONS } from "./set";
  * reads.
  *
  * **It is a `pragma_table_info` read rather than a Zod comparison** because the table is what a query
- * hits. A Zod object agreeing with Better Auth while the DDL lags is exactly the failure above: `Jwks`
- * would have been right and the insert would still have thrown.
+ * hits. A Zod object can agree with Better Auth while the DDL lags, and the insert still throws.
  *
- * **And the reverse, which #787 is the price of.** A `NOT NULL` column with no default that Better Auth
- * never writes breaks every insert into its table just as surely. 1.7.3 stopped writing
- * `pithy_auth_accounts.issuer`, `0001_init` still required it, and every email OTP sign-in answered 500
- * while this test, then one direction only, stayed green. `../test-utils/schemaDrift` holds both halves.
+ * **And the reverse.** A `NOT NULL` column with no default that Better Auth never writes breaks every
+ * insert into its table just as surely: `pithy_auth_accounts.issuer` is such a column on a chain before
+ * `0003`. `../test-utils/schemaDrift` holds both halves.
  *
  * **Then Better Auth is asked itself.** Since 1.7.3 it compares the same two things at initialization.
  * The kit turns that runtime check off, because it would run on every request (`../instance/auth.ts`),
@@ -57,6 +53,7 @@ const SET = {
 
 const ALL_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -144,14 +141,14 @@ describe("the migration chain against what Better Auth writes", () => {
 
     expect(
       schemaDrift(declared, await actualTables()),
-      "the auth tables and better-auth disagree — add a migration, and match the Zod object in data/betterAuth.ts (#451, #787)",
+      "the auth tables and better-auth disagree — add a migration, and match the Zod object in data/betterAuth.ts",
     ).toEqual([]);
   });
 
-  test("the chain before 0003 is the drift #787 shipped, and the reverse half names it", async () => {
-    // The gate has to be able to fail. This is the schema every Worker held on 1.7.1, read at the version
-    // installed now: the column that broke sign-in, and — in the other direction — the four lifecycle
-    // columns `0004` adds, which the kit's declaration names and a chain that old cannot hold (#620).
+  test("the chain before 0003 drifts, and the reverse half names it", async () => {
+    // The gate has to be able to fail. The chain through `0002`, read at the version installed now: the
+    // `NOT NULL` issuer column Better Auth does not write, and in the other direction the lifecycle
+    // columns later migrations add, which the kit's declaration names and a chain that old cannot hold.
     await runMigrations(
       env.DB,
       provider({ "0001_init": auth_0001_init, "0002_session_authenticated_at": auth_0002_session_authenticated_at }),

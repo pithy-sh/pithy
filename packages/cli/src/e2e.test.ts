@@ -86,7 +86,7 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
     project: "smoke-app",
     rollback: false,
     dryRun: false,
-    // The group this run stamped itself with (#694): generated, so matched by shape.
+    // The group this run stamped itself with: generated, so matched by shape.
     group: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
     workers: [{ worker: "smoke-app-api", databases: [] }],
   });
@@ -95,11 +95,9 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
 /**
  * **The five minutes, run with the real binary: `init`, `add auth`, and a project that boots.**
  *
- * This is the acceptance criterion #273 was filed on, and the reason it is here rather than in a unit
- * suite is that every part of the defect lived between commands. `pithy add auth` installed the package,
- * wrote the registration, and reported `Done.` on a Worker that could not start, because `auth`'s
- * manifest declares `secrets` and `email` and nothing read that declaration. `pithy doctor` called the
- * project healthy. Both commands were individually well tested.
+ * It is here rather than in a unit suite because the property lives between commands: `pithy add auth`
+ * reads `auth`'s manifest, which declares `secrets` and `email`, and composes them too, so the Worker it
+ * reports `Done.` on can start, and `pithy doctor` agrees. Each command alone can pass while the pair fails.
  *
  * So the commands are spawned, not called: `bun bin.ts <argv>`, exactly as an adopter or an agent runs
  * them, with `--json` so what is asserted is the contract and not the prose.
@@ -159,7 +157,7 @@ test("pithy add auth on a bare project refuses non-interactively, naming the exa
         "Run `pithy add auth --worker board --with-prerequisites --json`, or compose them first: `pithy add secrets --worker board --json`, then `pithy add email --worker board --json`.",
       exit: 2,
       retryable: false,
-      // The command the action leads with, naming the Worker the caller named and keeping the --json it passed (#711).
+      // The command the action leads with, naming the Worker the caller named and keeping the --json it passed.
       fix: "pithy add auth --worker board --with-prerequisites --json",
     },
   });
@@ -177,7 +175,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const added = await cli(["add", "auth", "--worker", "board", "--with-prerequisites", "--json"], target);
   // The refusal's own line rides on the assertion, so a non-zero exit names its cause rather than a bare `1`.
   expect(added.code, added.stderr).toBe(0);
-  // Held to the schema `pithy schema add` publishes (#697), from the real binary on a real project.
+  // Held to the schema `pithy schema add` publishes, from the real binary on a real project.
   await expectConforms("add", added.stdout);
   const result = JSON.parse(added.stdout.trim()) as {
     capability: string;
@@ -195,7 +193,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   }
 
   // The bindings each of them needs, in the environment `pithy dev` reads. Without these the Worker
-  // assembles and then fails validation on the first request — #258, the other half of this path.
+  // assembles and then fails validation on the first request.
   const stanza = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
     d1_databases?: { binding: string }[];
     ratelimits?: { name: string }[];
@@ -208,14 +206,12 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   ].sort();
   expect(bound).toEqual(["AUTH_RATE_LIMITER", "DB", "EMAIL_SENDER", "EMAIL_SUPPRESSIONS", "SECRETS"]);
 
-  // **And the migrations ran.** `add` re-reads the config it just wrote to build the registry, and the
-  // module cache used to hand it back the module from *before* the write — so a `pithy add` applied none
-  // of the migrations it reported, and `pithy dev` then served 500s off tables nothing had created. This
-  // run reports only `auth`'s, which is correct: each prerequisite applied its own inside its own add,
-  // and there is nothing left for this one to do about them. Before the fix the list was empty.
+  // **And the migrations ran.** `add` re-reads the config it just wrote to build the registry, so a
+  // module cache handing back the module from *before* the write would apply none of them. This run
+  // reports only `auth`'s, which is correct: each prerequisite applied its own inside its own add.
   const applied = result.databases.flatMap((database) => database.results.map((entry) => entry.migrationName));
-  // Auth's whole chain, not just its head — a second kit migration landed with #558 and this list is
-  // every migration the add applied, so it grows with the capability.
+  // Auth's whole chain, not just its head: this list is every migration the add applied, so it grows
+  // with the capability.
   expect(applied).toEqual([
     "0300_auth_0001_init",
     "0300_auth_0002_session_authenticated_at",
@@ -225,6 +221,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     "0300_auth_0006_verification_outcomes",
     "0300_auth_0007_erasure_record",
     "0300_auth_0008_last_active",
+    "0300_auth_0009_attestation_challenges",
   ]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,
@@ -239,11 +236,11 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
       health: { workers: { migrations: { ok: boolean; environments: unknown[] } }[] };
     };
   };
-  // `ledger.state` is asserted beside the count, because since #371 a count on its own no longer says the
+  // `ledger.state` is asserted beside the count, because a count on its own does not say the
   // comparison happened: a database that could not be read reports no `pending` at all, and matching on
   // `ok` alone would pass on a `partial` read of a schema nobody compared.
   //
-  // One answer per environment since #586: `dev` read and level, and the two deployed environments the
+  // One answer per environment: `dev` read and level, and the two deployed environments the
   // scaffold declares reported as what they are — nothing provisioned, so no count. Their state is reported
   // and never gates, so the exit is `dev`'s answer, and a fresh project exits 0.
   const unprovisioned = [
@@ -255,7 +252,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     ok: true,
     environments: [
       { env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] }, fix: null },
-      // Each with its `fix` (#697): the provision for staging, and none for prod, whose provision is a person's.
+      // Each with its `fix`: the provision for staging, and none for prod, whose provision is a person's.
       { env: "staging", state: "not-provisioned", unprovisioned, fix: "pithy provision --env staging --yes" },
       { env: "prod", state: "not-provisioned", unprovisioned, fix: null },
     ],
@@ -264,7 +261,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   await expectConforms("doctor", checked.stdout);
 
   // And the two lifecycle commands that read this registry next, from the same binary on the same project,
-  // held to the schemas `pithy schema` publishes for them (#697).
+  // held to the schemas `pithy schema` publishes for them.
   const migrated = await cli(["migrate", "--env", "dev", "--json"], target);
   expect(migrated.code, migrated.stderr).toBe(0);
   await expectConforms("migrate", migrated.stdout);
@@ -339,7 +336,7 @@ test("pithy doctor reports a composed capability whose prerequisite is absent, a
 }, 300_000);
 
 /**
- * **`pithy add --dry-run --json` over a config linked from outside the project (#697).** The real add writes
+ * **`pithy add --dry-run --json` over a config linked from outside the project.** The real add writes
  * through the adopter's link. The dry run crashed there with a raw `ENOTDIR` stack naming its temporary copy,
  * exit 1 and no `--json` line. Spawned, because the stack and the missing line are what the adopter saw.
  */

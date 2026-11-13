@@ -15,12 +15,13 @@ import { footprintCounts, seedAccountFootprint } from "../test-utils/accountFoot
 import { AUTH_PURGE_SUMMARY, authAddressOf, authPurgeContribution } from "./contribution";
 
 /**
- * Auth's own purge contribution against real D1 (#622): every `pithy_auth_*` row keyed to the account goes,
+ * Auth's own purge contribution against real D1: every `pithy_auth_*` row keyed to the account goes,
  * its history stays, somebody else's rows are untouched, and a second run succeeds having found nothing.
  */
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -113,7 +114,7 @@ describe("auth's purge contribution", () => {
     expect(parsed.sessions.map((session) => session.id)).toEqual(["s-u1"]);
     expect(parsed.providers.map((provider) => provider.providerId)).toEqual(["google"]);
     expect(parsed.devices.map((device) => device.id)).toEqual(["d-u1"]);
-    // The sign-in links and codes it used or was sent (#829): the ledger names the account, so it is theirs.
+    // The sign-in links and codes it used or was sent: the ledger names the account, so it is theirs.
     expect(parsed.verifications?.map((row) => [row.verificationId, row.state, row.emailJobId])).toEqual([
       ["used-link-u1", "used", "job-u1"],
     ]);

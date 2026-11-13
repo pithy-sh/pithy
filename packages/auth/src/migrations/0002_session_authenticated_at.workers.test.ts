@@ -3,9 +3,10 @@
 
 import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
-import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import { rollbackThrough } from "../test-utils/rollbackThrough";
 import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { AUTH_MIGRATIONS } from "./set";
 
@@ -44,6 +45,7 @@ describe("auth_0002_session_authenticated_at", () => {
     // so this migration would run against a table that does not exist.
     for (const table of [
       "pithy_auth_accounts",
+      "pithy_auth_attestation_challenges",
       "pithy_auth_devices",
       "pithy_auth_jwks",
       "pithy_auth_rate_limit",
@@ -67,16 +69,8 @@ describe("auth_0002_session_authenticated_at", () => {
 
   test("down removes it again, leaving 0001's own columns untouched", async () => {
     // Every migration's `down` is tested, and this one has a specific trap: a careless inverse that
-    // rebuilt the table would drop `family_id` and `device_id` with it. `0008`, `0007`, `0006`, `0005`, `0004` and `0003` sit
-    // above it in the chain, so they come down first.
     await runMigrations(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
+    await rollbackThrough(env.DB, provider(), "0002_session_authenticated_at");
     const columns = await sessionColumns();
     expect(columns).not.toContain("authenticated_at");
     expect(columns).toContain("family_id");

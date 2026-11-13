@@ -112,8 +112,14 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   controlplane: () => controlplane(),
   secrets: () => secrets({ registry: {} }),
   email: () => email({ fromAddress: "noreply@example.com", baseUrl: ORIGIN }),
-  // Its dev sign-in mounts in a `dev` composition only, so the `prod` document has no route for it.
-  auth: () => auth({ baseURL: ORIGIN, trustedOrigins: [ORIGIN] }),
+  // Its dev sign-in mounts in a `dev` composition only, so the `prod` document has no route for it. The attestation
+  // challenge route mounts once any environment has an attestation block.
+  auth: () =>
+    auth({
+      baseURL: ORIGIN,
+      trustedOrigins: [ORIGIN],
+      attestation: { environments: { prod: { ios: [{ teamId: "ABCDE12345", bundleId: "com.example.app" }] } } },
+    }),
   // Contributes middleware and a translator, and no route.
   i18n: () => i18n(),
   // Contributes a gate on other capabilities' routes, and no route of its own.

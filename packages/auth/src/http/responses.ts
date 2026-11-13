@@ -574,6 +574,19 @@ export const HandoffExchangeResponse = z
   .describe("The session a redirect sign-in made, handed to the native app that started it.");
 export type HandoffExchangeResponse = z.output<typeof HandoffExchangeResponse>;
 
+/** `POST {base}/attestation/challenge`. */
+export const AttestationChallengeResponse = z
+  .object({
+    challenge: z
+      .string()
+      .describe(
+        "The challenge: 32 random bytes, unpadded base64url. Good once, on one send route, until `expiresAt`. The platform's assertion is made over SHA-256 of these characters followed by that request's exact body.",
+      ),
+    expiresAt: z.iso.datetime().describe("When the challenge stops being accepted, ISO-8601."),
+  })
+  .describe("A single-use challenge for a native app attestation.");
+export type AttestationChallengeResponse = z.output<typeof AttestationChallengeResponse>;
+
 /** One of the caller's own registered devices. */
 export const MyDeviceView = z
   .object({

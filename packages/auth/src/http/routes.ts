@@ -8,10 +8,15 @@ import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
 import { announceSessionRotated } from "@pithy-sh/core/src/session/rotated";
+import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import type { Context, Hono } from "hono";
 import { userSessionTokens } from "../admin/users";
+import { issueChallenge } from "../attestation/challenge";
+import { attestationIsConfigured } from "../attestation/config";
+import { assertAttestationBlock, sendGate } from "../attestation/gate";
+import { PLATFORM_VERIFIERS } from "../attestation/verifier";
 import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
@@ -39,6 +44,7 @@ import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
 import {
   AccountDeleteResponse,
+  AttestationChallengeResponse,
   HandoffExchangeResponse,
   MyDeviceRevokeResponse,
   MyDevicesResponse,
@@ -59,6 +65,9 @@ const BETTER_AUTH_ANSWER: RouteResponse = {
   contentType: "application/json",
 };
 
+/** The routes that send a sign-in email, under `basePath`: the ones Turnstile and attestation gate. */
+export const SEND_ROUTES = ["/sign-in/magic-link", "/email-otp/send-verification-otp"] as const;
+
 function db(c: Ctx, wiring: AuthWiring) {
   return authDatabase(resolveDb(c.env, wiring.config.database));
 }
@@ -66,7 +75,7 @@ function db(c: Ctx, wiring: AuthWiring) {
 /**
  * Register the auth routes onto the backend's Hono app.
  *
- * Order matters: turnstile gates the human-initiated send routes (only when composed), Pithy's own
+ * Order matters: Turnstile and attestation gate the send routes ({@link SEND_ROUTES}), Pithy's own
  * routes are registered before the catch-all so they win, and Better Auth owns everything else under
  * `basePath`. A handler that returns a Response ends the chain, so the specific routes never fall
  * through to the catch-all. (The tier-1 edge rate limiter is contributed as capability *middleware*, so
@@ -77,6 +86,7 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | Route                      | Verification    | Input                       |
  * | -------------------------- | --------------- | --------------------------- |
  * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
+ * | `POST /attestation/challenge` | public       | none                        |
  * | `GET  /sign-in/social/start` | public        | query `SocialSignInStartQuery` |
  * | `POST /handoff`            | public          | json `HandoffExchangeBody`  |
  * | `GET  /devices`            | bearer/session  | none                        |
@@ -103,15 +113,42 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     // resolved, and reads it back here rather than binding a second copy of the same decision.
     const csrf = requireSameOrigin();
 
-    // Auto-gate the magic-link and OTP send routes with the humanity check, when turnstile is composed.
-    // The action is `@pithy-sh/turnstile`'s constant, never a literal: the widget is solved for the same
-    // string through the client projection, and a second copy of it could only be caught in production —
-    // where the two disagreeing refuses every sign-in. #377, and `TURNSTILE_LOGIN_ACTION`'s docblock.
-    if (wiring.turnstile) {
-      const { mode, token } = wiring.turnstile;
-      const guard = turnstile({ mode, field: token.field, header: token.header, action: TURNSTILE_LOGIN_ACTION });
-      app.use(`${base}/sign-in/magic-link`, guard);
-      app.use(`${base}/email-otp/send-verification-otp`, guard);
+    // The magic-link and OTP send routes are gated by Turnstile when it is composed, and by native app
+    // attestation once any environment has a block (`../attestation/gate.ts` holds the rule between the two).
+    // The Turnstile action is `@pithy-sh/turnstile`'s constant, never a literal: the widget is solved for the
+    // same string through the client projection, and two copies disagreeing refuses every sign-in.
+    const humanity = wiring.turnstile
+      ? turnstile({
+          mode: wiring.turnstile.mode,
+          field: wiring.turnstile.token.field,
+          header: wiring.turnstile.token.header,
+          action: TURNSTILE_LOGIN_ACTION,
+        })
+      : undefined;
+    const { attestation } = wiring.config;
+    const guard = attestationIsConfigured(attestation)
+      ? sendGate({
+          attestation,
+          database: wiring.config.database,
+          verifiers: wiring.attestationVerifiers ?? PLATFORM_VERIFIERS,
+          turnstile: humanity,
+        })
+      : humanity;
+    if (guard) {
+      for (const path of SEND_ROUTES) app.use(`${base}${path}`, guard);
+    }
+    if (attestationIsConfigured(attestation)) {
+      app.post(
+        `${base}/attestation/challenge`,
+        describeRoute({
+          summary: "Issue a single-use challenge for a native app attestation.",
+          description:
+            "A native app asks for one before each send. It attests over SHA-256 of the challenge followed by the send's exact body, and sends the result in the `x-pithy-attestation` header: unpadded base64url over the JSON `{ platform, challenge, assertion, keyId? }`. The challenge is good once, pass or fail, until `expiresAt`. An environment with no attestation block answers `auth/attestation_config`.",
+          verification: ["public"],
+          responses: { 200: AttestationChallengeResponse },
+        }),
+        (c) => issueAttestationChallenge(c, wiring),
+      );
     }
 
     // Rotate the refresh credential: mint a new session, revoke the presented one, return a fresh JWT.
@@ -181,7 +218,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
       (c) => revokeMyDevice(c, wiring, c.req.valid("json")),
     );
 
-    // The signed-in person deletes their own account (#622) — always soft, on the configured window. The one
+    // The signed-in person deletes their own account — always soft, on the configured window. The one
     // route a suspended account still reaches: the app stores require that somebody can always leave, and a
     // suspension is no reason to keep them. CSRF-guarded as a mutating route; the subject is the session's own,
     // and nothing in the body can name another.
@@ -300,9 +337,9 @@ function isSignInAttempt(path: string): boolean {
  * (`better-call@1.4.0`, `dist/router.mjs:83-89`), which renders an `APIError` as a Response and returns
  * it. The throw is swallowed one frame later by the library that asked for it.
  *
- * So the `emitDenied` call this replaces — gated on catching an `APIError` — had never run once. No
- * failed one-time code, no bad magic link, no refused OAuth callback has ever reached
- * `pithy_audit_events`, which is the largest class of security event this capability has (#449).
+ * A refusal recorded by catching an `APIError` would therefore never be recorded: no failed one-time code,
+ * no bad magic link, no refused OAuth callback, which is the largest class of security event this
+ * capability has.
  *
  * **The body is cloned, never consumed.** The Response is handed back to the caller untouched: Better
  * Auth's own flat shape is a contract adopters read through `createAuthClient`, and the browser client
@@ -332,12 +369,11 @@ async function auditRefusal(c: Ctx, response: Response): Promise<void> {
 /**
  * Delegate to Better Auth's fetch handler, and record what it refused.
  *
- * **The answer is returned exactly as Better Auth wrote it.** Re-homing its flat `{ message, code }`
- * into the kit envelope was tried and taken back out: `packages/auth/README.md` documents
- * `createAuthClient` from `better-auth/client` as a first-class client surface (#271), and
- * `@better-fetch/fetch` builds its error as `{ ...parsedBody, status }` — so rewriting the body would
- * make `error.code` `undefined` for every adopter on the documented path. The wire is Better Auth's
- * contract. `readFailure` in `../client/api` learns to read it instead (#449).
+ * **The answer is returned exactly as Better Auth wrote it, never re-homed in the kit envelope.**
+ * `packages/auth/README.md` documents `createAuthClient` from `better-auth/client` as a first-class client
+ * surface, and `@better-fetch/fetch` builds its error as `{ ...parsedBody, status }`, so rewriting the body
+ * would make `error.code` `undefined` for every adopter on the documented path. The wire is Better Auth's
+ * contract, and `readFailure` in `../client/api` reads it.
  *
  * The `catch` covers what better-call genuinely hands on: a non-`APIError` throw from an endpoint
  * (`router.mjs:88`), and a throw from a plugin's `onRequest` hook, which runs outside the router's own
@@ -347,7 +383,7 @@ async function auditRefusal(c: Ctx, response: Response): Promise<void> {
 async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
 
-  // **A suspended or deleted account does not reach Better Auth as itself (#620).** The session middleware
+  // **A suspended or deleted account does not reach Better Auth as itself.** The session middleware
   // has already refused it an `AuthContext`, but Better Auth resolves its own session on these endpoints and
   // would happily mint a `/token` for it. So its verdict is applied here too, on every endpoint that acts as
   // the credential's holder — and not on the ones that end a session or start a new one. `./lifecycleGate`
@@ -356,7 +392,7 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const refusal = noticedRefusal(c);
   if (refusal && !admitsRefusedAccount(pathname.slice(wiring.config.basePath.length))) throw refusal;
 
-  // **The first of the two guards on the refusal redirect (#625).** `errorCallbackURL` is the caller's
+  // **The first of the two guards on the refusal redirect.** `errorCallbackURL` is the caller's
   // string and `redirectOnError` builds the redirect on it, so the shape handed *in* decides
   // whether the collapse below is reading a query at all. `./errorCallbackUrl` normalizes it to something
   // the kit produced, or refuses it — and carries the argument for why guarding the input is not the same
@@ -390,7 +426,7 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   }
 
   // **The enumeration oracle on the social callback, closed here because here is the only place both
-  // halves are in reach (#625).** A refused social sign-in redirects with a code that says whether an
+  // halves are in reach.** A refused social sign-in redirects with a code that says whether an
   // account exists at the address the provider handed over; `./providerRefusal` carries the full
   // argument and the roster. The collapse has to happen where the capability hands the response back,
   // rather than in an adopter's middleware, for a reason this line demonstrates: middleware could
@@ -408,9 +444,7 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
     // a 302 is also what a *successful* OAuth callback answers with, so `auditRefusal` — which knows
     // only a status and a JSON body — would either read every completed social sign-in as a denial or
     // have to re-derive this decision from the Location header it is not looking at. The refusal is
-    // recorded from the one place that has already established it is a refusal and knows which one, so
-    // these refusals reach `pithy_audit_events` for the first time (#449 closed the same gap for the
-    // JSON refusals and could not see this one, because it is not a JSON refusal).
+    // recorded from the one place that has already established it is a refusal and knows which one.
     await emitDenied(c.var.emit, { ...correlation(c.req.raw.headers), detail: collapsed.reason });
     return collapsed.response;
   }
@@ -442,7 +476,7 @@ const ROTATION_REUSE_GRACE_MS = 30_000;
  * token + refresh token. This is the "refresh credential rotates on use" primitive Better Auth does not
  * provide natively.
  *
- * Two hardenings over a naive rotate (#59):
+ * Two hardenings over a naive rotate:
  *  - **Reuse detection.** A presented token that no longer resolves to a live session but was previously
  *    consumed is a replayed refresh token — the compromise signal for rotated refresh tokens
  *    (RFC 6819 §5.2.2.3). The whole family is revoked and the attempt denied. (Covers the bearer refresh
@@ -489,7 +523,7 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
     });
   }
 
-  // An account that may not act gets no successor (#620). `session.create.before` would refuse the mint below
+  // An account that may not act gets no successor. `session.create.before` would refuse the mint below
   // anyway; refusing here, from the middleware's verdict, is what keeps the presented token unspent and the
   // successor never written, so a reinstated account's device still holds a credential that works.
   const refusal = noticedRefusal(c);
@@ -509,15 +543,13 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
   // **And carry the authentication instant, which is the whole point of the column.** A rotation is the
   // same authentication continuing, not a new one — `createSession` would otherwise stamp `createdAt`
   // afresh and leave the freshness gate measuring nothing, resettable by anyone holding a stolen refresh
-  // token (#558).
+  // token.
   //
-  // **A session predating the column carries `null` forward, and must not fall back to `createdAt`.**
-  // That looked like a reasonable lower bound and is the opposite: `internal-adapter.mjs:275` stamps
-  // `createdAt` *after* the caller's override, so a row's `created_at` is the moment of its most recent
-  // rotation. Substituting it would hand every legacy session an authentication instant minutes old —
-  // freshest for exactly the actor rotating a stolen token — turning the one control that fails closed
-  // into one that fails open, on upgrade day, for the whole pre-migration population. `null` travels
-  // instead, the gate keeps refusing, and one real sign-in fixes it permanently.
+  // **A session with no authentication instant carries `null` forward, never `createdAt`.**
+  // `internal-adapter.mjs:275` stamps `createdAt` *after* the caller's override, so a row's `created_at` is
+  // the moment of its most recent rotation, and substituting it would hand that session an instant minutes
+  // old — freshest for exactly the actor rotating a stolen token. `null` keeps the gate refusing until one
+  // real sign-in.
   const authenticatedAt = session.authenticatedAt ?? null;
 
   // Mint the successor session and its access token BEFORE consuming the old one, so a transient signing
@@ -586,7 +618,7 @@ async function listMyDevices(c: Ctx, wiring: AuthWiring): Promise<Response> {
 }
 
 /**
- * Delete the caller's own account (#622): soft, on the configured window, audited as `auth/user_self_deleted`
+ * Delete the caller's own account: soft, on the configured window, audited as `auth/user_self_deleted`
  * with them as the actor, and every session they hold ended after the columns are written — through Better
  * Auth's adapter, so `onSessionRevoked` hears each. No reason: a person leaving owes nobody one.
  */
@@ -673,4 +705,16 @@ async function serveMyImage(c: Ctx, wiring: AuthWiring): Promise<Response> {
   return new Response(bytes.body as unknown as BodyInit, {
     headers: { "content-type": bytes.type, ...STORED_IMAGE_HEADERS },
   });
+}
+
+/** Issue an attestation challenge, where this environment has a block to judge its use by. */
+async function issueAttestationChallenge(c: Ctx, wiring: AuthWiring): Promise<Response> {
+  const { attestation } = wiring.config;
+  assertAttestationBlock(attestation, workerIdentity(c.env).environment);
+  const issued = await issueChallenge(db(c, wiring), { now: new Date(), expiresIn: attestation.challengeExpiresIn });
+  c.header("cache-control", "no-store");
+  return c.json({
+    challenge: issued.challenge,
+    expiresAt: issued.expiresAt.toISOString(),
+  } satisfies AttestationChallengeResponse);
 }

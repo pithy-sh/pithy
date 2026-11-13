@@ -26,7 +26,7 @@ import { PROVIDER_SIGN_IN_REFUSAL_REASONS } from "./providerSignInGate";
 import { authSecretsRegistry } from "./secrets";
 
 /**
- * The four rows of provider sign-in, driven end to end against a real instance over real D1 (#625).
+ * The four rows of provider sign-in, driven end to end against a real instance over real D1.
  *
  * **Rows 1 and 2 are the thing this change must not break, so they are asserted first and per provider.**
  * A magic-link user who presses Google — or GitHub, or Facebook — and whose provider-verified address
@@ -64,6 +64,7 @@ const SECRET = "test-secret-please-rotate-0000000000";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -286,7 +287,7 @@ interface AppOptions {
    * An adopter's own GitHub resolver, or `undefined` for the kit's.
    *
    * The kit's own resolver drops the address entirely when GitHub reports the primary unverified, so it
-   * cannot express row 3 — `#554`'s documented seam is what an adopter uses to build a wider ladder, and
+   * cannot express row 3. `resolveGithubUserInfo` is the documented seam an adopter uses to build a wider ladder, and
    * it is the shape that reaches the linking gate with an unverified address.
    */
   githubUserInfo?: AuthWiring["resolveGithubUserInfo"];
@@ -557,7 +558,7 @@ describe.each(PROVIDERS)("$id, the two rows that sign somebody in", (provider) =
     expect(outcome.location).toBe(CALLBACK_URL);
     expect(outcome.cookies.join("\n")).toContain("session_token");
     expect(await sessionCount()).toBe(1);
-    // Linked to the account that already existed — not a second, empty user beside it (#554).
+    // Linked to the account that already existed — not a second, empty user beside it.
     expect(await accountsFor(provider.id)).toEqual([{ user_id: userId, account_id: "subject-1" }]);
   });
 
@@ -567,7 +568,7 @@ describe.each(PROVIDERS)("$id, the two rows that sign somebody in", (provider) =
     await signInWith(app, provider, { subject: "subject-1", address: ADDRESS, verified: true });
 
     // A different address, and one no user row holds — so without row 1 this would be a *sign-up*
-    // minting a second, empty user beside the real account, which is #554 exactly. Row 1 reads the
+    // minting a second, empty user beside the real account. Row 1 reads the
     // identity and never the address, which is what keeps an `allowDifferentEmails` link signing in
     // once it has been made.
     const again = await signInWith(app, provider, {
@@ -938,7 +939,7 @@ describe("a local row the provider cannot vouch for is not something the kit's o
 });
 
 /**
- * Microsoft's verify-to-link challenge, end to end (#262).
+ * Microsoft's verify-to-link challenge, end to end.
  *
  * Entra ID cannot vouch for an email it did not verify, so a Microsoft address is unverified unless the
  * token carries `xms_edov: true` or the personal-accounts tenant. An unverified one neither links nor

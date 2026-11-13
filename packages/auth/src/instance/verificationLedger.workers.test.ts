@@ -14,12 +14,13 @@ import { type AuthEmailMessage, type AuthInstanceDeps, makeAuth } from "./auth";
 import { NO_SOCIAL_PROVIDERS } from "./providers";
 
 /**
- * The verification ledger (#829) through a real instance: every sign-in link and code auth issues writes a row,
+ * The verification ledger through a real instance: every sign-in link and code auth issues writes a row,
  * and its use stamps it — per type, with the mail that carried it, and never the token or the address.
  */
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

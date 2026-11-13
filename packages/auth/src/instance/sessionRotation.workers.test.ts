@@ -39,7 +39,7 @@ import { AUTH_JWKS_DEPENDENT, AUTH_SESSION_SECRET, authSecretsRegistry } from ".
 import type { SessionSecretVersions } from "./sessionSecrets";
 
 /**
- * **`auth-session-secret` rotates and nobody is signed out (#602).**
+ * **`auth-session-secret` rotates and nobody is signed out.**
  *
  * The real stack, end to end: a session signed in under version 1, the secret rotated to version 2 the way
  * the secrets manager rotates it, and a request made with the old cookie. Then the JWKS keys: sealed under
@@ -50,6 +50,7 @@ const OLD = "session-secret-version-one-0000000000000000";
 const NEW = "session-secret-version-two-0000000000000000";
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

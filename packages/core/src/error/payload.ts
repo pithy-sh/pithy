@@ -243,6 +243,42 @@ const AuthHandoffInvalidPublic = z
   })
   .describe("A sign-in handoff code that is spent, expired, unknown or presented with the wrong verifier (400).");
 
+const AuthAttestationMissingPublic = z
+  .object({
+    code: z
+      .literal("auth/attestation_missing")
+      .describe(
+        "A send route whose only gate is a native app attestation was called without one. The request carried no `x-pithy-attestation` header, and no Turnstile gate is composed to take it instead.",
+      ),
+    status: z.literal(400).describe("Bad Request — the attestation this route requires is absent."),
+    ...publicFields,
+  })
+  .describe("A native app attestation was required and the request carried none (400).");
+
+const AuthAttestationFailedPublic = z
+  .object({
+    code: z
+      .literal("auth/attestation_failed")
+      .describe(
+        "The native app attestation did not verify: its challenge was stale, reused or never issued, its assertion did not check out for an allowed app, or it was a test assertion where none is accepted. A failed attestation never falls through to Turnstile.",
+      ),
+    status: z.literal(403).describe("Forbidden — the attestation did not pass; the request is denied."),
+    ...publicFields,
+  })
+  .describe("A native app attestation did not verify (403).");
+
+const AuthAttestationConfigPublic = z
+  .object({
+    code: z
+      .literal("auth/attestation_config")
+      .describe(
+        "The attestation gate is misconfigured on the server: this environment declares no attestation block, or no verifier is available for the platform the request named.",
+      ),
+    status: z.literal(500).describe("Internal Server Error — a configuration fault, not a client request."),
+    ...publicFields,
+  })
+  .describe("The native app attestation gate is misconfigured (500).");
+
 const NotFoundPublic = z
   .object({
     code: z.literal("core/not_found").describe("The requested resource does not exist."),
@@ -2058,6 +2094,9 @@ export const KitPublicErrorPayload = z
     AuthAccountSuspendedPublic,
     AuthAccountDeletedPublic,
     AuthHandoffInvalidPublic,
+    AuthAttestationMissingPublic,
+    AuthAttestationFailedPublic,
+    AuthAttestationConfigPublic,
     NotFoundPublic,
     ConflictPublic,
     RateLimitPublic,
@@ -2245,6 +2284,15 @@ const AuthAccountDeleted = AuthAccountDeletedPublic.extend(internalFields).descr
 );
 const AuthHandoffInvalid = AuthHandoffInvalidPublic.extend(internalFields).describe(
   AuthHandoffInvalidPublic.description ?? "",
+);
+const AuthAttestationMissing = AuthAttestationMissingPublic.extend(internalFields).describe(
+  AuthAttestationMissingPublic.description ?? "",
+);
+const AuthAttestationFailed = AuthAttestationFailedPublic.extend(internalFields).describe(
+  AuthAttestationFailedPublic.description ?? "",
+);
+const AuthAttestationConfig = AuthAttestationConfigPublic.extend(internalFields).describe(
+  AuthAttestationConfigPublic.description ?? "",
 );
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
@@ -2707,6 +2755,9 @@ export const KitErrorPayload = z
     AuthAccountSuspended,
     AuthAccountDeleted,
     AuthHandoffInvalid,
+    AuthAttestationMissing,
+    AuthAttestationFailed,
+    AuthAttestationConfig,
     NotFound,
     Conflict,
     RateLimit,

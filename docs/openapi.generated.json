@@ -7612,6 +7612,54 @@
         ]
       }
     },
+    "/auth/attestation/challenge": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAttestationChallenge",
+        "summary": "Issue a single-use challenge for a native app attestation.",
+        "description": "A native app asks for one before each send. It attests over SHA-256 of the challenge followed by the send's exact body, and sends the result in the `x-pithy-attestation` header: unpadded base64url over the JSON `{ platform, challenge, assertion, keyId? }`. The challenge is good once, pass or fail, until `expiresAt`. An environment with no attestation block answers `auth/attestation_config`.",
+        "responses": {
+          "200": {
+            "description": "A single-use challenge for a native app attestation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "challenge": {
+                      "type": "string",
+                      "description": "The challenge: 32 random bytes, unpadded base64url. Good once, on one send route, until `expiresAt`. The platform's assertion is made over SHA-256 of these characters followed by that request's exact body."
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the challenge stops being accepted, ISO-8601."
+                    }
+                  },
+                  "required": [
+                    "challenge",
+                    "expiresAt"
+                  ],
+                  "description": "A single-use challenge for a native app attestation."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
     "/auth/token/rotate": {
       "post": {
         "tags": [

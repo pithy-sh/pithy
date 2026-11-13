@@ -28,7 +28,7 @@ import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 
 /**
- * A real auth Worker on a real port, for the live suites (#84).
+ * A real auth Worker on a real port, for the live suites.
  *
  * The live E2E questions this package has are about an **origin**: which `redirect_uri` Better Auth
  * hands Google, whether a token posted from a browser survives the humanity gate, whether a callback
@@ -42,7 +42,7 @@ import { AUTH_MIGRATIONS } from "../migrations/set";
  *
  * - **Miniflare supplies D1**, from Node rather than from inside a worker. Two databases, as a deployed
  *   worker has: `DB` for the `pithy_auth_*` and `pithy_email_*` tables, `SECRETS` for the encrypted
- *   rows every secret is read from (#153). No plaintext binding stands in for either.
+ *   rows every secret is read from. No plaintext binding stands in for either.
  * - **The migrations are the real ones**, run through the real registry and runner.
  * - **`node:http` gives the port.** Vitest's `fetch` reaches the app the way a browser would, so an
  *   `Origin` header is a real one and a `Set-Cookie` is a real one.
@@ -62,6 +62,7 @@ export function resetLiveSecrets(): void {
 /** Tables the app database holds once both capabilities' migrations have run. */
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -111,8 +112,8 @@ export interface LiveAppOptions {
    * stanza. `dev` by default, because that is what these suites are: a developer's machine, running the
    * stack the way `pithy dev` does.
    *
-   * It is an option because one thing now reads it — the turnstile gate refuses a Cloudflare test key
-   * outside dev and staging (#374) — so a suite has to be able to say it is prod to prove that.
+   * It is an option because the turnstile gate refuses a Cloudflare test key
+   * outside dev and staging — so a suite has to be able to say it is prod to prove that.
    */
   environment?: string;
 }

@@ -24,14 +24,13 @@ import { createRateLimitMiddleware } from "./rateLimit";
 import { createAuthRoutes } from "./routes";
 
 /**
- * The gate for #381, and it is deliberately built out of HTTP rather than out of the declaration the
- * providers are built from.
+ * The gate on per-provider resolution, deliberately built out of HTTP rather than out of the declaration
+ * the providers are built from.
  *
  * Nothing here reads `ResolvedProviders`, `socialProviders()`, or an `instance.options`. Every
  * assertion is a status code and a body from a real request against a real D1 and a real encrypted
  * secrets store, because the claim being made is about **who can sign in**, and a check that asked the
- * resolution what it resolved would answer yes for any resolution — including the one this branch
- * replaced. The plant is the absence of one encrypted row, which is the adopter's actual failure.
+ * resolution what it resolved would answer yes for any resolution, a broken one included. The plant is the absence of one encrypted row, which is the adopter's actual failure.
  *
  * What this suite separates, over HTTP:
  *
@@ -42,24 +41,19 @@ import { createAuthRoutes } from "./routes";
  * | **not enabled**  | irrelevant                | works      | **404 `PROVIDER_NOT_FOUND`** |
  * | enabled          | missing, *and* no session secret | fails | fails                  |
  *
- * Row two is the fix. Row three is the distinction the fix exists to draw — a fault and a choice are not
- * the same fact, and they answer differently. Row four is the precondition that keeps failing the whole
- * instance, which is the half of the issue that was already right and the half a change like this most
- * easily breaks.
+ * Row two costs one provider, not the instance. Row three is a different fact from row two — a fault and
+ * a choice are not the same, and they answer differently. Row four is the precondition that still fails
+ * the whole instance, and the half a change here most easily breaks.
  *
- * **Row three was once asserted without dispatching, and that hole is now closed (#385).** Under
- * workerd's pre-2026-03-03 behavior an `async` function that *returned* a rejected promise rather than
- * awaiting it fired `unhandledrejection` even where the caller awaited and caught it — Better Auth's
- * `runWithEndpointContext` is that shape, so asking for a provider the instance does not hold left two
- * phantom rejections behind and vitest counted them. The runtime fix is already shipped and default-on
- * from compatibility date 2026-03-03; `vitest.workers.config.ts` names the flag. So the disabled side is
- * a live request again, and the distinction is measured end to end rather than half proven by
- * construction.
+ * Row three is a live request. It depends on workerd's behavior from compatibility date 2026-03-03, where
+ * an `async` function that *returns* a rejected promise the caller awaits fires no `unhandledrejection`;
+ * Better Auth's `runWithEndpointContext` is that shape, and `vitest.workers.config.ts` names the flag.
  */
 
 const SECRET = "test-secret-please-rotate-0000000000";
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

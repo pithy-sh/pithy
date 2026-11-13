@@ -30,7 +30,7 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 const SINCE = new Date("2026-06-03T00:00:00.000Z");
 const ACTIVE_SINCE = new Date("2026-06-07T00:00:00.000Z");
 
-// Composed beside auth, as `testers()`'s `compose` hook would have found it (#645).
+// Composed beside auth, as `testers()`'s `compose` hook would have found it.
 const OPTIONS = { since: SINCE, activeSince: ACTIVE_SINCE, unreachable: new Set<string>(), auth: authPeer };
 
 /** Insert a user, since the whole join keys on the address. */
@@ -67,6 +67,7 @@ beforeEach(async () => {
   for (const table of [
     "pithy_auth_rotated_tokens",
     "pithy_auth_user_lifecycle",
+    "pithy_auth_attestation_challenges",
     "pithy_auth_verification_outcomes",
     "pithy_auth_devices",
     "pithy_auth_rate_limit",
@@ -216,7 +217,7 @@ describe("addresses", () => {
   });
 
   test("with no auth composed, a tester the auth tables would call active still reads unobservable", async () => {
-    // Auth arrives from the composition, never an import (#645). A project without it has no sign-in, and
+    // Auth arrives from the composition, never an import. A project without it has no sign-in, and
     // the honest reading of every tester there is `unobservable` — the rows below, which read `observed`
     // and `active` through auth, are never asked about.
     await user("u1", "ada@example.test");

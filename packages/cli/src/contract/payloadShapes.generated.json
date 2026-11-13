@@ -761,7 +761,7 @@
       }
     },
     "doctor": {
-      "schemaVersion": 8,
+      "schemaVersion": 9,
       "payload": {
         "$": "object",
         "$.cli": "object",
@@ -1188,6 +1188,13 @@
         "$.workflows.drift[].fix": "null | string",
         "$.workflows.drift[]{}": "unknown",
         "$.workflows{}": "unknown",
+        "$.attestation": "null | object",
+        "$.attestation.state": "string",
+        "$.attestation.findings": "array",
+        "$.attestation.findings[]": "object",
+        "$.attestation.findings[].fix": "null | string",
+        "$.attestation.findings[]{}": "unknown",
+        "$.attestation{}": "unknown",
         "$.extensions": "null | object",
         "$.extensions.extensions": "array",
         "$.extensions.extensions[]": "object",
@@ -1270,7 +1277,7 @@
         "$.node": "string",
         "$.failures": "array",
         "$.failures[]": "object",
-        "$.failures[].check": "\"biomeIncludes\" | \"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"varStanzas\" | \"workerNames\" | \"workflows\"",
+        "$.failures[].check": "\"attestation\" | \"biomeIncludes\" | \"cloudflare\" | \"devPreferences\" | \"environmentConfigs\" | \"environments\" | \"featureRatelimitIds\" | \"hostBindings\" | \"origins\" | \"project\" | \"projectName\" | \"secretRotations\" | \"selfBinding\" | \"serviceBindings\" | \"settings\" | \"supportSearchTriggers\" | \"varStanzas\" | \"workerNames\" | \"workflows\"",
         "$.failures[].detail": "string",
         "$.failures[].fix": "null | string"
       }

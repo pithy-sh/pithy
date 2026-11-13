@@ -187,7 +187,7 @@ export const SIDES: readonly Side[] = ["input", "output"];
  * moves only when a person decides it should: adding or removing a table is a one-line edit here, in the
  * same commit, and any other movement is the walk having lost the tree.
  */
-export const CENSUS = { tables: 80, packages: 19 };
+export const CENSUS = { tables: 81, packages: 19 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

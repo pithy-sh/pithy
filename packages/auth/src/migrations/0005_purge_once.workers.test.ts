@@ -3,11 +3,12 @@
 
 import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
-import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
+import { rollbackThrough } from "../test-utils/rollbackThrough";
 import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { AUTH_MIGRATIONS } from "./set";
 
@@ -45,6 +46,7 @@ describe("auth_0005_purge_once", () => {
   beforeEach(async () => {
     for (const table of [
       "pithy_auth_accounts",
+      "pithy_auth_attestation_challenges",
       "pithy_auth_devices",
       "pithy_auth_jwks",
       "pithy_auth_rate_limit",
@@ -87,11 +89,7 @@ describe("auth_0005_purge_once", () => {
   test("down takes the index and the column away, and the history before it stays", async () => {
     await runMigrations(env.DB, provider());
     await insert("u1", "deleted");
-    // `0007` and `0006` sit above it in the chain, so they come down first.
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
-    await rollbackMigration(env.DB, provider());
+    await rollbackThrough(env.DB, provider(), "0005_purge_once");
     expect(await lifecycleColumns()).not.toContain("notify");
     expect(await indexNames()).not.toContain("pithy_auth_user_lifecycle_purged_once_idx");
     const left = await env.DB.prepare("select count(*) as n from pithy_auth_user_lifecycle").first<{ n: number }>();

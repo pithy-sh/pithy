@@ -24,7 +24,7 @@ import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 
 /**
- * The account lifecycle, enforced at every door (#620): a suspended or deleted account cannot use the
+ * The account lifecycle, enforced at every door: a suspended or deleted account cannot use the
  * session it holds, cannot get a new access token, and cannot sign in again — and a suspension that has run
  * out is no suspension at all. Driven through the real middleware, routes and Better Auth instance over a
  * real D1, because every one of these is a place a check could be missing.
@@ -32,6 +32,7 @@ import { AUTH_MIGRATIONS } from "../migrations/set";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

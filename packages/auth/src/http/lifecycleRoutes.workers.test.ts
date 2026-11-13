@@ -36,7 +36,7 @@ import { AUTH_USERS_READ_SCOPE, AUTH_USERS_SUSPEND_SCOPE } from "./guards";
 import { AdminUserReinstateResponse, AdminUserSuspendResponse } from "./responses";
 
 /**
- * Suspend and reinstate, through the control plane (#621) — a real `createBackend`, real D1, tokens signed by
+ * Suspend and reinstate, through the control plane — a real `createBackend`, real D1, tokens signed by
  * `mintControlPlaneToken`, and a person signed in over OTP the way a reader signs in.
  *
  * The transitions underneath are proved in `../lifecycle/transitions.workers.test.ts`, and enforcement in
@@ -66,6 +66,7 @@ const SECRETS: SecretFixture<typeof REGISTRY> = {
 
 const AUTH_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
