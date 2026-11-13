@@ -4711,7 +4711,7 @@ const DoctorPayload = z
       state: State("`ok`, `reserved`, `could-not-check`"),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per id in the feature range."),
     }),
-    testBindings: Check("Test bindings missing from vitest.workers.config.ts, or `null`.", {
+    testBindings: Check("Test bindings missing from vitest.workers.config.ts or stated incompletely, or `null`.", {
       state: State("`ok`, `missing`, `could-not-check`"),
       missing: z
         .array(
@@ -4720,10 +4720,13 @@ const DoctorPayload = z
               capability: z.string().describe("The composed capability."),
               workers: z.array(z.string().describe("A Worker's name.")).describe("The Workers composing it."),
               bindings: z.array(z.string().describe("A binding name.")).describe("The bindings the config lacks."),
+              incomplete: z
+                .array(z.string().describe("A binding name."))
+                .describe("The rate limiters the config states without a namespace_id."),
               detail: z.string().describe("The sentence."),
               fix: DoctorFix,
             })
-            .describe("One capability whose test bindings are missing."),
+            .describe("One capability whose test bindings are missing or incomplete."),
         )
         .describe("One entry per capability."),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per capability."),

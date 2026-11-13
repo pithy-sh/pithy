@@ -20,7 +20,21 @@ const finding: TestBindingsCheck = {
       capability: "secrets",
       workers: ["api"],
       bindings: ["SECRETS", "SECRETS_ENCRYPTION_KEYS"],
+      incomplete: [],
       fix: "pithy add secrets --worker api",
+    },
+  ],
+};
+
+const unnamespaced: TestBindingsCheck = {
+  state: "missing",
+  missing: [
+    {
+      capability: "auth",
+      workers: ["app-a", "app-b"],
+      bindings: [],
+      incomplete: ["AUTH_RATE_LIMITER"],
+      fix: "pithy add auth --worker app-a",
     },
   ],
 };
@@ -31,7 +45,7 @@ describe("the Workers tests: block", () => {
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain("Workers tests:");
     expect(text).toContain("secrets (api): SECRETS, SECRETS_ENCRYPTION_KEYS missing from vitest.workers.config.ts.");
-    expect(text).toContain("Run pithy add <capability> again to write them, or add them by hand.");
+    expect(text).toContain("Run pithy add <capability> again to write or complete them, or edit them by hand.");
   });
 
   test("hands the check the Workers this report resolved", async () => {
@@ -93,5 +107,16 @@ describe("the Workers tests: block", () => {
     expect(payload.testBindings.findings).toEqual([
       "secrets (api): SECRETS, SECRETS_ENCRYPTION_KEYS missing from vitest.workers.config.ts.",
     ]);
+  });
+
+  test("names a rate limiter with no namespace_id, in text and in --json with its fix", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkTestBindings: async () => unnamespaced }));
+    const sentence = "auth (app-a, app-b): AUTH_RATE_LIMITER in vitest.workers.config.ts has no namespace_id.";
+    expect(renderDoctorText(report, "/home/u")).toContain(sentence);
+    const payload = renderDoctorJson(report) as unknown as {
+      testBindings: TestBindingsCheck & { findings: string[] };
+    };
+    expect(payload.testBindings.missing).toEqual([{ ...unnamespaced.missing[0], detail: sentence }]);
+    expect(payload.testBindings.findings).toEqual([sentence]);
   });
 });

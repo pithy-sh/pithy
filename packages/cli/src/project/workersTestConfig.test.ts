@@ -7,8 +7,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestBinding } from "@pithy-sh/core/src/capability/testBinding";
+import { V4WorkerOptionsSchema } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { rateLimitNamespaceId } from "./bindingEntries";
 import {
+  incompleteTestBindings,
   missingTestBindings,
   removeTestBindings,
   STARTER_TEST_BINDINGS,
@@ -30,6 +33,20 @@ const MASTER_KEY: TestBinding = {
   export: "devEncryptionKeys",
 };
 const SECRETS: TestBinding[] = [{ kind: "d1", name: "SECRETS" }, MASTER_KEY];
+const LIMITER: TestBinding = { kind: "ratelimit", name: "AUTH_RATE_LIMITER", limit: 100, period: 60 };
+
+/** The `ratelimits` object a written config states, evaluated the way the config's own module would. */
+function statedRatelimits(source: string): Record<string, unknown> {
+  const start = source.indexOf("ratelimits: {");
+  let depth = 0;
+  let end = start + "ratelimits: ".length;
+  for (; end < source.length; end += 1) {
+    if (source[end] === "{") depth += 1;
+    if (source[end] === "}") depth -= 1;
+    if (depth === 0) break;
+  }
+  return new Function(`return ${source.slice(start + "ratelimits: ".length, end + 1)};`)();
+}
 
 describe("withTestBindings", () => {
   test("adds a D1 to the scaffolded config's list, and a value with its import", () => {
@@ -62,7 +79,73 @@ describe("withTestBindings", () => {
       { kind: "ratelimit", name: "AUTH_RATE_LIMITER", limit: 100, period: 60 },
     ]);
     expect(source).toContain('        kvNamespaces: ["SESSIONS"],\n        r2Buckets: ["MEDIA_BUCKET"],\n');
-    expect(source).toContain("        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 100, period: 60 } } },\n");
+    expect(source).toContain(
+      '        ratelimits: { AUTH_RATE_LIMITER: { namespace_id: "3093", simple: { limit: 100, period: 60 } } },\n',
+    );
+  });
+
+  test("gives a rate limiter the namespace_id its wrangler.jsonc entry carries", () => {
+    const { source } = withTestBindings(TEMPLATE, [LIMITER]);
+    expect(source).toContain(
+      `AUTH_RATE_LIMITER: { namespace_id: "${rateLimitNamespaceId("AUTH_RATE_LIMITER")}", simple: { limit: 100, period: 60 } }`,
+    );
+  });
+
+  test("writes a rate limiter the miniflare the kit pins accepts", () => {
+    const { source } = withTestBindings(TEMPLATE, [
+      LIMITER,
+      { kind: "ratelimit", name: "UPLOAD_LIMITER", limit: 5, period: 10 },
+    ]);
+    const ratelimits = statedRatelimits(source);
+    expect(Object.keys(ratelimits)).toEqual(["AUTH_RATE_LIMITER", "UPLOAD_LIMITER"]);
+    const parsed = V4WorkerOptionsSchema.safeParse({ script: "", ratelimits });
+    expect(parsed.error?.issues ?? []).toEqual([]);
+  });
+
+  test("fills the namespace_id into a rate limiter stated without one, and changes nothing else", () => {
+    const stale = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 20, period: 10 } } },',
+    );
+    const { source, written, completed } = withTestBindings(stale, [LIMITER]);
+    expect(written).toEqual([]);
+    expect(completed).toEqual(["AUTH_RATE_LIMITER"]);
+    expect(source).toBe(
+      stale.replace(
+        "AUTH_RATE_LIMITER: { simple:",
+        `AUTH_RATE_LIMITER: { namespace_id: "${rateLimitNamespaceId("AUTH_RATE_LIMITER")}", simple:`,
+      ),
+    );
+    expect(withTestBindings(source, [LIMITER]).source).toBe(source);
+  });
+
+  test("fills the namespace_id into an entry written one member per line, in its layout", () => {
+    const stale = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: {\n          AUTH_RATE_LIMITER: {\n            simple: { limit: 100, period: 60 },\n          },\n        },',
+    );
+    const { source } = withTestBindings(stale, [LIMITER]);
+    expect(source).toBe(
+      stale.replace("AUTH_RATE_LIMITER: {\n", 'AUTH_RATE_LIMITER: {\n            namespace_id: "3093",\n'),
+    );
+  });
+
+  test("leaves a rate limiter with a namespace_id of its own alone", () => {
+    const own = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 1, period: 60 }, "namespace_id": "7" } },',
+    );
+    const { source, completed } = withTestBindings(own, [LIMITER]);
+    expect(source).toBe(own);
+    expect(completed).toEqual([]);
+  });
+
+  test("leaves a rate limiter whose value is not an object literal alone", () => {
+    const shared = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: limiter },',
+    );
+    expect(withTestBindings(shared, [LIMITER]).source).toBe(shared);
   });
 
   test("adds to an object property already there", () => {
@@ -129,6 +212,25 @@ describe("withTestBindings", () => {
   });
 });
 
+describe("incompleteTestBindings", () => {
+  test("names a rate limiter stated without a namespace_id, and nothing the config lacks outright", () => {
+    const stale = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 100, period: 60 } } },',
+    );
+    const other: TestBinding = { kind: "ratelimit", name: "UPLOAD_LIMITER", limit: 5, period: 60 };
+    expect(incompleteTestBindings(stale, [LIMITER, other, ...SECRETS]).map((binding) => binding.name)).toEqual([
+      "AUTH_RATE_LIMITER",
+    ]);
+    expect(incompleteTestBindings(withTestBindings(stale, [LIMITER]).source, [LIMITER])).toEqual([]);
+    expect(incompleteTestBindings(withTestBindings(TEMPLATE, [LIMITER]).source, [LIMITER])).toEqual([]);
+  });
+
+  test("asks nothing of a config with no miniflare block", () => {
+    expect(incompleteTestBindings("export default {};\n", [LIMITER])).toEqual([]);
+  });
+});
+
 describe("missingTestBindings", () => {
   test("names the bindings the config does not provide, and never an unbound one", () => {
     const declared: TestBinding[] = [{ kind: "d1", name: "DB" }, ...SECRETS, { kind: "unbound", name: "QUEUE" }];
@@ -176,6 +278,18 @@ describe("writeTestBindings", () => {
     expect(await writeTestBindings(dir, "secrets", SECRETS)).toEqual([
       "secrets: add SECRETS, SECRETS_ENCRYPTION_KEYS to the miniflare options in vitest.workers.config.ts. No miniflare block was found to write them into.",
     ]);
+  });
+
+  test("fills a missing namespace_id into the project's Workers test config", async () => {
+    const stale = TEMPLATE.replace(
+      'kvNamespaces: ["SESSIONS"],',
+      'kvNamespaces: ["SESSIONS"],\n        ratelimits: { AUTH_RATE_LIMITER: { simple: { limit: 100, period: 60 } } },',
+    );
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), stale);
+    expect(await writeTestBindings(dir, "auth", [LIMITER])).toEqual([]);
+    expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(
+      stale.replace("{ simple:", '{ namespace_id: "3093", simple:'),
+    );
   });
 
   test("writes nothing to a project with no Workers test config", async () => {

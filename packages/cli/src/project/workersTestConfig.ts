@@ -4,6 +4,7 @@
 import { join } from "node:path";
 import type { TestBinding } from "@pithy-sh/core/src/capability/testBinding";
 import { findNamedImport, type ScannedConfig, scanConfig } from "../capabilities/configImports";
+import { rateLimitNamespaceId } from "./bindingEntries";
 import { readOptionalFile } from "./readOptionalFile";
 import { type LockfileSync, writeRootConfig } from "./rootConfigImports";
 
@@ -33,14 +34,20 @@ function isStated(binding: TestBinding): binding is StatedBinding {
   return binding.kind !== "unbound";
 }
 
+/** The `namespace_id` member a rate limiter's entry carries: the id its `wrangler.jsonc` entry is written with. */
+function namespaceIdMember(name: string): string {
+  return `namespace_id: "${rateLimitNamespaceId(name)}"`;
+}
+
 /**
  * The entry one binding adds to an option of `shape`: an element of a list, or a `key: value` member of an object.
- * A D1, KV or R2 binding in an object is keyed by its name and given its name as the id.
+ * A D1, KV or R2 binding in an object is keyed by its name and given its name as the id. Miniflare refuses a rate
+ * limiter without a `namespace_id`; this one has no live budget behind it, so it takes the id `wrangler.jsonc` does.
  */
 function entryOf(binding: StatedBinding, shape: Shape): string {
   switch (binding.kind) {
     case "ratelimit":
-      return `${binding.name}: { simple: { limit: ${binding.limit}, period: ${binding.period} } }`;
+      return `${binding.name}: { ${namespaceIdMember(binding.name)}, simple: { limit: ${binding.limit}, period: ${binding.period} } }`;
     case "value":
       return `${binding.name}: ${binding.export}()`;
     default:
@@ -175,23 +182,54 @@ function withImport(source: string, name: string, module: string): string {
   return last === undefined ? `${statement}${source}` : splice(source, last.index + last[0].length, statement);
 }
 
+/**
+ * The object literal a rate limiter's entry holds, when the config states the limiter with no `namespace_id` in it.
+ * An entry whose value is anything but an object literal is the adopter's to answer for, and is not read.
+ */
+function lackingNamespaceId(scanned: ScannedConfig, block: Span, binding: StatedBinding): Span | null {
+  if (binding.kind !== "ratelimit") return null;
+  const span = property(scanned, block, OPTION.ratelimit.key);
+  const start = span === null ? null : elementStart(scanned, span, binding.name);
+  if (span === null || start === null) return null;
+  const colon = scanned.code.indexOf(":", start);
+  const open = nextCode(scanned, colon + 1);
+  if (colon === -1 || colon > span.close || /[^\w"'\s]/.test(scanned.code.slice(start, colon))) return null;
+  if (scanned.code[open] !== "{") return null;
+  const value = { open, close: closing(scanned, open) };
+  return elementStart(scanned, value, "namespace_id") === null ? value : null;
+}
+
+/** Put `member` first in the object at `value`, in the layout the object is written in. */
+function withLeadingMember(source: string, scanned: ScannedConfig, value: Span, member: string): string {
+  const first = nextCode(scanned, value.open + 1);
+  if (first === value.close) return splice(source, value.open + 1, ` ${member} `);
+  if (source.slice(value.open + 1, first).includes("\n")) {
+    return splice(source, value.open + 1, `\n${indentAt(source, first)}${member},`);
+  }
+  return splice(source, value.open + 1, ` ${member},`);
+}
+
 /** What {@link withTestBindings} did to one config. */
 export interface TestBindingsEdit {
   /** The config with every binding it could place. */
   source: string;
   /** The bindings this edit wrote, in declaration order. */
   written: string[];
+  /** The rate limiters already stated that this edit gave the `namespace_id` they lacked. */
+  completed: string[];
   /** The stated bindings it could not place, because the config has no `miniflare` block. */
   unplaced: string[];
 }
 
 /**
  * Add each stated binding a Workers test config does not provide yet. Idempotent, comment-aware, and a binding
- * already present is left as the adopter wrote it. An `unbound` binding states nothing.
+ * already present is left as the adopter wrote it, except that a rate limiter stated without the `namespace_id`
+ * Miniflare requires is given one. An `unbound` binding states nothing.
  */
 export function withTestBindings(original: string, bindings: readonly TestBinding[]): TestBindingsEdit {
   let source = original;
   const written: string[] = [];
+  const completed: string[] = [];
   const unplaced: string[] = [];
   for (const binding of bindings.filter(isStated)) {
     const scanned = scanConfig(source);
@@ -200,7 +238,13 @@ export function withTestBindings(original: string, bindings: readonly TestBindin
       unplaced.push(binding.name);
       continue;
     }
-    if (provides(scanned, block, binding)) continue;
+    if (provides(scanned, block, binding)) {
+      const value = lackingNamespaceId(scanned, block, binding);
+      if (value === null) continue;
+      source = withLeadingMember(source, scanned, value, namespaceIdMember(binding.name));
+      completed.push(binding.name);
+      continue;
+    }
     const { key } = OPTION[binding.kind];
     const span = property(scanned, block, key);
     const shape = span === null ? OPTION[binding.kind].shape : shapeOf(scanned, span);
@@ -212,7 +256,15 @@ export function withTestBindings(original: string, bindings: readonly TestBindin
     if (binding.kind === "value") source = withImport(source, binding.export, binding.module);
     written.push(binding.name);
   }
-  return { source, written, unplaced };
+  return { source, written, completed, unplaced };
+}
+
+/** The stated rate limiters a Workers test config holds without the `namespace_id` Miniflare requires. */
+export function incompleteTestBindings(source: string, bindings: readonly TestBinding[]): StatedBinding[] {
+  const scanned = scanConfig(source);
+  const block = miniflareBlock(scanned);
+  if (block === null) return [];
+  return bindings.filter(isStated).filter((binding) => lackingNamespaceId(scanned, block, binding) !== null);
 }
 
 /** The stated bindings a Workers test config does not provide. With no `miniflare` block, every one of them. */

@@ -1078,7 +1078,13 @@ describe("every finding in every block carries fix", () => {
       checkTestBindings: async () => ({
         state: "missing",
         missing: [
-          { capability: "secrets", workers: ["api"], bindings: ["SECRETS"], fix: "pithy add secrets --worker api" },
+          {
+            capability: "secrets",
+            workers: ["api"],
+            bindings: ["SECRETS"],
+            incomplete: [],
+            fix: "pithy add secrets --worker api",
+          },
         ],
       }),
       checkRootImports: async () => ({
