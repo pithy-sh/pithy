@@ -62,6 +62,30 @@ export const HandoffExchangeBody = z
   .describe("The code a native app trades for its session after a redirect sign-in, with the verifier that binds it.");
 export type HandoffExchangeBody = z.output<typeof HandoffExchangeBody>;
 
+/** `POST {base}/attestation/ios/keys`: an App Attest key and Apple's attestation of it. */
+export const AppAttestKeyBody = z
+  .object({
+    challenge: z
+      .string()
+      .min(1)
+      .max(128)
+      .describe(
+        "A challenge from `POST {base}/attestation/challenge`. The app passes SHA-256 of its characters to `attestKey` as the client data hash. Spent by this request, pass or fail.",
+      ),
+    keyId: z
+      .string()
+      .min(1)
+      .max(256)
+      .describe("The key identifier `generateKey` returned, base64 as Apple hands it over."),
+    attestation: z
+      .string()
+      .min(1)
+      .max(16_384)
+      .describe("The attestation object `attestKey` returned, base64 as Apple hands it over."),
+  })
+  .describe("A new App Attest key for this server to verify and register before the app makes assertions with it.");
+export type AppAttestKeyBody = z.output<typeof AppAttestKeyBody>;
+
 /** The providers a native app can sign in with through the system browser: every redirect provider auth offers. */
 export const RedirectProvider = z
   .enum(["apple", "facebook", "github", "google", "microsoft"])

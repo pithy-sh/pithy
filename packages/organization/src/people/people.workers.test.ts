@@ -28,6 +28,7 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_app_attest_keys",
   "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuthDatabase } from "../data/tables";
+import { appAttestVerifier } from "./appAttest/verifier";
 import { type AttestationEnvironment, type AttestationPlatform, testAssertionAllowedIn } from "./config";
 import type { PresentedAttestation } from "./wire";
 
@@ -48,7 +49,7 @@ export interface AttestationVerifier {
 export type AttestationVerifiers = Partial<Record<AttestationPlatform, AttestationVerifier>>;
 
 /** The verifiers this release ships for real assertions. */
-export const PLATFORM_VERIFIERS: AttestationVerifiers = {};
+export const PLATFORM_VERIFIERS: AttestationVerifiers = { ios: appAttestVerifier };
 
 /** Whether this attestation is the documented test assertion. */
 export function isTestAssertion(presented: PresentedAttestation): boolean {

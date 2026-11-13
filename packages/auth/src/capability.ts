@@ -191,7 +191,7 @@ export const AuthConfig = z
         "Which account-lifecycle emails are sent. All four send by default, through `@pithy-sh/email`; switch one off by setting it to false.",
       ),
     attestation: AttestationConfig.prefault({}).describe(
-      "Native app attestation on the email send routes, per environment. An environment with a block takes an attestation in the `x-pithy-attestation` header in place of a Turnstile token, and requires one when turnstile is not composed. This release verifies the test assertion only. See the README's attestation section.",
+      "Native app attestation on the email send routes, per environment. An environment with a block takes an attestation in the `x-pithy-attestation` header in place of a Turnstile token, and requires one when turnstile is not composed. This release verifies Apple App Attest and the test assertion. See the README's attestation section.",
     ),
     plugins: z
       .array(AuthPlugin)
@@ -235,6 +235,11 @@ export interface AuthWiring {
    * `PLATFORM_VERIFIERS`; a harness passes its own.
    */
   attestationVerifiers?: AttestationVerifiers | undefined;
+  /**
+   * The root CA an App Attest key's certificate chain must lead to, DER. Absent means Apple App Attestation Root
+   * CA, pinned in the package; a harness passes the root of its own test chain.
+   */
+  appAttestRoot?: Uint8Array | undefined;
   /**
    * The adopter's session-revoked listener, or absent. See {@link AuthOptions.onSessionRevoked}.
    *
