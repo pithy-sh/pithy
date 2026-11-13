@@ -39,7 +39,7 @@ import {
 } from "./transitions";
 
 /**
- * The transitions every lifecycle action is built on (#620). The admin routes (#621, #622) and the purge
+ * The transitions every lifecycle action is built on. The admin routes and the purge
  * Workflow call these and nothing else, so what is proved here — the columns and the row written together,
  * the audit event, the mail, a hook fired once and only once, a throwing hook that changes nothing — holds
  * for every one of them.
@@ -47,6 +47,7 @@ import {
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -217,7 +218,7 @@ describe("suspendUser", () => {
     expect(h.fired[0]?.event).toMatchObject({ userId: "u1", reason: "A payment is under review." });
   });
 
-  test("suspending an account that is already suspended restates the reason and the end (#621)", async () => {
+  test("suspending an account that is already suspended restates the reason and the end", async () => {
     await seedUser();
     const h = harness();
     const first = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "First." });
@@ -643,7 +644,7 @@ describe("deleteUser", () => {
     expect((await readLifecycleColumns(h.deps.db, "u1"))?.purgeAfter?.getTime()).toBe(NOW.getTime() + 7 * DAY);
   });
 
-  test("the deletion-scheduled mail carries the configured restore path (#622)", async () => {
+  test("the deletion-scheduled mail carries the configured restore path", async () => {
     await seedUser();
     const h = harness({ config: { retention: { restoreUrl: "https://app.example.test/restore" } } });
     await deleteUser(h.deps, { userId: "u1", actor: { type: "user", id: "u1" }, reason: null });
@@ -652,7 +653,7 @@ describe("deleteUser", () => {
     expect(String(job?.payload.restoreUrl)).toContain("restore");
   });
 
-  test("notify: false sends no deletion-scheduled mail, and says so (#622)", async () => {
+  test("notify: false sends no deletion-scheduled mail, and says so", async () => {
     await seedUser();
     const h = harness();
     const result = await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", notify: false });
@@ -679,7 +680,7 @@ describe("deleteUser", () => {
   });
 });
 
-describe("deleteUser, hard (#622)", () => {
+describe("deleteUser, hard", () => {
   test("closes the window now: purgeAfter is the deletion's own instant, audited as a hard deletion", async () => {
     await seedUser();
     const h = harness();
@@ -754,7 +755,7 @@ describe("restoreUser", () => {
     expect(await history()).toEqual([]);
   });
 
-  test("once the window has closed it is a conflict, and nothing is written (#622)", async () => {
+  test("once the window has closed it is a conflict, and nothing is written", async () => {
     await seedUser();
     const h = harness();
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x", mode: "hard" });
@@ -775,7 +776,7 @@ describe("restoreUser", () => {
     return () => new Date(NOW.getTime() + (reads++ === 0 ? first : after));
   };
 
-  test("a window that closes while the restore is in flight is a conflict, and the purge still finds it due (#622)", async () => {
+  test("a window that closes while the restore is in flight is a conflict, and the purge still finds it due", async () => {
     await seedUser();
     const h = harness();
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
@@ -791,7 +792,7 @@ describe("restoreUser", () => {
     expect((await purgeSubject(later, "u1")).state).toBe("due");
   });
 
-  test("a hard deletion that brings the purge forward while the restore is in flight wins (#622)", async () => {
+  test("a hard deletion that brings the purge forward while the restore is in flight wins", async () => {
     await seedUser();
     const h = harness();
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
@@ -807,7 +808,7 @@ describe("restoreUser", () => {
     expect((await purgeSubject({ ...h.deps, now: () => new Date(NOW.getTime() + 20) }, "u1")).state).toBe("due");
   });
 
-  test("on the system clock, the guard is the database's own time when the statement runs (#622)", async () => {
+  test("on the system clock, the guard is the database's own time when the statement runs", async () => {
     await seedUser("open");
     await seedUser("closed");
     const h = harness();
@@ -835,7 +836,7 @@ describe("restoreUser", () => {
     );
   });
 
-  test("after the purge it is a 404 whose action says the data is gone (#622)", async () => {
+  test("after the purge it is a 404 whose action says the data is gone", async () => {
     const h = harness();
     await completePurge(h.deps, { userId: "gone" });
     const refusal = await restoreUser(h.deps, { userId: "gone", actor: OPERATOR, reason: "x" }).catch((e) => e);
@@ -868,7 +869,7 @@ describe("the purge's records", () => {
   });
 
   test("mailPurgeComplete mails the address it is handed, in the account's language", async () => {
-    // The purge Workflow (#622) captures the address before its steps erase it and hands it here, before
+    // The purge Workflow captures the address before its steps erase it and hands it here, before
     // auth's own step erases the row the address lives on.
     const h = harness();
     const result = await mailPurgeComplete(h.deps, {
@@ -910,7 +911,7 @@ describe("the purge's records", () => {
   });
 });
 
-describe("which purges are due (#622)", () => {
+describe("which purges are due", () => {
   test("purgeSubject: due only once deleted and past purgeAfter, with the address captured", async () => {
     await seedUser();
     const h = harness();
@@ -955,8 +956,8 @@ describe("which purges are due (#622)", () => {
   });
 });
 
-describe("the purge's operations over the transitions (#622)", () => {
-  test("address reads the account's own address off its row, and null for an account that is not there (#814)", async () => {
+describe("the purge's operations over the transitions", () => {
+  test("address reads the account's own address off its row, and null for an account that is not there", async () => {
     await seedUser();
     const ops = purgeOps(harness().deps, NO_HOLDS);
     expect(await ops.address("u1")).toBe("u1@test.com");
@@ -1032,7 +1033,7 @@ describe("the purge's operations over the transitions (#622)", () => {
   });
 });
 
-describe("the erasure record (#823)", () => {
+describe("the erasure record", () => {
   test("a deletion's row keeps its mode and when its purge comes due, so the purge cannot erase them", async () => {
     for (const id of ["soft", "hard", "forward"]) await seedUser(id);
     const h = harness();

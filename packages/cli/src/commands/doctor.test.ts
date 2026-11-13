@@ -180,9 +180,9 @@ describe("buildDoctorReport — project detection", () => {
 });
 
 /**
- * **The command doctor names is one that clears the line (#634).** It used to print `pithy upgrade` for every
- * outdated package, and `upgrade` never moved a version — so following the advice printed the same line again.
- * The command is now decided from what the project declares, by the same rule `--packages` moves by.
+ * **The command doctor names is one that clears the line.** `pithy upgrade` moves no version, so naming it for an
+ * outdated package would print the same line again. The command is decided from what the project declares, by the
+ * same rule `--packages` moves by.
  */
 describe("buildDoctorReport — the command an outdated package names", () => {
   const declared = (spec: string | null) => async () =>
@@ -299,8 +299,8 @@ describe("buildDoctorReport — the command an outdated package names", () => {
 
 /**
  * **A CLI the project installed is moved the way the project's other packages are.** `bun run pithy` runs
- * `node_modules/.bin/pithy`, and a global install leaves that copy exactly where it was — so the global
- * command doctor named for it printed the same `Update available` line again (#634).
+ * `node_modules/.bin/pithy`, and a global install leaves that copy exactly where it was — so a global command
+ * would leave the same `Update available` line in place.
  */
 describe("buildDoctorReport — the command an outdated project-local CLI names", () => {
   const cliSpec = async () => [
@@ -436,16 +436,15 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **#533's follow-on: the command an adopter runs when something is wrong finally says this.**
+   * **A capability composed and installed nowhere is named by the command an adopter runs when something is wrong.**
    *
    * The Worker composes `payments` and its five checks are green — a composition that loaded is a
    * composition that loaded. Nothing else in the report notices that the package behind it is installed
    * nowhere: it ships no manifest to any scan, so no binding of its is checked and no config option of
    * its is read, and the first thing to say so is whichever `pithy payments …` command refuses next.
    *
-   * `pithy add payments` is the remedy **here**, and it is the sentence #533 was reported about being
-   * printed somewhere else: at a package the project already had, where it installs nothing and rewrites
-   * a hand-built `pithy.config.ts` for the privilege. Resolution reaches a per-Worker install now, so a
+   * `pithy add payments` is the remedy **here**, and only here: at a package the project already has, it would
+   * install nothing and rewrite a hand-built `pithy.config.ts`. Resolution reaches a per-Worker install, so a
    * capability that reaches this list is composed and installed nowhere, which is what `pithy add` is for.
    */
   test("a capability that is composed and installed nowhere is named, with the command that fixes it", async () => {
@@ -559,12 +558,12 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **#539: one capability, two versions — printed, explained, and green.**
+   * **One capability, two versions — printed, explained, and green.**
    *
    * Nothing refuses this state, so it cannot fail the exit: a project legitimately mid-upgrade, with one
    * Worker bumped ahead of another, would be red for as long as the upgrade took. And because it never
    * fails `ok`, the block cannot be gated on `ok` alone — that would print the finding on every report
-   * except the ones it is for, which is the same collapse #513 removed one section over.
+   * except the ones it is for.
    */
   test("one capability at two versions opens the health block on its own, and the exit stays 0", async () => {
     const report = await buildDoctorReport(
@@ -609,8 +608,8 @@ describe("renderDoctorText", () => {
         "      Nothing refuses this, so it does not fail the exit. A mid-upgrade project passes through.",
       ].join("\n"),
     );
-    // No `pithy add` here. The package is installed — that is the sentence #533 was reported about, and
-    // re-running it rewrites a hand-built `pithy.config.ts` to work around an install.
+    // No `pithy add` here. The package is installed, and running it would rewrite a hand-built
+    // `pithy.config.ts` to work around an install.
     expect(renderDoctorText(report, "/home/u")).not.toContain("Run: pithy add payments");
 
     // And it rides in `--json` with the rest of the project's health, so an agent reads the same fact.
@@ -625,18 +624,17 @@ describe("renderDoctorText", () => {
           { worker: "api", version: "5.9.9" },
           { worker: "admin", version: "5.0.0" },
         ],
-        // A version skew is an install to settle, not a command to run (#697).
+        // A version skew is an install to settle, not a command to run.
         fix: null,
       },
     ]);
   });
 
   /**
-   * #513, and the case that would otherwise be invisible: a stale `env dev` name **never fails the exit**,
+   * The case that would otherwise be invisible: a stale `env dev` name **never fails the exit**,
    * because `pithy provision` writes `env.<stanza>` and never reaches the top-level one, and locally the
    * binding is the address anyway. So the block cannot be gated on `ok` alone — it would print this
-   * finding on every report except the ones it is for, which is the collapse #440 and #499 each removed
-   * one level up.
+   * finding on every report except the ones it is for.
    */
   test("a project-global binding a project still binds per environment opens the health block on its own", async () => {
     const report = await buildDoctorReport(
@@ -688,7 +686,7 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **The order the section prints its remedy in, because the reverse of it loses data (#513 review).**
+   * **The order the section prints its remedy in, because the reverse of it loses data.**
    *
    * `pithy provision` changes which resource a binding names and moves nothing. The per-environment
    * resource is the one that has been in use — `EMAIL_SUPPRESSIONS` and `SUPPORT_BUCKET` are both bound
@@ -755,10 +753,9 @@ describe("renderDoctorText", () => {
     // explicit row ids, and the execute aborts transactionally having written nothing.
     expect(text).not.toContain("wrangler d1 export each old database");
     expect(text).toContain("The copy is not an export and an import.");
-    // **And the pointer is a URL, because the published package has no `docs/` in it (#513 review, round
-    // three).** `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and `templates`, so
-    // `docs/commands/doctor.md §…` named a file no adopter who installed the CLI has — the same defect as
-    // a command that does not run, one indirection along. `doctorDocs.test.ts` holds the URL to the page
+    // **And the pointer is a URL, because the published package has no `docs/` in it.**
+    // `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and `templates`, so a
+    // `docs/commands/doctor.md §…` path names a file no adopter who installed the CLI has. `doctorDocs.test.ts` holds the URL to the page
     // it renders at and to a heading that page has; here it is only required to be a URL and not a path.
     expect(text).toContain(
       "The sequence that works: https://pithy.sh/docs/cli/commands/doctor#carrying-the-data-across",
@@ -769,12 +766,10 @@ describe("renderDoctorText", () => {
     // never prints a `wrangler d1` line without `--remote`, because the default is the local database.
     expect(text.split("\n").filter((line) => /\bwrangler d1\b/.test(line) && !line.includes("--remote"))).toEqual([]);
 
-    // **And which row wins — stated as what the sequence does, never as homework (#513 review, round
-    // three).** `email` is unique, so two environments make two rows of one address. The sentence used to
-    // tell the operator to "keep the stricter", above a sequence whose `INSERT OR IGNORE` kept whichever
-    // row arrived first: on this page's own worked example the weaker row won on both criteria. The
-    // sequence carries an `ON CONFLICT(email) DO UPDATE … WHERE` clause now, so the rule is applied
-    // rather than remembered, and the line says which rule that is.
+    // **And which row wins — stated as what the sequence does, never as homework.** `email` is unique, so
+    // two environments make two rows of one address. The sequence carries an `ON CONFLICT(email) DO UPDATE
+    // … WHERE` clause, so the stricter row is kept by the rule rather than by the operator, and the line says
+    // which rule that is.
     expect(text).toContain("One address suppressed in two of them is two rows that merge into one.");
     // **Led by the clause that actually fires.** Reading the precedence top to bottom put
     // permanent-beats-temporary first, which is the test two observed rows never fail: every suppression
@@ -824,11 +819,10 @@ describe("renderDoctorText", () => {
     const text = renderDoctorText(report, "/home/u");
 
     expect(text).toContain("Copy the objects across first.");
-    // **The repoint moves the writes, and only the writes (#513 review, round three).** For support the
-    // binding is write-only — `attachment/store.ts` and `inbound/ingest.ts` both `put`, nothing under
-    // `packages/support/src` ever calls `get` or `head`, and the one read is `store.presignGet` signed
-    // against `credentials.bucket`. So "every attachment in the old ones becomes unreachable" was false
-    // on the repoint alone, and the same screen said so three lines below in the credential sentence.
+    // **The repoint moves the writes, and only the writes.** For support the binding is write-only —
+    // `attachment/store.ts` and `inbound/ingest.ts` both `put`, nothing under `packages/support/src` ever
+    // calls `get` or `head`, and the one read is `store.presignGet` signed against `credentials.bucket`. So
+    // the repoint alone makes no stored attachment unreachable.
     expect(text).toContain("The repoint changes which bucket the binding names, not what");
     expect(text).not.toContain("every attachment and raw message in the old ones becomes unreachable");
     expect(text).toContain("Sync each old bucket into acme-global-support over R2's S3 endpoint");
@@ -836,7 +830,7 @@ describe("renderDoctorText", () => {
     expect(text).not.toContain("wrangler d1 export");
     expect(text).toContain("Make the destination if it is not there yet: pithy support provision");
 
-    // **The binding is not the only place the bucket is named (#513 review).** Attachments are written
+    // **The binding is not the only place the bucket is named.** Attachments are written
     // through `env.SUPPORT_BUCKET`, and every presigned URL is signed against the `bucket` field inside
     // `support-r2-credentials` — a second string the repoint does not touch, and one nothing in the kit
     // writes. Move one without the other and writes go to the project-global bucket while signed reads
@@ -851,10 +845,10 @@ describe("renderDoctorText", () => {
     expect(text.indexOf("Then run: pithy provision --env staging")).toBeLessThan(
       text.indexOf("pithy secrets update support-r2-credentials --env staging"),
     );
-    // `set` is not a subcommand of `pithy secrets`, and a remedy naming one would be #517 again.
+    // `set` is not a subcommand of `pithy secrets`, and a remedy naming one would not run.
     expect(text).not.toContain("pithy secrets set");
 
-    // **And `update` is not the command on every project (#513 review, round three).** `pithy secrets
+    // **And `update` is not the command on every project.** `pithy secrets
     // update` refuses a secret that does not exist, and nothing in the kit ever writes this one — `pithy
     // support provision` writes none — so a project whose attachments were written but never signed-read
     // has none, and the printed line would exit 1 on exactly the project that has this finding. The
@@ -866,13 +860,13 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **The skew this check exists for, and the remedy it must not print there (#513 review, #517).**
+   * **The skew this check exists for, and the remedy it must not print there.**
    *
    * The finding is keyed on the capability's own namer so a newer CLI beside an older `@pithy-sh/email`
    * still answers — that install is the one most likely to be split. But `pithy provision` composes the
    * name from that older manifest, so the run writes the per-environment name straight back and the next
-   * `doctor` prints the same finding. Naming a command that cannot clear its own finding is #517's
-   * defect, which took four rounds; here the package moves first and the report says so.
+   * `doctor` prints the same finding. A command that cannot clear its own finding is never named; here the
+   * package moves first and the report says so.
    */
   test("under version skew the report names the package to upgrade before the run", async () => {
     const report = await buildDoctorReport(
@@ -918,7 +912,7 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **The divergence half carries the same carry-over, because it is the same loss (#513 review).**
+   * **The divergence half carries the same carry-over, because it is the same loss.**
    *
    * Two stanzas naming one resource and opening two is `hostEnv.ts`'s "bound identically in every
    * environment" failing on the id rather than on the name. Repointing them at one strands whatever the
@@ -967,10 +961,9 @@ describe("renderDoctorText", () => {
     expect(text).toContain("sup-1: api env.staging");
     expect(text).toContain("It must be bound identically in every environment.");
 
-    // **Its own remedy, not the split branch's (#513 review).** Both stanzas here already carry the
-    // expected *name*, so "export each old database, then execute it against acme-global-email-
-    // suppressions" named one string as both source and destination — a database exporting into itself,
-    // and `wrangler d1 export` addresses a database by name or binding and never by id anyway.
+    // **Its own remedy, not the split branch's.** Both stanzas here already carry the expected *name*, so the
+    // split branch's "export each old database, then execute it against …" would name one string as both
+    // source and destination, and `wrangler d1 export` addresses a database by name or binding, never by id.
     expect(text).toContain("Two databases are open and one survives.");
     expect(text).toContain("Decide from the ids which one that is, and copy the other's rows into it first.");
     expect(text).not.toContain("Copy the rows across first.");
@@ -980,7 +973,7 @@ describe("renderDoctorText", () => {
     // the split branch enumerates from, and this branch was degrading it to a placeholder nobody can
     // paste — on the screen where the decision is actually made.
     expect(text).toContain("Then run: pithy provision --env staging");
-    // Production is a person's decision, said as one rather than handed over as a command (#711).
+    // Production is a person's decision, said as one rather than handed over as a command.
     expect(text).toContain(
       "`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment.",
     );
@@ -994,7 +987,7 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **A divergence cannot be addressed by the name the two databases share (#513 review, round three).**
+   * **A divergence cannot be addressed by the name the two databases share.**
    *
    * Every command in the sequence the split branch points at is `wrangler d1 <verb> <resource-name>`, and
    * that is right there: the stanzas name *different* databases and each name resolves. A pure divergence
@@ -1053,13 +1046,11 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **A divergence only `dev` is part of is reported, explained, and green (#513 review, round three).**
+   * **A divergence only `dev` is part of is reported, explained, and green.**
    *
-   * `pithy provision` writes `config.env[<stanza>]`, so nothing rewrites the top-level one — which the
-   * split branch has said since #513 and the divergent branch did not. There a `dev` id beside one
-   * managed id failed the exit unconditionally: every printed line ran, `doctor` still exited 1, and the
-   * same screen said nothing would ever rewrite the dev id. There is also no choice to make between two
-   * live databases here, so the remedy that describes one is not printed at all.
+   * `pithy provision` writes `config.env[<stanza>]`, so nothing rewrites the top-level one, and failing the
+   * exit on a `dev` id beside one managed id would hold it red with nothing to run. There is also no choice to
+   * make between two live databases here, so the remedy that describes one is not printed at all.
    */
   test("a divergence the dev stanza alone is part of prints the dev line and no choice to make", async () => {
     const report = await buildDoctorReport(
@@ -1110,12 +1101,11 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * **The split branch's wording must not reappear on the divergent one, and the reverse (#513 review).**
+   * **The split branch's wording must not reappear on the divergent one, and the reverse.**
    *
-   * The two shapes shared one remedy for a round, which is how a sentence written for a stale *name*
-   * came to be printed under two live *ids* — where it named the same string as both ends of the copy.
-   * They are separate functions now, so this is the assertion that keeps them separate: each branch's
-   * opening sentence appears under its own finding and under no other.
+   * A sentence written for a stale *name*, printed under two live *ids*, names the same string as both ends of
+   * the copy. The two are separate functions, and this keeps them separate: each branch's opening sentence
+   * appears under its own finding and under no other.
    */
   test("neither branch prints the other's copy sentence", async () => {
     const report = await buildDoctorReport(
@@ -1180,9 +1170,9 @@ describe("renderDoctorText", () => {
   });
 
   /**
-   * #282. Nothing was pending, so the line read `none pending ✓` — about a database `pithy migrate`
-   * refused to touch. The two directions are two different faults with two different remedies, so the
-   * undeclared one gets its own sentence rather than a second number on the pending line.
+   * Nothing pending is not the same as healthy: `pithy migrate` refuses a database whose ledger records a
+   * migration the project no longer declares. The two directions are two different faults with two different
+   * remedies, so the undeclared one gets its own sentence rather than a second number on the pending line.
    */
   test("a migration the ledger records and the project no longer declares gets its own line and remedy", async () => {
     const report = await buildDoctorReport(
@@ -1465,12 +1455,12 @@ describe("renderDoctorText", () => {
 });
 
 /**
- * The #371 gates on this report's eleven probes. A report is what an adopter reads to find out why
+ * The gates on this report's eleven probes. A report is what an adopter reads to find out why
  * something is wrong, so one probe that throws must cost its own line and leave the other ten standing.
  *
- * Planted one probe at a time, in both halves of the defect the issue names: an **unguarded** probe, whose
- * throw used to take the whole report, and a **guarded** one, whose throw used to be filed under `null` —
- * indistinguishable from the question not arising here.
+ * Planted one probe at a time, in both halves: an **unguarded** probe, whose throw must not take the whole
+ * report, and a **guarded** one, whose throw must not be filed under `null` — indistinguishable from the
+ * question not arising here.
  */
 describe("a probe that throws", () => {
   const throwing = (message: string) => () => {
@@ -1635,9 +1625,8 @@ describe("doctorExitCode", () => {
   });
 
   /**
-   * #264. A declared origin with nothing serving it is the one this command's own remedy produced: it
-   * told an adopter to close `workers.dev` beside a domain whose route had never been written, then
-   * reported the result — a Worker reachable at no address — as healthy, exit 0.
+   * A declared origin with nothing serving it is a Worker reachable at no address: `workers.dev` closed beside
+   * a domain whose route was never written. It is not healthy, and it fails the exit.
    */
   test("non-zero when a declared origin has nothing serving it, and the block names the route", async () => {
     const report = await buildDoctorReport(
@@ -1678,7 +1667,7 @@ describe("doctorExitCode", () => {
   });
 
   /**
-   * #267. The only fault in this report whose whole symptom is that nothing happens: a job declared,
+   * The only fault in this report whose whole symptom is that nothing happens: a job declared,
    * `pithy worker sync` never run, and the cron that would have fired it never written. The block has to
    * name both sides of the comparison — what is declared and what is bound — because the reader is being
    * told about a table in a file they believed already matched.
@@ -1712,14 +1701,13 @@ describe("doctorExitCode", () => {
   });
 
   /**
-   * #271. A Better Auth plugin an adopter composed adds routes to the Worker and tables to the
+   * A Better Auth plugin an adopter composed adds routes to the Worker and tables to the
    * database, and has no `package.json` for `Project capabilities:` to name it from. It is not a fault
    * — so it prints without one, and it never gates.
    */
   test("a composed extension is named, with the tables it brought, and never fails the exit", async () => {
     // The fixture composes `auth`, so it has to *have* `auth` — the same thing an adopter's project has
-    // to have, and what `capabilities:` reports when it does not (#533's follow-on). Before the check
-    // landed, a composition nothing could resolve was invisible and this fixture was quietly one.
+    // to have, and what `capabilities:` reports when it does not.
     await linkKitPackages(dir, ["auth"]);
     const report = await buildDoctorReport(
       baseOptions({
@@ -1754,6 +1742,34 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(baseOptions());
     expect(report.extensions).toEqual({ extensions: [] });
     expect(renderDoctorText(report, "/home/u")).not.toContain("Capability extensions:");
+  });
+
+  test("non-zero when a production environment sets auth's attestation to test, and the block says where", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkAttestation: async () => ({
+          state: "findings",
+          findings: [{ worker: dirOf("board"), environment: "prod" }],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Attestation:");
+    expect(text).toContain("board: prod sets auth's attestation to test");
+    expect(text).toContain("attestation.environments.prod.mode to enforce in apps/board/pithy.config.ts");
+    expect(renderDoctorJson(report)).toMatchObject({
+      attestation: { state: "findings", findings: [expect.objectContaining({ environment: "prod", fix: null })] },
+      failures: [expect.objectContaining({ check: "attestation", fix: null })],
+    });
+  });
+
+  test("zero, and no block, when every production environment enforces attestation", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ checkAttestation: async () => ({ state: "ok", findings: [] }) }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Attestation:");
   });
 
   /** Nothing was established, so nothing gates — the same standard every other check here is held to. */
@@ -1843,7 +1859,7 @@ describe("--worker", () => {
 
     await buildDoctorReport(baseOptions({ resolveWorkersFor }));
     await buildDoctorReport(baseOptions({ worker: "api", resolveWorkersFor }));
-    // The set each report lists is `dev`'s composition — never one for no environment (#586). Every other
+    // The set each report lists is `dev`'s composition — never one for no environment. Every other
     // call composes one Worker for one deployed environment, narrowed to that Worker by name whether or not
     // the flag was given; `dev`'s is the set already in hand.
     const sets = seen.filter((call) => call.environment === "dev");
@@ -2073,7 +2089,7 @@ describe("cloudflare credentials", () => {
   test("a clean setup still prints the line, because it names the account, not a complaint", async () => {
     // The terse report exists to say nothing when nothing is wrong. This line is not a finding — it is a
     // location, and the run most likely to be about to deploy is the one where everything else is green
-    // (#206). Same rule the `Secrets:` line follows.
+    // Same rule the `Secrets:` line follows.
     const report = await buildDoctorReport(healthyOptions());
     expect(renderDoctorText(report, "/home/u")).toContain("Cloudflare:");
   });
@@ -2146,7 +2162,7 @@ describe("cloudflare credentials", () => {
 });
 
 /**
- * `PITHY_OFFLINE` (#218). `doctor` is the command people run when something is wrong, including on a
+ * `PITHY_OFFLINE`. `doctor` is the command people run when something is wrong, including on a
  * machine that is not theirs — so it is the one that must be able to answer without reaching anything.
  */
 describe("offline", () => {
@@ -2448,8 +2464,8 @@ describe("dev login", () => {
 });
 
 /**
- * The port registry's contents, not just its address (#436). The defect: `Ports:` named a file in
- * `~/.config` and nothing read it back, so "why is this project on 8847" had no answer short of `cat`.
+ * The port registry's contents, not just its address: "why is this project on 8847" is answered here, not by
+ * `cat` on a file in `~/.config`.
  */
 describe("port registry listing", () => {
   const ACME = "/home/u/code/acme";
@@ -2524,7 +2540,7 @@ describe("port registry listing", () => {
   });
 
   test("names the command that frees a feature block no worktree holds", async () => {
-    // #637: the worktree is gone, the branch and the block outlived it, and nothing else in the toolchain
+    // The worktree is gone, the branch and the block outlived it, and nothing else in the toolchain
     // would ever say so. The row is decided by the predicate `pithy feature prune` frees by.
     const report = await buildDoctorReport(
       baseOptions({
@@ -2619,8 +2635,8 @@ describe("port registry listing", () => {
 });
 
 /**
- * The `.dev.vars` files, and the state #178 was reported from: a project whose Worker was getting
- * nothing while `doctor` called it healthy. Reported, never gated — but never silent either.
+ * The `.dev.vars` files, and a project whose Worker gets nothing from them while everything else is
+ * healthy. Reported, never gated — but never silent either.
  */
 describe("dev vars", () => {
   const devVars =
@@ -2665,8 +2681,8 @@ describe("dev vars", () => {
     );
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain("LEFTOVER_FROM_2024 is in .dev.vars and nothing reads it");
-    // #182 moved the credentials to `<config>/cloudflare.json`, so this copy is a live token in a
-    // checkout that nothing reads. It was the one silent class here; it is not any more.
+    // The credentials live in `<config>/cloudflare.json`, so this copy is a live token in a checkout that
+    // nothing reads.
     expect(text).toContain("CLOUDFLARE_API_TOKEN is in .dev.vars, which nothing reads now");
   });
 
@@ -2704,9 +2720,8 @@ describe("dev vars", () => {
 
 /**
  * The `Secrets:` line, which is a **location** rather than a finding — the one line in the report that
- * nothing else in the toolchain could tell you. The file is outside every checkout since #156, so a
- * report that omits it leaves an adopter with no way to find it at all, and "where is it" is not a
- * complaint the terse report is entitled to suppress (#166).
+ * nothing else in the toolchain could tell you. The file is outside every checkout, so a report that omits
+ * it leaves an adopter with no way to find it at all, and the terse report prints it too.
  */
 describe("dev secrets file", () => {
   const location =
@@ -2727,7 +2742,7 @@ describe("dev secrets file", () => {
 
   /**
    * The command, not only the path. The file is outside the checkout, so nothing an adopter can browse
-   * leads to it and this line is the only place the toolchain names either one (#186).
+   * leads to it and this line is the only place the toolchain names either one.
    */
   test("names the command that opens it, in both forms of the report", async () => {
     const verbose = await buildDoctorReport(baseOptions({ checkDevSecretsFile: location() }));
@@ -2768,7 +2783,7 @@ describe("dev secrets file", () => {
   /**
    * The rename trail, in the only report that can carry it. `devSecretsFile` is deliberately not a term
    * in the terse predicate, so a project whose *only* anomaly is a renamed or duplicated config directory
-   * renders terse — and before #166 that put the trail out of reach in exactly the case it was written for.
+   * renders terse, and the trail has to be in reach in exactly that case.
    */
   test("a renamed project's trail prints in the terse report", async () => {
     const report = await buildDoctorReport(
@@ -2787,13 +2802,13 @@ describe("dev secrets file", () => {
 });
 
 /**
- * **A `pithy.config.ts` that will not load for a declared environment (#548).**
+ * **A `pithy.config.ts` that will not load for a declared environment.**
  *
  * A config is code, and the kit teaches it to read the environment it is being composed for, so one can
  * load under `dev` and throw under `prod`. The project that found this had exactly that — `prod` threw
  * `Billing is not configured for this environment` — and the only thing in the run that noticed was
- * `projectSecretApplicability`, which fed the failure back into its own fold as *every name in reach* and
- * turned #541 off in silence.
+ * `projectSecretApplicability`, which would fold the failure in as *every name in reach* and stop
+ * filtering in silence.
  *
  * The composition no longer votes, and the fault is reported **here**, on its own terms. Not as a footnote
  * under `Dev secrets:`: the reader does not have a narrow secret listing, they have a Worker whose config
@@ -2849,7 +2864,7 @@ describe("environment configs", () => {
     const json = renderDoctorJson(report) as {
       environmentConfigs: { unresolved: { environment: string; reason: string }[]; detail: string[] };
     };
-    // Each with `fix: null`: the config's own refusal is the remedy, and it is an edit (#697).
+    // Each with `fix: null`: the config's own refusal is the remedy, and it is an edit.
     expect(json.environmentConfigs.unresolved).toEqual(unloadable.unresolved.map((entry) => ({ ...entry, fix: null })));
     expect(json.environmentConfigs.detail).toEqual(["prod: Set payments.billing in apps/api/pithy.config.ts."]);
   });
@@ -2946,7 +2961,7 @@ describe("worker names", () => {
   });
 
   /**
-   * #580's two additions, at the command's own seams: the clash that fails the exit, and the note that
+   * Two findings, at the command's own seams: the clash that fails the exit, and the note that
    * must not. They are asserted together because the whole point of the pair is that they are not the
    * same kind of finding, and one block prints both.
    */
@@ -3067,12 +3082,11 @@ describe("version checks that could not run", () => {
 });
 
 /**
- * The finding `pithy doctor` did not report.
+ * A manifest that is present and invalid is a finding, never a package that ships none.
  *
- * `availableManifests` skipped a manifest that was present and invalid exactly as it skips a package that
- * ships none, so the capability was absent from every check the health block runs and the block said the
- * project was healthy. Doctor is one of the three commands an adopter runs when a capability has gone
- * missing, and it was one of the three that stayed silent (#184).
+ * Skipped like an absent one, the capability would be missing from every check the health block runs and the
+ * block would call the project healthy. Doctor is one of the three commands an adopter runs when a capability
+ * has gone missing, so it names a manifest the schema refuses.
  */
 describe("manifest faults in the health block", () => {
   /** Install a manifest the schema refuses into the report's own project directory. */
@@ -3113,7 +3127,7 @@ describe("manifest faults in the health block", () => {
 });
 
 /**
- * One optional line's failure must not cost every other line (#210).
+ * One optional line's failure must not cost every other line.
  *
  * `doctor` deliberately discards read failures — a diagnostic has to work in the environment it
  * diagnoses — and the shell rc read was the one that did not follow the rule. An unreadable `~/.bashrc`
@@ -3121,11 +3135,11 @@ describe("manifest faults in the health block", () => {
  * secrets paths, project health, dev secrets. The least important line in the report took the other
  * twenty with it.
  *
- * Catching it to `false` is not the fix and is why #203 left it alone: `Alias: not installed` about a
+ * Catching it to `false` is not the fix: `Alias: not installed` about a
  * file nothing could read is a lie, and the adopter's next move is `pithy alias`, which fails on the
  * same file. The field is tri-state, and the third state names the file.
  */
-describe("one unreadable file must not cost the whole report (#210)", () => {
+describe("one unreadable file must not cost the whole report", () => {
   /** The refusal `readRcFile` raises for a file that is there and will not open. */
   const unreadableRc = async (path: string): Promise<string> => {
     throw new ConflictError({
@@ -3247,14 +3261,12 @@ describe("one unreadable file must not cost the whole report (#210)", () => {
 });
 
 /**
- * A Worker nobody could ask, in the report (#208).
+ * A Worker nobody could ask, in the report.
  *
- * The `Dev secrets:` block used to disappear entirely when every `pithy.config.ts` failed to import: the
- * lossy target list answered `[]`, `checkDevSecrets` read that as "no Worker composes secrets" and
- * returned `null`, and the report went quiet in the one state it was written for. Same shape as #166 —
- * a line that vanishes in the report that needed it.
+ * When every `pithy.config.ts` fails to import, an empty target list must not read as "no Worker composes
+ * secrets": the `Dev secrets:` block stays, in the one state it was written for.
  */
-describe("a Worker nobody could ask, in the report (#208)", () => {
+describe("a Worker nobody could ask, in the report", () => {
   const broken = [
     { name: "replay-board", dir: "/p/apps/board", reason: "apps/board/pithy.config.ts would not import. Fix it." },
   ];
@@ -3323,12 +3335,11 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
 });
 
 /**
- * Every fault the human report shows, in `--json` (#325).
+ * Every fault the human report shows, in `--json`.
  *
- * `unreadable` became the loader's sentence in #323 and the projection passed it through unchanged, so a
- * CI script gating on `unreadable === true` stopped firing and read a broken secrets file as healthy — a
- * non-empty string is not `false`, it is merely not `true`. `malformed` and `bootstrapMissing` were never
- * projected at all, and `malformed` is the one that flips the exit.
+ * `unreadable` is a boolean on the wire even though the loader carries a sentence: a CI script gating on
+ * `unreadable === true` must fire on a broken secrets file. `malformed` and `bootstrapMissing` are projected
+ * too, and `malformed` is the one that flips the exit.
  */
 describe("--json carries every dev-secrets fault the text block prints (#325)", () => {
   const faulty = () =>
@@ -3349,7 +3360,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
     });
 
   /**
-   * **What the report filters out, the payload still carries (#541).** The text block says nothing about
+   * **What the report filters out, the payload still carries.** The text block says nothing about
    * a secret the configuration cannot reach — a settled configuration is not a fault — but an agent
    * driving `doctor --json` would otherwise watch three names vanish between two releases with nothing
    * saying why. It is the one way filtering can lie, and this field is what stops it.

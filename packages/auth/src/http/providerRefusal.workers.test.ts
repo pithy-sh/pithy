@@ -28,7 +28,7 @@ import { createRateLimitMiddleware } from "./rateLimit";
 import { createAuthRoutes } from "./routes";
 
 /**
- * The enumeration oracle on the social callback, measured end to end (#625).
+ * The enumeration oracle on the social callback, measured end to end.
  *
  * **This suite refuses to look at a unit.** The claim is about what leaves the Worker on a real refusal,
  * and the two facts it separates are decided three modules down in a dependency — so the only honest
@@ -55,6 +55,7 @@ import { createAuthRoutes } from "./routes";
 const SECRET = "test-secret-please-rotate-0000000000";
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -76,7 +77,7 @@ const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
 /** The address the provider asserts. One constant, so the two runs differ in exactly one thing: the row. */
 const PROVIDER_EMAIL = "victim@example.test";
 
-/** Where a refusal is sent — an adopter's own screen, as `#554` tells adopters to configure. */
+/** Where a refusal is sent: an adopter's own screen, as the auth docs tell adopters to configure. */
 const ERROR_CALLBACK = "http://localhost/sign-in?provider=github";
 
 function appEnv(): Record<string, unknown> {
@@ -263,14 +264,11 @@ afterEach(() => {
  * The two sign-up policies, run over the identical assertions so this is a gate on the rule rather than
  * on the strings any one configuration happens to produce.
  *
- * **They used to produce two different pairs, and now they produce none.** With sign-up refused the pair
- * was Better Auth's own `account_not_linked` / `signup_disabled`, which is what #625 reports; with
- * sign-up permitted — the default — the no-row side never reached `signup_disabled` at all but went on
- * to create a user, where the kit's own `user.create.before` hook refused it with `EMAIL_NOT_VERIFIED`
- * and a whole sentence of `error_description`. Same question, same two answers, different spelling.
- *
- * `../instance/providerSignInGate` now decides both before Better Auth branches, so on either policy
- * neither half of either pair is produced anywhere and the trail carries the gate's own word instead.
+ * Left to Better Auth, each policy spells the two answers differently: with sign-up refused they are
+ * `account_not_linked` / `signup_disabled`; with sign-up permitted the no-row side reaches the kit's
+ * `user.create.before` hook and `EMAIL_NOT_VERIFIED`. `../instance/providerSignInGate` decides both before
+ * Better Auth branches, so on either policy neither pair is produced and the trail carries the gate's own
+ * word instead.
  * That is what {@link REASONS} is, and `../instance/providerSignInGate.workers.test.ts` is where the
  * claim "never produced at all" is asserted rather than inferred from a header.
  */
@@ -278,7 +276,7 @@ const REASONS = [PROVIDER_SIGN_IN_REFUSAL_REASONS.accountExists, PROVIDER_SIGN_I
 
 const POLICIES = [
   {
-    label: "sign-up refused (#554's recommended configuration)",
+    label: "sign-up refused (the recommended configuration)",
     allowSignUp: false,
     /** What the trail must still be able to tell apart, matched row first. */
     reasons: REASONS,
@@ -326,9 +324,8 @@ describe.each(POLICIES)("a refused social sign-in, $label", ({ allowSignUp, reas
     const { matched, unmatched } = await bothRefusals(allowSignUp);
 
     // The trail tells the two apart, which is the half an adopter's own middleware could only throw
-    // away: it sees the one code this Worker now sends, and has nothing left to record. Neither
-    // refusal had ever reached `pithy_audit_events` before — a 302 is not a `DENIED_STATUSES` status —
-    // and the words are now the gate's, because the dependency's two codes are no longer produced.
+    // away: it sees the one code this Worker sends, and has nothing left to record. A 302 is not a
+    // `DENIED_STATUSES` status, so the gate records these itself, in its own words.
     expect([deniedReason(matched), deniedReason(unmatched)]).toEqual([...reasons]);
   });
 });
@@ -340,15 +337,13 @@ function deniedReason(refusal: Refusal): unknown {
 }
 
 /**
- * The two `errorCallbackURL` shapes that walked straight past the first fix.
+ * Two `errorCallbackURL` shapes a collapse on the Location header alone does not handle.
  *
  * Both are the caller's own input — `POST /sign-in/social` takes the value and Better Auth stores it in
  * the state verbatim — so neither needed anything but a different request body. They are driven here
- * rather than only against the unit because the claim they refute is about what leaves the Worker: the
- * first version of this suite drove exactly one shape of `errorCallbackURL` and was green throughout.
+ * rather than only against the unit because the claim they refute is about what leaves the Worker.
  *
- * `allowSignUp: false` is #554's recommended configuration and the pair the issue names. One policy is
- * enough here — the policy axis is already covered above; what varies here is the header's shape.
+ * `allowSignUp: false` is the recommended configuration. One policy is enough here — the policy axis is already covered above; what varies here is the header's shape.
  */
 const BYPASSES = [
   {
@@ -361,7 +356,7 @@ const BYPASSES = [
   },
   {
     label: "an errorCallbackURL normalized on the way in",
-    // Round 3 (`./errorCallbackUrl`): this value never reaches Better Auth as sent. A trailing `?` is an
+    // The door (`./errorCallbackUrl`) means this value never reaches Better Auth as sent. A trailing `?` is an
     // empty query the kit does not produce, so the guard hands on `http://localhost/sign-in` and the
     // refusal is appended to that. Driving it here is what proves the *rebuilt request* — new body, new
     // headers, same everything else — survives the whole round trip and still refuses correctly.
@@ -378,7 +373,7 @@ describe.each(BYPASSES)("a refused social sign-in through $label", ({ errorCallb
       ["an address with an account", matched],
       ["an address with none", unmatched],
     ] as const) {
-      // The exact header, not a substring: this is the shape the fix has to preserve as well as clean.
+      // The exact header, not a substring: the collapse has to preserve this shape as well as clean it.
       expect(refusal.location, `${label} answered the wrong Location`).toBe(location);
       for (const leaked of PROVIDER_REFUSAL_CODES) {
         expect(`${label}: ${refusal.location}`).not.toContain(leaked);
@@ -387,23 +382,20 @@ describe.each(BYPASSES)("a refused social sign-in through $label", ({ errorCallb
     }
 
     expect({ status: unmatched.status, body: unmatched.body }).toEqual({ status: matched.status, body: matched.body });
-    // The half a header rewrite loses. On the relative path nothing had been recorded at all.
+    // The half a header rewrite loses: the trail records the denial on every shape.
     expect([deniedReason(matched), deniedReason(unmatched)]).toEqual([...REASONS]);
   });
 });
 
 /**
- * Round 3: the shape that walked past the output-side collapse, and the door that now stops it (#625).
+ * The door: values the output-side collapse cannot clean are refused on the way in.
  *
- * `errorCallbackURL: http://localhost/sign-in#x` answered
- * `…/sign-in#x?error=account_not_linked` for a seeded address and `…?error=signup_disabled` for an
- * unseeded one — the whole oracle, restored by one character. `redirectOnError` concatenates without
- * parsing, so the appended code landed inside the fragment, `collapseProviderRefusal` read
- * `searchParams` and found no `error`, and the header went out untouched with no audit row behind it.
+ * `redirectOnError` concatenates without parsing, so with `errorCallbackURL: http://localhost/sign-in#x`
+ * the appended code lands inside the fragment, where `collapseProviderRefusal` cannot see it in
+ * `searchParams`, and a seeded and an unseeded address would answer differently.
  *
- * **That is a diagnosis, not a fourth entry for the bypass table.** Every input shape where the
- * dependency's concatenation and our parsing disagree is another one, and the parser cannot be patched
- * into knowing which shapes those are. So the value is guarded on the way *in*
+ * Every input shape where the dependency's concatenation and our parsing disagree is another such case,
+ * and a parser cannot be taught which shapes those are. So the value is guarded on the way *in*
  * (`./errorCallbackUrl`), and what cannot be normalized to a shape the kit would have produced is
  * refused at the door — before any state is minted, before the provider is contacted, before anything
  * is looked up.
@@ -426,17 +418,17 @@ const DOOR = [
   },
   {
     label: "an `error` parameter planted ahead of the appended one",
-    // Round 2 caught this at the other end, by putting every `error` value to the roster. It is closed
-    // here too now: a URL that already answers this question is not one the kit would have produced.
+    // The collapse also puts every `error` value to the roster. The door refuses it first: a URL that
+    // already answers this question is not one the kit would have produced.
     errorCallbackURL: "http://localhost/sign-in?error=access_denied",
   },
   {
-    label: "a bare-relative path — round 2's own open question, answered end to end",
-    // Unit-covered only until now. `matchesOriginPattern` rules on it at
+    label: "a bare-relative path",
+    // Left to Better Auth, `matchesOriginPattern` rules on it at
     // `trusted-origins.mjs`: it does not start with `/`, so the relative branch is skipped;
     // `getProtocol` throws and returns null, `getOrigin` likewise, and `pattern === null` is false. So
     // Better Auth refused it 403 `INVALID_ERROR_CALLBACK_URL` — the right outcome reached by an origin
-    // check that had no origin to check. The door refuses it first now, and says why.
+    // check that had no origin to check. The door refuses it first, and says why.
     errorCallbackURL: "sign-in?provider=github",
   },
   {
@@ -520,23 +512,20 @@ describe("the door narrows what reaches Better Auth without widening it", () => 
 });
 
 /**
- * Round 4: the guard was reading the wrong bytes, so the door had a second entrance (#625).
+ * The guard reads the body the way the dependency does, not by a cheaper test on its bytes.
  *
- * The value was guarded, but only for requests the guard recognized as carrying one — and it decided
- * that by looking at the **raw body text** for the literal field name and at the `content-type` for the
- * literal string `application/json`. Two spellings of the same request walked past both:
+ * Two spellings of the same request carry the field where a test on the raw text or a single
+ * `content-type` substring would not see it:
  *
  * - **A `\u` escape in the key.** JSON permits `\uXXXX` anywhere in a string, keys included, so
  *   `"errorCallbackURL"` is `errorCallbackURL` after `JSON.parse` and shares not one byte with it
- *   before. The substring test said no, the request went through untouched, and the fragment arrived
- *   at `redirectOnError` intact — the whole of round 3's oracle, restored by six characters.
+ *   before.
  * - **Another media type better-call parses.** `getBody` reads a keyed body from `application/json`
  *   *and* from the `+json` structured-suffix family, from `application/x-www-form-urlencoded` and from
  *   `multipart/form-data`. A `content-type` test written as one substring covers one of the four.
  *
- * **These are the same defect in two places**: a cheap test standing in for the parse it was supposed
- * to precede. `errorCallbackUrlReach.workers.test.ts` holds the gate on the class — it measures the
- * dependency's reach and the guard's against each other, rather than listing today's two spellings.
+ * `errorCallbackUrlReach.workers.test.ts` holds the gate on the class: it measures the dependency's reach
+ * and the guard's against each other, rather than listing these two spellings.
  * These cases are the two spellings, driven the whole way, because the claim is about what an attacker
  * can send and not about what a function returns.
  */
@@ -549,7 +538,7 @@ function multipartBody(fields: Record<string, string>): string {
   return `${parts.join("")}--${MULTIPART_BOUNDARY}--\r\n`;
 }
 
-/** The fragment of round 3, carried by a request the round-3 guard did not look inside. */
+/** The door's fragment, carried by a request a guard on the raw bytes would not look inside. */
 const SMUGGLED = "http://localhost/sign-in#";
 
 const SMUGGLED_BODIES = [
@@ -616,23 +605,21 @@ describe("a body the guard now parses is still the body Better Auth is handed", 
 });
 
 /**
- * Round 5: the value also arrives in a query string, and the guard only read bodies (#625).
+ * The value also arrives in a query string, and the guard reads it there too.
  *
- * `guardErrorCallbackURL` opened `if (!request.body) return request`. `better-auth/plugins`' own
- * `oauthPopup()` takes the field off a **GET** — `oauth-popup/index.mjs:143` stores
- * `errorURL: c.query.errorCallbackURL` — so the fragment walked in untouched and round 3's oracle came
- * back whole for anyone composing it.
+ * `better-auth/plugins`' own `oauthPopup()` takes the field off a **GET**: `oauth-popup/index.mjs:143`
+ * stores `errorURL: c.query.errorCallbackURL`.
  *
  * **The kit composes no such plugin, which is why this is driven rather than argued.** `AuthConfig.plugins`
  * is a documented seam and the plugin is the dependency's own. Composing it here is what an adopter does,
  * with the kit's real routes over real D1 either way — so what the cases assert is what that adopter's
  * Worker answers, not what a function returns.
  *
- * **Round 6 refuses this plugin at `auth()`, and these cases still stand.** They build their wiring from
+ * **`auth()` refuses this plugin, and these cases still stand.** They build their wiring from
  * `AuthConfig.parse` rather than `auth()`, so the composition gate is deliberately below them: what is
  * being measured here is the *query channel*, which belongs to better-call's router and not to one
  * plugin, and `oauthPopup()` is the readiest route in the tree that reads the field off a `GET`. Any
- * composed plugin may declare such a query. The reason that plugin is now refused is unrelated to this
+ * composed plugin may declare such a query. The reason that plugin is refused is unrelated to this
  * one — it answers refusals through a response body — and lives in `../instance/refusalTransport`.
  */
 const POPUP_ORIGIN = "http://localhost";
@@ -681,13 +668,13 @@ describe("a fragment smuggled through the query, where an adopter's popup plugin
 });
 
 /**
- * Round 5's other hole: two decoders where the dependency has one.
+ * One decoder, the dependency's, where a second would disagree with it.
  *
  * better-call's branch predicates `includes()` the whole `content-type`, urlencoded first; the decode
  * that branch performs — `request.formData()` — dispatches on the media type's **essence**. A header
- * whose essence is multipart and which carries the urlencoded name in a parameter therefore sent both
- * programs into the urlencoded branch, where `formData()` found the field and the guard's
- * `new URLSearchParams(text)` did not.
+ * whose essence is multipart and which carries the urlencoded name in a parameter sends both programs
+ * into the urlencoded branch, where `formData()` finds the field and a `new URLSearchParams(text)` would
+ * not.
  */
 describe("a fragment smuggled behind a media type the two programs read differently", () => {
   test("is refused at the door, naming the field, with no state minted", async () => {

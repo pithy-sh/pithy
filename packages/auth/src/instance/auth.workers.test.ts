@@ -14,6 +14,7 @@ import { NO_SOCIAL_PROVIDERS, type ResolvedProviders } from "./providers";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -105,8 +106,7 @@ describe("the reader's stored locale", () => {
    * back, so a `locale` column present in the migration and in the `User` Zod object and absent from
    * `KIT_USER_FIELDS` is null forever and missing from every user object the instance returns. Nothing
    * about that is a type error and nothing about it is a schema mismatch — it is a column that silently
-   * does nothing, which is exactly how it shipped once (#441): reverting the declaration left all 405
-   * tests green.
+   * does nothing, and no other test notices.
    *
    * Asserted here rather than against `makeAuth`'s options because `betterAuth()` cannot be constructed
    * without a real database, and because the options are not the property anyway. What matters is
@@ -317,9 +317,8 @@ describe("social providers and account linking, via instance.options", () => {
   });
 
   /**
-   * #381, at the layer where the instance is assembled. An unresolvable provider is built *out* — the
-   * whole point, since a `Promise.all` rejection used to build nothing at all — while the ready one
-   * beside it is untouched. What the two absences then look like from outside is not the same, and
+   * Per-provider resolution, at the layer where the instance is assembled. An unresolvable provider is
+   * built *out*, rather than failing the whole instance, while the ready one beside it is untouched. What the two absences then look like from outside is not the same, and
    * that half is `providers.test.ts`'s and `http/providerResolution.workers.test.ts`'s.
    */
   test("an unresolvable provider is left out, and its ready sibling is not", () => {
@@ -385,13 +384,12 @@ describe("onSessionRevoked", () => {
 });
 
 /**
- * **The structural half of #627: a `delete.after` that is not claimed cannot be wired unnoticed.**
+ * **A `delete.after` that is not claimed cannot be wired unnoticed.**
  *
  * Better Auth's `deleteWithHooks` runs `delete.after` on the row it *read*, never on the delete having
- * removed anything, so every caller racing for one row reaches the hook believing it did the work. Two
- * hooks have now produced that defect — the account trail double-counting an unlink, and `/sign-out`
- * writing a success for callers that signed nobody out — which is why the fix is a primitive and why
- * this asserts a property of *whatever is wired* rather than of those two.
+ * removed anything, so every caller racing for one row reaches the hook believing it did the work: an
+ * unlink counted twice, or a sign-out recorded for a caller that signed nobody out. The claim is a
+ * primitive, and this asserts a property of *whatever is wired*.
  *
  * `surveyDeleteHooks` names nothing: it walks the keys that are there, so a third model added tomorrow
  * is covered the day it lands. `wired` is asserted non-empty in the same breath, because a gate whose

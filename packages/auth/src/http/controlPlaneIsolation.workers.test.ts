@@ -40,8 +40,7 @@ import { requireAuth } from "./middleware";
  * The isolation proof: a control-plane call touches nothing auth owns, and an auth credential opens
  * nothing the control plane guards.
  *
- * Issue #80 names this as a definition-of-done item because it is the property most likely to regress
- * silently. Every check below would still pass if the seam merely *happened* not to write a row today;
+ * It is the property most likely to regress silently. Every check below would still pass if the seam merely *happened* not to write a row today;
  * what makes them a guard rather than a coincidence is the structural fact each one pins:
  *
  *   - The seam presents its credential on `pithy-control-plane`, and `createSessionMiddleware` only
@@ -60,12 +59,13 @@ import { requireAuth } from "./middleware";
 
 const SECRET = "test-secret-please-rotate-0000000000";
 
-/** The environment this Worker and the registered connection both claim. It decides nothing about how a secret resolves (#153); the control-plane guard matches on it. */
+/** The environment this Worker and the registered connection both claim. It decides nothing about how a secret resolves; the control-plane guard matches on it. */
 const ENVIRONMENT = "dev";
 
 /** Every table auth (and its email delivery side) owns. A control-plane call must leave all of them empty. */
 const AUTH_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -120,7 +120,7 @@ function memoryKv(): MemoryKv {
 /**
  * The Worker env one test's requests share. `SECRETS` and `SECRETS_ENCRYPTION_KEYS` are the real
  * bindings the reader uses — every auth secret is a `d1` entry, so it comes from the row `beforeEach`
- * seeded and never from the env (#153). `EMAIL_SUPPRESSIONS` points at the app D1 only to satisfy the
+ * seeded and never from the env. `EMAIL_SUPPRESSIONS` points at the app D1 only to satisfy the
  * binding check; no email is ever sent here.
  */
 function workerEnv(): Record<string, unknown> {

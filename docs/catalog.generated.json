@@ -1465,6 +1465,30 @@
       "remedy": "Stop and ask"
     },
     {
+      "code": "auth/attestation_config",
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
+    },
+    {
+      "code": "auth/attestation_failed",
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "auth/attestation_missing",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
       "code": "auth/forbidden",
       "status": 403,
       "exitClass": "precondition",

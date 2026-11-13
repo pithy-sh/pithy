@@ -59,6 +59,7 @@ const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -125,16 +126,16 @@ async function seedDevLogin(): Promise<DevLogin> {
     // What the CLI hands a checkout with no port block, and what this set reads either way.
     origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
-    // This set seals nothing at creation time, so it asks the run for nothing it just minted (#660).
+    // This set seals nothing at creation time, so it asks the run for nothing it just minted.
     mintedThisRun: () => undefined,
     preferences: { user: EXAMPLE_ADA.email },
     seeded: collectSeededRows(userSets),
   });
-  // No `d1` since `#572` — the set writes a file and nothing else. Kept as a loop rather than deleted
-  // so this helper keeps working if a later set does declare rows.
+  // The set declares no `d1` today: it writes a file and nothing else. A loop, so the helper still
+  // seeds rows if a set declares them.
   for (const group of prepared.d1 ?? []) await seedD1Group(database, group, Session);
-  // A record since `#667`. `dev.json` named Ada, so hers is the first entry — and these tests are about
-  // the cookie's name and port rather than about who is in it, so any one entry answers them.
+  // A record keyed by user id. These tests are about the cookie's name and port rather than about who
+  // is in it, so Ada's entry answers them.
   const logins = DevLogins.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
   const login = logins[EXAMPLE_ADA.id];
   if (!login) throw new Error(`expected a dev login for ${EXAMPLE_ADA.id}`);
@@ -144,9 +145,9 @@ async function seedDevLogin(): Promise<DevLogin> {
 /**
  * Sign in the way a browser does, and hand back the cookie it was given.
  *
- * **The artifact no longer holds a cookie — `#572`** — so a test that needs one asks the route for it,
- * which is what the browser does and is the only thing that produces one. That makes these tests read
- * the whole path rather than a value the seed happened to compute.
+ * The artifact holds a claim, not a cookie, so a test that needs one asks the route for it, which is
+ * what the browser does and is the only thing that produces one. These tests read the whole path rather
+ * than a value the seed computed.
  */
 async function signedInCookie(app: Hono<PithyHonoEnv>, login: DevLogin): Promise<string> {
   const href = `http://localhost:9339${DEV_LOGIN_ROUTE}?${DEV_LOGIN_CLAIM_PARAM}=${login.claim}`;
@@ -241,7 +242,7 @@ test("production is untouched: the configured origin passes and the local one do
 });
 
 /**
- * **A feature deployment's base URL is its own `workers.dev` origin (#643), not `http://localhost`.**
+ * **A feature deployment's base URL is its own `workers.dev` origin, not `http://localhost`.**
  *
  * The config is the one `pithy init` scaffolds — `originFor(compositionEnvironment(), DOMAINS)` — and the
  * feature stanza carries what `pithy provision --feature` stamps: `ENVIRONMENT=feature` and the derived

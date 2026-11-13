@@ -12,6 +12,7 @@ import { type DeviceMeta, deleteDevice, deviceSessionTokens, listDevices, regist
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

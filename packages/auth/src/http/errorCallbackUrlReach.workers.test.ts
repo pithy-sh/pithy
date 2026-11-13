@@ -16,7 +16,7 @@ import { AUTH_MIGRATIONS } from "../migrations/set";
 import { guardErrorCallbackURL } from "./errorCallbackUrl";
 
 /**
- * **The guard's reach must equal the dependency's, and this is the gate that says so (#625).**
+ * **The guard's reach must equal the dependency's, and this is the gate that says so.**
  *
  * `./errorCallbackUrl` normalizes or refuses one body field. Which requests it *looks inside* is a
  * separate claim from what it does once it has looked, and round 4 is the round where that claim was
@@ -75,6 +75,7 @@ import { guardErrorCallbackURL } from "./errorCallbackUrl";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

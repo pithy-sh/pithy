@@ -17,13 +17,12 @@ import { confirmOptIn, createCohort, inviteMember, recordAccepted } from "../ros
 import { type DailyPassDeps, runCohortPass } from "./daily";
 
 /**
- * **A reader that forgets auth fails typecheck, and one that passes it sees who came** (#645 review).
+ * **A reader that forgets auth fails typecheck, and one that passes it sees who came.**
  *
- * `pithy testers list`, `status`, `roster` and `run` built their calls without auth: `readCohort` took it as an
- * optional seventh argument and the pass's deps as an optional key, so leaving it out typechecked. A project that
- * composes auth then read every tester `unobservable`, and `run` wrote `{ observed_count: 0, active_count: 0 }`
- * for the day — a snapshot that is history, and wrong. Both are now required, with `undefined` said out loud by a
- * project that has no auth. The `@ts-expect-error` lines below fail typecheck the day either becomes optional.
+ * `readCohort`'s auth argument and the pass's `auth` dep are required, with `undefined` said out loud by a
+ * project that has no auth. Left optional, a call that forgot it would read every tester `unobservable` in a
+ * project that composes auth, and `run` would write a wrong day's snapshot that is never rewritten. The
+ * `@ts-expect-error` lines below fail typecheck the day either becomes optional.
  */
 
 const CONFIG = TestersConfig.parse({ baseUrl: "https://api.example.test" });
@@ -65,6 +64,7 @@ beforeEach(async () => {
   for (const table of [
     "pithy_auth_rotated_tokens",
     "pithy_auth_user_lifecycle",
+    "pithy_auth_attestation_challenges",
     "pithy_auth_verification_outcomes",
     "pithy_auth_devices",
     "pithy_auth_rate_limit",

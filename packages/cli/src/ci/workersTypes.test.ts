@@ -113,7 +113,7 @@ const DECLARED_ONLY: Record<string, string> = {
 const IMPORTERS: Record<string, number> = {
   "packages/artifacts": 3,
   "packages/audit": 11,
-  "packages/auth": 11,
+  "packages/auth": 12,
   "packages/cli": 19,
   "packages/cloudflare": 2,
   "packages/consent": 6,

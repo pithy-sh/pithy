@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
+import { AttestationChallenge } from "./attestationChallenge";
 import { Account, Jwks, RateLimit, Session, User, Verification } from "./betterAuth";
 import { Device } from "./device";
 import { RotatedToken } from "./rotatedToken";
@@ -16,7 +17,7 @@ import { VerificationOutcome } from "./verificationOutcome";
  * (whose Kysely adapter wraps this same Kysely), the device registry, and the migration.
  *
  * The first six tables are Better-Auth-managed; `pithyAuthDevices`, `pithyAuthRotatedTokens`,
- * `pithyAuthUserLifecycle` and `pithyAuthVerificationOutcomes` are ours. Setting Better Auth's `modelName` to these exact camelCase keys lets the one `CamelCasePlugin`
+ * `pithyAuthUserLifecycle`, `pithyAuthVerificationOutcomes` and `pithyAuthAttestationChallenges` are ours. Setting Better Auth's `modelName` to these exact camelCase keys lets the one `CamelCasePlugin`
  * own the camelCase ↔ snake_case boundary uniformly for both Better Auth's queries and our migration DDL.
  */
 export const authTables = {
@@ -30,6 +31,7 @@ export const authTables = {
   pithyAuthRotatedTokens: RotatedToken,
   pithyAuthUserLifecycle: UserLifecycleEvent,
   pithyAuthVerificationOutcomes: VerificationOutcome,
+  pithyAuthAttestationChallenges: AttestationChallenge,
 };
 export type AuthTables = typeof authTables;
 

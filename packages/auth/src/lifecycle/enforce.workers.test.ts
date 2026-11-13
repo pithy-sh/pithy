@@ -12,13 +12,14 @@ import { AUTH_MIGRATIONS } from "../migrations/set";
 import { lifecycleRefusalFor, noteRefusal, noticedRefusal, readLifecycleColumns, suspensionReason } from "./enforce";
 
 /**
- * The reads enforcement makes, on their own (#620). The HTTP suite proves the doors refuse; this proves what
+ * The reads enforcement makes, on their own. The HTTP suite proves the doors refuse; this proves what
  * each door is handed — which reason is the one in force, what an empty one becomes, and what an account
  * nobody can find reads as.
  */
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",

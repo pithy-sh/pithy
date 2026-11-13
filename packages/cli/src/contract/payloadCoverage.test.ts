@@ -96,6 +96,8 @@ const OPEN_SUBTREES = [
   "dashboard status: $.trusts[].claims",
   "dev: $|0.workers",
   "dev: $|4.autostart",
+  "doctor: $.attestation|0",
+  "doctor: $.attestation|0.findings[]",
   "doctor: $.auditSinks|0",
   "doctor: $.auditSinks|0.secrets[]",
   "doctor: $.auditSinks|0.sinks[]",

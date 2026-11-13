@@ -8,6 +8,7 @@ import { providerExample } from "../capabilities/entitlementGap";
 import { undeclinableReason } from "../capabilities/reconcile";
 import type { DoctorReport } from "../commands/doctor";
 import { describeUndeclared } from "../migrations/ledger";
+import { describeTestAttestation } from "../project/attestationMode";
 import { describeOriginDrift, originDriftFix } from "../project/domains";
 import { describeWorkflowDrift, workflowDriftFix } from "../project/workflows";
 import { provisionFixCommand } from "../provision/provisionFix";
@@ -85,6 +86,7 @@ export const DoctorCheck = z
     "environmentConfigs",
     "origins",
     "workflows",
+    "attestation",
     "supportSearchTriggers",
     "devPreferences",
     "settings",
@@ -426,6 +428,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // establishes nothing and carries no drift, so it never reaches here.
   for (const drift of report.workflows?.drift ?? [])
     add("workflows", describeWorkflowDrift(drift), workflowDriftFix(drift));
+  for (const finding of report.attestation?.findings ?? []) add("attestation", describeTestAttestation(finding), null);
 
   // The same standard, met the way `Settings:` meets it rather than the way the file checks do: the fault
   // is established by a **database that answered**, so it is the finding that gates and never the state. A
@@ -542,6 +545,7 @@ export const DOCTOR_GATES: { readonly [K in keyof DoctorReport]-?: DoctorGate } 
   environmentConfigs: gatesOn("environmentConfigs"),
   origins: gatesOn("origins"),
   workflows: gatesOn("workflows"),
+  attestation: gatesOn("attestation"),
   supportSearchTriggers: gatesOn("supportSearchTriggers"),
   devPreferences: {
     gates: "devPreferences",

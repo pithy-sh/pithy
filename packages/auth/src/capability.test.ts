@@ -56,7 +56,7 @@ describe("auth capability", () => {
   // table must be namespaced under the capability so it can't clash with an adopter's.
   test("every provided table is namespaced under pithyAuth (the pithy_auth_ prefix)", () => {
     const tables = Object.keys(build().databases?.app?.tables ?? {});
-    expect(tables.length).toBe(10);
+    expect(tables.length).toBe(11);
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
@@ -71,6 +71,7 @@ describe("auth capability", () => {
       "0006_verification_outcomes",
       "0007_erasure_record",
       "0008_last_active",
+      "0009_attestation_challenges",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -131,9 +132,8 @@ describe("auth capability", () => {
   });
 
   test("a provider may create accounts by default, and each toggle says so independently", () => {
-    // `allowSignUp` defaults true so nothing about google/apple/facebook changes. It is the GitHub case
-    // that needed saying: the dashboard wants *email* sign-up and *no* GitHub sign-up, which was
-    // unexpressible — and that is exactly how an orphan user appeared (pithy-sh/pithy#554).
+    // `allowSignUp` defaults true. Per provider, so a project can allow *email* sign-up and refuse
+    // *GitHub* sign-up, which the global toggle alone cannot say.
     const cap = build();
     expect(cap.authConfig.github.allowSignUp).toBe(true);
     expect(cap.authConfig.google.allowSignUp).toBe(true);
@@ -170,6 +170,7 @@ describe("additional Better Auth plugins", () => {
       "0006_verification_outcomes",
       "0007_erasure_record",
       "0008_last_active",
+      "0009_attestation_challenges",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -185,6 +186,7 @@ describe("additional Better Auth plugins", () => {
       "0006_verification_outcomes",
       "0007_erasure_record",
       "0008_last_active",
+      "0009_attestation_challenges",
       "0002_plugin_organization",
     ]);
   });
@@ -210,7 +212,7 @@ describe("additional Better Auth plugins", () => {
     expect(() => build({ plugins: ["organization" as unknown as BetterAuthPlugin] })).toThrow();
   });
 
-  test("a plugin whose refusals the capability cannot collapse is refused by `auth()` itself (#625)", () => {
+  test("a plugin whose refusals the capability cannot collapse is refused by `auth()` itself", () => {
     // The unit case lives in `instance/plugins.test.ts`. This one is about the *wiring*: the gate is worth
     // nothing if `auth()` does not run it, and `oauthPopup()` composed here would restore the
     // account-enumeration oracle on the social callback with no malformed input anywhere.
@@ -298,7 +300,7 @@ describe("auth client projection", () => {
       basePath: "/auth",
       providers: { google: false, apple: false, facebook: false, github: false, microsoft: false },
       // Per provider, beside the global one: a project may let email create accounts while a provider
-      // may not, and a screen with only `signUpEnabled` promises what that provider refuses (#559).
+      // may not, and a screen with only `signUpEnabled` promises what that provider refuses.
       providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
       otpLength: 6,
       signUpEnabled: true,
@@ -395,10 +397,8 @@ describe("pithy.manifest.json", () => {
   });
 
   test("every registry entry is in the manifest, and says where it comes from and how it is replaced", () => {
-    // Stated as the invariant, not as a filtered comparison. The filtered version — build `declared`
-    // from the entries that declare both axes, compare — could not fail for the one case it existed to
-    // catch: an entry declaring neither axis is dropped from `declared` and is absent from the manifest,
-    // so it vanishes from both sides and the comparison passes. Silent drift is the drift #322 ends.
+    // Stated as the invariant, not as a filtered comparison: a comparison over the entries that declare
+    // both axes drops an entry declaring neither from both sides, and passes.
     const entries: [string, SecretRegistryEntry][] = Object.entries(authSecretsRegistry);
     expect(manifest.secrets.map((secret) => secret.name)).toEqual(entries.map(([name]) => name));
     for (const [name, entry] of entries) {
@@ -436,7 +436,7 @@ describe("pithy.manifest.json", () => {
   });
 });
 
-describe("the account lifecycle config (#620)", () => {
+describe("the account lifecycle config", () => {
   test("retention defaults to a 30-day purge window when nothing says otherwise", () => {
     expect(build().authConfig.retention).toEqual({ purgeAfterDays: 30 });
     expect(AuthConfig.parse({ baseURL: "https://api.example.com" }).retention.purgeAfterDays).toBe(30);
@@ -496,7 +496,7 @@ describe("the account lifecycle config (#620)", () => {
   });
 });
 
-describe("the erasure record (#823)", () => {
+describe("the erasure record", () => {
   test("declares the user subject, its resource type, and every action its deletion and purge record", () => {
     // The control plane finds this among the composed capabilities: drop it, or name a wrong action, and every
     // user attestation is a 404, cites no deletion, or names no failure, with nothing else failing. Each of the
@@ -533,7 +533,7 @@ describe("the erasure record (#823)", () => {
   });
 });
 
-describe("the deletion lifecycle on the capability (#622)", () => {
+describe("the deletion lifecycle on the capability", () => {
   test("restoreUrl is optional, takes an http(s) page, and refuses anything else", () => {
     expect(build().authConfig.retention.restoreUrl).toBeUndefined();
     expect(

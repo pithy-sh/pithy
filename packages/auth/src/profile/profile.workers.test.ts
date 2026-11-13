@@ -31,6 +31,7 @@ const SECRET = "test-secret-please-rotate-0000000000";
 
 const TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
   "pithy_auth_rate_limit",
@@ -309,7 +310,7 @@ describe("the person's own read", () => {
 });
 
 describe("a row the rule would not accept today", () => {
-  // **The regression this pins, found by the tenancy capability's roster (#563).** The gate makes it
+  // The gate makes it
   // impossible for the kit to *write* an unacceptable picture. It says nothing about one that is
   // already there — a provider wrote it before the rule existed, a repair script put it there, a backup
   // restored it. If the column refused such a value on read, `getUsers` would throw for a whole page of
