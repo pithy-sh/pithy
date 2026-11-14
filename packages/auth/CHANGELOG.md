@@ -1,5 +1,25 @@
 # @pithy-sh/auth
 
+## 0.16.0
+
+### Minor Changes
+
+- [#1039](https://github.com/pithy-sh/pithy/pull/1039) [`1150b02`](https://github.com/pithy-sh/pithy/commit/1150b02715a86f63a962456a44df37b7fbb31ae4) Thanks [@kingmesal](https://github.com/kingmesal)! - Auth verifies Apple App Attest, so an iOS app signs in without Turnstile.
+
+- [#1038](https://github.com/pithy-sh/pithy/pull/1038) [`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86) Thanks [@kingmesal](https://github.com/kingmesal)! - Auth's sign-in routes accept a native attestation in place of a Turnstile token, with a test mode for simulators and CI.
+
+- [#1041](https://github.com/pithy-sh/pithy/pull/1041) [`8538a41`](https://github.com/pithy-sh/pithy/commit/8538a41f35ef494c999c90c675683b572eed1a4f) Thanks [@kingmesal](https://github.com/kingmesal)! - Auth verifies Google Play Integrity, so an Android app signs in without Turnstile.
+
+- [#1040](https://github.com/pithy-sh/pithy/pull/1040) [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770) Thanks [@kingmesal](https://github.com/kingmesal)! - The React Native app attests on iOS and Android, and names the gate's refusal instead of a bare 403.
+
+### Patch Changes
+
+- Updated dependencies [[`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86), [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770)]:
+  - @pithy-sh/core@0.24.0
+  - @pithy-sh/turnstile@0.9.0
+  - @pithy-sh/email@0.10.7
+  - @pithy-sh/secrets@0.6.12
+
 ## 0.15.3
 
 ### Patch Changes

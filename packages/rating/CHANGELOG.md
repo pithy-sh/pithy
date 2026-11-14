@@ -1,5 +1,12 @@
 # @pithy-sh/rating
 
+## 0.6.10
+
+### Patch Changes
+
+- Updated dependencies [[`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86)]:
+  - @pithy-sh/core@0.24.0
+
 ## 0.6.9
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @pithy-sh/ui-react
 
+## 0.8.0
+
+### Minor Changes
+
+- [#1040](https://github.com/pithy-sh/pithy/pull/1040) [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770) Thanks [@kingmesal](https://github.com/kingmesal)! - The React Native app attests on iOS and Android, and names the gate's refusal instead of a bare 403.
+
 ## 0.7.1
 
 ### Patch Changes

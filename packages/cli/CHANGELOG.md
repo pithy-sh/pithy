@@ -1,5 +1,25 @@
 # @pithy-sh/cli
 
+## 0.28.0
+
+### Minor Changes
+
+- [#1038](https://github.com/pithy-sh/pithy/pull/1038) [`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86) Thanks [@kingmesal](https://github.com/kingmesal)! - Auth's sign-in routes accept a native attestation in place of a Turnstile token, with a test mode for simulators and CI.
+
+- [#1040](https://github.com/pithy-sh/pithy/pull/1040) [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770) Thanks [@kingmesal](https://github.com/kingmesal)! - The React Native app attests on iOS and Android, and names the gate's refusal instead of a bare 403.
+
+### Patch Changes
+
+- [#1037](https://github.com/pithy-sh/pithy/pull/1037) [`fa58018`](https://github.com/pithy-sh/pithy/commit/fa58018e59a4006fef969c39f00ddfdd9892aa5b) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add` now writes a test rate limiter with its `namespace_id`, so it typechecks, and fills the id into one written without it. Running it again no longer rewrites `wrangler.jsonc`.
+- Updated dependencies [[`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86), [`8538a41`](https://github.com/pithy-sh/pithy/commit/8538a41f35ef494c999c90c675683b572eed1a4f), [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770)]:
+  - @pithy-sh/core@0.24.0
+  - @pithy-sh/ui-react-native@0.3.0
+  - @pithy-sh/ui-react@0.8.0
+  - @pithy-sh/turnstile@0.9.0
+  - @pithy-sh/cloudflare@0.10.7
+  - @pithy-sh/email@0.10.7
+  - @pithy-sh/secrets@0.6.12
+
 ## 0.27.1
 
 ### Patch Changes

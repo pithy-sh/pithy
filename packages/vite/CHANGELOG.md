@@ -1,5 +1,16 @@
 # @pithy-sh/vite
 
+## 0.24.0
+
+### Minor Changes
+
+- [#1040](https://github.com/pithy-sh/pithy/pull/1040) [`7c74c34`](https://github.com/pithy-sh/pithy/commit/7c74c34fce219f30fa5aa6e5e2e8e25372049770) Thanks [@kingmesal](https://github.com/kingmesal)! - The React Native app attests on iOS and Android, and names the gate's refusal instead of a bare 403.
+
+### Patch Changes
+
+- Updated dependencies [[`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86)]:
+  - @pithy-sh/core@0.24.0
+
 ## 0.23.0
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @pithy-sh/core
 
+## 0.24.0
+
+### Minor Changes
+
+- [#1038](https://github.com/pithy-sh/pithy/pull/1038) [`5e09159`](https://github.com/pithy-sh/pithy/commit/5e09159dd34e845573a4f555afdb4f5f01443c86) Thanks [@kingmesal](https://github.com/kingmesal)! - Auth's sign-in routes accept a native attestation in place of a Turnstile token, with a test mode for simulators and CI.
+
 ## 0.23.0
 
 ### Minor Changes
