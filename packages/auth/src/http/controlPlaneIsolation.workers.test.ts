@@ -65,6 +65,7 @@ const ENVIRONMENT = "dev";
 /** Every table auth (and its email delivery side) owns. A control-plane call must leave all of them empty. */
 const AUTH_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_app_attest_keys",
   "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",

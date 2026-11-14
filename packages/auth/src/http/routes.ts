@@ -13,8 +13,11 @@ import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import type { Context, Hono } from "hono";
 import { userSessionTokens } from "../admin/users";
+import { APPLE_APP_ATTESTATION_ROOT } from "../attestation/appAttest/root";
+import { registerAppAttestKey } from "../attestation/appAttest/verifier";
 import { issueChallenge } from "../attestation/challenge";
 import { attestationIsConfigured } from "../attestation/config";
+import { AttestationFailedError } from "../attestation/errors";
 import { assertAttestationBlock, sendGate } from "../attestation/gate";
 import { PLATFORM_VERIFIERS } from "../attestation/verifier";
 import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
@@ -44,13 +47,20 @@ import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
 import {
   AccountDeleteResponse,
+  AppAttestKeyResponse,
   AttestationChallengeResponse,
   HandoffExchangeResponse,
   MyDeviceRevokeResponse,
   MyDevicesResponse,
   TokenRotateResponse,
 } from "./responses";
-import { DeleteAccountBody, HandoffExchangeBody, RevokeDeviceBody, SocialSignInStartQuery } from "./schemas";
+import {
+  AppAttestKeyBody,
+  DeleteAccountBody,
+  HandoffExchangeBody,
+  RevokeDeviceBody,
+  SocialSignInStartQuery,
+} from "./schemas";
 import { accountDeletionView } from "./views";
 
 type Ctx = Context<PithyHonoEnv>;
@@ -87,6 +97,7 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | -------------------------- | --------------- | --------------------------- |
  * | `POST /token/rotate`       | bearer/session  | none — the credential only  |
  * | `POST /attestation/challenge` | public       | none                        |
+ * | `POST /attestation/ios/keys` | public         | json `AppAttestKeyBody`     |
  * | `GET  /sign-in/social/start` | public        | query `SocialSignInStartQuery` |
  * | `POST /handoff`            | public          | json `HandoffExchangeBody`  |
  * | `GET  /devices`            | bearer/session  | none                        |
@@ -148,6 +159,18 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
           responses: { 200: AttestationChallengeResponse },
         }),
         (c) => issueAttestationChallenge(c, wiring),
+      );
+      app.post(
+        `${base}/attestation/ios/keys`,
+        describeRoute({
+          summary: "Register an iOS app's App Attest key, with Apple's attestation of it.",
+          description:
+            "Once per key, before its first assertion. The app asks for a challenge, passes SHA-256 of its characters to `attestKey` as the client data hash, and sends the key id and the attestation object here. The certificate chain must lead to Apple App Attestation Root CA, the `rpIdHash` must be an allowed app's, and the key must be from Apple's production environment, or from either in dev, staging and a feature deployment. Then each send carries an assertion by this key in `x-pithy-attestation`. Any check that fails, a key already registered included, answers `auth/attestation_failed`; an environment with no attestation block answers `auth/attestation_config`.",
+          verification: ["public"],
+          responses: { 200: AppAttestKeyResponse },
+        }),
+        validate("json", AppAttestKeyBody),
+        (c) => registerIosKey(c, wiring, c.req.valid("json")),
       );
     }
 
@@ -705,6 +728,29 @@ async function serveMyImage(c: Ctx, wiring: AuthWiring): Promise<Response> {
   return new Response(bytes.body as unknown as BodyInit, {
     headers: { "content-type": bytes.type, ...STORED_IMAGE_HEADERS },
   });
+}
+
+/**
+ * Verify an App Attest attestation against the environment's iOS apps and, when it holds, store the
+ * key so its later assertions verify. A failed attestation answers `auth/attestation_failed`.
+ */
+async function registerIosKey(c: Ctx, wiring: AuthWiring, body: AppAttestKeyBody): Promise<Response> {
+  const environment = workerIdentity(c.env).environment;
+  const settings = assertAttestationBlock(wiring.config.attestation, environment);
+  const now = new Date();
+  const verdict = await registerAppAttestKey({
+    db: db(c, wiring),
+    challenge: body.challenge,
+    keyId: body.keyId,
+    attestation: body.attestation,
+    apps: settings.ios,
+    environment,
+    root: wiring.appAttestRoot ?? APPLE_APP_ATTESTATION_ROOT,
+    now,
+  });
+  if (!verdict.ok) throw new AttestationFailedError({ detail: verdict.reason });
+  c.header("cache-control", "no-store");
+  return c.json({ keyId: body.keyId, registeredAt: now.toISOString() } satisfies AppAttestKeyResponse);
 }
 
 /** Issue an attestation challenge, where this environment has a block to judge its use by. */

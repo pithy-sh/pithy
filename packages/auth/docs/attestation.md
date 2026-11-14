@@ -2,7 +2,7 @@
 
 _This copy ships in the package because `README.md` sends an adopter to it by name._
 
-A web page proves a human is there with Turnstile. A native app has no widget to solve. It proves something else instead: that the request came from your app, unmodified, on a real device. Apple calls that App Attest. Google calls it Play Integrity. Auth's send routes take either one in place of a Turnstile token, once that platform's verifier ships. This release ships the gate, the challenge and test mode, and verifies no real assertion yet; [What this release verifies](#what-this-release-verifies) says what that means today.
+A web page proves a human is there with Turnstile. A native app has no widget to solve. It proves something else instead: that the request came from your app, unmodified, on a real device. Apple calls that App Attest. Google calls it Play Integrity. Auth's send routes take either one in place of a Turnstile token, once that platform's verifier ships. This release verifies Apple App Attest. [What this release verifies](#what-this-release-verifies) says what that means for Android.
 
 ## What it gates
 
@@ -44,15 +44,47 @@ auth({
 
 An `enforce` block must allow at least one app. A real assertion from a platform with no app listed is refused; the test assertion is judged by the mode and the environment alone. An environment with no block keeps its send routes exactly as they were.
 
-A project that never configures attestation installs nothing new and mounts no new route. `pithy migrate` creates the one new table, `pithy_auth_attestation_challenges`, and nothing writes to it. Verification runs on WebCrypto, and `@pithy-sh/auth` takes no dependency for it.
+A project that never configures attestation installs nothing new and mounts no new route. `pithy migrate` creates two tables, `pithy_auth_attestation_challenges` and `pithy_auth_app_attest_keys`, and nothing writes to either. Verification runs on WebCrypto, with auth's own CBOR and certificate reader, and `@pithy-sh/auth` takes no dependency for it.
 
 ## The flow
 
 1. **Ask for a challenge.** `POST /auth/attestation/challenge` answers `{ challenge, expiresAt }`. The challenge is 32 random bytes as unpadded base64url. It is good once, until `expiresAt`. Auth stores only its SHA-256.
 2. **Attest over the request.** Hash the challenge's characters followed by the send's exact body bytes with SHA-256. That digest is App Attest's `clientDataHash`, and its base64url is Play Integrity's `requestHash`. It binds the attestation to this challenge and this body, so it cannot be lifted onto another address.
-3. **Send it in one header.** `x-pithy-attestation` carries unpadded base64url over the JSON `{ "platform": "ios" | "android", "challenge": "…", "assertion": "…", "keyId": "…" }`. `assertion` is the App Attest attestation object or assertion, or the Play Integrity token, as the platform hands it over. `keyId` is App Attest's key identifier; Android has none.
+3. **Send it in one header.** `x-pithy-attestation` carries unpadded base64url over the JSON `{ "platform": "ios" | "android", "challenge": "…", "assertion": "…", "keyId": "…" }`. `assertion` is the App Attest assertion from `generateAssertion`, or the Play Integrity token, as the platform hands it over. On iOS the key must already be registered: the attestation object from `attestKey` goes once to `POST /auth/attestation/ios/keys` (see [Registering a key](#registering-a-key)), never in this header. `keyId` is App Attest's key identifier; Android has none.
 
 The challenge is spent the moment it is presented, pass or fail. A failed attempt asks for a new one.
+
+## Apple App Attest
+
+### What goes in config
+
+Each iOS app is one entry in `ios`: `{ teamId, bundleId }`. Together they are the app's App ID, `<teamId>.<bundleId>`, and App Attest signs over its SHA-256.
+
+- **`teamId`** is your Apple Developer Team ID: ten uppercase letters and digits, such as `ABCDE12345`. Find it at [developer.apple.com/account](https://developer.apple.com/account) under **Membership details**, or in Xcode on the target's **Signing & Capabilities** tab as the team's identifier. If the app's identifier in **Certificates, Identifiers & Profiles** shows an App ID prefix other than the Team ID, which only very old apps have, use that prefix.
+- **`bundleId`** is the app's bundle identifier, such as `com.example.app`. Find it in Xcode on the target's **General** tab under **Identity**, or in an Expo app's `app.json` as `ios.bundleIdentifier`.
+
+List every app that may attest in that environment. A staging build with its own bundle identifier is its own entry in the `staging` block.
+
+The app needs the **App Attest** capability in Xcode, which adds the `com.apple.developer.devicecheck.appattest-environment` entitlement. Its value picks Apple's environment, and auth reads it from the attestation: `production` keys are accepted everywhere, and `development` keys only where the Worker's `ENVIRONMENT` is `dev`, `staging` or `feature`, the same rule test mode follows. A development key in `prod` is refused. TestFlight and App Store builds attest in `production`.
+
+### Registering a key
+
+Once per key, before its first assertion:
+
+1. The app calls `generateKey()` and keeps the key id.
+2. It asks `POST /auth/attestation/challenge` for a challenge.
+3. It calls `attestKey(keyId, clientDataHash:)` with SHA-256 of the challenge's characters: the [binding](#the-flow) over the challenge and an empty body.
+4. It sends `POST /auth/attestation/ios/keys` with `{ "challenge": "…", "keyId": "…", "attestation": "…" }`, the key id and the attestation object base64 as Apple hands them over.
+
+Auth spends the challenge, then checks the attestation Apple's way: the certificate chain leads to Apple App Attestation Root CA, which ships pinned in the package; the certificate's nonce is bound to this challenge; the certificate's key hashes to the key id; the `rpIdHash` is SHA-256 of an allowed app's App ID; the counter is zero; the AAGUID is an environment accepted here; and the credential id is the key id. It stores the key id, the public key, the App ID, the environment and a counter of zero in `pithy_auth_app_attest_keys`. A key registers once: registering it again is refused, so its counter cannot be reset. A key names no person.
+
+### Each send
+
+The app calls `generateAssertion(keyId, clientDataHash:)` with the binding over a fresh challenge and the send's exact body, and sends the assertion as `assertion` with the key id as `keyId` in `x-pithy-attestation`. Auth finds the key, checks that its app is still allowed and that a development key is accepted here, checks the `rpIdHash`, verifies the signature over the binding with the stored public key, and requires the counter to rise above the stored one. Then it stores the new counter.
+
+### Refusals
+
+Every App Attest check that fails is `auth/attestation_failed`, and `detail` starts with the check that failed: `challenge`, `format`, `chain`, `nonce`, `keyId`, `key` (no key with that id is registered), `rpIdHash`, `aaguid`, `credentialId`, `signature` or `counter`. A request carrying no `keyId` fails on `keyId`. The gate's own refusals come before these and are worded as [the codes](#the-three-refusals) say: a header that does not decode, or a send from a platform with no allowed app. An environment with no attestation block answers `auth/attestation_config`, at the registration route as at a send.
 
 ## Test mode
 
@@ -71,7 +103,7 @@ Send it as `assertion`, with a real challenge from the challenge route. The chal
 | Code | Status | When |
 |---|---|---|
 | `auth/attestation_missing` | 400 | The environment has a block, turnstile is not composed, and the request carried no attestation. |
-| `auth/attestation_failed` | 403 | The attestation did not verify: a header that does not decode, a challenge that is stale, reused or never issued, a real assertion from a platform with no allowed app, an assertion that does not check out, or the test assertion where it is not accepted. |
+| `auth/attestation_failed` | 403 | The attestation did not verify: a header that does not decode, a challenge that is stale, reused or never issued, a real assertion from a platform with no allowed app, an App Attest key that does not register, an assertion that does not check out, or the test assertion where it is not accepted. |
 | `auth/attestation_config` | 500 | The server cannot judge it: the environment has no attestation block, or no verifier for the platform is available. |
 
 Each one says why in `detail`, which goes to the operator's log and never to the client. The client sees the code, the status and a short message.
@@ -88,16 +120,16 @@ const attestation = createAttestation({ ...session.options, attester: testAttest
 const sent = await sendOtp({ email, type: "sign-in" }, { ...session.options, attestation });
 ```
 
-`createAttestation` asks the challenge route for a challenge before each send, hands the attester the challenge, the exact body and their binding, and puts the result in `x-pithy-attestation`. With `attestation` set, the send carries no Turnstile token. The attester is injected:
+`createAttestation` asks the challenge route for a challenge before each send, hands the attester the challenge, the exact body, their binding and a transport for any call it must make first, and puts the result in `x-pithy-attestation`. With `attestation` set, the send carries no Turnstile token. The attester is injected:
 
 - **`testAttester(platform)`** sends the test assertion.
-- **`appAttestAttester({ module, store })`** is App Attest. `module` is `@expo/app-integrity`, and `store` keeps the key id. A send with no registered key generates one and sends Apple's attestation of it, and the key is kept as registered only once that send succeeds; later sends assert with it. A key whose send did not succeed, lost on the network or refused for any reason, is never asserted with, and the next send generates another. A registered key the device can no longer assert with, after a reinstall, a restore or a migration, is dropped and a new one registered on the same send. The module hashes the string it is handed into `clientDataHash`, so it is handed the challenge followed by the body.
-- **`playIntegrityAttester({ module, cloudProjectNumber })`** is Play Integrity. It prepares the token provider, again after any failure to prepare it or to get a token, and asks for a token whose `requestHash` is the binding's base64url.
+- **`appAttestAttester({ module, store })`** is App Attest. `module` is `@expo/app-integrity`, and `store` keeps the key id. With no registered key, a send first [registers one](#registering-a-key): it calls `generateKeyAsync`, asks the challenge route for a challenge of its own, calls `attestKeyAsync` with that challenge, and posts the challenge, the key id and the attestation object to `POST /auth/attestation/ios/keys`. The key id goes into `store` only when that route answers success. Then the send, and every later one, calls `generateAssertionAsync` over its own challenge and the exact body and sends the assertion in the header. A registration the route refuses is not kept, the send answers the route's code with nothing sent, and the next send registers a new key. A key the device can no longer assert with, after a reinstall, a restore or a migration, is dropped and a new one registered on the same send. The module hashes the string it is handed into `clientDataHash`, so registration hands it the challenge alone and an assertion the challenge followed by the body: the two bindings auth checks.
+- **`playIntegrityAttester({ module, cloudProjectNumber })`** is Play Integrity, for when auth verifies it; this release does not, so the scaffold attests on Android only in a `test` environment. It prepares the token provider, again after any failure to prepare it or to get a token, and asks for a token whose `requestHash` is the binding's base64url.
 
 `@pithy-sh/auth` never depends on `@expo/app-integrity`: the app installs it and passes it in. A web-only or server-only project installs nothing for attestation. Its peers are `expo` and `react-native` at any version, so the floor is the API: 0.1.9, an Expo SDK 54 release, is the first with the `Async` names this client calls. The scaffold pins `expo` `~57.0.31` and `@expo/app-integrity` `~57.0.2`.
 
-**A refusal keeps its code.** A refused send answers an `AuthResult` whose `failure.code` is the gate's: `auth/attestation_failed`, `auth/attestation_missing`, `auth/attestation_config`, `turnstile/failed` or `turnstile/missing_token`. `isGateRefusal(failure)` says whether a refusal is the gate's, which a screen may show without telling a registered address from another. A device that would not attest is `client/attestation_unavailable`, and nothing was sent. On `auth/attestation_failed` the attestation is told, and App Attest drops its key so the next send registers a new one. On a send that succeeded it is told too, which is when App Attest keeps its key as registered.
+**A refusal keeps its code.** A refused send answers an `AuthResult` whose `failure.code` is the gate's: `auth/attestation_failed`, `auth/attestation_missing`, `auth/attestation_config`, `turnstile/failed` or `turnstile/missing_token`. `isGateRefusal(failure)` says whether a refusal is the gate's, which a screen may show without telling a registered address from another. A device that would not attest is `client/attestation_unavailable`, and nothing was sent. On `auth/attestation_failed` at a send the attestation is told, and App Attest drops its key so the next send registers a new one. A refused registration answers the registration route's code, and the send is never made.
 
 ## What this release verifies
 
-This release ships the challenge, the gate, the test verifier and the codes. A real App Attest or Play Integrity assertion in an `enforce` environment is answered with `auth/attestation_config` until the release that verifies that platform. The client projection says so: under `enforce`, `attestation.platforms` is `true` only for a platform with an allowed app and a verifier, so until then the scaffolded app keeps Turnstile on both platforms.
+Apple App Attest, and the test assertion on either platform. A real Play Integrity token is answered with `auth/attestation_config` until the release that verifies Android. The client projection says so: under `enforce`, `attestation.platforms` is `true` only for a platform with an allowed app and a verifier, so the scaffolded app attests on iOS and keeps Turnstile on Android until then.

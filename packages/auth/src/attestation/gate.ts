@@ -49,7 +49,7 @@ async function verifyAttestation(
 
   // Spent before anything else is judged, so a failed attempt cannot be retried on the same challenge.
   const use = await consumeChallenge(db, presented.challenge, now);
-  if (!use.ok) throw new AttestationFailedError({ detail: use.reason });
+  if (!use.ok) throw new AttestationFailedError({ detail: `challenge: ${use.reason}` });
 
   if (!isTestAssertion(presented) && settings[presented.platform].length === 0) {
     throw new AttestationFailedError({

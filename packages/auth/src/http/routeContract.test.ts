@@ -40,10 +40,18 @@ import { createAuthRoutes } from "./routes";
  * `app.routes` at all — see "registered before the catch-all" below.
  */
 
-/** The wiring `createAuthRoutes` needs to register: config only. The email and turnstile seams are optional. */
+/**
+ * The wiring `createAuthRoutes` needs to register: config only. The email and turnstile seams are optional. An
+ * attestation block is set so the attestation routes mount, as they do in a project that configures one.
+ */
 function buildWiring(turnstile?: TurnstileLoginGate, basePath = "/auth"): AuthWiring {
   return {
-    config: AuthConfig.parse({ baseURL: "http://localhost", basePath, trustedOrigins: ["http://localhost"] }),
+    config: AuthConfig.parse({
+      baseURL: "http://localhost",
+      basePath,
+      trustedOrigins: ["http://localhost"],
+      attestation: { environments: { prod: { ios: [{ teamId: "ABCDE12345", bundleId: "com.example.app" }] } } },
+    }),
     resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile,
@@ -346,8 +354,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: twenty-two routes carry a method — the thirteen
-    // admin ones and the nine a person calls. A twenty-third is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: twenty-four routes carry a method — the thirteen
+    // admin ones and the eleven a person or an app calls. A twenty-fifth is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -374,6 +382,10 @@ describe("the advertised admin surface matches what is mounted", () => {
       "POST /auth/admin/users/:userId/sessions/revoke",
       "POST /auth/admin/users/:userId/suspend",
       "POST /auth/admin/users/search",
+      // A native app's attestation: a single-use challenge, and the one-time registration of an App Attest key.
+      // Public, and mounted only where an environment has an attestation block.
+      "POST /auth/attestation/challenge",
+      "POST /auth/attestation/ios/keys",
       "POST /auth/devices/revoke",
       // A native app trading the one-time code a redirect sign-in left on its deep link. Public: the code is the credential.
       "POST /auth/handoff",

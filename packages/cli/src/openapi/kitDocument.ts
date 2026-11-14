@@ -113,7 +113,7 @@ export const KIT_COMPOSITION: Readonly<Record<string, () => Capability>> = {
   secrets: () => secrets({ registry: {} }),
   email: () => email({ fromAddress: "noreply@example.com", baseUrl: ORIGIN }),
   // Its dev sign-in mounts in a `dev` composition only, so the `prod` document has no route for it. The attestation
-  // challenge route mounts once any environment has an attestation block.
+  // routes, the challenge and the iOS key registration, mount once any environment has an attestation block.
   auth: () =>
     auth({
       baseURL: ORIGIN,

@@ -587,6 +587,15 @@ export const AttestationChallengeResponse = z
   .describe("A single-use challenge for a native app attestation.");
 export type AttestationChallengeResponse = z.output<typeof AttestationChallengeResponse>;
 
+/** `POST {base}/attestation/ios/keys`. */
+export const AppAttestKeyResponse = z
+  .object({
+    keyId: z.string().describe("The key identifier, as the request sent it. Assertions name it as `keyId`."),
+    registeredAt: z.iso.datetime().describe("When the key was registered, ISO-8601."),
+  })
+  .describe("An App Attest key this server verified and registered.");
+export type AppAttestKeyResponse = z.output<typeof AppAttestKeyResponse>;
+
 /** One of the caller's own registered devices. */
 export const MyDeviceView = z
   .object({

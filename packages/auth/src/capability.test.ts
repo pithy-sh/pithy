@@ -59,7 +59,7 @@ describe("auth capability", () => {
   // table must be namespaced under the capability so it can't clash with an adopter's.
   test("every provided table is namespaced under pithyAuth (the pithy_auth_ prefix)", () => {
     const tables = Object.keys(build().databases?.app?.tables ?? {});
-    expect(tables.length).toBe(11);
+    expect(tables.length).toBe(12);
     for (const name of tables) expect(name.startsWith("pithyAuth")).toBe(true);
   });
 
@@ -75,6 +75,7 @@ describe("auth capability", () => {
       "0007_erasure_record",
       "0008_last_active",
       "0009_attestation_challenges",
+      "0010_app_attest_keys",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -174,6 +175,7 @@ describe("additional Better Auth plugins", () => {
       "0007_erasure_record",
       "0008_last_active",
       "0009_attestation_challenges",
+      "0010_app_attest_keys",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -190,6 +192,7 @@ describe("additional Better Auth plugins", () => {
       "0007_erasure_record",
       "0008_last_active",
       "0009_attestation_challenges",
+      "0010_app_attest_keys",
       "0002_plugin_organization",
     ]);
   });
