@@ -5,19 +5,13 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 /**
- * **`client-env.d.ts` is generated from the four declared client projections (#398).**
+ * **`client-env.d.ts` is generated from the declared client projections.**
  *
- * `@pithy-sh/ui-react`'s `templates/client-env.d.ts` is the ambient declaration for the four
- * `virtual:pithy/*` modules, copied into an adopter's Worker by `pithy ui add react`. It used to be
- * hand-written, three packages away from the `client:` projections that produce the values it
- * describes, and #392 held the two together with a spawned compiler because there was no faithful
- * source to generate from: `Capability.client` is typed `(context) => ClientProjection`, so each
- * capability's real shape existed only as an inferred literal inside a closure.
- *
- * #395 removed that. The four capabilities now declare their projection types, and the declaration is
- * the source of truth rather than a restatement of the literal. So there is exactly one statement of
- * each shape, and this module copies it — **a gate that watches two things agree is strictly worse
- * than one thing.**
+ * `@pithy-sh/ui-react`'s `templates/client-env.d.ts` is the ambient declaration for the
+ * `virtual:pithy/*` modules, copied into an adopter's Worker by `pithy ui add react`. Each capability
+ * declares its projection type, and its `client:` closure is checked against that declaration in its
+ * own package. So there is exactly one statement of each shape, and this module copies it — **a gate
+ * that watches two things agree is strictly worse than one thing.**
  *
  * ## Why the declared type is copied as text rather than re-printed from a type
  *
@@ -85,7 +79,7 @@ const PREAMBLE = `/// <reference types="vite/client" />
 // The \`virtual:pithy/*\` modules are never written to disk. These declarations describe modules the
 // Vite plugin serves, built from the Worker's own pithy.config.ts.
 //
-// **Generated, and copied here as it was emitted (#398).** Each declaration below is a capability's
+// **Generated, and copied here as it was emitted.** Each declaration below is a capability's
 // declared client projection — \`src/client/projection.ts\` in @pithy-sh/auth, @pithy-sh/consent,
 // @pithy-sh/i18n, @pithy-sh/payments, @pithy-sh/support and @pithy-sh/turnstile — written out by
 // @pithy-sh/vite's \`src/clientEnvDeclaration.ts\` at kit build time. In the kit that is one
@@ -208,10 +202,9 @@ function indentAt(text: string, index: number): string {
  * Replace every reference to a sibling type alias with that alias's own text, re-indented to sit where
  * the reference did.
  *
- * `PaymentsClientProduct` is the only one today, and it is named rather than inlined at the source for
- * a reason #395 recorded — the annotation goes on the `.map` callback, where a fresh literal is still
- * checked in both directions. The declaration an adopter reads has no such seam to hang a name on, so
- * the shape is written where it is used.
+ * `PaymentsClientProduct` is the only one today: it is named at the source so the annotation can go
+ * on the `.map` callback, where a fresh literal is still checked in both directions. The declaration an
+ * adopter reads has no such seam to hang a name on, so the shape is written where it is used.
  */
 export function inlineAliases(
   text: string,
@@ -254,10 +247,8 @@ function reindent(text: string, indent: string): string {
  *
  * **The first line is trimmed rather than measured, and the rest are dedented by their common indent.**
  * A type alias's body begins on the `=` line, so its first line arrives as `{` behind a single space
- * that says nothing about the block's depth. Taking that space as the base — which is what this did
- * until #476 changed the input from source to emitted declaration — shifted every following line one
- * column left of where it belonged, and the misalignment was invisible in the old input only because a
- * hand-written union happened to start on a line of its own.
+ * that says nothing about the block's depth. Taking that space as the base would shift every following
+ * line one column left of where it belongs.
  */
 function shift(text: string, indent: string): string {
   const lines = text.split("\n");
@@ -317,19 +308,16 @@ export function renderClientEnv(
 /**
  * Read the four projections' sources through their own packages' exports maps.
  *
- * **Resolved, then mirrored back to `src` — Jim, #476.** Until every package shipped a build,
- * `@pithy-sh/auth/src/client/projection` resolved to the TypeScript itself. It resolves to
- * `dist/client/projection.js` now, where the types are stripped and `AuthClientProjection` does not
- * exist, so the resolved path is walked back to the module it was emitted from.
+ * **Resolved, then mirrored back to `src`.** `@pithy-sh/auth/src/client/projection` resolves to
+ * `dist/client/projection.js`, where the types are stripped and `AuthClientProjection` does not exist,
+ * so the resolved path is walked back to the module it was emitted from.
  *
- * The declaration beside it, `dist/client/projection.d.ts`, is the other candidate and was tried first.
- * It is arguably the more truthful input — it is the type an adopter can actually see — but it makes
- * this generator's build wait on five capability packages' builds, and `@pithy-sh/vite` depends on none
- * of them. That is five cross-package `dependsOn` edges in `turbo.jsonc` that a sixth capability's
- * projection would silently need and silently not have: the generator would read a stale declaration,
- * emit a stale template, and say nothing. Source has no such ordering, `turbo.jsonc` already names
- * every `packages/<name>/src/client/projection.ts` as this build's input, and the authored text is
- * what the file's own header promises an adopter is emitted verbatim.
+ * Source, not the `dist/client/projection.d.ts` beside it: reading the declaration would make this
+ * generator's build wait on every capability package's build, cross-package `dependsOn` edges in
+ * `turbo.jsonc` that a further capability's projection would silently need and silently not have, so
+ * the generator would read a stale declaration and emit a stale template. Source has no such ordering,
+ * `turbo.jsonc` names every `packages/<name>/src/client/projection.ts` as this build's input, and the
+ * authored text is what the file's own header promises an adopter is emitted verbatim.
  *
  * `dist/x.js` → `src/x.ts` is not a guess about the layout: `tsdown` and `tsc -p tsconfig.build.json`
  * both mirror `src/` into `dist/`, so the two are the same path under a different root, and

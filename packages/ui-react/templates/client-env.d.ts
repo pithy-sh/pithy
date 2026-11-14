@@ -13,7 +13,7 @@
 // The `virtual:pithy/*` modules are never written to disk. These declarations describe modules the
 // Vite plugin serves, built from the Worker's own pithy.config.ts.
 //
-// **Generated, and copied here as it was emitted (#398).** Each declaration below is a capability's
+// **Generated, and copied here as it was emitted.** Each declaration below is a capability's
 // declared client projection — `src/client/projection.ts` in @pithy-sh/auth, @pithy-sh/consent,
 // @pithy-sh/i18n, @pithy-sh/payments, @pithy-sh/support and @pithy-sh/turnstile — written out by
 // @pithy-sh/vite's `src/clientEnvDeclaration.ts` at kit build time. In the kit that is one
@@ -67,9 +67,8 @@ declare module "virtual:pithy/auth" {
          *
          * **A second fact from {@link signUpEnabled}, and the screen needs both.** That one answers for
          * magic link and OTP; this answers per provider. A project can let email create accounts while
-         * GitHub only signs existing ones in — which is the configuration #554 exists for — and with only
-         * the global flag a screen renders "Signing in creates one." directly beneath a button that will
-         * refuse (#559).
+         * GitHub only signs existing ones in, and with only the global flag a screen would promise an
+         * account directly beneath a button that will refuse.
          *
          * Optional, so a screen copied before this landed keeps compiling and reads `undefined` as "no
          * provider objects" — the state every project was in until now.
@@ -90,6 +89,32 @@ declare module "virtual:pithy/auth" {
         otpLength: number;
         /** Whether signing in may provision a new user. Drives the sign-up copy. */
         signUpEnabled: boolean;
+        /**
+         * Native app attestation in this environment, when it has an attestation block. Absent, the send routes
+         * take no attestation, and a native app passes the humanity check as a web page does.
+         *
+         * Optional, so a screen copied before it existed keeps compiling.
+         */
+        attestation?: {
+          /**
+           * `test` where the Worker accepts the documented test assertion, so a simulator, an emulator or CI sends
+           * it; `enforce` where only a real App Attest or Play Integrity assertion passes.
+           */
+          mode: "enforce" | "test";
+          /**
+           * Whether a phone on each platform can pass by attesting here. Under `enforce`, `false` where the block
+           * allows no app for that platform or the Worker has no verifier for it, so that platform's phones pass the
+           * humanity check.
+           *
+           * Optional, so a screen copied before it existed keeps compiling; absent reads as both `true`.
+           */
+          platforms?: {
+            /** Whether an iPhone can pass with App Attest, or the test assertion. */
+            ios: boolean;
+            /** Whether an Android phone can pass with Play Integrity, or the test assertion. */
+            android: boolean;
+          };
+        };
       };
   export default config;
 }
@@ -366,7 +391,7 @@ declare module "virtual:pithy/turnstile" {
          * The action label the widget must be solved for. Render it, never retype it: the sign-in route
          * asserts this exact string against the token, and dev and staging cannot notice a copy that has
          * drifted — Cloudflare's test keys answer with no action at all, so the first environment that
-         * can tell is the one where a mismatch refuses every sign-in. #377.
+         * can tell is the one where a mismatch refuses every sign-in.
          */
         action: string;
         /** Where the response token goes: a body field, or a header when one is configured. */

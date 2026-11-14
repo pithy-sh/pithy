@@ -1,5 +1,5 @@
-import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
-import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+import type { AuthFailure, AuthFetch } from "@pithy-sh/auth/src/client/api";
+import { isGateRefusal, sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
 // The one code a refused provider sign-in comes back with. Imported rather than spelled: a literal here and a
 // literal there is a pair that can drift, and the drift would show as this block silently never rendering again.
 import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusal";
@@ -93,6 +93,8 @@ const EN = {
   "auth/sign_in.refused.remedy":
     "Sign in with your email, then connect {provider} from your profile. After that, this works whatever your primary is.",
   "auth/sign_in.divider": "or",
+  // A send the gate refused, when the catalog has no sentence for its code. The code is shown beneath it.
+  "auth/sign_in.gate_refused": "The check before sending didn't pass, so nothing was sent. Try again.",
   "auth/sign_in.email.label": "Email",
   "auth/sign_in.submit": "Email me a link",
   "auth/sign_in.signup.prompt": "No account yet?",
@@ -441,6 +443,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<Refusal>(null);
+  const [gateRefusal, setGateRefusal] = useState<AuthFailure | null>(null);
   // A refusal that came back on the callback, rather than from the pre-redirect call. Both halves are
   // read from the URL: `error` is Better Auth's, `provider` is the one this screen wrote into the
   // `errorCallbackURL` before redirecting. See `urlRefusal` for why neither can be component state.
@@ -461,14 +464,17 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
-    await sendMagicLink(
+    const result = await sendMagicLink(
       { email, callbackURL: `${origin}${callbackPath}${resumeQuery()}` },
       { ...client, gate: check.attach },
     );
     setBusy(false);
-    // Always the same answer, whether or not the address is registered. Telling the two apart is an
-    // enumeration oracle, so neither the copy nor the timing of it confirms either way.
-    setSent(true);
+    // The gate refuses before the address is read, so its refusal is shown with its code and the form stays.
+    // Every other answer is the same one, whether or not the address is registered: telling the two apart is
+    // an enumeration oracle, so neither the copy nor the timing of it confirms either way.
+    const refused = !result.ok && isGateRefusal(result.failure) ? result.failure : null;
+    setGateRefusal(refused);
+    if (refused === null) setSent(true);
   }
 
   async function social(provider: { id: string; label: string }): Promise<void> {
@@ -571,6 +577,14 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
         <button type="submit" disabled={busy || !email || check.pending}>
           {t.t("auth/sign_in.submit")}
         </button>
+        {gateRefusal && (
+          <div className="auth__failed" data-testid="gate-refusal" role="alert">
+            <p>{t.maybe(gateRefusal.code) ?? t.t("auth/sign_in.gate_refused")}</p>
+            <p className="muted">
+              <code>{gateRefusal.code}</code>
+            </p>
+          </div>
+        )}
       </form>
 
       {/* Reassurance, not navigation. Passwordless has no sign-up screen to point at — sign-up *is*

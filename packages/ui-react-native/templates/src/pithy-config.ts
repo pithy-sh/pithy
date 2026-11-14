@@ -56,6 +56,11 @@ export interface GeneratedPithyConfig {
   /** The Google OAuth client ids native Google sign-in needs. Null turns it off. */
   readonly google: { readonly webClientId: string | null; readonly iosClientId: string | null };
   /**
+   * The Google Cloud project Play Integrity answers for, linked to the app in Play Console. Null, or absent, and an
+   * Android build passes the humanity check where attestation is enforced.
+   */
+  readonly playIntegrity?: { readonly cloudProjectNumber: string | null };
+  /**
    * Every base path the Worker's routes answer under, such as `/auth`. Under `pithy dev` the web build's proxy sends
    * these to the Worker. Absent when Pithy has not listed them: the proxy then takes the kit's default paths.
    */
@@ -185,3 +190,6 @@ export const platformRails: PaymentsPlatformRails = config.rails;
 
 /** The Google OAuth client ids native Google sign-in needs. */
 export const googleClientIds: GeneratedPithyConfig["google"] = config.google;
+
+/** The Google Cloud project number Play Integrity answers for, or `null` when none is set. */
+export const playIntegrityProject: string | null = config.playIntegrity?.cloudProjectNumber ?? null;

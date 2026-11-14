@@ -51,6 +51,7 @@ export const TEMPLATE_GROUPS = {
   ],
   auth: [
     "src/session.tsx",
+    "src/attestation.ts",
     "src/turnstile.tsx",
     "src/useTurnstileWeb.ts",
     "src/routes/pithy/sign-in.tsx",

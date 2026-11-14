@@ -4,6 +4,7 @@
 import { I18nManager } from "react-native";
 import { afterEach } from "vitest";
 import { asyncStorage } from "./async-storage";
+import { appIntegrity } from "./expo-app-integrity";
 import { apple } from "./expo-apple-authentication";
 import { constants } from "./expo-constants";
 import { cryptoStub } from "./expo-crypto";
@@ -30,6 +31,7 @@ afterEach(() => {
   launchLeftToRight();
   for (const stub of [
     cryptoStub,
+    appIntegrity,
     apple,
     constants,
     iap,

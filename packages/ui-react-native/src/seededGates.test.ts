@@ -147,6 +147,11 @@ const LEDGER: Record<string, Held> = {
     wall: "runner",
     why: "A sign-in's token is adopted into the secure store before the session is read, sign-out tells the Worker before forgetting, and a resume target that is one of the app's own screens stays in the app. It imports `react-native` and expo-crypto, so no test of it loads in the project's Node runner.",
   },
+  "src/attestation.ts": {
+    keptGate: "src/attestation.test.tsx",
+    wall: "runner",
+    why: "Each platform sends what its mode asks for, the test assertion in a `test` environment and App Attest or Play Integrity in an enforcing one, over the exact body sent, and the web build, an environment with no block and a device that cannot attest keep Turnstile. It imports `@expo/app-integrity`, expo-crypto and the transport, which reach `react-native`, so no test of it loads in the project's Node runner.",
+  },
   "src/turnstile.tsx": {
     keptGate: "src/turnstile.test.tsx",
     wall: "runner",

@@ -61,6 +61,8 @@ export const reactNativeStub: UiStub = {
   manifest,
   substitutions: (context) => ({ [WORKER_TOKEN]: context.worker, [APP_TOKEN]: context.app ?? context.worker }),
   dependencies: {
+    // App Attest and Play Integrity for auth's send routes. The app's own dependency, never `@pithy-sh/auth`'s.
+    "@expo/app-integrity": "~57.0.2",
     "@expo/metro-runtime": "~57.0.17",
     // The client seams and the translator. Core's version for both, which `.changeset/config.json` releases
     // as one fixed group.

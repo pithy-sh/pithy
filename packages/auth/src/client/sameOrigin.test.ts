@@ -154,6 +154,8 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "`session.fetch(...)` — calling the bearer session's own fetch, the transport `./bearer` hands another capability's client, over a scripted stub. No network, and the request it makes is built by `./bearer` through `withoutCookies` in `./api`.",
   "src/http/bearerRoundTrip.test.ts":
     "Node's `fetch` standing in for a native app's against a real listening port, and `session.fetch(...)` driven over it. The harness the bearer session is tested through, not a second producer: it sends exactly the absolute URL and headers the session built, with no cookie jar.",
+  "src/http/attestationRoundTrip.test.ts":
+    "Node's `fetch` standing in for a native app's against a real listening port, under a bearer session and an attestation. The harness the attested send is tested through, not a second producer: it sends exactly the absolute URL and headers the session built, with no cookie jar.",
   "src/http/clientRoundTrip.test.ts":
     "Node's `fetch` standing in for a browser against a real listening port, so the primitive can be driven over a real socket with a real cookie jar. It is the harness the primitive is tested through, not a second producer: it takes the relative path `callAuth` produced and resolves it, and nothing in the package calls it.",
 };
@@ -275,6 +277,8 @@ const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   "src/client/bearer.ts": ["./api"],
   // The redirect handoff. Only the primitive; its crypto is injected, so it reaches for no platform.
   "src/client/handoff.ts": ["./api"],
+  // Native app attestation. The primitive and the bearer session's store shape; the platform is injected.
+  "src/client/attestation.ts": ["./api", "./bearer"],
 };
 
 describe("the browser half carries no schema library", () => {

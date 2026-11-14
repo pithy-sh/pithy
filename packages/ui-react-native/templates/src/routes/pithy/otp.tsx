@@ -1,9 +1,11 @@
-import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
+import { type AuthFailure, isGateRefusal, sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
+import { ATTESTATION_UNAVAILABLE } from "@pithy-sh/auth/src/client/attestation";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { screenPath } from "@pithy-sh/ui-core/src/routes";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { useAttestation } from "../../attestation";
 import { authConfig } from "../../pithy-config";
 import { parseQuery, queryString } from "../../platform";
 import { Redirect, routeTable, useGo, usePath, useSearch, useSearchParam } from "../../router";
@@ -47,6 +49,7 @@ const EN = {
   "auth/otp.sent.other": "We sent {count} digits to {email}.",
   "auth/otp.inbox": "your inbox",
   "auth/otp.failed": "That code didn't work. Try again, or send a new one.",
+  "auth/otp.gate_refused": "The check before sending didn't pass, so no new code was sent. Try again.",
   "auth/otp.submit": "Sign in",
   "auth/otp.resend": "Send a new code",
 } satisfies MessageCatalog;
@@ -97,6 +100,8 @@ export default function Otp(): ReactNode {
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const [gateRefusal, setGateRefusal] = useState<AuthFailure | null>(null);
+  const attestation = useAttestation();
   const [busy, setBusy] = useState(false);
   const inputs = useRef<(TextInput | null)[]>([]);
   const onToken = useCallback((value: string | null) => setCaptcha(value), []);
@@ -144,7 +149,21 @@ export default function Otp(): ReactNode {
   async function resend(): Promise<void> {
     // The gate goes on the send route and not on the verify one, which is where `@pithy-sh/auth` stacks the
     // humanity check: a code that was already mailed is not a surface worth challenging.
-    await sendOtp({ email, type: "sign-in" }, { ...transport.auth, gate: (body) => turnstileRequest(body, captcha) });
+    const result = await sendOtp(
+      { email, type: "sign-in" },
+      {
+        ...transport.auth,
+        gate: (body) => turnstileRequest(body, captcha),
+        ...(attestation ? { attestation } : {}),
+      },
+    );
+    // The gate's refusal, or a device that could not attest, is shown with its code. Any other answer is not, so no
+    // answer tells a registered address from another.
+    setGateRefusal(
+      !result.ok && (isGateRefusal(result.failure) || result.failure.code === ATTESTATION_UNAVAILABLE.code)
+        ? result.failure
+        : null,
+    );
   }
 
   if (carried !== null) {
@@ -209,14 +228,22 @@ export default function Otp(): ReactNode {
           onPress={() => void verify()}
           theme={theme}
         />
-        {/* Resending goes back through the gated send route, so the widget belongs here too. */}
-        <Turnstile onToken={onToken} />
+        {/* Resending goes back through the gated send route, so the widget belongs here too, unless the app attests. */}
+        {attestation ? null : <Turnstile onToken={onToken} />}
         <Button
           label={t.t("auth/otp.resend")}
-          disabled={busy || turnstilePending(captcha)}
+          disabled={busy || (!attestation && turnstilePending(captcha))}
           onPress={() => void resend()}
           theme={theme}
         />
+        {gateRefusal ? (
+          <View testID="gate-refusal" style={{ gap: theme.spacing.xs }}>
+            <Text style={[theme.type.body, { color: theme.colors.danger }]}>
+              {t.maybe(gateRefusal.code) ?? t.t("auth/otp.gate_refused")}
+            </Text>
+            <Text style={[theme.type.caption, { color: theme.colors.muted }]}>{gateRefusal.code}</Text>
+          </View>
+        ) : null}
       </View>
     </View>
   );

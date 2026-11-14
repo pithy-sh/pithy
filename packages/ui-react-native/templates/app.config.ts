@@ -14,6 +14,17 @@ const googleIosScheme = generated.google.iosClientId
   : null;
 
 /**
+ * Whether any environment the app builds for enforces attestation. App Attest then needs its entitlement, and its
+ * App ID the App Attest capability. A `test` environment sends the test assertion and needs neither.
+ */
+const enforcesAttestation = Object.values(generated.auth).some(
+  (projection) => projection?.enabled === true && projection.attestation?.mode === "enforce",
+);
+
+/** App Attest's environment: Apple's production service for a prod build, its development service otherwise. */
+const appAttestEnvironment = process.env.EXPO_PUBLIC_PITHY_ENV === "prod" ? "production" : "development";
+
+/**
  * The Expo app's config, read from the same file the screens read. The scheme a sign-in returns to and the origin
  * a checkout returns through are stated once, in `src/pithy-config.generated.ts`, so the app cannot answer to a
  * link the config does not name.
@@ -36,6 +47,9 @@ export default ({ projectRoot }: ConfigContext): ExpoConfig => ({
     supportsTablet: true,
     usesAppleSignIn: true,
     associatedDomains: universalHost ? [`applinks:${universalHost}`] : [],
+    ...(enforcesAttestation
+      ? { entitlements: { "com.apple.developer.devicecheck.appattest-environment": appAttestEnvironment } }
+      : {}),
   },
   android: {
     intentFilters: universalHost

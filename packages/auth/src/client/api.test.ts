@@ -7,10 +7,13 @@ import {
   AUTH_CROSS_ORIGIN,
   AUTH_UNREACHABLE,
   AUTH_UNREADABLE,
+  type AuthAttestation,
+  type AuthFailure,
   type AuthFetch,
   type AuthRequestInit,
   callAuth,
   getSession,
+  isGateRefusal,
   sendMagicLink,
   sendOtp,
   signInWithOtp,
@@ -24,7 +27,7 @@ import {
  *
  * Every assertion here is about something a scaffolded screen used to be responsible for and no longer
  * is: the cookie mode, the base-path join, the three ways an answer can fail to be one, and the
- * same-origin refusal that keeps an ambient session from leaving this origin (#370).
+ * same-origin refusal that keeps an ambient session from leaving this origin.
  */
 
 /** One request the module made. */
@@ -335,7 +338,7 @@ describe("the one home for a reader's language", () => {
 });
 
 /**
- * The two shapes this Worker answers with, and the one it does not (#449).
+ * The two shapes this Worker answers with, and the one it does not.
  *
  * Everything this capability writes answers the kit envelope; every route Better Auth owns answers its
  * own flat `{ message, code }`, because better-call renders an endpoint's `APIError` into a Response
@@ -369,7 +372,7 @@ describe("readFailure, through callAuth", () => {
   });
 
   test("keeps the flat shape's message when the i18n plugin translated it", async () => {
-    // `@better-auth/i18n` substitutes `message` and keeps the English on `originalMessage` (#452). The
+    // `@better-auth/i18n` substitutes `message` and keeps the English on `originalMessage`. The
     // translated sentence is the one a screen renders; the extra field is ignored rather than surfaced.
     const result = await getSession({
       fetch: refusing(400, { code: "INVALID_OTP", message: "Código no válido", originalMessage: "Invalid OTP" }),
@@ -445,5 +448,111 @@ describe("an absolute origin, for a program this Worker does not serve", () => {
     await callAuth("/get-session", {}, { origin: "https://api.example.test:8443", fetch: send }, anything);
     await callAuth("/get-session", {}, { origin: "http://[::1]:8787", fetch: send }, anything);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("an attested send", () => {
+  /** An attestation that records the body it was asked to attest over, and answers one header. */
+  function attesting(): AuthAttestation & { bodies: string[]; refusals: AuthFailure[] } {
+    const bodies: string[] = [];
+    const refusals: AuthFailure[] = [];
+    return {
+      bodies,
+      refusals,
+      async attest(body) {
+        bodies.push(body);
+        return { ok: true, value: { "x-pithy-attestation": "attested" } };
+      },
+      refused(failure) {
+        refusals.push(failure);
+      },
+    };
+  }
+
+  const inBody = (body: Record<string, unknown>) => ({
+    body: { ...body, "cf-turnstile-response": "tok" },
+    headers: { "x-turnstile": "tok" },
+  });
+
+  test("carries the attestation over the exact body it sends, and no Turnstile token", async () => {
+    const { fetch: send, calls } = recorder();
+    const attestation = attesting();
+    await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: send, gate: inBody, attestation });
+    await sendMagicLink({ email: "a@b.c", callbackURL: "https://app.example/cb" }, { fetch: send, attestation });
+    expect(calls.map((call) => call.init?.headers?.["x-pithy-attestation"])).toEqual(["attested", "attested"]);
+    expect(calls[0]?.init?.headers?.["x-turnstile"]).toBeUndefined();
+    expect(attestation.bodies).toEqual([calls[0]?.init?.body, calls[1]?.init?.body]);
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ email: "a@b.c", type: "sign-in" });
+  });
+
+  test("an attestation that could not be made is the failure, and nothing is sent", async () => {
+    const { fetch: send, calls } = recorder();
+    const failure: AuthFailure = { code: "auth/attestation_config", message: "No.", action: null };
+    const result = await sendOtp(
+      { email: "a@b.c", type: "sign-in" },
+      { fetch: send, attestation: { attest: async () => ({ ok: false, failure }) } },
+    );
+    expect(result).toEqual({ ok: false, failure });
+    expect(calls).toEqual([]);
+  });
+
+  test("a refused attestation is reported back to the attestation, and to the caller by its code", async () => {
+    const attestation = attesting();
+    const refusal = { error: { code: "auth/attestation_failed", message: "Did not verify.", action: null } };
+    const result = await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(403, refusal), attestation });
+    expect(result.ok ? null : result.failure.code).toBe("auth/attestation_failed");
+    expect(attestation.refusals.map((failure) => failure.code)).toEqual(["auth/attestation_failed"]);
+  });
+
+  test("a send that succeeded, failed for the server or was lost reports no refusal", async () => {
+    const attestation = attesting();
+    const { fetch: send } = recorder();
+    await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: send, attestation });
+    const unavailable = { error: { code: "auth/attestation_config", message: "No verifier.", action: null } };
+    await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(500, unavailable), attestation });
+    const lost: AuthFetch = async () => {
+      throw new TypeError("Network request failed");
+    };
+    await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: lost, attestation });
+    expect(attestation.refusals).toEqual([]);
+  });
+
+  test("a refusal that is not the attestation's is not reported to it", async () => {
+    const attestation = attesting();
+    const limited = { error: { code: "core/rate_limited", message: "Slow down.", action: null } };
+    await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(429, limited), attestation });
+    expect(attestation.refusals).toEqual([]);
+  });
+
+  test("the social route is never attested", async () => {
+    const attestation = attesting();
+    const { fetch: send, calls } = recorder({
+      "/auth/sign-in/social": () => ({ url: "https://accounts.google.com/o/oauth2/auth?client_id=abc" }),
+    });
+    await startSocialSignIn(
+      { provider: "google", callbackURL: "https://app.example/cb" },
+      { fetch: send, attestation },
+    );
+    expect(calls[0]?.init?.headers?.["x-pithy-attestation"]).toBeUndefined();
+    expect(attestation.bodies).toEqual([]);
+  });
+});
+
+describe("a gate's refusal reaches the caller by its code", () => {
+  test("turnstile's and attestation's refusals are the gate's, and read off a send", async () => {
+    for (const code of ["turnstile/failed", "turnstile/missing_token", "auth/attestation_failed"]) {
+      const result = await sendOtp(
+        { email: "a@b.c", type: "sign-in" },
+        { fetch: answering(code === "turnstile/missing_token" ? 400 : 403, { error: { code, message: "m" } }) },
+      );
+      expect(result.ok ? null : result.failure.code).toBe(code);
+      expect(result.ok ? false : isGateRefusal(result.failure)).toBe(true);
+    }
+  });
+
+  test("anything else is not the gate's", () => {
+    for (const code of ["core/rate_limited", "INVALID_OTP", "client/unreachable", "auth/attestationx", "turnstile"]) {
+      expect(isGateRefusal({ code, message: "m", action: null })).toBe(false);
+    }
   });
 });

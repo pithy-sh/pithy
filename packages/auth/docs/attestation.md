@@ -108,6 +108,28 @@ Send it as `assertion`, with a real challenge from the challenge route. The chal
 
 Each one says why in `detail`, which goes to the operator's log and never to the client. The client sees the code, the status and a short message.
 
+## The client
+
+`@pithy-sh/auth/src/client/attestation` speaks this flow for a native app, and the React Native scaffold wires it for you ([`docs/UI.md`](../../../docs/UI.md) § *React Native*).
+
+```ts
+import { sendOtp } from "@pithy-sh/auth/src/client/api";
+import { createAttestation, testAttester } from "@pithy-sh/auth/src/client/attestation";
+
+const attestation = createAttestation({ ...session.options, attester: testAttester("ios") });
+const sent = await sendOtp({ email, type: "sign-in" }, { ...session.options, attestation });
+```
+
+`createAttestation` asks the challenge route for a challenge before each send, hands the attester the challenge, the exact body, their binding and a transport for any call it must make first, and puts the result in `x-pithy-attestation`. With `attestation` set, the send carries no Turnstile token. The attester is injected:
+
+- **`testAttester(platform)`** sends the test assertion.
+- **`appAttestAttester({ module, store })`** is App Attest. `module` is `@expo/app-integrity`, and `store` keeps the key id. With no registered key, a send first [registers one](#registering-a-key): it calls `generateKeyAsync`, asks the challenge route for a challenge of its own, calls `attestKeyAsync` with that challenge, and posts the challenge, the key id and the attestation object to `POST /auth/attestation/ios/keys`. The key id goes into `store` only when that route answers success. Then the send, and every later one, calls `generateAssertionAsync` over its own challenge and the exact body and sends the assertion in the header. A registration the route refuses is not kept, the send answers the route's code with nothing sent, and the next send registers a new key. A key the device can no longer assert with, after a reinstall, a restore or a migration, is dropped and a new one registered on the same send. The module hashes the string it is handed into `clientDataHash`, so registration hands it the challenge alone and an assertion the challenge followed by the body: the two bindings auth checks.
+- **`playIntegrityAttester({ module, cloudProjectNumber })`** is Play Integrity, for when auth verifies it; this release does not, so the scaffold attests on Android only in a `test` environment. It prepares the token provider, again after any failure to prepare it or to get a token, and asks for a token whose `requestHash` is the binding's base64url.
+
+`@pithy-sh/auth` never depends on `@expo/app-integrity`: the app installs it and passes it in. A web-only or server-only project installs nothing for attestation. Its peers are `expo` and `react-native` at any version, so the floor is the API: 0.1.9, an Expo SDK 54 release, is the first with the `Async` names this client calls. The scaffold pins `expo` `~57.0.31` and `@expo/app-integrity` `~57.0.2`.
+
+**A refusal keeps its code.** A refused send answers an `AuthResult` whose `failure.code` is the gate's: `auth/attestation_failed`, `auth/attestation_missing`, `auth/attestation_config`, `turnstile/failed` or `turnstile/missing_token`. `isGateRefusal(failure)` says whether a refusal is the gate's, which a screen may show without telling a registered address from another. A device that would not attest is `client/attestation_unavailable`, and nothing was sent. On `auth/attestation_failed` at a send the attestation is told, and App Attest drops its key so the next send registers a new one. A refused registration answers the registration route's code, and the send is never made.
+
 ## What this release verifies
 
-Apple App Attest, and the test assertion on either platform. A real Play Integrity token is answered with `auth/attestation_config` until the release that verifies Android.
+Apple App Attest, and the test assertion on either platform. A real Play Integrity token is answered with `auth/attestation_config` until the release that verifies Android. The client projection says so: under `enforce`, `attestation.platforms` is `true` only for a platform with an allowed app and a verifier, so the scaffolded app attests on iOS and keeps Turnstile on Android until then.

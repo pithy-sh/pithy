@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { beforeEach, expect, test, vi } from "vitest";
 
 /**
- * **A correct code for an account that may not act goes on to the screen for that state** (#620).
+ * **A correct code for an account that may not act goes on to the screen for that state.**
  *
  * The Worker answers the OTP sign-in for a suspended or deleted account with a 403 carrying
  * `auth/account_suspended` or `auth/account_deleted`. Read as a wrong code, that is "That code didn't work",
@@ -23,7 +23,10 @@ const navigated: string[] = [];
 const redirected: string[] = [];
 let carried: string | null = null;
 let search = "";
-let answer: { ok: true; value: unknown } | { ok: false; failure: { code: string; message: string; action: null } };
+type Answer = { ok: true; value: unknown } | { ok: false; failure: { code: string; message: string; action: null } };
+let answer: Answer;
+/** What the next resend answers. */
+let resendAnswer: Answer = { ok: true, value: null };
 
 vi.mock("../../pithy-config", () => ({
   authConfig: { enabled: true, basePath: "/auth", otpLength: 6 },
@@ -51,9 +54,10 @@ vi.mock("../../router", () => {
   };
 });
 
-vi.mock("@pithy-sh/auth/src/client/api", () => ({
+vi.mock("@pithy-sh/auth/src/client/api", async (importOriginal) => ({
+  isGateRefusal: (await importOriginal<typeof import("@pithy-sh/auth/src/client/api")>()).isGateRefusal,
   signInWithOtp: async () => answer,
-  sendOtp: async () => ({ ok: true, value: null }),
+  sendOtp: async () => resendAnswer,
   getSession: async () => ({ ok: true, value: null }),
   signOut: async () => ({ ok: true, value: null }),
 }));
@@ -66,6 +70,7 @@ beforeEach(() => {
   redirected.length = 0;
   carried = null;
   search = "";
+  resendAnswer = { ok: true, value: null };
   document.body.innerHTML = "";
 });
 
@@ -161,4 +166,35 @@ test("an empty ?email= does not cost the address it was handed", async () => {
   await render();
   expect(redirected).toEqual(["/otp"]);
   expect((await import("../../session")).heldOtpAddress()).toBe("someone@example.com");
+});
+
+/** Press "Send a new code" on a rendered screen. */
+async function pressResend(host: HTMLElement): Promise<void> {
+  const button = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+    (each) => each.textContent === "Send a new code",
+  );
+  expect(button?.disabled, "the resend stayed disabled with no Turnstile composed").toBe(false);
+  await act(async () => {
+    button?.click();
+  });
+}
+
+test.each(["turnstile/failed", "turnstile/missing_token"])(
+  "a resend the gate refused with %s shows its code, and one that passes clears it",
+  async (code) => {
+    const host = await render();
+    resendAnswer = { ok: false, failure: { code, message: "Refused.", action: null } };
+    await pressResend(host);
+    expect(host.querySelector("[data-testid=gate-refusal]")?.textContent).toContain(code);
+    resendAnswer = { ok: true, value: null };
+    await pressResend(host);
+    expect(host.querySelector("[data-testid=gate-refusal]")).toBeNull();
+  },
+);
+
+test("a resend refused for any other reason shows nothing, so no answer tells a registered address from another", async () => {
+  const host = await render();
+  resendAnswer = { ok: false, failure: { code: "auth/user_not_found", message: "No.", action: null } };
+  await pressResend(host);
+  expect(host.querySelector("[data-testid=gate-refusal]")).toBeNull();
 });

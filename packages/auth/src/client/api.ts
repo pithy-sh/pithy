@@ -6,13 +6,9 @@
  * same-origin, cookie-bearing request to this Worker, and the calls made through it — the six a
  * scaffolded screen makes, and {@link updateUser}, which an adopter's own screen calls.
  *
- * **This module lives in the package for the reason `@pithy-sh/payments`'s counterpart does, only more
- * so.** `pithy ui add` writes the auth screens once and may never rewrite them: they are copied into
- * the adopter's repository and become the adopter's files. Every request written into one of those
- * files is frozen there at the moment `pithy init` ran, and a later fix to the base path, the cookie
- * mode or the failure directions reaches none of them. Six such requests existed — `/get-session`,
- * `/sign-out`, the two OTP routes, the magic link, and the social handoff — each spelling out the same
- * transport by hand. They call this now, and this upgrades with a minor release (#370).
+ * **It lives in the package because the screens do not.** `pithy ui add` copies the auth screens into the
+ * adopter's repository once, and a request written out in one of them could never be fixed by a release. The
+ * screens call this, and this upgrades with a minor release.
  *
  * **Two transports, chosen by one option.** With no `origin`, every request is a rooted path on the
  * page's own origin carrying `credentials: "include"` and nothing else: no token in `localStorage` or
@@ -104,6 +100,19 @@ export type AuthGate = (body: Record<string, unknown>) => {
   headers: Record<string, string>;
 };
 
+/**
+ * A native app's attestation, for the two send routes: the headers that carry one over exactly `body`.
+ *
+ * `./attestation` builds it from a challenge and the platform's assertion. When a call carries one, the send is
+ * judged by it alone and the humanity check is not applied.
+ */
+export interface AuthAttestation {
+  /** The headers to send with `body`, or the failure that stopped the attestation. */
+  attest(body: string): Promise<AuthResult<Record<string, string>>>;
+  /** The Worker refused the attestation with `auth/attestation_failed`, so a key it named is not used again. */
+  refused?(failure: AuthFailure): void | Promise<void>;
+}
+
 /** What every call takes: where the routes are, and the seams a test replaces. */
 export interface AuthClientOptions {
   /**
@@ -121,6 +130,8 @@ export interface AuthClientOptions {
   global?: AuthGlobal;
   /** The humanity check to satisfy, on the two routes that are gated by one. */
   gate?: AuthGate;
+  /** A native app's attestation, sent on those two routes in place of the humanity check. */
+  attestation?: AuthAttestation;
 }
 
 /** A refusal a screen can render: the namespaced code, the public message, and what to do next. */
@@ -163,6 +174,16 @@ export const AUTH_CROSS_ORIGIN: AuthFailure = {
   action:
     "Check the auth `basePath` in pithy.config.ts, which is a path on the worker and not a URL, and the client's `origin`, which is a scheme and host with no path.",
 };
+
+/**
+ * Whether a refusal is the send gate's: Turnstile's `turnstile/*` or attestation's `auth/attestation_*`.
+ *
+ * The gate refuses before the address is looked at, so a screen may name it without telling a registered address
+ * from another. Every other refusal of a send is answered the same way whatever the address.
+ */
+export function isGateRefusal(failure: AuthFailure): boolean {
+  return failure.code.startsWith("turnstile/") || failure.code.startsWith("auth/attestation_");
+}
 
 /** Whether a value is a plain record — the first step of every guard below. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -223,14 +244,10 @@ export function withoutCookies(init: AuthRequestInit | undefined): AuthRequestIn
  * route Better Auth owns — the one-time code, the magic link, sign-out, `get-session`, the social
  * handoff, `update-user` — answers its own flat `{ message, code }`, because better-call renders an
  * endpoint's `APIError` into a Response inside `instance.handler` and nothing on our side of that ever
- * sees it (#449).
+ * sees it. Both are read, so a mistyped one-time code reads as a wrong code rather than as a broken app.
  *
- * Reading only the envelope meant every one of those refusals arrived as {@link AUTH_UNREADABLE}, so a
- * reader who mistyped their one-time code was told the app was broken rather than that the code was
- * wrong — in a screen `pithy ui add` copies into an adopter's repository, where it can never be fixed.
- *
- * **The flat shape is read rather than rewritten on the server, deliberately.** `packages/auth/README.md`
- * documents `createAuthClient` from `better-auth/client` as a first-class client surface (#271), and
+ * **The flat shape is read rather than rewritten on the server.** `packages/auth/README.md` documents
+ * `createAuthClient` from `better-auth/client` as a first-class client surface, and
  * `@better-fetch/fetch` builds its error as `{ ...parsedBody, status }` — so an adopter on that path
  * reads `error.code === "INVALID_OTP"` today. Re-homing the body into our envelope would make that
  * `undefined` for every one of them. The wire is Better Auth's contract; this side learns to read it.
@@ -263,11 +280,8 @@ function readFailure(body: unknown): AuthFailure {
  * renders. A body that will not parse is the generic failure rather than a crash — a corporate proxy's
  * HTML page reaches a browser far more often than anyone expects.
  *
- * **Exported, and that is the point of it.** `@pithy-sh/auth` shipped no browser primitive at all, so
- * six scaffolded screens each wrote the transport out by hand — and those screens are copied into an
- * adopter's repository, where Pithy can never fix them. Every browser program that asks this Worker an
- * auth question calls this, and `sameOrigin.test.ts` fails the build on any module that grows its own
- * (#370).
+ * **Exported, so no screen writes a transport of its own.** Every browser program that asks this Worker an
+ * auth question calls this, and `sameOrigin.test.ts` fails the build on any module that grows its own.
  *
  * **Zod-free, like everything on this side of the wire.** The answer is narrowed by the hand-written
  * `guard` a caller passes, never by a schema: this compiles into an adopter's browser bundle, and
@@ -312,12 +326,7 @@ export async function callAuth<T>(
   return guard(body) ? { ok: true, value: body } : { ok: false, failure: AUTH_UNREADABLE };
 }
 
-/**
- * A JSON POST, with the humanity check's contribution already folded in.
- *
- * The gate is applied here rather than at each call site for the reason the cookie mode is: a screen
- * that forgets it sends an ungated request to a gated route and gets a 403 it cannot explain.
- */
+/** A JSON POST, with the humanity check's contribution folded in, so no call site can forget it. */
 function jsonPost(body: Record<string, unknown>, options: AuthClientOptions | undefined): AuthRequestInit {
   const gated = options?.gate ? options.gate(body) : { body, headers: {} };
   return {
@@ -325,6 +334,30 @@ function jsonPost(body: Record<string, unknown>, options: AuthClientOptions | un
     headers: { "content-type": "application/json", ...gated.headers },
     body: JSON.stringify(gated.body),
   };
+}
+
+/**
+ * A send to a gated route: attested when `options.attestation` is set, and otherwise through {@link jsonPost}'s
+ * humanity check. A refused attestation is reported back to it, so a key the Worker refused is not used again.
+ */
+async function gatedSend(
+  path: string,
+  body: Record<string, unknown>,
+  options: AuthClientOptions | undefined,
+): Promise<AuthResult<Record<string, unknown>>> {
+  const attestation = options?.attestation;
+  if (!attestation) return callAuth(path, jsonPost(body, options), options, isObject);
+  const serialized = JSON.stringify(body);
+  const attested = await attestation.attest(serialized);
+  if (!attested.ok) return attested;
+  const result = await callAuth(
+    path,
+    { method: "POST", headers: { "content-type": "application/json", ...attested.value }, body: serialized },
+    options,
+    isObject,
+  );
+  if (!result.ok && result.failure.code === "auth/attestation_failed") await attestation.refused?.(result.failure);
+  return result;
 }
 
 /** The signed-in user, as far as a browser is concerned. */
@@ -374,12 +407,9 @@ export function getSession(options?: AuthClientOptions): Promise<AuthResult<Auth
 /**
  * End the session server-side.
  *
- * **The content type is not decoration, and the scaffolded screen was missing it.** The route refuses a
- * POST without `application/json` with a 415 — so every app scaffolded so far has been signing nobody
- * out. It went unnoticed because the screen ignored the answer and navigated to `/sign-in` regardless,
- * which looks exactly like a successful sign-out until the back button restores a live session.
- * `clientRoundTrip.test.ts` is what found it, and is what would find it again: a request written into a
- * file Pithy may never rewrite is a request nobody ever tested against the route it names (#370).
+ * **The content type is required.** The route refuses a POST without `application/json` with a 415, and a
+ * screen that ignores the answer and navigates on would look signed out while the session lives.
+ * `clientRoundTrip.test.ts` holds this call against the real route.
  *
  * The body is an empty object rather than nothing, because a declared JSON content type with no body is
  * the other half of the same 415.
@@ -432,7 +462,7 @@ export function signOut(options?: AuthClientOptions): Promise<AuthResult<Record<
  * function.** Standing up a second Better Auth client with `inferAdditionalFields` duplicates
  * configuration `@pithy-sh/auth` already owns. Reaching for {@link callAuth} instead means an adopter
  * spelling out the path, the content type and the guard themselves, one deep import below the surface
- * every other auth call in their app goes through — written into a file Pithy can never fix (#446).
+ * every other auth call in their app goes through, in a file a release can never fix.
  *
  * **The answer carries no user, whatever the route's own OpenAPI block advertises.** Better Auth's
  * `/update-user` ends `ctx.json({ status: true })`, so `value` is `{ status: true }` and
@@ -471,14 +501,14 @@ export function signInWithOtp(
 /**
  * Mail a one-time code.
  *
- * Gated by the humanity check when one is composed — `options.gate` puts the token where the middleware
- * reads it, and a screen cannot forget to.
+ * Gated: `options.attestation` attests over the request, and otherwise `options.gate` puts the humanity check's
+ * token where the middleware reads it. A gate's refusal comes back with its code; see {@link isGateRefusal}.
  */
 export function sendOtp(
   input: { email: string; type: "sign-in" },
   options?: AuthClientOptions,
 ): Promise<AuthResult<Record<string, unknown>>> {
-  return callAuth("/email-otp/send-verification-otp", jsonPost({ ...input }, options), options, isObject);
+  return gatedSend("/email-otp/send-verification-otp", { ...input }, options);
 }
 
 /**
@@ -491,7 +521,7 @@ export function sendMagicLink(
   input: { email: string; callbackURL: string },
   options?: AuthClientOptions,
 ): Promise<AuthResult<Record<string, unknown>>> {
-  return callAuth("/sign-in/magic-link", jsonPost({ ...input }, options), options, isObject);
+  return gatedSend("/sign-in/magic-link", { ...input }, options);
 }
 
 /**
@@ -542,10 +572,9 @@ function isAuthorization(value: unknown): value is { url: string } {
  * refused callback to `${baseURL}${basePath}/error`, which in production redirects on to the adopter's
  * home route carrying a query string no template reads — so the user lands on a page that says nothing
  * about what just happened. Pass the sign-in screen's own path and the refusal returns to the control
- * that started it, as `?error=<code>`. That is the transport the whole GitHub rejection copy depends on
- * (pithy-sh/pithy#554); without it the sentence exists and is unreachable.
+ * that started it, as `?error=<code>`, which is how a provider's refusal copy reaches the screen.
  *
- * **The value has a shape, and the Worker refuses one that does not fit (#625).** An absolute URL on a
+ * **The value has a shape, and the Worker refuses one that does not fit.** An absolute URL on a
  * trusted origin, or a root-relative path — with **no fragment** and no `error`/`error_description`
  * parameter already on it. Better Auth appends `?error=<code>` to this string without parsing it, so a
  * `#` anywhere in it swallows the code the refusal screen is waiting for, and an `error` already there
@@ -559,7 +588,7 @@ export async function startSocialSignIn(
 ): Promise<SocialSignIn> {
   // The gate is dropped rather than passed through, so a screen holding one client options object for
   // the whole page cannot accidentally gate this route.
-  const ungated: AuthClientOptions | undefined = options && { ...options, gate: undefined };
+  const ungated: AuthClientOptions | undefined = options && { ...options, gate: undefined, attestation: undefined };
   const result = await callAuth("/sign-in/social", jsonPost({ ...input }, undefined), ungated, isObject);
   if (!result.ok) return { kind: "refused", failure: result.failure };
   return isAuthorization(result.value) ? { kind: "authorize", url: result.value.url } : { kind: "unconfigured" };

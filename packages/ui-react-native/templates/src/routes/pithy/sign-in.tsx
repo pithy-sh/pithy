@@ -1,4 +1,13 @@
-import { sendMagicLink, sendOtp, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+import {
+  type AuthAttestation,
+  type AuthFailure,
+  type AuthResult,
+  isGateRefusal,
+  sendMagicLink,
+  sendOtp,
+  startSocialSignIn,
+} from "@pithy-sh/auth/src/client/api";
+import { ATTESTATION_UNAVAILABLE } from "@pithy-sh/auth/src/client/attestation";
 import { handoffCode, nativeSignInStartURL } from "@pithy-sh/auth/src/client/handoff";
 // The one code a refused provider sign-in comes back with. Imported rather than spelled: a literal here and a
 // literal there is a pair that can drift, and the drift would show as this block silently never rendering again.
@@ -19,6 +28,7 @@ import { CryptoDigestAlgorithm, digestStringAsync, getRandomBytes } from "expo-c
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { useAttestation } from "../../attestation";
 import { authConfig, googleClientIds, origin, universalLinkOrigin } from "../../pithy-config";
 import { appLink, onDevice, parseLink, parseQuery, queryString } from "../../platform";
 import { Redirect, routeTable, useGo, useSearch, useSearchParam } from "../../router";
@@ -120,6 +130,8 @@ const EN = {
   // On a phone with no universal link the email path is a one-time code, so the copy that names the link names the
   // code instead. Keyed under the code screen's domain: on the sign-in screen's own keys, a code is never offered.
   "auth/otp.ask.submit": "Email me a code",
+  // A send the gate refused, when the catalog has no sentence for its code. The code is shown beneath it.
+  "auth/sign_in.gate_refused": "The check before sending didn't pass, so nothing was sent. Try again.",
   "auth/otp.ask.provider_unconfigured": "{provider} is not configured here. Use a code instead.",
   "auth/otp.ask.provider_silent": "{provider} didn't answer. Use a code instead.",
   "auth/otp.ask.signup_email_only":
@@ -147,6 +159,8 @@ export interface HumanityCheck {
     body: Record<string, unknown>;
     headers: Record<string, string>;
   };
+  /** The app's attestation, sent in place of the token where the environment takes one. See `attestation.ts`. */
+  readonly attestation?: AuthAttestation | null;
 }
 
 /** No check at all: what the screen does when the turnstile capability is not composed. */
@@ -402,6 +416,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<Refusal>(null);
+  const [gateRefusal, setGateRefusal] = useState<AuthFailure | null>(null);
   const error = useSearchParam("error");
   const returned = linkRefusal(error, useSearchParam("provider"));
   // A sign-in refused for the account's standing, suspended or deleted, goes on to the screen for that state.
@@ -418,24 +433,42 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   const callbackTo = `${callbackPath}${resumeQuery(search)}`;
 
   const byCode = emailByCode();
+  const gated = {
+    ...transport.auth,
+    gate: check.attach,
+    ...(check.attestation ? { attestation: check.attestation } : {}),
+  };
+
+  /**
+   * Whether the gate refused the send, which it does before the address is read, or the device could not attest,
+   * so nothing was sent. Its code is shown and the form stays; every other answer goes on as if the mail went, so no
+   * answer tells a registered address from another.
+   */
+  function gateRefused(result: AuthResult<unknown>): boolean {
+    const failure =
+      !result.ok && (isGateRefusal(result.failure) || result.failure.code === ATTESTATION_UNAVAILABLE.code)
+        ? result.failure
+        : null;
+    setGateRefusal(failure);
+    return failure !== null;
+  }
 
   async function sendLink(): Promise<void> {
     if (byCode) return sendCode();
     setBusy(true);
     const callbackURL = onDevice() ? await beginHandoff(callbackTo) : callbackTo;
-    await sendMagicLink({ email, callbackURL }, { ...transport.auth, gate: check.attach });
+    const result = await sendMagicLink({ email, callbackURL }, gated);
     setBusy(false);
-    // Always the same answer, whether or not the address is registered: telling the two apart is an enumeration
-    // oracle.
+    if (gateRefused(result)) return;
     setSent(true);
   }
 
   /** Mail a one-time code and go on to the screen that takes it, with the address and whatever it should resume. */
   async function sendCode(): Promise<void> {
     setBusy(true);
-    // Whatever the answer, the code screen: telling a registered address from another is an enumeration oracle.
-    await sendOtp({ email, type: "sign-in" }, { ...transport.auth, gate: check.attach });
+    const result = await sendOtp({ email, type: "sign-in" }, gated);
     setBusy(false);
+    if (gateRefused(result)) return;
     holdOtpAddress(email);
     go(`${otpPath}${resumeQuery(search)}`);
   }
@@ -625,14 +658,15 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
             },
           ]}
         />
-        {check.widget}
+        {check.attestation ? null : check.widget}
         <Button
           label={t.t(byCode ? "auth/otp.ask.submit" : "auth/sign_in.submit")}
           primary
-          disabled={busy || !email || check.pending}
+          disabled={busy || !email || (!check.attestation && check.pending)}
           onPress={() => void sendLink()}
           theme={theme}
         />
+        {gateRefusal ? <GateRefusal failure={gateRefusal} t={t} theme={theme} /> : null}
       </View>
 
       {/* Reassurance, not navigation: signing up is signing in, so there is no other screen to point at. */}
@@ -658,17 +692,35 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   );
 }
 
-/** The wiring: the real projection, the real widget, and your two slots. */
+/**
+ * The gate's refusal of a send, `turnstile/*` or `auth/attestation_*`: the sentence for its code, and the code
+ * itself, so a report from the screen names what refused.
+ */
+export function GateRefusal(props: { failure: AuthFailure; t: Translator; theme: Theme }): ReactNode {
+  const { failure, t, theme } = props;
+  return (
+    <View testID="gate-refusal" style={{ gap: theme.spacing.xs }}>
+      <Text style={[theme.type.body, { color: theme.colors.danger }]}>
+        {t.maybe(failure.code) ?? t.t("auth/sign_in.gate_refused")}
+      </Text>
+      <Text style={[theme.type.caption, { color: theme.colors.muted }]}>{failure.code}</Text>
+    </View>
+  );
+}
+
+/** The wiring: the real projection, the real widget or the app's attestation, and your two slots. */
 export default function SignIn(): ReactNode {
   const [token, setToken] = useState<string | null>(null);
   const onToken = useCallback((value: string | null) => setToken(value), []);
+  const attestation = useAttestation();
   const check = useMemo<HumanityCheck>(
     () => ({
       widget: <Turnstile onToken={onToken} />,
       pending: turnstilePending(token),
       attach: (body) => turnstileRequest(body, token),
+      attestation,
     }),
-    [onToken, token],
+    [onToken, token, attestation],
   );
   return <SignInScreen auth={authConfig} check={check} brand={BRAND} mark={MARK} />;
 }

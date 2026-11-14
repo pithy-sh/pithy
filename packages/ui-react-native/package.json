@@ -58,6 +58,7 @@
     }
   },
   "devDependencies": {
+    "@expo/app-integrity": "57.0.2",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/consent": "workspace:*",
     "@pithy-sh/core": "workspace:*",
