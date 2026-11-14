@@ -5,6 +5,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as authClient from "@pithy-sh/auth/src/client/api";
+import * as authAttestation from "@pithy-sh/auth/src/client/attestation";
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { LocaleCatalogs, MessageKey, messageDomain } from "@pithy-sh/core/src/i18n/catalog";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
@@ -392,7 +393,7 @@ const CONTRIBUTED_EN = CONTRIBUTED.flatMap(({ package: name, catalogs }) =>
  * own comment argues why the Spanish names no noun at all.
  */
 const SENTINELS: { key: string; value: string }[] = (
-  [...Object.values(authClient), ...Object.values(paymentsClient)] as unknown[]
+  [...Object.values(authClient), ...Object.values(authAttestation), ...Object.values(paymentsClient)] as unknown[]
 )
   .filter(
     (value): value is { code: string; message: string } =>

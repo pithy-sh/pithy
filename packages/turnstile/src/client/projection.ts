@@ -13,7 +13,7 @@
  *
  * **This is the only statement of the shape.** `@pithy-sh/ui-react`'s `templates/client-env.d.ts` — the
  * ambient declaration `pithy ui add react` copies into an adopter's Worker — is generated from this type
- * by `@pithy-sh/vite`'s `clientEnvDeclaration.ts` (#398). The unions and the per-field doc comments below
+ * by `@pithy-sh/vite`'s `clientEnvDeclaration.ts`. The unions and the per-field doc comments below
  * are emitted verbatim, so what is written here is what a screen author reads.
  */
 export type TurnstileClientProjection =
@@ -35,7 +35,7 @@ export type TurnstileClientProjection =
        * The action label the widget must be solved for. Render it, never retype it: the sign-in route
        * asserts this exact string against the token, and dev and staging cannot notice a copy that has
        * drifted — Cloudflare's test keys answer with no action at all, so the first environment that
-       * can tell is the one where a mismatch refuses every sign-in. #377.
+       * can tell is the one where a mismatch refuses every sign-in.
        */
       action: string;
       /** Where the response token goes: a body field, or a header when one is configured. */

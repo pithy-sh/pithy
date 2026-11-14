@@ -17,11 +17,14 @@ import { magicLink } from "better-auth/plugins/magic-link";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { AttestationConfig } from "./attestation/config";
+import type { AttestationVerifier } from "./attestation/verifier";
 import { AuthAuditActions } from "./audit/actions";
 import {
   type AuthCapability,
   AuthConfig,
   type AuthConfigInput,
+  attestationProjection,
   auth,
   isAuthCapability,
   turnstileLoginGate,
@@ -363,6 +366,60 @@ describe("auth client projection", () => {
     const projection = resolveClientProjection(build({ otpLength: 8, basePath: "/identity" }), context);
     expect(projection.otpLength).toBe(8);
     expect(projection.basePath).toBe("/identity");
+  });
+
+  test("an environment's attestation block projects its mode, and an environment with none projects nothing", () => {
+    const cap = build({
+      attestation: {
+        environments: {
+          dev: { mode: "test" },
+          staging: { mode: "test" },
+          live: { mode: "test", android: [{ packageName: "com.example.app" }] },
+          prod: { mode: "enforce", android: [{ packageName: "com.example.app" }] },
+        },
+      },
+    });
+    const mode = (environment: string) =>
+      (resolveClientProjection(cap, { environment }) as { attestation?: { mode: string } }).attestation;
+    const both = { ios: true, android: true };
+    expect(mode("dev")).toEqual({ mode: "test", platforms: both });
+    expect(mode("staging")).toEqual({ mode: "test", platforms: both });
+    // This release verifies no real assertion, so under enforce every platform keeps Turnstile.
+    const neither = { ios: false, android: false };
+    expect(mode("prod")).toEqual({ mode: "enforce", platforms: neither });
+    // The Worker holds a declared environment to enforce whatever its block says, so the app is told so.
+    expect(mode("live")).toEqual({ mode: "enforce", platforms: neither });
+    expect(mode("feature")).toBeUndefined();
+    expect(mode("dev")).toBeDefined();
+    expect(resolveClientProjection(build(), { environment: "dev" })).not.toHaveProperty("attestation");
+  });
+
+  test("under enforce, a platform attests only where it has an allowed app and the Worker has its verifier", () => {
+    const config = AttestationConfig.parse({
+      environments: {
+        prod: {
+          mode: "enforce",
+          ios: [{ teamId: "ABCDE12345", bundleId: "com.example.app" }],
+          android: [{ packageName: "com.example.app" }],
+        },
+        staging: { mode: "enforce", android: [{ packageName: "com.example.app" }] },
+      },
+    });
+    const verifier: AttestationVerifier = { verify: async () => ({ ok: true }) };
+    // An app allowed with no verifier would be answered auth/attestation_config on every send, so it keeps Turnstile.
+    expect(attestationProjection(config, "prod", {})).toEqual({
+      attestation: { mode: "enforce", platforms: { ios: false, android: false } },
+    });
+    expect(attestationProjection(config, "prod", { ios: verifier })).toEqual({
+      attestation: { mode: "enforce", platforms: { ios: true, android: false } },
+    });
+    expect(attestationProjection(config, "prod", { ios: verifier, android: verifier })).toEqual({
+      attestation: { mode: "enforce", platforms: { ios: true, android: true } },
+    });
+    // A verifier with no allowed app is refused all the same.
+    expect(attestationProjection(config, "staging", { ios: verifier, android: verifier })).toEqual({
+      attestation: { mode: "enforce", platforms: { ios: false, android: true } },
+    });
   });
 });
 

@@ -11,7 +11,7 @@ import { expect, test, vi } from "vitest";
  * `src/routes/pithy/callback.tsx`. Those used to be two strings: a `` `${origin}/callback` `` template
  * here and an `export const path = "/callback"` there, with nothing comparing them. Renaming the
  * screen's path — an ordinary rebrand — typechecked, linted, built, and broke every sign-in, because
- * the link then landed on the not-found screen (#393).
+ * the link then landed on the not-found screen.
  *
  * It is the one flow you cannot test by being signed in, so nothing about your day would tell you.
  *
@@ -44,9 +44,15 @@ vi.mock("../../pithy-config", () => ({
 /** Every `callbackURL` the screen handed the kit, in order. */
 const issued: string[] = [];
 
-vi.mock("@pithy-sh/auth/src/client/api", () => ({
+/** What the next magic-link send answers. */
+let linkAnswer: { ok: true; value: unknown } | { ok: false; failure: { code: string; message: string; action: null } } =
+  { ok: true, value: {} };
+
+vi.mock("@pithy-sh/auth/src/client/api", async (importOriginal) => ({
+  isGateRefusal: (await importOriginal<typeof import("@pithy-sh/auth/src/client/api")>()).isGateRefusal,
   sendMagicLink: async (body: { callbackURL: string }) => {
     issued.push(body.callbackURL);
+    return linkAnswer;
   },
   startSocialSignIn: async (body: { callbackURL: string }) => {
     issued.push(body.callbackURL);
@@ -113,4 +119,42 @@ test("a provider comes back to the same place, so the two ways in cannot drift a
   });
 
   expect(issued).toEqual([`${ORIGIN}${CANARY_CALLBACK}`]);
+});
+
+/** Render the screen, type an address, submit, and hand back the host. */
+async function submitAddress(): Promise<HTMLElement> {
+  const { SignInScreen } = await import("./sign-in");
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  await act(async () => {
+    createRoot(host).render(<SignInScreen auth={{ ...AUTH, providers: {} }} origin={ORIGIN} />);
+  });
+  const field = host.querySelector<HTMLInputElement>("input[type=email]");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "someone@example.com");
+    field?.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    host.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  return host;
+}
+
+test.each(["turnstile/failed", "turnstile/missing_token"])(
+  "a send the gate refused with %s shows its code and keeps the form, never 'Check your inbox.'",
+  async (code) => {
+    linkAnswer = { ok: false, failure: { code, message: "Refused.", action: null } };
+    const host = await submitAddress();
+    expect(host.querySelector("[data-testid=gate-refusal]")?.textContent).toContain(code);
+    expect(host.textContent).not.toContain("Check your inbox.");
+    expect(host.querySelector("form")).not.toBeNull();
+  },
+);
+
+test("any other refusal reads as sent, so no answer tells a registered address from another", async () => {
+  linkAnswer = { ok: false, failure: { code: "auth/user_not_found", message: "No.", action: null } };
+  const host = await submitAddress();
+  expect(host.textContent).toContain("Check your inbox.");
+  expect(host.querySelector("[data-testid=gate-refusal]")).toBeNull();
+  linkAnswer = { ok: true, value: {} };
 });

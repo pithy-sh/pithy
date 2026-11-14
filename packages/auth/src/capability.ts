@@ -18,8 +18,8 @@ import {
 } from "@pithy-sh/turnstile/src/config/config";
 import type { Context } from "hono";
 import { z } from "zod";
-import { AttestationConfig } from "./attestation/config";
-import type { AttestationVerifiers } from "./attestation/verifier";
+import { AttestationConfig, attestationFor, testAssertionAllowedIn } from "./attestation/config";
+import { type AttestationVerifiers, PLATFORM_VERIFIERS } from "./attestation/verifier";
 import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
@@ -425,6 +425,35 @@ function assertPluginTablesUnclaimed(
 }
 
 /**
+ * The attestation half of the client projection for one environment: its mode as the Worker will apply it, and
+ * which platforms can pass by attesting, or nothing where the environment has no block. A Worker accepts the test
+ * assertion only in the environments {@link testAssertionAllowedIn} names, so a `test` block anywhere else projects
+ * as `enforce`. Under `enforce` a platform passes only with an allowed app and a verifier in `verifiers`: without
+ * the app its assertion is refused, and without the verifier it is answered `auth/attestation_config`, so it
+ * projects `false` and its phones keep Turnstile. The test assertion passes from either platform.
+ */
+export function attestationProjection(
+  config: AttestationConfig,
+  environment: string,
+  verifiers: AttestationVerifiers,
+): Pick<Extract<AuthClientProjection, { enabled: true }>, "attestation"> {
+  const block = attestationFor(config, environment);
+  if (block === undefined) return {};
+  if (block.mode === "test" && testAssertionAllowedIn(environment)) {
+    return { attestation: { mode: "test", platforms: { ios: true, android: true } } };
+  }
+  return {
+    attestation: {
+      mode: "enforce",
+      platforms: {
+        ios: block.ios.length > 0 && verifiers.ios !== undefined,
+        android: block.android.length > 0 && verifiers.android !== undefined,
+      },
+    },
+  };
+}
+
+/**
  * The auth capability. Passwordless sign-in (magic link, OTP, Google, Apple), the hybrid bearer +
  * cookie token model, the per-device session registry, and the `bearer`/`session` fills for core's
  * `AuthContext` seam. Depends on `secrets` and `email`; auto-gates its send routes with `turnstile`
@@ -597,7 +626,7 @@ export function auth(options: AuthOptions): AuthCapability {
      * could say. The declared type is what makes a dropped field — and a grown one, `baseURL` projected
      * "just for a redirect" — a compile error here rather than a browser's problem.
      */
-    client: (): AuthClientProjection => ({
+    client: (context): AuthClientProjection => ({
       enabled: true,
       basePath: resolved.basePath,
       // Nested, so a screen can iterate the set rather than naming four booleans — and so adding a
@@ -620,6 +649,11 @@ export function auth(options: AuthOptions): AuthCapability {
       },
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,
+      ...attestationProjection(
+        resolved.attestation,
+        context.environment,
+        wiring.attestationVerifiers ?? PLATFORM_VERIFIERS,
+      ),
     }),
     // Order matters: the same-origin policy is published first, so it is on the request before any
     // route can gate on it; then the tier-1 edge rate limiter (before session resolution touches D1);

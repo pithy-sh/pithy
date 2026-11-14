@@ -513,15 +513,18 @@ describe("the React 19 stub", () => {
     }
     // Only enabled providers render at all.
     expect(signIn).toContain("SOCIAL.filter((provider) => auth.providers[provider.id])");
-    // Anti-enumeration: the answer never distinguishes a known address from an unknown one. `setSent`
-    // is unconditional and the response is discarded, so there is nothing for the copy to branch on —
-    // stated about the code rather than as a banned phrase, because the account line is the words
-    // "No account yet?" and it is about this visitor, not about an address that was submitted.
+    // Anti-enumeration: the answer never distinguishes a known address from an unknown one. The one
+    // branch on the response is the gate's refusal, which comes before the address is read; every other
+    // answer is `setSent` — stated about the code rather than as a banned phrase, because the account
+    // line is the words "No account yet?" and it is about this visitor, not about an address that was
+    // submitted. `sign-in.test.tsx` renders both answers.
     expect(signIn).toContain("Check your inbox.");
     expect(signIn).toContain("If that address can sign in");
     const sendLink = signIn.slice(signIn.indexOf("async function sendLink"), signIn.indexOf("async function social"));
-    expect(sendLink).toContain("setSent(true);");
-    expect(sendLink).not.toMatch(/response|\.ok\b/);
+    expect(sendLink).toContain("if (refused === null) setSent(true);");
+    expect(sendLink.match(/\.ok\b/g) ?? []).toHaveLength(1);
+    expect(sendLink).toContain("!result.ok && isGateRefusal(result.failure)");
+    expect(sendLink).not.toMatch(/response|result\.failure\.code/);
   });
 
   test("one way in — the magic link, and nothing beside it", () => {

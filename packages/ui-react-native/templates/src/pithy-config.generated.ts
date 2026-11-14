@@ -1,7 +1,10 @@
 // Written from apps/__PITHY_WORKER__'s composed config. Pithy's `ui sync --app` rewrites it when that config
 // changes, and keeps the fields below that are yours.
 //
-// Yours to edit, and kept by a sync: `appScheme`, `universalLinkOrigin`, `google` and `rails`.
+// Yours to edit, and kept by a sync: `appScheme`, `universalLinkOrigin`, `google`, `playIntegrity` and `rails`.
+//
+// `playIntegrity.cloudProjectNumber` is the Google Cloud project linked to the app in Play Console. Android
+// attests with Play Integrity where `auth.<env>.attestation.mode` is enforce, and only once it is set.
 //
 // `rails.ios`, `rails.android` and `rails.web` name the rail each platform sells through: "apple", "google",
 // "stripe", "lemonSqueezy", "paddle", or "none" to show plans and sell nothing. Change one here, or pass
@@ -38,6 +41,9 @@ const config: GeneratedPithyConfig = {
   google: {
     webClientId: null,
     iosClientId: null,
+  },
+  playIntegrity: {
+    cloudProjectNumber: null,
   },
   auth: {
     dev: {

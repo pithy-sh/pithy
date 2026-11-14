@@ -102,6 +102,20 @@ export const GoogleClientIds = z
   .describe("The Google OAuth client ids native Google sign-in needs. Public values, never a secret.");
 export type GoogleClientIds = z.infer<typeof GoogleClientIds>;
 
+/** The Google Cloud project Play Integrity answers for. A public number; never a secret. */
+export const PlayIntegrity = z
+  .object({
+    cloudProjectNumber: z
+      .string()
+      .regex(/^[0-9]+$/, "A Google Cloud project number is digits only.")
+      .nullable()
+      .describe(
+        "The number of the Google Cloud project linked to the app in Play Console. An Android build attests with Play Integrity where the environment enforces attestation. Null turns it off, and the app passes the humanity check instead.",
+      ),
+  })
+  .describe("The Google Cloud project Play Integrity answers for. A public number, never a secret.");
+export type PlayIntegrity = z.infer<typeof PlayIntegrity>;
+
 /** One capability's client projection, as the Worker composed it: every field kept, `enabled` checked. */
 const Projection = (capability: string, environment: AppEnvironment) =>
   z
@@ -151,6 +165,9 @@ export const GeneratedConfig = z
       ),
     rails: PlatformRails,
     google: GoogleClientIds,
+    playIntegrity: PlayIntegrity.optional().describe(
+      "The Google Cloud project Play Integrity answers for. Absent in a file written before it existed: Android then passes the humanity check where attestation is enforced.",
+    ),
     workerPaths: z
       .array(z.string().regex(/^\/[^/?#\s]+$/))
       .optional()
@@ -175,6 +192,7 @@ export const ADOPTER_CHOICES = [
   "universalLinkOrigin",
   "rails",
   "google",
+  "playIntegrity",
 ] as const satisfies readonly (keyof GeneratedConfig)[];
 
 /** The line the value starts on, and the line after it. The format is these two lines and an object literal between. */
@@ -241,7 +259,10 @@ export function renderGeneratedConfig(config: GeneratedConfig, worker: string): 
     `// Written from apps/${worker}'s composed config. Pithy's \`ui sync --app\` rewrites it when that config`,
     "// changes, and keeps the fields below that are yours.",
     "//",
-    "// Yours to edit, and kept by a sync: `appScheme`, `universalLinkOrigin`, `google` and `rails`.",
+    "// Yours to edit, and kept by a sync: `appScheme`, `universalLinkOrigin`, `google`, `playIntegrity` and `rails`.",
+    "//",
+    "// `playIntegrity.cloudProjectNumber` is the Google Cloud project linked to the app in Play Console. Android",
+    "// attests with Play Integrity where `auth.<env>.attestation.mode` is enforce, and only once it is set.",
     "//",
     '// `rails.ios`, `rails.android` and `rails.web` name the rail each platform sells through: "apple", "google",',
     '// "stripe", "lemonSqueezy", "paddle", or "none" to show plans and sell nothing. Change one here, or pass',
@@ -414,6 +435,8 @@ function keepOrigins(previous: Origins, next: Origins): Origins {
 export function keepAdopterChoices(previous: GeneratedConfig | null, next: GeneratedConfig): GeneratedConfig {
   if (previous === null) return next;
   const kept: GeneratedConfig = { ...next, origins: keepOrigins(previous.origins, next.origins) };
-  for (const key of ADOPTER_CHOICES) Object.assign(kept, { [key]: previous[key] });
+  for (const key of ADOPTER_CHOICES) {
+    if (previous[key] !== undefined) Object.assign(kept, { [key]: previous[key] });
+  }
   return kept;
 }

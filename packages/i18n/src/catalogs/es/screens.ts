@@ -47,6 +47,8 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.refused.remedy":
     "Entra con tu correo y luego conecta {provider} desde tu perfil. A partir de ahí funciona sea cual sea tu principal.",
   "auth/sign_in.divider": "o",
+  "auth/sign_in.gate_refused":
+    "La comprobación previa al envío no se ha superado, así que no se ha enviado nada. Inténtalo de nuevo.",
   "auth/sign_in.email.label": "Correo electrónico",
   "auth/sign_in.submit": "Envíame un enlace",
   "auth/sign_in.signup.prompt": "¿Aún no tienes cuenta?",
@@ -63,6 +65,8 @@ export const esScreens: MessageCatalog = {
   "auth/otp.sent.other": "Hemos enviado {count} dígitos a {email}.",
   "auth/otp.inbox": "tu correo",
   "auth/otp.failed": "Ese código no funcionó. Inténtalo otra vez o pide uno nuevo.",
+  "auth/otp.gate_refused":
+    "La comprobación previa al envío no se ha superado, así que no se ha enviado un código nuevo. Inténtalo de nuevo.",
   "auth/otp.submit": "Entrar",
   "auth/otp.resend": "Enviar un código nuevo",
   // The native sign-in screen on a phone with no universal link, where email signs in with a code.
@@ -284,4 +288,5 @@ export const esScreens: MessageCatalog = {
   "client/unreadable": "La respuesta no se ha podido leer.",
   "client/cross_origin": "Esa petición habría salido de este sitio, así que no se ha enviado.",
   "client/no_browser": "No hay ningún navegador al que enviarte para pagar.",
+  "client/attestation_unavailable": "Este dispositivo no ha podido demostrar que ejecuta la aplicación.",
 };

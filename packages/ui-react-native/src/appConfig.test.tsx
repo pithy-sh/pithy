@@ -12,9 +12,13 @@ const dirs: string[] = [];
  * The Expo config the template answers for the app at `projectRoot`, with `src/pithy-config.generated.ts` naming
  * `universalLinkOrigin`.
  */
-async function expoConfig(universalLinkOrigin: string | null, projectRoot = "/nowhere/apps/app") {
+async function expoConfig(
+  universalLinkOrigin: string | null,
+  projectRoot = "/nowhere/apps/app",
+  auth: Record<string, unknown> = { dev: { enabled: false } },
+) {
   vi.doMock("../templates/src/pithy-config.generated.ts", () => ({
-    default: { appScheme: "pithyapp", universalLinkOrigin, google: { webClientId: null, iosClientId: null } },
+    default: { appScheme: "pithyapp", universalLinkOrigin, google: { webClientId: null, iosClientId: null }, auth },
   }));
   const { default: config } = await import("../templates/app.config");
   return config({ projectRoot, staticConfigPath: null, packageJsonPath: null, config: {} });
@@ -51,6 +55,28 @@ describe("the app's universal link", () => {
     expect(config.android?.intentFilters).toEqual([
       expect.objectContaining({ autoVerify: true, data: [{ scheme: "https", host: "links.example.com" }] }),
     ]);
+  });
+});
+
+describe("the App Attest entitlement", () => {
+  const enforcing = {
+    dev: { enabled: true, attestation: { mode: "test" } },
+    prod: { enabled: true, attestation: { mode: "enforce" } },
+  };
+
+  test("is absent while no environment enforces attestation, so signing needs no App Attest capability", async () => {
+    expect((await expoConfig(null)).ios?.entitlements).toBeUndefined();
+    const testOnly = { dev: { enabled: true, attestation: { mode: "test" } }, prod: { enabled: true } };
+    expect((await expoConfig(null, undefined, testOnly)).ios?.entitlements).toBeUndefined();
+  });
+
+  test("names Apple's development service, and its production one for a prod build", async () => {
+    const dev = await expoConfig(null, undefined, enforcing);
+    expect(dev.ios?.entitlements).toEqual({ "com.apple.developer.devicecheck.appattest-environment": "development" });
+    vi.resetModules();
+    vi.stubEnv("EXPO_PUBLIC_PITHY_ENV", "prod");
+    const prod = await expoConfig(null, undefined, enforcing);
+    expect(prod.ios?.entitlements).toEqual({ "com.apple.developer.devicecheck.appattest-environment": "production" });
   });
 });
 

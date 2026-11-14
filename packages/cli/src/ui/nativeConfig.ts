@@ -127,6 +127,7 @@ export function buildGeneratedConfig(input: {
     universalLinkOrigin: universalLinkOriginFor(input.config),
     rails: input.rails,
     google: { webClientId: null, iosClientId: null },
+    playIntegrity: { cloudProjectNumber: null },
     // The dev proxy forwards these under `pithy dev`, so the local route table is the one that counts.
     workerPaths: deriveWorkerFirst(input.config, []).filter((pattern) => !pattern.endsWith("/*")),
     ...Object.fromEntries(PROJECTED.map((name) => [name, projections(name)])),

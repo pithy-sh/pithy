@@ -18,6 +18,8 @@ import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-util
 import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { Hono } from "hono";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
+import type { z } from "zod";
+import type { AttestationConfig } from "../attestation/config";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { publishSameOrigin } from "../http/csrf";
 import { createSessionMiddleware } from "../http/middleware";
@@ -116,6 +118,8 @@ export interface LiveAppOptions {
    * outside dev and staging — so a suite has to be able to say it is prod to prove that.
    */
   environment?: string;
+  /** Auth's `attestation` block, as `auth()` takes it. Absent, attestation is not configured. */
+  attestation?: z.input<typeof AttestationConfig>;
 }
 
 /** A booted app: where it listens, what it was pinned to, and what it recorded. */
@@ -200,6 +204,7 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
       basePath: options.basePath,
       trustedOrigins: [origin],
       google: { enabled: Boolean(options.google) },
+      ...(options.attestation ? { attestation: options.attestation } : {}),
     }),
     resolveGithubUserInfo: undefined,
     enqueueEmail: emailCapability.enqueue,

@@ -158,9 +158,11 @@ describe("a sync", () => {
       universalLinkOrigin: "https://links.example.com",
       rails: { ios: "none", android: "google", web: "paddle" },
       google: { webClientId: "web.apps.googleusercontent.com", iosClientId: null },
+      playIntegrity: { cloudProjectNumber: "123456789" },
     };
     const next: GeneratedConfig = {
       ...composed,
+      playIntegrity: { cloudProjectNumber: null },
       origins: { ...composed.origins, prod: "https://api2.example.com" },
       i18n: { ...composed.i18n, dev: { enabled: true } },
     };
@@ -210,6 +212,20 @@ describe("a sync", () => {
     };
     const next: GeneratedConfig = { ...composed, origins: { dev: "http://localhost:8791", prod: null } };
     expect(keepAdopterChoices(edited, next).origins).toEqual({ dev: "http://localhost:8791", prod: null });
+  });
+
+  test("a file written before `playIntegrity` existed takes the composed default, and still reads back", () => {
+    const next: GeneratedConfig = { ...composed, playIntegrity: { cloudProjectNumber: null } };
+    const kept = keepAdopterChoices(composed, next);
+    expect(kept.playIntegrity).toEqual({ cloudProjectNumber: null });
+    expect(readGeneratedConfig(renderGeneratedConfig(kept, "api"))).toEqual(kept);
+    expect(readGeneratedConfig(renderGeneratedConfig(composed, "api"))).toEqual(composed);
+  });
+
+  test("a Google Cloud project number is digits only", () => {
+    expect(GeneratedConfig.safeParse({ ...composed, playIntegrity: { cloudProjectNumber: "12a" } }).success).toBe(
+      false,
+    );
   });
 
   test("with nothing written yet, the composed config is the answer", () => {

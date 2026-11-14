@@ -1,4 +1,4 @@
-import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
+import { type AuthFailure, isGateRefusal, sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { screenPath } from "@pithy-sh/ui-core/src/routes";
@@ -45,6 +45,7 @@ const EN = {
   "auth/otp.sent.other": "We sent {count} digits to {email}.",
   "auth/otp.inbox": "your inbox",
   "auth/otp.failed": "That code didn't work. Try again, or send a new one.",
+  "auth/otp.gate_refused": "The check before sending didn't pass, so no new code was sent. Try again.",
   "auth/otp.submit": "Sign in",
   "auth/otp.resend": "Send a new code",
 } satisfies MessageCatalog;
@@ -61,6 +62,7 @@ export default function Otp() {
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length: authConfig.otpLength }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const [gateRefusal, setGateRefusal] = useState<AuthFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
   const onToken = useCallback((value: string | null) => setCaptcha(value), []);
@@ -100,7 +102,13 @@ export default function Otp() {
   async function resend(): Promise<void> {
     // The gate goes on the send route and not on the verify one, which is where `@pithy-sh/auth`
     // stacks the humanity check: a code that was already mailed is not a surface worth challenging.
-    await sendOtp({ email, type: "sign-in" }, { ...client, gate: (body) => turnstileRequest(body, captcha) });
+    const result = await sendOtp(
+      { email, type: "sign-in" },
+      { ...client, gate: (body) => turnstileRequest(body, captcha) },
+    );
+    // The gate's refusal is shown with its code. Any other answer is not, so no answer tells a registered address
+    // from another.
+    setGateRefusal(!result.ok && isGateRefusal(result.failure) ? result.failure : null);
   }
 
   if (carried !== null) {
@@ -155,6 +163,14 @@ export default function Otp() {
         >
           {t.t("auth/otp.resend")}
         </button>
+        {gateRefusal && (
+          <div className="auth__failed" data-testid="gate-refusal" role="alert">
+            <p>{t.maybe(gateRefusal.code) ?? t.t("auth/otp.gate_refused")}</p>
+            <p className="muted">
+              <code>{gateRefusal.code}</code>
+            </p>
+          </div>
+        )}
       </div>
     </main>
   );

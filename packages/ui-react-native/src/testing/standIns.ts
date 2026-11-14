@@ -15,4 +15,5 @@ export const STAND_INS: Readonly<Record<string, string>> = {
   "react-native-webview": "react-native-webview.ts",
   "@react-native-async-storage/async-storage": "async-storage.ts",
   "@react-native-google-signin/google-signin": "google-signin.ts",
+  "@expo/app-integrity": "expo-app-integrity.ts",
 };

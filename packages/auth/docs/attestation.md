@@ -76,6 +76,28 @@ Send it as `assertion`, with a real challenge from the challenge route. The chal
 
 Each one says why in `detail`, which goes to the operator's log and never to the client. The client sees the code, the status and a short message.
 
+## The client
+
+`@pithy-sh/auth/src/client/attestation` speaks this flow for a native app, and the React Native scaffold wires it for you ([`docs/UI.md`](../../../docs/UI.md) § *React Native*).
+
+```ts
+import { sendOtp } from "@pithy-sh/auth/src/client/api";
+import { createAttestation, testAttester } from "@pithy-sh/auth/src/client/attestation";
+
+const attestation = createAttestation({ ...session.options, attester: testAttester("ios") });
+const sent = await sendOtp({ email, type: "sign-in" }, { ...session.options, attestation });
+```
+
+`createAttestation` asks the challenge route for a challenge before each send, hands the attester the challenge, the exact body and their binding, and puts the result in `x-pithy-attestation`. With `attestation` set, the send carries no Turnstile token. The attester is injected:
+
+- **`testAttester(platform)`** sends the test assertion.
+- **`appAttestAttester({ module, store })`** is App Attest. `module` is `@expo/app-integrity`, and `store` keeps the key id. A send with no registered key generates one and sends Apple's attestation of it, and the key is kept as registered only once that send succeeds; later sends assert with it. A key whose send did not succeed, lost on the network or refused for any reason, is never asserted with, and the next send generates another. A registered key the device can no longer assert with, after a reinstall, a restore or a migration, is dropped and a new one registered on the same send. The module hashes the string it is handed into `clientDataHash`, so it is handed the challenge followed by the body.
+- **`playIntegrityAttester({ module, cloudProjectNumber })`** is Play Integrity. It prepares the token provider, again after any failure to prepare it or to get a token, and asks for a token whose `requestHash` is the binding's base64url.
+
+`@pithy-sh/auth` never depends on `@expo/app-integrity`: the app installs it and passes it in. A web-only or server-only project installs nothing for attestation. Its peers are `expo` and `react-native` at any version, so the floor is the API: 0.1.9, an Expo SDK 54 release, is the first with the `Async` names this client calls. The scaffold pins `expo` `~57.0.31` and `@expo/app-integrity` `~57.0.2`.
+
+**A refusal keeps its code.** A refused send answers an `AuthResult` whose `failure.code` is the gate's: `auth/attestation_failed`, `auth/attestation_missing`, `auth/attestation_config`, `turnstile/failed` or `turnstile/missing_token`. `isGateRefusal(failure)` says whether a refusal is the gate's, which a screen may show without telling a registered address from another. A device that would not attest is `client/attestation_unavailable`, and nothing was sent. On `auth/attestation_failed` the attestation is told, and App Attest drops its key so the next send registers a new one. On a send that succeeded it is told too, which is when App Attest keeps its key as registered.
+
 ## What this release verifies
 
-This release ships the challenge, the gate, the test verifier and the codes. A real App Attest or Play Integrity assertion in an `enforce` environment is answered with `auth/attestation_config` until the release that verifies that platform.
+This release ships the challenge, the gate, the test verifier and the codes. A real App Attest or Play Integrity assertion in an `enforce` environment is answered with `auth/attestation_config` until the release that verifies that platform. The client projection says so: under `enforce`, `attestation.platforms` is `true` only for a platform with an allowed app and a verifier, so until then the scaffolded app keeps Turnstile on both platforms.
