@@ -172,7 +172,7 @@ export function appAttestAttester(input: {
       } catch {
         read = null;
       }
-      held ??= read;
+      if (held === undefined) held = read;
       return held;
     })();
     return loading;
