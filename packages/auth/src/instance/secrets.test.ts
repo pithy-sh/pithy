@@ -14,14 +14,17 @@ import {
   AUTH_GOOGLE_CREDENTIALS,
   AUTH_JWKS_DEPENDENT,
   AUTH_MICROSOFT_CREDENTIALS,
+  AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT,
   AUTH_SESSION_SECRET,
   authSecretsRegistry,
   authSecretsRegistryFor,
   FacebookOAuthCredentials,
   GithubOAuthCredentials,
   GoogleOAuthCredentials,
+  inapplicablePlayIntegritySecret,
   inapplicableProviderSecrets,
   MicrosoftOAuthCredentials,
+  PlayIntegrityServiceAccount,
   sessionSecretOverlapDays,
 } from "./secrets";
 
@@ -72,6 +75,34 @@ describe("provider credential codecs", () => {
     }
   });
 
+  test("a Play Integrity service account round-trips the fields auth reads, and drops the rest of Google's file", () => {
+    const value = {
+      type: "service_account" as const,
+      project_id: "example",
+      private_key_id: "abc",
+      private_key: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+      client_email: "pi@example.iam.gserviceaccount.com",
+      client_id: "1",
+      token_uri: "https://oauth2.googleapis.com/token",
+    };
+    expect(PlayIntegrityServiceAccount.parse(value)).toEqual(value);
+    expect(
+      PlayIntegrityServiceAccount.parse({ ...value, auth_uri: "https://accounts.google.com/o/oauth2/auth" }),
+    ).toEqual(value);
+  });
+
+  test("a Play Integrity service account needs its key and its address, and an https token endpoint", () => {
+    const minimal = { private_key: "k", client_email: "pi@example.iam.gserviceaccount.com" };
+    expect(PlayIntegrityServiceAccount.parse(minimal)).toEqual(minimal);
+    expect(() => PlayIntegrityServiceAccount.parse({ client_email: minimal.client_email })).toThrow();
+    expect(() => PlayIntegrityServiceAccount.parse({ private_key: "k" })).toThrow();
+    expect(() => PlayIntegrityServiceAccount.parse({ ...minimal, token_uri: "http://example.com/token" })).toThrow();
+  });
+
+  test("the Play Integrity private key is asked for as part of one JSON document, never on one line", () => {
+    expect(PlayIntegrityServiceAccount.shape.private_key.meta()).toMatchObject({ multiline: true });
+  });
+
   test("a credential missing its secret is rejected at the boundary", () => {
     expect(() => FacebookOAuthCredentials.parse({ clientId: "f-id" })).toThrow();
     expect(() => GithubOAuthCredentials.parse({ clientId: "h-id" })).toThrow();
@@ -79,12 +110,11 @@ describe("provider credential codecs", () => {
 });
 
 /**
- * **Which provider credentials this composition cannot reach (#541).**
+ * **Which provider credentials this composition cannot reach.**
  *
- * Auth declares one credential per provider whether or not the project runs that provider, so a project
- * on Google and GitHub carries two secrets no code path will ever read. `pithy doctor` listed both as
- * outstanding — under *"fine to leave until you need it"*, which is wrong for a credential the
- * configuration has already refused — and `pithy secrets ls` showed them with nothing saying so.
+ * Auth declares one credential per provider whether or not the project runs that provider. A credential the
+ * configuration cannot reach is declared inapplicable, so `pithy doctor` does not count it as outstanding and
+ * `pithy secrets ls` says why it is there.
  *
  * The capability holds both halves at construction and states the answer. Nothing infers it from the
  * names: `auth-apple-credentials` and `apple` are spelled alike by coincidence.
@@ -156,6 +186,25 @@ describe("inapplicableProviderSecrets", () => {
   });
 });
 
+describe("inapplicablePlayIntegritySecret", () => {
+  test("names the service account when no environment allows an Android app", () => {
+    expect(inapplicablePlayIntegritySecret({ environments: {} })).toEqual({
+      [AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT]: "auth() allows no Android app to attest in any environment",
+    });
+    expect(inapplicablePlayIntegritySecret({ environments: { staging: { android: [] } } })).toHaveProperty(
+      AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT,
+    );
+  });
+
+  test("declares nothing once any environment allows one", () => {
+    expect(
+      inapplicablePlayIntegritySecret({
+        environments: { staging: { android: [] }, prod: { android: [{ packageName: "com.example.app" }] } },
+      }),
+    ).toEqual({});
+  });
+});
+
 /** The capability hangs the declaration on the contract, which is the only place the CLI reads. */
 describe("auth().inapplicableSecrets", () => {
   test("carries the disabled providers", () => {
@@ -166,9 +215,21 @@ describe("auth().inapplicableSecrets", () => {
       "auth() does not enable the microsoft provider",
     );
   });
+
+  test("carries the Play Integrity service account until an environment allows an Android app", () => {
+    expect(auth({ baseURL: "https://example.com" }).inapplicableSecrets).toHaveProperty(
+      AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT,
+    );
+    const android = auth({
+      baseURL: "https://example.com",
+      attestation: { environments: { prod: { android: [{ packageName: "com.example.app" }] } } },
+    });
+    expect(android.inapplicableSecrets).not.toHaveProperty(AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT);
+    expect(Object.keys(android.secretRegistry ?? {})).toContain(AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT);
+  });
 });
 
-describe("the session secret's unattended rotation (#602)", () => {
+describe("the session secret's unattended rotation", () => {
   const WEEK = 60 * 60 * 24 * 7;
 
   test("its overlap is the session lifetime, rounded up to whole days, and that lifetime is also its floor", () => {

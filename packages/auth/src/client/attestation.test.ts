@@ -10,6 +10,7 @@ import {
   ATTESTATION_HEADER,
   ATTESTATION_TEST_ASSERTION,
   ATTESTATION_UNAVAILABLE,
+  type AttestationProof,
   AttestationRefusedError,
   type AttestationRequest,
   type AttestationTransport,
@@ -160,17 +161,29 @@ describe("an attestation over one send", () => {
     expect(result).toEqual({ ok: false, failure: ATTESTATION_UNAVAILABLE });
   });
 
-  test("a refusal is handed on to the attester, so it can start over", async () => {
-    let reset = 0;
+  test("a refusal is handed on to the attester with the proof of the send the Worker refused", async () => {
+    const refused: AttestationProof[] = [];
+    let made = 0;
     const attester: Attester = {
-      ...testAttester("ios"),
-      refused: async () => {
-        reset += 1;
+      platform: "ios",
+      attest: async () => {
+        made += 1;
+        return { assertion: `assertion-${made}`, keyId: `key-${made}` };
+      },
+      refused: async (proof) => {
+        refused.push(proof);
       },
     };
     const attestation = createAttestation({ origin: ORIGIN, fetch: worker().fetch, attester });
-    await attestation.refused?.({ code: "auth/attestation_failed", message: "m", action: null });
-    expect(reset).toBe(1);
+    const first = await attestation.attest("{}");
+    await attestation.attest("{}");
+    const failure: AuthFailure = { code: "auth/attestation_failed", message: "m", action: null };
+    if (!first.ok) throw new Error("expected the first send's headers");
+    await attestation.refused?.(failure, first.value);
+    expect(refused).toEqual([{ assertion: "assertion-1", keyId: "key-1" }]);
+    // Headers this attestation never answered name no proof, so nothing is dropped.
+    await attestation.refused?.(failure, { [ATTESTATION_HEADER]: "forged" });
+    expect(refused).toHaveLength(1);
   });
 });
 
@@ -308,8 +321,8 @@ describe("App Attest on iOS", () => {
     const store = memoryStore();
     const worker = registrar();
     const attester = appAttestAttester({ module, store });
-    await attester.attest(REQUEST, worker);
-    await attester.refused?.();
+    const proof = await attester.attest(REQUEST, worker);
+    await attester.refused?.(proof);
     expect(store.data.size).toBe(0);
     expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
     expect(worker.log).toEqual([
@@ -383,8 +396,103 @@ describe("App Attest on iOS", () => {
     const attester = appAttestAttester({ module: appAttest(), store });
     expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
     expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
-    await expect(attester.refused?.()).resolves.toBeUndefined();
+    await expect(attester.refused?.({ assertion: "assertion-by-key-1", keyId: "key-1" })).resolves.toBeUndefined();
     expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
+  });
+
+  test("a late refusal of an older key drops only that key, never the newer one", async () => {
+    const module = appAttest();
+    const store = memoryStore();
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store });
+    const old = await attester.attest(REQUEST, worker);
+    await attester.refused?.(old);
+    const fresh = await attester.attest(REQUEST, worker);
+    expect(fresh.keyId).toBe("key-2");
+    // The first send's refusal, delivered again after key-2 replaced key-1, leaves key-2 held and stored.
+    await attester.refused?.(old);
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-2"));
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(2);
+  });
+
+  test("on a cold launch, sends that start together read the stored key once and register one key", async () => {
+    const module = appAttest();
+    const backing = memoryStore();
+    let reads = 0;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const store: SecureStore = {
+      ...backing,
+      // A second read would answer only once released, after the first send had kept its key: the stale `null`
+      // it would then hand back must never replace the key in hand.
+      getItem: async (key) => {
+        reads += 1;
+        if (reads > 1) await held;
+        return backing.getItem(key);
+      },
+    };
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store });
+    const first = attester.attest(REQUEST, worker);
+    const second = attester.attest(REQUEST, worker);
+    expect((await first).keyId).toBe("key-1");
+    release();
+    expect((await second).keyId).toBe("key-1");
+    expect(reads).toBe(1);
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
+  });
+
+  test("a send whose assertion fails reuses the key another send registered meanwhile", async () => {
+    const store = memoryStore();
+    store.data.set(APP_ATTEST_KEY_STORAGE_KEY, stored("lost"));
+    const module = appAttest();
+    const assert = module.generateAssertionAsync;
+    let lostAsserts = 0;
+    let release: () => void = () => {};
+    const late = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    module.generateAssertionAsync = async (keyId, challenge) => {
+      if (keyId === "lost") {
+        lostAsserts += 1;
+        // The second send's refusal by the device arrives only after the first has registered key-1.
+        if (lostAsserts > 1) await late;
+        throw new Error("invalidKey");
+      }
+      return assert(keyId, challenge);
+    };
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store });
+    const first = attester.attest(REQUEST, worker);
+    const second = attester.attest(REQUEST, worker);
+    expect((await first).keyId).toBe("key-1");
+    release();
+    expect(await second).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-1"));
+  });
+
+  test("two sends whose shared registration is refused both answer its code, and the next send registers", async () => {
+    const module = appAttest();
+    const store = memoryStore();
+    const worker = registrar();
+    worker.refusal = REFUSED;
+    const attester = appAttestAttester({ module, store });
+    const results = await Promise.allSettled([attester.attest(REQUEST, worker), attester.attest(REQUEST, worker)]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      expect(result.status === "rejected" && (result.reason as AttestationRefusedError).failure).toEqual(REFUSED);
+    }
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
+    expect(store.data.size).toBe(0);
+
+    worker.refusal = null;
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(2);
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-2"));
   });
 
   test.each([

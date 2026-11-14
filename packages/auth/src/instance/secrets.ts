@@ -29,6 +29,9 @@ import type { SessionSecretVersions } from "./sessionSecrets";
  * - `auth-microsoft-credentials` — the Microsoft Entra ID app registration's client id, client secret,
  *   and tenant, as a typed JSON value. The tenant rides inside because it means nothing apart from the
  *   registration it belongs to. Rotatable: an Entra client secret expires (24 months at most).
+ * - `auth-play-integrity-service-account` — the Google Cloud service account JSON key the Worker decodes Play
+ *   Integrity tokens with. Read only when an Android attestation arrives; rotated by adding a key in Google
+ *   Cloud Console, not on our schedule.
  */
 export const AUTH_SESSION_SECRET = "auth-session-secret";
 export const AUTH_GOOGLE_CREDENTIALS = "auth-google-credentials";
@@ -36,9 +39,10 @@ export const AUTH_APPLE_CREDENTIALS = "auth-apple-credentials";
 export const AUTH_FACEBOOK_CREDENTIALS = "auth-facebook-credentials";
 export const AUTH_GITHUB_CREDENTIALS = "auth-github-credentials";
 export const AUTH_MICROSOFT_CREDENTIALS = "auth-microsoft-credentials";
+export const AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT = "auth-play-integrity-service-account";
 
 /**
- * The JWKS private keys, as `auth-session-secret`'s overlap names them (#602).
+ * The JWKS private keys, as `auth-session-secret`'s overlap names them.
  *
  * Better Auth encrypts every key in `pithy_auth_jwks` under the session secret, and a key never expires —
  * so retiring the version one is sealed under would leave a signing key nothing can open. The session
@@ -182,6 +186,52 @@ export const MicrosoftOAuthCredentials = z
 export type MicrosoftOAuthCredentials = z.infer<typeof MicrosoftOAuthCredentials>;
 
 /**
+ * The Google Cloud service account key Play Integrity tokens are decoded with: the JSON file Google Cloud
+ * Console downloads, pasted whole. Fields auth does not read are dropped on write.
+ */
+export const PlayIntegrityServiceAccount = z
+  .object({
+    type: z
+      .literal("service_account")
+      .optional()
+      .meta({ multiline: false })
+      .describe("The key file's kind. Google writes `service_account`."),
+    project_id: z
+      .string()
+      .optional()
+      .meta({ multiline: false })
+      .describe("The Google Cloud project the service account belongs to, linked to the app in Play Console."),
+    private_key_id: z
+      .string()
+      .optional()
+      .meta({ multiline: false })
+      .describe("The key's id, sent as the assertion's `kid` so Google picks the right public key."),
+    private_key: z
+      .string()
+      .min(1)
+      .meta({ multiline: true })
+      .describe("The RSA private key, a PKCS#8 PEM. It spans many lines, so paste the whole JSON file."),
+    client_email: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe("The service account's address, such as `play-integrity@my-project.iam.gserviceaccount.com`."),
+    client_id: z
+      .string()
+      .optional()
+      .meta({ multiline: false })
+      .describe("The service account's numeric id. Not read; kept so the stored value matches the file."),
+    token_uri: z
+      .string()
+      .regex(/^https:\/\//, "The token endpoint is an https URL.")
+      .optional()
+      .meta({ multiline: false })
+      .describe("Google's OAuth token endpoint. Defaults to `https://oauth2.googleapis.com/token`."),
+  })
+  .describe("A Google Cloud service account JSON key, for decoding Play Integrity tokens in one environment.");
+export type PlayIntegrityServiceAccount = z.infer<typeof PlayIntegrityServiceAccount>;
+
+/**
  * Where a human goes for each OAuth credential pair, and where the same human rotates it.
  *
  * **The settings page, not the product homepage.** The point is to end a search, not to start one — and
@@ -195,6 +245,7 @@ const FACEBOOK_APPS_PAGE = "https://developers.facebook.com/apps/";
 const GITHUB_OAUTH_APPS_PAGE = "https://github.com/settings/developers";
 const MICROSOFT_APP_REGISTRATIONS_PAGE =
   "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade";
+const GOOGLE_SERVICE_ACCOUNTS_PAGE = "https://console.cloud.google.com/iam-admin/serviceaccounts";
 
 export const authSecretsRegistry = defineSecretRegistry({
   // `devValue` is the whole difference between an app that runs after `pithy add auth` and one that
@@ -210,11 +261,11 @@ export const authSecretsRegistry = defineSecretRegistry({
     // a session signature, so the kit both makes it and replaces it.
     origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
     rotation: { kind: "local" },
-    // The default session lifetime's overlap, and the JWKS keys sealed under it (#602). `auth()` declares
+    // The default session lifetime's overlap, and the JWKS keys sealed under it. `auth()` declares
     // its own from the configured `sessionExpiresIn`; this is what a module reading the secret sees.
     overlap: { days: 7, minimumDays: 7, reencrypt: [AUTH_JWKS_DEPENDENT] },
   },
-  // The five below are `obtained` and rotate `manual`, and each names the page rather than the product.
+  // The six below are `obtained` and rotate `manual`, and each names the page rather than the product.
   // An adopter searching Google's console for which of four credential types "client secret" means is the
   // gap this closes — and nothing will ever mint one, so saying where is the whole of what the kit can do.
   [AUTH_GOOGLE_CREDENTIALS]: {
@@ -262,10 +313,19 @@ export const authSecretsRegistry = defineSecretRegistry({
     origin: { kind: "obtained", issuer: "microsoft", documentation: MICROSOFT_APP_REGISTRATIONS_PAGE },
     rotation: { kind: "manual", issuer: "microsoft", documentation: MICROSOFT_APP_REGISTRATIONS_PAGE },
   },
+  [AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: PlayIntegrityServiceAccount,
+    origin: { kind: "obtained", issuer: "google", documentation: GOOGLE_SERVICE_ACCOUNTS_PAGE },
+    rotation: { kind: "manual", issuer: "google", documentation: GOOGLE_SERVICE_ACCOUNTS_PAGE },
+  },
 });
 
 /**
- * **The registry `auth()` contributes, from its own configuration (#602).**
+ * **The registry `auth()` contributes, from its own configuration.**
  *
  * The session secret's overlap follows the configured session lifetime — {@link sessionSecretOverlapDays} —
  * and it is both the overlap and its floor: an adopter who lengthens sessions lengthens the overlap with
@@ -308,7 +368,7 @@ export function authSecretsRegistryFor(config: {
 }
 
 /**
- * Which provider a credential belongs to — the join the CLI must never make by spelling (#541).
+ * Which provider a credential belongs to — the join the CLI must never make by spelling.
  *
  * `auth-apple-credentials` and the `apple` config key look like each other and that is a coincidence:
  * nothing makes a secret name and a config key the same thing, and a reporting command that matched
@@ -329,9 +389,9 @@ export type AuthProviderToggles = Record<(typeof PROVIDER_CREDENTIALS)[number][0
  * **The provider credentials this composition cannot reach**, as the `inapplicableSecrets` contribution.
  *
  * Auth declares five credentials whether or not a project runs five providers, so a project on Google
- * and GitHub carries two secrets nothing will ever read. `pithy doctor` asked for them every run under
- * *"fine to leave until you need it"* — softening, not silence, and "until you need it" is wrong about a
- * provider the configuration has not enabled.
+ * and GitHub carries two secrets nothing will ever read. A disabled provider's credential is listed as not
+ * applicable rather than as outstanding work: "set it until you need it" is wrong about a provider the
+ * configuration has not enabled.
  *
  * **The session secret is never in here**, and that is the line this draws: it is read on every sign-in
  * whatever the providers are, so it is outstanding work in every project that has not set it.
@@ -355,7 +415,7 @@ export async function resolveSessionSecret(env: SecretsStoreEnv): Promise<string
 }
 
 /**
- * Resolve every retained version of the session secret (#602) — what an instance needs to open values sealed
+ * Resolve every retained version of the session secret: what an instance needs to open values sealed
  * under the previous version, and what a credential signed under it is verified against. One read through
  * the same cached accessor as {@link resolveSessionSecret}.
  */
@@ -386,6 +446,25 @@ export async function resolveFacebookCredentials(env: SecretsStoreEnv): Promise<
 export async function resolveGithubCredentials(env: SecretsStoreEnv): Promise<GithubOAuthCredentials> {
   const secrets = await sharedSecretsStore(env, authSecretsRegistry);
   return secrets.get(AUTH_GITHUB_CREDENTIALS);
+}
+
+/**
+ * The Play Integrity service account when no environment of this composition allows an Android app: nothing
+ * there reads it.
+ */
+export function inapplicablePlayIntegritySecret(attestation: {
+  environments: Record<string, { android: readonly unknown[] }>;
+}): Record<string, string> {
+  const allowsAndroid = Object.values(attestation.environments).some((block) => block.android.length > 0);
+  return allowsAndroid
+    ? {}
+    : { [AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT]: "auth() allows no Android app to attest in any environment" };
+}
+
+/** Resolve the Play Integrity service account for this invocation (only call for an Android attestation). */
+export async function resolvePlayIntegrityServiceAccount(env: SecretsStoreEnv): Promise<PlayIntegrityServiceAccount> {
+  const secrets = await sharedSecretsStore(env, authSecretsRegistry);
+  return secrets.get(AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT);
 }
 
 /** Resolve the Microsoft Entra ID credentials for this invocation (only call when Microsoft is enabled). */

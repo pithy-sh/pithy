@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import {
   type AuthProviderToggles,
   authSecretsRegistry,
+  inapplicablePlayIntegritySecret,
   inapplicableProviderSecrets,
 } from "@pithy-sh/auth/src/instance/secrets";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
@@ -56,7 +57,7 @@ const registry = defineSecretRegistry({
 });
 
 /**
- * **`rm --backend`: removing the value a declaration moved away from (#596).**
+ * **`rm --backend`: removing the value a declaration moved away from.**
  *
  * `email-link-signing-key` was a `d1` row and is now a Secrets Store entry, so a project provisioned before
  * the move holds a row nothing reads. A plain `rm` routes by the declaration — it would delete the *entry*,
@@ -295,7 +296,7 @@ describe("runSecretWrite", () => {
         action: "secrets/set",
         outcome: "failure",
         // The environments it reached before it failed — none, because the first dispatch is what threw
-        // — and the backend it was headed for (#517). Never the value, and nothing derived from one.
+        // — and the backend it was headed for. Never the value, and nothing derived from one.
         metadata: { name: "auth-signing-key", backend: "d1", environments: [] },
       }),
     ]);
@@ -431,22 +432,22 @@ describe("resolveSecretRegistry", () => {
       }
     })();
     // One Worker's config cannot say which Worker `pithy add` should wire, so the command is the project's to
-    // name (`commands/secrets.test.ts`, #697), and this sentence names none rather than a placeholder (#711).
+    // name (`commands/secrets.test.ts`), and this sentence names none rather than a placeholder.
     expect(failure?.payload.action).toBe("Add secrets({ registry }) to a Worker's pithy.config.ts capabilities.");
     expect(fixOf(failure as NotFoundError)).toBeUndefined();
   });
 
   /**
-   * **The property `pithy secrets` is for, and the one nothing asserted — #501.**
+   * **The property `pithy secrets` is for.**
    *
-   * A capability's secrets live on *its* capability, not on `secrets({ registry })`. This resolved the
-   * secrets capability's own slice, so `pithy secrets create auth-session-secret` — the command `pithy
-   * add auth` tells an adopter to run — answered "not declared in the registry", and every externally
-   * issued credential in the product had no path to a deployed environment. It surfaced at a first
-   * deploy rather than at the add, because the capabilities mint dev values themselves.
+   * A capability's secrets live on *its* capability, not on `secrets({ registry })`, so the registry the
+   * command resolves is every composed capability's slice. Reading only the secrets capability's own would
+   * answer `pithy secrets create auth-session-secret` — the command `pithy add auth` tells an adopter to
+   * run — with "not declared in the registry", and no externally issued credential could reach a deployed
+   * environment.
    *
-   * Asserted over a real capability registry rather than a fixture: the bug was that a *contributed*
-   * slice went unread, so a hand-written stand-in would have proved the wrong thing.
+   * Asserted over a real capability registry rather than a fixture: the property is that a *contributed*
+   * slice is read, so a hand-written stand-in would prove the wrong thing.
    */
   test("carries the secrets every other capability declares, not only the secrets capability's own", () => {
     const payments = defineCapability({
@@ -524,7 +525,7 @@ describe("keyspaces", () => {
 });
 
 /**
- * **One owner for the master-key refusal, asked twice** (#517).
+ * **One owner for the master-key refusal, asked twice.**
  *
  * `runSecretWrite` raises it, which is the guarantee: nothing reaches a store without passing through
  * there. `pithy secrets` asks it again *before* reading a value, because a refusal that arrives after a
@@ -544,14 +545,14 @@ describe("assertNotTheMasterKey", () => {
 });
 
 /**
- * # What a write changed, which is not always where it was dispatched (#517)
+ * # What a write changed, which is not always where it was dispatched
  *
  * `secretWriteTargets` answers *where does this write go*, and for a `global` + `cf-secrets-store` secret
  * the answer is one environment — the canonical one, whose manager performs the single account-level
  * write. That is the right dispatch answer and the wrong report: the entry is `<project>-global-<secret>`,
- * flat and account-wide, and **every** environment's stanza binds it. So `pithy secrets update npm-token`
- * printed `written to prod` over a change that replaced the credential staging reads too, and an operator
- * who then went to update staging separately was acting on a report of work already done.
+ * flat and account-wide, and **every** environment's stanza binds it. So the report names every
+ * environment the write reached, or `pithy secrets update npm-token` would say `written to prod` over a
+ * change that replaced the credential staging reads too.
  *
  * One producer for the sentence and the `--json` line, because a report of one act said in two places is
  * a report that eventually says two things.
@@ -597,7 +598,7 @@ describe("secretWriteEffect", () => {
 
   /**
    * A partial fan-out still reports what landed, not the declared set — the widening is a fact about a
-   * `global` store entry, and a `d1` split is the one thing the report must never smooth over (#324).
+   * `global` store entry, and a `d1` split is the one thing the report must never smooth over.
    */
   test("an interrupted d1 fan-out is not widened", () => {
     const fanned = defineSecretRegistry({
@@ -615,11 +616,10 @@ describe("secretWriteEffect", () => {
 });
 
 /**
- * **`pithy secrets ls` marks what the configuration cannot reach (#541).**
+ * **`pithy secrets ls` marks what the configuration cannot reach.**
  *
- * The list read as a checklist, so an operator could not tell *not yet done* from *will never apply* —
- * and three settled questions came back on every run. The mark is the shape chosen over a filter,
- * because it answers *what would I have to do to enable this* as well.
+ * The list reads as a checklist, so it tells *not yet done* from *will never apply*, and the reason says
+ * *what would I have to do to enable this* as well.
  */
 describe("secretListRows", () => {
   const registry = defineSecretRegistry({
@@ -639,11 +639,9 @@ describe("secretListRows", () => {
   });
 
   /**
-   * **The headline of #552, and the reason `ls` exists.** This listing reads as a checklist of what a
-   * project has to go and set. A line saying *not applicable* is still a line on that checklist, so it
-   * re-raises a settled question on every run — which is the complaint #541 opened with, and marking
-   * rather than hiding only changed the wording of it. A project running Google and GitHub has two OAuth
-   * credentials to think about, not four.
+   * **The reason `ls` exists.** This listing reads as a checklist of what a project has to go and set. A
+   * line saying *not applicable* is still a line on that checklist, so it is left out by default. A project
+   * running Google and GitHub has two OAuth credentials to think about, not four.
    */
   test("a secret this configuration will never read is not listed at all", () => {
     const rows = secretListRows(
@@ -729,7 +727,7 @@ describe("secretListRows", () => {
 });
 
 /**
- * **`ls` says which environments its marks were decided from, when it was not all of them (#548).**
+ * **`ls` says which environments its marks were decided from, when it was not all of them.**
  *
  * Whether a secret applies is a property of the composition, and an environment whose `pithy.config.ts`
  * throws produced none — so it says nothing about any name, and the marks are drawn from the environments
@@ -737,9 +735,8 @@ describe("secretListRows", () => {
  * only the unloaded environment needs can be marked *not applicable* on the strength of the ones that did
  * compose. The remedy is fixing that config, which is why the note sends the reader to `pithy doctor`.
  *
- * It used to be worse and quieter. A non-composition contributed *every name in reach*, which under
- * "in reach anywhere wins" beat every real one — so the project that found this printed the unmarked
- * pre-#541 list on every run with nothing saying why.
+ * A non-composition contributes no name at all. Were it to contribute *every name in reach*, "in reach
+ * anywhere wins" would beat every real mark and the listing would come out unmarked with nothing saying why.
  */
 describe("unresolvedNote", () => {
   /** The ordinary project prints no note at all — an empty string, so the caller appends it blind. */
@@ -774,11 +771,9 @@ describe("unresolvedNote", () => {
 });
 
 /**
- * **The `ls` listings in `docs/commands/secrets.md` are what the command prints (#801).**
+ * **The `ls` listings in `docs/commands/secrets.md` are what the command prints.**
  *
- * They had drifted three ways at once: one example sat in the wrong order, showed a row only `--all`
- * prints without the rest `--all` would add, and closed on the risk sentence for the other mode. A page
- * that shows output the command cannot produce teaches a reader to distrust the real thing, so each
+ * A page that shows output the command cannot produce teaches a reader to distrust the real thing, so each
  * fence is rendered here from the same seam the command writes through and compared byte for byte.
  */
 describe("the ls examples in docs/commands/secrets.md", () => {
@@ -798,10 +793,10 @@ describe("the ls examples in docs/commands/secrets.md", () => {
 
   /**
    * The project the page describes, built from the capabilities' own declarations rather than from a copy
-   * of them: auth's real registry and its real provider reasons with Google and GitHub enabled, and
-   * support's real registry with `SUPPORT_BUCKET` declined, folded by the same `secretApplicability` the
-   * command runs. A provider auth adds, or a reason it rewords, moves these rows and fails the page — the
-   * drift #801 was opened for, when Microsoft arrived in #262 and the page kept counting four.
+   * of them: auth's real registry and its real reasons with Google and GitHub enabled and no Android app
+   * allowed, and support's real registry with `SUPPORT_BUCKET` declined, folded by the same
+   * `secretApplicability` the command runs. A secret auth adds, or a reason it rewords, moves these rows
+   * and fails the page.
    */
   const providers = { google: true, apple: false, facebook: false, github: true, microsoft: false } as const;
   const project = { ...authSecretsRegistry, ...supportSecretsRegistry };
@@ -812,11 +807,14 @@ describe("the ls examples in docs/commands/secrets.md", () => {
         defineCapability({
           name: "auth",
           requiredBindings: [],
-          inapplicableSecrets: inapplicableProviderSecrets(
-            Object.fromEntries(
-              Object.entries(providers).map(([name, enabled]) => [name, { enabled }]),
-            ) as AuthProviderToggles,
-          ),
+          inapplicableSecrets: {
+            ...inapplicableProviderSecrets(
+              Object.fromEntries(
+                Object.entries(providers).map(([name, enabled]) => [name, { enabled }]),
+              ) as AuthProviderToggles,
+            ),
+            ...inapplicablePlayIntegritySecret({ environments: {} }),
+          },
         }),
         defineCapability({ name: "support", requiredBindings: [] }),
       ],

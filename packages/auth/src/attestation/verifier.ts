@@ -4,6 +4,7 @@
 import type { AuthDatabase } from "../data/tables";
 import { appAttestVerifier } from "./appAttest/verifier";
 import { type AttestationEnvironment, type AttestationPlatform, testAssertionAllowedIn } from "./config";
+import { playIntegrityVerifier } from "./playIntegrity/verifier";
 import type { PresentedAttestation } from "./wire";
 
 /**
@@ -49,7 +50,7 @@ export interface AttestationVerifier {
 export type AttestationVerifiers = Partial<Record<AttestationPlatform, AttestationVerifier>>;
 
 /** The verifiers this release ships for real assertions. */
-export const PLATFORM_VERIFIERS: AttestationVerifiers = { ios: appAttestVerifier };
+export const PLATFORM_VERIFIERS: AttestationVerifiers = { ios: appAttestVerifier, android: playIntegrityVerifier };
 
 /** Whether this attestation is the documented test assertion. */
 export function isTestAssertion(presented: PresentedAttestation): boolean {

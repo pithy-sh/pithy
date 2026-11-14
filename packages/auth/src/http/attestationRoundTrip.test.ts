@@ -3,9 +3,16 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 import { type AuthFetch, sendMagicLink, sendOtp, signInWithOtp } from "../client/api";
-import { APP_ATTEST_KEY_STORAGE_KEY, appAttestAttester, createAttestation, testAttester } from "../client/attestation";
+import {
+  APP_ATTEST_KEY_STORAGE_KEY,
+  appAttestAttester,
+  createAttestation,
+  playIntegrityAttester,
+  testAttester,
+} from "../client/attestation";
 import { createBearerSession, type SecureStore } from "../client/bearer";
 import { type AppAttestDeviceModule, appAttestAuthority, appAttestDeviceModule } from "../test-utils/appAttestDevice";
+import { googleFetch, passingDecodeOf, testServiceAccount } from "../test-utils/googlePlay";
 import { type LiveApp, resetLiveSecrets, startLiveApp } from "../test-utils/liveApp";
 
 /**
@@ -212,5 +219,99 @@ describe("an iPhone signs in with App Attest", () => {
     const sent = await sendOtp({ email: "ios@example.com", type: "sign-in" }, iphone(app, device, store).options);
     expect(sent.ok ? null : sent.failure.code).toBe("auth/attestation_failed");
     expect(store.data.size).toBe(0);
+  });
+});
+
+describe("an Android phone signs in with Play Integrity", () => {
+  const PACKAGE = "com.example.app";
+  const PROJECT = "123456789";
+
+  /**
+   * `@expo/app-integrity`'s Play Integrity half on a phone: each token stands for the `requestHash` the client
+   * handed it, as Google will record it. `replay` hands back the first token for every later send.
+   */
+  function playIntegrityDevice(replay = false) {
+    const hashes = new Map<string, string>();
+    const calls: string[] = [];
+    return {
+      hashes,
+      calls,
+      prepareIntegrityTokenProviderAsync: async (project: string) => {
+        calls.push(`prepare ${project}`);
+      },
+      requestIntegrityCheckAsync: async (requestHash: string) => {
+        calls.push(`request ${requestHash}`);
+        if (replay && hashes.size > 0) return "integrity-token-1";
+        const token = `integrity-token-${hashes.size + 1}`;
+        hashes.set(token, requestHash);
+        return token;
+      },
+    };
+  }
+
+  /** Google, decoding each token the device minted to a passing verdict carrying the client's own requestHash. */
+  function google(device: ReturnType<typeof playIntegrityDevice>) {
+    return googleFetch({
+      decode: (request) => {
+        const { integrity_token: token } = JSON.parse(request.body) as { integrity_token: string };
+        const requestHash = device.hashes.get(token);
+        return requestHash === undefined
+          ? { status: 400, body: { error: { message: "Integrity token cannot be decoded." } } }
+          : passingDecodeOf(requestHash, new Date(), PACKAGE);
+      },
+    });
+  }
+
+  async function android(device: ReturnType<typeof playIntegrityDevice>) {
+    const stub = google(device);
+    app = await startLiveApp({
+      basePath: BASE_PATH,
+      environment: "prod",
+      attestation: { environments: { prod: { mode: "enforce", android: [{ packageName: PACKAGE }] } } },
+      playIntegrity: { account: (await testServiceAccount()).account, fetch: stub.fetch },
+    });
+    const session = createBearerSession({
+      origin: app.origin,
+      basePath: BASE_PATH,
+      store: memoryStore(),
+      device: { id: "device-android", platform: "android" },
+      fetch: nativeFetch,
+    });
+    const attestation = createAttestation({
+      ...session.options,
+      attester: playIntegrityAttester({ module: device, cloudProjectNumber: PROJECT }),
+    });
+    return { live: app, stub, session, options: { ...session.options, attestation } };
+  }
+
+  test("the client's requestHash is the binding the Worker checks, and it signs in with no humanity check", async () => {
+    const device = playIntegrityDevice();
+    const { live, stub, session, options } = await android(device);
+    const email = "android@example.com";
+
+    const sent = await sendOtp({ email, type: "sign-in" }, options);
+    expect(sent.ok ? "sent" : sent.failure.code).toBe("sent");
+    const otp = await live.mailedOtp(email);
+    expect(otp).not.toBeNull();
+
+    const signedIn = await signInWithOtp({ email, otp: otp ?? "" }, options);
+    expect(signedIn.ok && typeof signedIn.value.token).toBe("string");
+    await session.adopt(signedIn.ok ? String(signedIn.value.token) : "");
+    expect(session.signedIn()).toBe(true);
+
+    const linked = await sendMagicLink({ email, callbackURL: "https://app.example.com/callback" }, options);
+    expect(linked.ok ? "sent" : linked.failure.code).toBe("sent");
+    expect(device.calls.filter((call) => call.startsWith("prepare"))).toEqual([`prepare ${PROJECT}`]);
+    expect(device.hashes.size).toBe(2);
+    expect(stub.seen.filter((request) => request.url.endsWith(`${PACKAGE}:decodeIntegrityToken`))).toHaveLength(2);
+  });
+
+  test("a token bound to an earlier send is refused with auth/attestation_failed, and nothing is mailed", async () => {
+    const device = playIntegrityDevice(true);
+    const { live, options } = await android(device);
+    expect((await sendOtp({ email: "first@example.com", type: "sign-in" }, options)).ok).toBe(true);
+    const replayed = await sendOtp({ email: "second@example.com", type: "sign-in" }, options);
+    expect(replayed.ok ? null : replayed.failure.code).toBe("auth/attestation_failed");
+    expect((await live.enqueued()).map((job) => job.to)).toEqual(["first@example.com"]);
   });
 });

@@ -33,7 +33,11 @@ import { getAuthInstance } from "./http/resolve";
 import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
-import { authSecretsRegistryFor, inapplicableProviderSecrets } from "./instance/secrets";
+import {
+  authSecretsRegistryFor,
+  inapplicablePlayIntegritySecret,
+  inapplicableProviderSecrets,
+} from "./instance/secrets";
 import { authErasureRecords } from "./lifecycle/erasure";
 import type { UserLifecycleHooks } from "./lifecycle/hooks";
 import type { McpHost, McpWiring } from "./mcp/host";
@@ -191,7 +195,7 @@ export const AuthConfig = z
         "Which account-lifecycle emails are sent. All four send by default, through `@pithy-sh/email`; switch one off by setting it to false.",
       ),
     attestation: AttestationConfig.prefault({}).describe(
-      "Native app attestation on the email send routes, per environment. An environment with a block takes an attestation in the `x-pithy-attestation` header in place of a Turnstile token, and requires one when turnstile is not composed. This release verifies Apple App Attest and the test assertion. See the README's attestation section.",
+      "Native app attestation on the email send routes, per environment. An environment with a block takes an attestation in the `x-pithy-attestation` header in place of a Turnstile token, and requires one when turnstile is not composed. Apple App Attest and Google Play Integrity are verified, and the test assertion in a test environment. See the README's attestation section.",
     ),
     plugins: z
       .array(AuthPlugin)
@@ -534,11 +538,14 @@ export function auth(options: AuthOptions): AuthCapability {
     // Built from the config, so the session secret's overlap is this composition's session lifetime and its
     // period is the one the adopter asked for, if any.
     secretRegistry: authSecretsRegistryFor(resolved),
-    // And which of those four credentials this composition cannot reach. A provider that is off
-    // has no code path that reads its pair, so `pithy doctor` listing it as outstanding re-raised a
-    // settled question on every run. Declared rather than inferred: the config key and the secret name
-    // are spelled alike by coincidence, and this is the only place that holds both.
-    inapplicableSecrets: inapplicableProviderSecrets(resolved),
+    // And which of those credentials this composition cannot reach: a provider that is off, and the Play
+    // Integrity service account where no environment allows an Android app. Nothing reads either, so
+    // `pithy doctor` does not count it as outstanding. Declared rather than inferred: the config key and the
+    // secret name are spelled alike by coincidence, and this is the only place that holds both.
+    inapplicableSecrets: {
+      ...inapplicableProviderSecrets(resolved),
+      ...inapplicablePlayIntegritySecret(resolved.attestation),
+    },
     requiredBindings: [
       { type: "d1", name: resolved.database },
       { type: "ratelimit", name: resolved.rateLimiterBinding },

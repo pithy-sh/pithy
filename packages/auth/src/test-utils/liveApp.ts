@@ -20,12 +20,14 @@ import { Hono } from "hono";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import type { z } from "zod";
 import type { AttestationConfig } from "../attestation/config";
+import { createPlayIntegrityVerifier } from "../attestation/playIntegrity/verifier";
+import { PLATFORM_VERIFIERS } from "../attestation/verifier";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { publishSameOrigin } from "../http/csrf";
 import { createSessionMiddleware } from "../http/middleware";
 import { createRateLimitMiddleware } from "../http/rateLimit";
 import { createAuthRoutes } from "../http/routes";
-import { authSecretsRegistry } from "../instance/secrets";
+import { authSecretsRegistry, type PlayIntegrityServiceAccount } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 
@@ -123,6 +125,11 @@ export interface LiveAppOptions {
   attestation?: z.input<typeof AttestationConfig>;
   /** The root an App Attest key's chain must lead to, DER, in place of Apple's: a test device's. */
   appAttestRoot?: Uint8Array;
+  /**
+   * Play Integrity's service account, stored as auth's secret, and the `fetch` the verifier calls Google with: a
+   * stand-in for Google's token endpoint and `decodeIntegrityToken`, so Google is the one thing not live.
+   */
+  playIntegrity?: { account: PlayIntegrityServiceAccount; fetch: typeof fetch } | undefined;
 }
 
 /** A booted app: where it listens, what it was pinned to, and what it recorded. */
@@ -190,6 +197,7 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
 
   const fixture: SecretFixture<typeof LIVE_REGISTRY> = { "auth-session-secret": SESSION_SECRET };
   if (options.google) fixture["auth-google-credentials"] = options.google;
+  if (options.playIntegrity) fixture["auth-play-integrity-service-account"] = options.playIntegrity.account;
   if (options.turnstile) {
     fixture["turnstile-secret-keys"] = { [options.turnstile.mode]: { key: options.turnstile.secretKey } };
   }
@@ -215,6 +223,14 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
       ? { mode: options.turnstile.mode, token: { field: "cf-turnstile-response" } }
       : undefined,
     appAttestRoot: options.appAttestRoot,
+    ...(options.playIntegrity
+      ? {
+          attestationVerifiers: {
+            ...PLATFORM_VERIFIERS,
+            android: createPlayIntegrityVerifier({ fetch: options.playIntegrity.fetch }),
+          },
+        }
+      : {}),
   };
 
   const app = buildApp(wiring, events);
