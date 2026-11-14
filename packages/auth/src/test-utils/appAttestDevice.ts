@@ -207,12 +207,26 @@ export interface AttestedKey {
   assert(options: { appId: string; clientDataHash: Bytes; counter: number }): Promise<string>;
 }
 
+/** A key generated in the fake Secure Enclave and not yet attested, as `generateKey` leaves it. */
+export interface GeneratedKey {
+  /** The key id as `generateKey` hands it over: standard base64 of SHA-256 over the public point. */
+  keyId: string;
+  /** The raw public point. */
+  publicKey: Bytes;
+  /** Apple's attestation of this key, as `attestKey` hands it over: standard base64. */
+  attest(options: AttestOptions): Promise<string>;
+  /** An assertion over `clientDataHash`, as `generateAssertion` hands it over: standard base64. */
+  assert(options: { appId: string; clientDataHash: Bytes; counter: number }): Promise<string>;
+}
+
 /** A fake App Attest service. */
 export interface AppAttestAuthority {
   /** The root to trust in place of Apple's, DER. */
   root: Bytes;
   /** Generate a key and attest to it. */
   attest(options: AttestOptions): Promise<AttestedKey>;
+  /** Generate a key, to attest later: the two steps a device takes, `generateKey` then `attestKey`. */
+  generate(): Promise<GeneratedKey>;
 }
 
 /** Stand up a fake App Attest service whose certificates are valid around `now`. */
@@ -246,75 +260,84 @@ export async function appAttestAuthority(options: { now?: Date } = {}): Promise<
     ca: true,
   });
 
+  async function generate(): Promise<GeneratedKey> {
+    const key = await keyPair("P-256");
+    const keyId = await sha256(key.point);
+    return {
+      keyId: standardBase64(keyId),
+      publicKey: key.point,
+      async attest(spec) {
+        const authData = concat(
+          await sha256(new TextEncoder().encode(spec.appId)),
+          new Uint8Array([0x40]),
+          uint32(spec.counter ?? 0),
+          AAGUID[spec.environment ?? "production"],
+          new Uint8Array([0, (spec.credentialId ?? keyId).length]),
+          spec.credentialId ?? keyId,
+          cbor(
+            new Map<CborIn, CborIn>([
+              [1, 2],
+              [3, -7],
+              [-1, 1],
+              [-2, key.point.subarray(1, 33)],
+              [-3, key.point.subarray(33)],
+            ]),
+          ),
+        );
+        const nonce = spec.nonce ?? (await sha256(authData, spec.clientDataHash));
+        const leaf = await certificate({
+          serial: 3,
+          issuer: intermediateName,
+          subject: Array.from(keyId, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+          subjectKey: key,
+          signer: intermediateKey,
+          hash: "SHA-256",
+          notBefore: spec.notBefore ?? hours(-1),
+          notAfter: spec.notAfter ?? hours(72),
+          ca: false,
+          extensions: [seq(oid("1.2.840.113635.100.8.2"), octets(seq(tlv(0xa1, octets(nonce)))))],
+        });
+        return standardBase64(
+          cbor(
+            new Map<CborIn, CborIn>([
+              ["fmt", "apple-appattest"],
+              [
+                "attStmt",
+                new Map<CborIn, CborIn>([
+                  ["x5c", [leaf, intermediate]],
+                  ["receipt", new Uint8Array([1, 2, 3])],
+                ]),
+              ],
+              ["authData", authData],
+            ]),
+          ),
+        );
+      },
+      async assert({ appId, clientDataHash, counter }) {
+        const authenticatorData = concat(
+          await sha256(new TextEncoder().encode(appId)),
+          new Uint8Array([0x40]),
+          uint32(counter),
+        );
+        const signature = await sign(key, "SHA-256", await sha256(authenticatorData, clientDataHash));
+        return standardBase64(
+          cbor(
+            new Map<CborIn, CborIn>([
+              ["signature", signature],
+              ["authenticatorData", authenticatorData],
+            ]),
+          ),
+        );
+      },
+    };
+  }
+
   return {
     root,
+    generate,
     async attest(spec) {
-      const key = await keyPair("P-256");
-      const keyId = await sha256(key.point);
-      const authData = concat(
-        await sha256(new TextEncoder().encode(spec.appId)),
-        new Uint8Array([0x40]),
-        uint32(spec.counter ?? 0),
-        AAGUID[spec.environment ?? "production"],
-        new Uint8Array([0, (spec.credentialId ?? keyId).length]),
-        spec.credentialId ?? keyId,
-        cbor(
-          new Map<CborIn, CborIn>([
-            [1, 2],
-            [3, -7],
-            [-1, 1],
-            [-2, key.point.subarray(1, 33)],
-            [-3, key.point.subarray(33)],
-          ]),
-        ),
-      );
-      const nonce = spec.nonce ?? (await sha256(authData, spec.clientDataHash));
-      const leaf = await certificate({
-        serial: 3,
-        issuer: intermediateName,
-        subject: Array.from(keyId, (byte) => byte.toString(16).padStart(2, "0")).join(""),
-        subjectKey: key,
-        signer: intermediateKey,
-        hash: "SHA-256",
-        notBefore: spec.notBefore ?? hours(-1),
-        notAfter: spec.notAfter ?? hours(72),
-        ca: false,
-        extensions: [seq(oid("1.2.840.113635.100.8.2"), octets(seq(tlv(0xa1, octets(nonce)))))],
-      });
-      const attestation = cbor(
-        new Map<CborIn, CborIn>([
-          ["fmt", "apple-appattest"],
-          [
-            "attStmt",
-            new Map<CborIn, CborIn>([
-              ["x5c", [leaf, intermediate]],
-              ["receipt", new Uint8Array([1, 2, 3])],
-            ]),
-          ],
-          ["authData", authData],
-        ]),
-      );
-      return {
-        keyId: standardBase64(keyId),
-        attestation: standardBase64(attestation),
-        publicKey: key.point,
-        async assert({ appId, clientDataHash, counter }) {
-          const authenticatorData = concat(
-            await sha256(new TextEncoder().encode(appId)),
-            new Uint8Array([0x40]),
-            uint32(counter),
-          );
-          const signature = await sign(key, "SHA-256", await sha256(authenticatorData, clientDataHash));
-          return standardBase64(
-            cbor(
-              new Map<CborIn, CborIn>([
-                ["signature", signature],
-                ["authenticatorData", authenticatorData],
-              ]),
-            ),
-          );
-        },
-      };
+      const key = await generate();
+      return { keyId: key.keyId, attestation: await key.attest(spec), publicKey: key.publicKey, assert: key.assert };
     },
   };
 }
@@ -322,4 +345,55 @@ export async function appAttestAuthority(options: { now?: Date } = {}): Promise<
 /** A key id as auth stores it: base64url of the 32 bytes. */
 export function storedKeyId(keyId: string): string {
   return base64UrlEncode(Uint8Array.from(atob(keyId), (char) => char.charCodeAt(0)));
+}
+
+/** A fake device's `@expo/app-integrity`: the shape `appAttestAttester` takes, over `authority`'s keys. */
+export interface AppAttestDeviceModule {
+  readonly isSupported: boolean;
+  generateKeyAsync(): Promise<string>;
+  attestKeyAsync(keyId: string, challenge: string): Promise<string>;
+  generateAssertionAsync(keyId: string, challenge: string): Promise<string>;
+  /** Forget every key, as a reinstall or a restore to a new phone does: asserting with one then throws. */
+  wipe(): void;
+  /** Each call in order, with the string it was handed. */
+  readonly calls: string[];
+}
+
+/**
+ * `@expo/app-integrity`'s App Attest half on a fake device: the key lives in `authority`'s Secure Enclave stand-in,
+ * and each call hashes the string it is handed with SHA-256 over its UTF-8 into `clientDataHash`, as the native
+ * module does. Each key's counter rises by one per assertion, as the Secure Enclave's does.
+ */
+export function appAttestDeviceModule(authority: AppAttestAuthority, appId: string): AppAttestDeviceModule {
+  const keys = new Map<string, { key: GeneratedKey; counter: number }>();
+  const calls: string[] = [];
+  const hash = (text: string) => sha256(new TextEncoder().encode(text));
+  const find = (keyId: string) => {
+    const entry = keys.get(keyId);
+    if (entry === undefined) throw new Error("invalidKey");
+    return entry;
+  };
+  return {
+    isSupported: true,
+    calls,
+    async generateKeyAsync() {
+      const key = await authority.generate();
+      keys.set(key.keyId, { key, counter: 0 });
+      calls.push(`generateKeyAsync -> ${key.keyId}`);
+      return key.keyId;
+    },
+    async attestKeyAsync(keyId, challenge) {
+      calls.push(`attestKeyAsync ${keyId} ${challenge}`);
+      return find(keyId).key.attest({ appId, clientDataHash: await hash(challenge) });
+    },
+    async generateAssertionAsync(keyId, challenge) {
+      calls.push(`generateAssertionAsync ${keyId} ${challenge}`);
+      const entry = find(keyId);
+      entry.counter += 1;
+      return entry.key.assert({ appId, clientDataHash: await hash(challenge), counter: entry.counter });
+    },
+    wipe() {
+      keys.clear();
+    },
+  };
 }

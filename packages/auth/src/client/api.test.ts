@@ -453,16 +453,12 @@ describe("an absolute origin, for a program this Worker does not serve", () => {
 
 describe("an attested send", () => {
   /** An attestation that records the body it was asked to attest over, and answers one header. */
-  function attesting(): AuthAttestation & { bodies: string[]; refusals: AuthFailure[]; acceptances: number } {
+  function attesting(): AuthAttestation & { bodies: string[]; refusals: AuthFailure[] } {
     const bodies: string[] = [];
     const refusals: AuthFailure[] = [];
     return {
       bodies,
       refusals,
-      acceptances: 0,
-      accepted() {
-        this.acceptances += 1;
-      },
       async attest(body) {
         bodies.push(body);
         return { ok: true, value: { "x-pithy-attestation": "attested" } };
@@ -506,21 +502,18 @@ describe("an attested send", () => {
     const result = await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(403, refusal), attestation });
     expect(result.ok ? null : result.failure.code).toBe("auth/attestation_failed");
     expect(attestation.refusals.map((failure) => failure.code)).toEqual(["auth/attestation_failed"]);
-    expect(attestation.acceptances).toBe(0);
   });
 
-  test("a send that succeeded tells the attestation it was taken, and one that failed does not", async () => {
+  test("a send that succeeded, failed for the server or was lost reports no refusal", async () => {
     const attestation = attesting();
     const { fetch: send } = recorder();
     await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: send, attestation });
-    expect(attestation.acceptances).toBe(1);
     const unavailable = { error: { code: "auth/attestation_config", message: "No verifier.", action: null } };
     await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(500, unavailable), attestation });
     const lost: AuthFetch = async () => {
       throw new TypeError("Network request failed");
     };
     await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: lost, attestation });
-    expect(attestation.acceptances).toBe(1);
     expect(attestation.refusals).toEqual([]);
   });
 

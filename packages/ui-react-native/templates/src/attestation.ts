@@ -22,9 +22,10 @@ import { secureStore, type Transport, transport } from "./transport";
  * send asks the Worker for a challenge and sends the platform's assertion over it in one header:
  *
  * - **`test`**: the documented test assertion, from the iOS Simulator, the Android emulator and CI. No WebView.
- * - **`enforce` on iOS**: App Attest. The first send generates a key in the Secure Enclave and registers it; its id
- *   is kept in the Keychain, and every later send asserts with it.
- * - **`enforce` on Android**: Play Integrity, for the Google Cloud project `playIntegrity.cloudProjectNumber` names.
+ * - **`enforce` on iOS**: App Attest. The first send generates a key in the Secure Enclave and registers it with the
+ *   Worker; its id is kept in the Keychain once the Worker has registered it, and every send asserts with it.
+ * - **`enforce` on Android**: Play Integrity, for the Google Cloud project `playIntegrity.cloudProjectNumber` names,
+ *   once the Worker verifies it. Until then `attestation.platforms.android` is `false` and Android keeps Turnstile.
  *
  * Everywhere else the screen keeps Turnstile: the web build, an environment with no block, a platform the block
  * allows no app for or the Worker cannot yet verify under `enforce` (`attestation.platforms`), an iPhone without

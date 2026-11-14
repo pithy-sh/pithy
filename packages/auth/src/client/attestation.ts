@@ -52,10 +52,32 @@ export interface AttestationRequest {
 
 /** What an attester produced. */
 export interface AttestationProof {
-  /** The App Attest attestation object or assertion, the Play Integrity token, or the test assertion. */
+  /** The App Attest assertion, the Play Integrity token, or the test assertion. */
   readonly assertion: string;
   /** The App Attest key id, on iOS. */
   readonly keyId?: string;
+}
+
+/** What an attester may ask of the Worker besides the send it attests: the calls a key's registration makes. */
+export interface AttestationTransport {
+  /** A fresh single-use challenge from `POST {basePath}/attestation/challenge`. */
+  challenge(): Promise<AuthResult<string>>;
+  /** Register an App Attest key with Apple's attestation of it, at `POST {basePath}/attestation/ios/keys`. */
+  registerAppAttestKey(input: { challenge: string; keyId: string; attestation: string }): Promise<AuthResult<void>>;
+}
+
+/**
+ * The Worker refused a call an attester made through its {@link AttestationTransport}. Thrown by an attester and
+ * answered by the send as {@link AttestationRefusedError.failure}, so a refused registration reaches the screen with
+ * the Worker's code rather than as {@link ATTESTATION_UNAVAILABLE}.
+ */
+export class AttestationRefusedError extends Error {
+  readonly failure: AuthFailure;
+  constructor(failure: AuthFailure) {
+    super(failure.message);
+    this.name = "AttestationRefusedError";
+    this.failure = failure;
+  }
 }
 
 /** One platform's attestation, injected. */
@@ -64,12 +86,14 @@ export interface Attester {
   readonly platform: "ios" | "android";
   /** Whether this device can attest at all. Absent means it can. A screen offers Turnstile where it cannot. */
   readonly available?: boolean;
-  /** The assertion over `request`. May throw: the caller turns a throw into {@link ATTESTATION_UNAVAILABLE}. */
-  attest(request: AttestationRequest): Promise<AttestationProof>;
+  /**
+   * The assertion over `request`. `transport` reaches the Worker for anything the assertion needs first, such as
+   * registering a key. May throw: the caller answers an {@link AttestationRefusedError} with its failure and any
+   * other throw with {@link ATTESTATION_UNAVAILABLE}.
+   */
+  attest(request: AttestationRequest, transport: AttestationTransport): Promise<AttestationProof>;
   /** The Worker refused what this produced. An attester holding a key drops it, so the next send starts over. */
   refused?(): Promise<void>;
-  /** The send carrying what this produced succeeded. An attester registering a key keeps it as registered. */
-  accepted?(): Promise<void>;
 }
 
 /** The test assertion from `platform`. A `test` environment accepts it; nothing else does. */
@@ -89,35 +113,36 @@ export interface AppAttestModule {
   generateAssertionAsync(keyId: string, challenge: string): Promise<string>;
 }
 
-/** An App Attest key as stored: its id, and whether the Worker has been sent its attestation. */
-interface StoredKey {
-  keyId: string;
-  registered: boolean;
-}
-
-/** A stored key read back, or `null` when the value is not one this module wrote. */
-function readKey(raw: string | null): StoredKey | null {
+/** A stored key id read back, or `null` when the value is not one this module wrote. */
+function readKeyId(raw: string | null): string | null {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { keyId, registered } = parsed as Record<string, unknown>;
-    if (typeof keyId !== "string" || keyId === "" || typeof registered !== "boolean") return null;
-    return { keyId, registered };
+    const { keyId } = parsed as Record<string, unknown>;
+    return typeof keyId === "string" && keyId !== "" ? keyId : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Apple App Attest. A send with no registered key generates one and sends Apple's attestation of it; once that send
- * succeeds the key is kept as registered, in `store`, the Keychain on a phone, and every later send asserts with it.
- * A key whose send did not succeed is never asserted with: the Worker may not have seen it, and App Attest attests
- * a key only once, so the next send generates another. A registered key the device cannot assert with, which is what
- * a Keychain entry outliving a reinstall or a restore leaves, is dropped and a new one registered in its place.
+ * Apple App Attest.
  *
- * `@expo/app-integrity` hashes the string it is handed into `clientDataHash`, so it is handed the binding's
- * preimage, the challenge followed by the body, and the hash it makes is the binding.
+ * **A key is registered once, then asserts.** With no registered key, a send generates one, asks the Worker for a
+ * challenge, has Apple attest the key over it, and posts the attestation object to `/attestation/ios/keys`. The key
+ * is kept in `store`, the Keychain on a phone, only when that route answers success; a key it refused, or that never
+ * reached it, is never asserted with, and the next send registers another. Then that send, and every later one,
+ * asserts with the key over its own challenge and exact body.
+ *
+ * **A key that stops working is replaced.** A key the device can no longer assert with, which is what a Keychain
+ * entry outliving a reinstall or a restore leaves, is dropped and a new one registered on the same send. A send the
+ * Worker refuses with `auth/attestation_failed` drops the key too, through {@link Attester.refused}, so the next
+ * send registers a new one.
+ *
+ * **What the module is handed is what the Worker hashes.** `@expo/app-integrity` hashes the string it is handed into
+ * `clientDataHash`. Registration hands it the challenge alone, whose SHA-256 is the binding over the challenge and an
+ * empty body; an assertion hands it the challenge followed by the send's body, whose SHA-256 is the send's binding.
  */
 export function appAttestAttester(input: {
   module: AppAttestModule;
@@ -126,60 +151,27 @@ export function appAttestAttester(input: {
 }): Attester {
   const { module, store } = input;
   const key = input.storageKey ?? APP_ATTEST_KEY_STORAGE_KEY;
-  let held: StoredKey | null | undefined;
-  let pending: string | null = null;
+  let held: string | null | undefined;
+  let registering: Promise<string> | null = null;
 
-  async function load(): Promise<StoredKey | null> {
+  async function load(): Promise<string | null> {
     if (held !== undefined) return held;
     try {
-      held = readKey(await store.getItem(key));
+      held = readKeyId(await store.getItem(key));
     } catch {
       held = null;
     }
     return held;
   }
 
-  async function keep(next: StoredKey): Promise<void> {
-    held = next;
+  async function keep(keyId: string): Promise<void> {
+    held = keyId;
     try {
-      await store.setItem(key, JSON.stringify(next));
+      await store.setItem(key, JSON.stringify({ keyId }));
     } catch {
       // Kept for this launch. The next launch registers a new key.
     }
   }
-
-  return {
-    platform: "ios",
-    available: module.isSupported,
-    async attest(request) {
-      const message = `${request.challenge}${request.body}`;
-      const current = await load();
-      if (current?.registered) {
-        try {
-          return { assertion: await module.generateAssertionAsync(current.keyId, message), keyId: current.keyId };
-        } catch {
-          // The Keychain outlives a reinstall, a restore and a migration; the key itself does not. Drop it and
-          // register a new one over this same request.
-          await forget();
-        }
-      }
-      pending = null;
-      const keyId = await module.generateKeyAsync();
-      const attestation = await module.attestKeyAsync(keyId, message);
-      pending = keyId;
-      return { assertion: attestation, keyId };
-    },
-    async accepted() {
-      if (pending === null) return;
-      const keyId = pending;
-      pending = null;
-      await keep({ keyId, registered: true });
-    },
-    async refused() {
-      pending = null;
-      await forget();
-    },
-  };
 
   async function forget(): Promise<void> {
     held = null;
@@ -189,6 +181,49 @@ export function appAttestAttester(input: {
       // Nothing left to try. A key the store kept is refused again, and dropped again.
     }
   }
+
+  /** Generate a key, have Apple attest it over a fresh challenge, and register it. Kept only once registered. */
+  async function register(transport: AttestationTransport): Promise<string> {
+    const keyId = await module.generateKeyAsync();
+    const issued = await transport.challenge();
+    if (!issued.ok) throw new AttestationRefusedError(issued.failure);
+    const attestation = await module.attestKeyAsync(keyId, issued.value);
+    const registered = await transport.registerAppAttestKey({ challenge: issued.value, keyId, attestation });
+    if (!registered.ok) throw new AttestationRefusedError(registered.failure);
+    await keep(keyId);
+    return keyId;
+  }
+
+  /** One registration at a time, so two sends at once register one key between them. */
+  function registerOnce(transport: AttestationTransport): Promise<string> {
+    registering ??= register(transport).finally(() => {
+      registering = null;
+    });
+    return registering;
+  }
+
+  return {
+    platform: "ios",
+    available: module.isSupported,
+    async attest(request, transport) {
+      const message = `${request.challenge}${request.body}`;
+      const current = await load();
+      if (current !== null) {
+        try {
+          return { assertion: await module.generateAssertionAsync(current, message), keyId: current };
+        } catch {
+          // The Keychain outlives a reinstall, a restore and a migration; the key itself does not. Drop it and
+          // register a new one for this same send.
+          if (held === current) await forget();
+        }
+      }
+      const keyId = await registerOnce(transport);
+      return { assertion: await module.generateAssertionAsync(keyId, message), keyId };
+    },
+    async refused() {
+      await forget();
+    },
+  };
 }
 
 /** The Play Integrity half of `@expo/app-integrity`, as this module calls it. */
@@ -260,6 +295,36 @@ function isChallenge(value: unknown): value is { challenge: string; expiresAt: s
   return typeof challenge === "string" && challenge !== "";
 }
 
+/** Whether a value is the key registration route's answer. */
+function isRegistration(value: unknown): value is { keyId: string; registeredAt: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const { keyId } = value as Record<string, unknown>;
+  return typeof keyId === "string" && keyId !== "";
+}
+
+/** The Worker calls an attester makes, over `options`. */
+function transportOver(options: AuthClientOptions): AttestationTransport {
+  const post = (body: unknown) => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return {
+    async challenge() {
+      const issued = await callAuth("/attestation/challenge", post({}), options, isChallenge);
+      return issued.ok ? { ok: true, value: issued.value.challenge } : issued;
+    },
+    async registerAppAttestKey(input) {
+      const registered = await callAuth("/attestation/ios/keys", post(input), options, isRegistration);
+      if (!registered.ok) return registered;
+      // The route echoes the key id it registered. Any other answer is not a registration of this key.
+      return registered.value.keyId === input.keyId
+        ? { ok: true, value: undefined }
+        : { ok: false, failure: AUTH_UNREADABLE };
+    },
+  };
+}
+
 /**
  * The attestation a gated send takes as `options.attestation`: one challenge per send, the attester's assertion
  * over it and the body, and the header that carries them. `options` reaches the challenge route the way every
@@ -274,16 +339,12 @@ export function createAttestation(
 ): AuthAttestation {
   const { attester, digest: _digest, attestation: _attestation, gate: _gate, ...options } = input;
   const digest = input.digest ?? webDigest;
+  const transport = transportOver(options);
   return {
     async attest(body): Promise<AuthResult<Record<string, string>>> {
-      const issued = await callAuth(
-        "/attestation/challenge",
-        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
-        options,
-        isChallenge,
-      );
+      const issued = await transport.challenge();
       if (!issued.ok) return issued;
-      const { challenge } = issued.value;
+      const challenge = issued.value;
       const encoder = new TextEncoder();
       const prefix = encoder.encode(challenge);
       const bytes = encoder.encode(body);
@@ -292,8 +353,9 @@ export function createAttestation(
       message.set(bytes, prefix.length);
       let proof: AttestationProof;
       try {
-        proof = await attester.attest({ challenge, body, binding: await digest(message) });
-      } catch {
+        proof = await attester.attest({ challenge, body, binding: await digest(message) }, transport);
+      } catch (failure) {
+        if (failure instanceof AttestationRefusedError) return { ok: false, failure: failure.failure };
         return { ok: false, failure: ATTESTATION_UNAVAILABLE };
       }
       if (typeof proof.assertion !== "string" || proof.assertion === "") {
@@ -312,13 +374,6 @@ export function createAttestation(
         await attester.refused?.();
       } catch {
         // The refusal is the caller's answer either way.
-      }
-    },
-    async accepted() {
-      try {
-        await attester.accepted?.();
-      } catch {
-        // The send succeeded either way. A key not kept is registered again on a later send.
       }
     },
   };

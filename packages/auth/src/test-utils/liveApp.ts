@@ -121,6 +121,8 @@ export interface LiveAppOptions {
   environment?: string;
   /** Auth's `attestation` block, as `auth()` takes it. Absent, attestation is not configured. */
   attestation?: z.input<typeof AttestationConfig>;
+  /** The root an App Attest key's chain must lead to, DER, in place of Apple's: a test device's. */
+  appAttestRoot?: Uint8Array;
 }
 
 /** A booted app: where it listens, what it was pinned to, and what it recorded. */
@@ -212,6 +214,7 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
     turnstile: options.turnstile
       ? { mode: options.turnstile.mode, token: { field: "cf-turnstile-response" } }
       : undefined,
+    appAttestRoot: options.appAttestRoot,
   };
 
   const app = buildApp(wiring, events);

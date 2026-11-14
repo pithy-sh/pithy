@@ -109,10 +109,8 @@ export type AuthGate = (body: Record<string, unknown>) => {
 export interface AuthAttestation {
   /** The headers to send with `body`, or the failure that stopped the attestation. */
   attest(body: string): Promise<AuthResult<Record<string, string>>>;
-  /** The Worker refused the attestation with `auth/attestation_failed`. */
+  /** The Worker refused the attestation with `auth/attestation_failed`, so a key it named is not used again. */
   refused?(failure: AuthFailure): void | Promise<void>;
-  /** The send it carried succeeded, so the Worker took the attestation. Only then may a key count as registered. */
-  accepted?(): void | Promise<void>;
 }
 
 /** What every call takes: where the routes are, and the seams a test replaces. */
@@ -340,8 +338,7 @@ function jsonPost(body: Record<string, unknown>, options: AuthClientOptions | un
 
 /**
  * A send to a gated route: attested when `options.attestation` is set, and otherwise through {@link jsonPost}'s
- * humanity check. The outcome is reported back to it: a refused attestation so a key the Worker refused is not used
- * again, and an accepted one so a key counts as registered only once the Worker has taken it.
+ * humanity check. A refused attestation is reported back to it, so a key the Worker refused is not used again.
  */
 async function gatedSend(
   path: string,
@@ -359,8 +356,7 @@ async function gatedSend(
     options,
     isObject,
   );
-  if (result.ok) await attestation.accepted?.();
-  else if (result.failure.code === "auth/attestation_failed") await attestation.refused?.(result.failure);
+  if (!result.ok && result.failure.code === "auth/attestation_failed") await attestation.refused?.(result.failure);
   return result;
 }
 

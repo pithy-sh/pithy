@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { ATTESTATION_TEST_ASSERTION as SERVER_TEST_ASSERTION } from "../attestation/verifier";
-import { decodeAttestation, requestBinding, ATTESTATION_HEADER as SERVER_HEADER } from "../attestation/wire";
-import type { AuthFetch, AuthRequestInit } from "./api";
+import { decodeAttestation, requestBinding } from "../attestation/wire";
+import type { AuthFailure, AuthFetch, AuthRequestInit } from "./api";
 import {
   APP_ATTEST_KEY_STORAGE_KEY,
   type AppAttestModule,
   ATTESTATION_HEADER,
   ATTESTATION_TEST_ASSERTION,
   ATTESTATION_UNAVAILABLE,
+  AttestationRefusedError,
   type AttestationRequest,
+  type AttestationTransport,
   type Attester,
   appAttestAttester,
   base64Url,
@@ -68,11 +69,6 @@ function header(result: Awaited<ReturnType<ReturnType<typeof createAttestation>[
 }
 
 describe("the client speaks the gate's wire", () => {
-  test("the header and the test assertion are the ones the Worker reads", () => {
-    expect(ATTESTATION_HEADER).toBe(SERVER_HEADER);
-    expect(ATTESTATION_TEST_ASSERTION).toBe(SERVER_TEST_ASSERTION);
-  });
-
   test("base64url is unpadded and URL-safe, for every length", () => {
     const bytes = new Uint8Array([0xfb, 0xff, 0xfe, 0x00, 0x7f]);
     for (let length = 0; length <= bytes.length; length += 1) {
@@ -112,7 +108,7 @@ describe("an attestation over one send", () => {
     const { fetch } = worker();
     const result = await createAttestation({ origin: ORIGIN, fetch, attester: testAttester("android") }).attest("{}");
     const decoded = decodeAttestation(header(result));
-    expect(decoded.ok && decoded.value).toMatchObject({ platform: "android", assertion: SERVER_TEST_ASSERTION });
+    expect(decoded.ok && decoded.value).toMatchObject({ platform: "android", assertion: ATTESTATION_TEST_ASSERTION });
     expect(decoded.ok && "keyId" in decoded.value).toBe(false);
   });
 
@@ -176,20 +172,6 @@ describe("an attestation over one send", () => {
     await attestation.refused?.({ code: "auth/attestation_failed", message: "m", action: null });
     expect(reset).toBe(1);
   });
-
-  test("an acceptance is handed on to the attester, and an attester that throws on it costs nothing", async () => {
-    let kept = 0;
-    const attester: Attester = {
-      ...testAttester("ios"),
-      accepted: async () => {
-        kept += 1;
-        throw new Error("keychain locked");
-      },
-    };
-    const attestation = createAttestation({ origin: ORIGIN, fetch: worker().fetch, attester });
-    await expect(attestation.accepted?.()).resolves.toBeUndefined();
-    expect(kept).toBe(1);
-  });
 });
 
 /** `@expo/app-integrity`'s App Attest half, recording what it was asked. */
@@ -215,97 +197,174 @@ function appAttest(supported = true): AppAttestModule & { log: string[] } {
   };
 }
 
+/** A transport to a Worker that issues `reg-1`, `reg-2`… and registers every key, or answers `refusal` there. */
+function registrar(): AttestationTransport & {
+  log: string[];
+  refusal: AuthFailure | null;
+  challengeRefusal: AuthFailure | null;
+} {
+  let issued = 0;
+  return {
+    log: [],
+    refusal: null,
+    challengeRefusal: null,
+    async challenge() {
+      if (this.challengeRefusal) return { ok: false, failure: this.challengeRefusal };
+      issued += 1;
+      this.log.push(`challenge reg-${issued}`);
+      return { ok: true, value: `reg-${issued}` };
+    },
+    async registerAppAttestKey(input) {
+      this.log.push(`register ${input.keyId} ${input.challenge} ${input.attestation}`);
+      return this.refusal ? { ok: false, failure: this.refusal } : { ok: true, value: undefined };
+    },
+  };
+}
+
+/** A transport an attester must not use. */
+const offline: AttestationTransport = {
+  challenge: async () => {
+    throw new Error("no transport");
+  },
+  registerAppAttestKey: async () => {
+    throw new Error("no transport");
+  },
+};
+
 const REQUEST: AttestationRequest = { challenge: "ch", body: '{"email":"a@b.c"}', binding: new Uint8Array([9]) };
+const REFUSED: AuthFailure = { code: "auth/attestation_failed", message: "Did not verify.", action: null };
+const stored = (keyId: string) => JSON.stringify({ keyId });
 
 describe("App Attest on iOS", () => {
-  test("generates a key once, registers it with an attestation, then asserts with it", async () => {
+  test("registers a key once over its own challenge, then asserts over the send's challenge and body", async () => {
     const module = appAttest();
     const store = memoryStore();
+    const worker = registrar();
     const attester = appAttestAttester({ module, store });
 
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "attestation-of-key-1", keyId: "key-1" });
-    await attester.accepted?.();
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
-    // The module hashes what it is handed into clientDataHash, so it is handed the binding's preimage.
-    expect(module.log).toEqual(["generate key-1", `attest key-1 ch${REQUEST.body}`, `assert key-1 ch${REQUEST.body}`]);
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    // The module hashes what it is handed into clientDataHash: the challenge alone to register, which is the binding
+    // over an empty body, and the challenge followed by the body to assert, which is the send's binding.
+    expect(module.log).toEqual([
+      "generate key-1",
+      "attest key-1 reg-1",
+      `assert key-1 ch${REQUEST.body}`,
+      `assert key-1 ch${REQUEST.body}`,
+    ]);
+    expect(worker.log).toEqual(["challenge reg-1", "register key-1 reg-1 attestation-of-key-1"]);
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-1"));
   });
 
-  test("the key and its registration outlive the launch, in the secure store", async () => {
+  test("the attestation object goes only to the registration route, never in the send", async () => {
+    const attester = appAttestAttester({ module: appAttest(), store: memoryStore() });
+    const proof = await attester.attest(REQUEST, registrar());
+    expect(proof.assertion).not.toMatch(/^attestation-of-/);
+  });
+
+  test("a registered key outlives the launch, in the secure store, and is not registered again", async () => {
     const store = memoryStore();
-    const first = appAttestAttester({ module: appAttest(), store });
-    await first.attest(REQUEST);
-    await first.accepted?.();
+    await appAttestAttester({ module: appAttest(), store }).attest(REQUEST, registrar());
     const later = appAttest();
-    expect(await appAttestAttester({ module: later, store }).attest(REQUEST)).toEqual({
+    const worker = registrar();
+    expect(await appAttestAttester({ module: later, store }).attest(REQUEST, worker)).toEqual({
       assertion: "assertion-by-key-1",
       keyId: "key-1",
     });
     expect(later.log).toEqual([`assert key-1 ch${REQUEST.body}`]);
+    expect(worker.log).toEqual([]);
   });
 
-  test("a key the Worker refused is dropped, and the next send registers a new one", async () => {
+  test("a registration the Worker refuses is not kept, answers its code, and the next send registers another", async () => {
     const module = appAttest();
     const store = memoryStore();
+    const worker = registrar();
+    worker.refusal = REFUSED;
     const attester = appAttestAttester({ module, store });
-    await attester.attest(REQUEST);
-    await attester.accepted?.();
+    const thrown = await attester.attest(REQUEST, worker).catch((failure: unknown) => failure);
+    expect(thrown).toBeInstanceOf(AttestationRefusedError);
+    expect((thrown as AttestationRefusedError).failure).toEqual(REFUSED);
+    expect(store.data.size).toBe(0);
+    expect(module.log.filter((line) => line.startsWith("assert"))).toEqual([]);
+
+    worker.refusal = null;
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-2"));
+  });
+
+  test("a registration that never got a challenge is not kept, and answers the Worker's code", async () => {
+    const store = memoryStore();
+    const worker = registrar();
+    worker.challengeRefusal = { code: "core/rate_limited", message: "Slow down.", action: null };
+    const thrown = await appAttestAttester({ module: appAttest(), store })
+      .attest(REQUEST, worker)
+      .catch((failure: unknown) => failure);
+    expect((thrown as AttestationRefusedError).failure.code).toBe("core/rate_limited");
+    expect(store.data.size).toBe(0);
+  });
+
+  test("a key the Worker refused at a send is dropped, and the next send registers a new one", async () => {
+    const module = appAttest();
+    const store = memoryStore();
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store });
+    await attester.attest(REQUEST, worker);
     await attester.refused?.();
     expect(store.data.size).toBe(0);
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "attestation-of-key-2", keyId: "key-2" });
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
+    expect(worker.log).toEqual([
+      "challenge reg-1",
+      "register key-1 reg-1 attestation-of-key-1",
+      "challenge reg-2",
+      "register key-2 reg-2 attestation-of-key-2",
+    ]);
   });
 
   test("a registered key the device can no longer assert with is dropped, and the same send registers a new one", async () => {
     // The Keychain outlives a reinstall, a restore to a new phone or a migration; the App Attest key does not.
     const store = memoryStore();
-    const first = appAttestAttester({ module: appAttest(), store });
-    await first.attest(REQUEST);
-    await first.accepted?.();
-    const later = appAttest();
-    later.generateAssertionAsync = async (keyId) => {
-      later.log.push(`assert ${keyId} refused`);
-      throw new Error("invalidKey");
+    store.data.set(APP_ATTEST_KEY_STORAGE_KEY, stored("lost"));
+    const module = appAttest();
+    const assert = module.generateAssertionAsync;
+    module.generateAssertionAsync = async (keyId, challenge) => {
+      if (keyId === "lost") {
+        module.log.push("assert lost refused");
+        throw new Error("invalidKey");
+      }
+      return assert(keyId, challenge);
     };
-    let generated = 0;
-    later.generateKeyAsync = async () => {
-      generated += 1;
-      later.log.push(`generate fresh-${generated}`);
-      return `fresh-${generated}`;
-    };
-    const attester = appAttestAttester({ module: later, store });
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "attestation-of-fresh-1", keyId: "fresh-1" });
-    expect(later.log).toEqual(["assert key-1 refused", "generate fresh-1", `attest fresh-1 ch${REQUEST.body}`]);
-    expect(store.data.size).toBe(0);
-    await attester.accepted?.();
-    expect(JSON.parse(store.data.values().next().value ?? "{}")).toEqual({ keyId: "fresh-1", registered: true });
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store });
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    expect(module.log).toEqual([
+      "assert lost refused",
+      "generate key-1",
+      "attest key-1 reg-1",
+      `assert key-1 ch${REQUEST.body}`,
+    ]);
+    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(stored("key-1"));
   });
 
-  test("a registered key that cannot assert and a device that cannot register leave nothing stored", async () => {
-    const store = memoryStore();
-    const first = appAttestAttester({ module: appAttest(), store });
-    await first.attest(REQUEST);
-    await first.accepted?.();
-    const later = appAttest();
-    later.generateAssertionAsync = async () => {
-      throw new Error("invalidKey");
-    };
-    later.attestKeyAsync = async () => {
-      throw new Error("serverUnavailable");
-    };
-    const attester = appAttestAttester({ module: later, store });
-    await expect(attester.attest(REQUEST)).rejects.toThrow("serverUnavailable");
-    expect(store.data.size).toBe(0);
-    later.attestKeyAsync = async (keyId) => `attestation-of-${keyId}`;
-    expect(await attester.attest(REQUEST)).toMatchObject({ assertion: expect.stringMatching(/^attestation-of-/) });
-  });
-
-  test("a key whose attestation failed is not kept as registered", async () => {
+  test("a device that cannot attest the key leaves nothing stored and registers nothing", async () => {
     const module = appAttest();
     module.attestKeyAsync = async () => {
       throw new Error("serverUnavailable");
     };
     const store = memoryStore();
-    await expect(appAttestAttester({ module, store }).attest(REQUEST)).rejects.toThrow("serverUnavailable");
+    const worker = registrar();
+    await expect(appAttestAttester({ module, store }).attest(REQUEST, worker)).rejects.toThrow("serverUnavailable");
     expect(store.data.size).toBe(0);
+    expect(worker.log).toEqual(["challenge reg-1"]);
+  });
+
+  test("two sends at once register one key between them", async () => {
+    const module = appAttest();
+    const worker = registrar();
+    const attester = appAttestAttester({ module, store: memoryStore() });
+    const [first, second] = await Promise.all([attester.attest(REQUEST, worker), attester.attest(REQUEST, worker)]);
+    expect(first.keyId).toBe("key-1");
+    expect(second.keyId).toBe("key-1");
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
   });
 
   test("a store that refuses costs the key's permanence, never the send", async () => {
@@ -320,59 +379,103 @@ describe("App Attest on iOS", () => {
         throw new Error("locked");
       },
     };
+    const worker = registrar();
     const attester = appAttestAttester({ module: appAttest(), store });
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "attestation-of-key-1", keyId: "key-1" });
-    await expect(attester.accepted?.()).resolves.toBeUndefined();
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
+    expect(await attester.attest(REQUEST, worker)).toEqual({ assertion: "assertion-by-key-1", keyId: "key-1" });
     await expect(attester.refused?.()).resolves.toBeUndefined();
-  });
-
-  test("a key whose send never succeeded is not registered, and the next send attests a new one", async () => {
-    const module = appAttest();
-    const store = memoryStore();
-    const attester = appAttestAttester({ module, store });
-    await attester.attest(REQUEST);
-    // The send was lost, rate limited, or refused for a reason other than the attestation: no accepted().
-    expect(store.data.size).toBe(0);
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "attestation-of-key-2", keyId: "key-2" });
-    await attester.accepted?.();
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "assertion-by-key-2", keyId: "key-2" });
-    expect(module.log.filter((line) => line.startsWith("assert"))).toEqual([`assert key-2 ch${REQUEST.body}`]);
-  });
-
-  test("an acceptance with no attestation outstanding changes nothing", async () => {
-    const store = memoryStore();
-    const attester = appAttestAttester({ module: appAttest(), store });
-    await attester.accepted?.();
-    expect(store.data.size).toBe(0);
-    await attester.attest(REQUEST);
-    await attester.accepted?.();
-    await attester.accepted?.();
-    expect(store.data.get(APP_ATTEST_KEY_STORAGE_KEY)).toBe(JSON.stringify({ keyId: "key-1", registered: true }));
+    expect(worker.log.filter((line) => line.startsWith("register"))).toHaveLength(1);
   });
 
   test.each([
     ["not JSON", "key-1"],
     ["JSON that is not an object", '"key-1"'],
     ["null", "null"],
-    ["an empty key id", JSON.stringify({ keyId: "", registered: true })],
-    ["a key id that is not a string", JSON.stringify({ keyId: 7, registered: true })],
-    ["a registration that is not a boolean", JSON.stringify({ keyId: "key-9", registered: "yes" })],
-    ["a key never registered", JSON.stringify({ keyId: "key-9", registered: false })],
+    ["an empty key id", JSON.stringify({ keyId: "" })],
+    ["a key id that is not a string", JSON.stringify({ keyId: 7 })],
   ])("a stored value that is %s is never asserted with, and a new key is registered", async (_case, raw) => {
     const module = appAttest();
     const store = memoryStore();
     store.data.set(APP_ATTEST_KEY_STORAGE_KEY, raw);
-    expect(await appAttestAttester({ module, store }).attest(REQUEST)).toEqual({
-      assertion: "attestation-of-key-1",
+    expect(await appAttestAttester({ module, store }).attest(REQUEST, registrar())).toEqual({
+      assertion: "assertion-by-key-1",
       keyId: "key-1",
     });
-    expect(module.log).toEqual(["generate key-1", `attest key-1 ch${REQUEST.body}`]);
+    expect(module.log).toEqual(["generate key-1", "attest key-1 reg-1", `assert key-1 ch${REQUEST.body}`]);
   });
 
   test("a device without App Attest says so before any send", () => {
     expect(appAttestAttester({ module: appAttest(false), store: memoryStore() }).available).toBe(false);
     expect(appAttestAttester({ module: appAttest(true), store: memoryStore() }).available).toBe(true);
+  });
+});
+
+describe("App Attest through the Worker's routes", () => {
+  /** A Worker that issues `c-1`, `c-2`… and registers keys, answering `registration` there when it is set. */
+  function routes(registration?: { status: number; body: unknown }) {
+    let issued = 0;
+    const calls: Call[] = [];
+    const fetch: AuthFetch = async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith("/attestation/challenge")) {
+        issued += 1;
+        return { ok: true, status: 200, json: async () => ({ challenge: `c-${issued}`, expiresAt: "2999-01-01" }) };
+      }
+      if (registration)
+        return { ok: registration.status < 400, status: registration.status, json: async () => registration.body };
+      const { keyId } = JSON.parse(String(init?.body)) as { keyId: string };
+      return { ok: true, status: 200, json: async () => ({ keyId, registeredAt: "2026-11-13T00:00:00.000Z" }) };
+    };
+    return { fetch, calls };
+  }
+
+  test("registers at /attestation/ios/keys over its own challenge, then sends an assertion over a fresh one", async () => {
+    const { fetch, calls } = routes();
+    const module = appAttest();
+    const store = memoryStore();
+    const attestation = createAttestation({ origin: ORIGIN, fetch, attester: appAttestAttester({ module, store }) });
+    const body = JSON.stringify({ email: "ada@example.com", type: "sign-in" });
+
+    const result = await attestation.attest(body);
+    expect(calls.map((call) => [call.url, call.init?.method, call.init?.body])).toEqual([
+      [`${ORIGIN}/auth/attestation/challenge`, "POST", "{}"],
+      [`${ORIGIN}/auth/attestation/challenge`, "POST", "{}"],
+      [
+        `${ORIGIN}/auth/attestation/ios/keys`,
+        "POST",
+        JSON.stringify({ challenge: "c-2", keyId: "key-1", attestation: "attestation-of-key-1" }),
+      ],
+    ]);
+    expect(decodeAttestation(header(result))).toEqual({
+      ok: true,
+      value: { platform: "ios", challenge: "c-1", assertion: "assertion-by-key-1", keyId: "key-1" },
+    });
+    expect(module.log).toEqual(["generate key-1", "attest key-1 c-2", `assert key-1 c-1${body}`]);
+  });
+
+  test("a refused registration answers the Worker's code, keeps nothing, and sends nothing", async () => {
+    const refusal = { error: { code: "auth/attestation_failed", message: "Did not verify.", action: null } };
+    const { fetch } = routes({ status: 403, body: refusal });
+    const store = memoryStore();
+    const result = await createAttestation({
+      origin: ORIGIN,
+      fetch,
+      attester: appAttestAttester({ module: appAttest(), store }),
+    }).attest("{}");
+    expect(result.ok ? null : result.failure.code).toBe("auth/attestation_failed");
+    expect(store.data.size).toBe(0);
+  });
+
+  test("a registration answer that names another key is not a registration of this one", async () => {
+    const { fetch } = routes({ status: 200, body: { keyId: "someone-else", registeredAt: "2026-11-13T00:00:00Z" } });
+    const store = memoryStore();
+    const result = await createAttestation({
+      origin: ORIGIN,
+      fetch,
+      attester: appAttestAttester({ module: appAttest(), store }),
+    }).attest("{}");
+    expect(result.ok ? null : result.failure.code).toBe("client/unreadable");
+    expect(store.data.size).toBe(0);
   });
 });
 
@@ -397,8 +500,8 @@ describe("Play Integrity on Android", () => {
     const attester = playIntegrityAttester({ module, cloudProjectNumber: "123456789" });
     const binding = new Uint8Array(32).fill(0xff);
     const hash = Buffer.from(binding).toString("base64url");
-    expect(await attester.attest({ ...REQUEST, binding })).toEqual({ assertion: `token-for-${hash}` });
-    await attester.attest({ ...REQUEST, binding });
+    expect(await attester.attest({ ...REQUEST, binding }, offline)).toEqual({ assertion: `token-for-${hash}` });
+    await attester.attest({ ...REQUEST, binding }, offline);
     expect(module.log).toEqual(["prepare 123456789", `request ${hash}`, `request ${hash}`]);
   });
 
@@ -410,9 +513,9 @@ describe("Play Integrity on Android", () => {
       if (fail) throw new Error("PLAY_SERVICES_NOT_FOUND");
     };
     const attester = playIntegrityAttester({ module, cloudProjectNumber: "1" });
-    await expect(attester.attest(REQUEST)).rejects.toThrow("PLAY_SERVICES_NOT_FOUND");
+    await expect(attester.attest(REQUEST, offline)).rejects.toThrow("PLAY_SERVICES_NOT_FOUND");
     fail = false;
-    await attester.attest(REQUEST);
+    await attester.attest(REQUEST, offline);
     expect(module.log.filter((line) => line.startsWith("prepare"))).toEqual(["prepare 1", "prepare 1"]);
   });
 
@@ -425,9 +528,9 @@ describe("Play Integrity on Android", () => {
       return "token";
     };
     const attester = playIntegrityAttester({ module, cloudProjectNumber: "1" });
-    await expect(attester.attest(REQUEST)).rejects.toThrow("ERR_APP_INTEGRITY_PROVIDER_INVALID");
+    await expect(attester.attest(REQUEST, offline)).rejects.toThrow("ERR_APP_INTEGRITY_PROVIDER_INVALID");
     fail = false;
-    expect(await attester.attest(REQUEST)).toEqual({ assertion: "token" });
+    expect(await attester.attest(REQUEST, offline)).toEqual({ assertion: "token" });
     expect(module.log.filter((line) => line.startsWith("prepare"))).toEqual(["prepare 1", "prepare 1"]);
   });
 

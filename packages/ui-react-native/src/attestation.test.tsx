@@ -55,10 +55,12 @@ interface Call {
 
 let calls: Call[] = [];
 let refusal: { status: number; body: unknown } | null = null;
+let registrationRefusal: { status: number; body: unknown } | null = null;
 
 beforeEach(() => {
   calls = [];
   refusal = null;
+  registrationRefusal = null;
   config.attestation = undefined;
   config.playIntegrityProject = null;
   vi.stubGlobal("fetch", async (url: string, init: RequestInit & { headers?: Record<string, string> }) => {
@@ -67,6 +69,11 @@ beforeEach(() => {
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     if (url.endsWith("/attestation/challenge"))
       return json(200, { challenge: "the-challenge", expiresAt: "2999-01-01" });
+    if (url.endsWith("/attestation/ios/keys")) {
+      if (registrationRefusal) return json(registrationRefusal.status, registrationRefusal.body);
+      const { keyId } = JSON.parse(String(init.body)) as { keyId: string };
+      return json(200, { keyId, registeredAt: "2026-11-13T00:00:00.000Z" });
+    }
     if (refusal && (url.endsWith("/sign-in/magic-link") || url.endsWith("/send-verification-otp"))) {
       return json(refusal.status, refusal.body);
     }
@@ -156,7 +163,7 @@ describe("in a test environment, a simulator and an emulator", () => {
 });
 
 describe("in an enforcing environment", () => {
-  test("an iPhone registers an App Attest key over the challenge and the exact body", async () => {
+  test("an iPhone registers an App Attest key, then sends an assertion over the challenge and the exact body", async () => {
     config.attestation = { mode: "enforce" };
     await openSignIn("ios");
     expect(webViews.mounted).toEqual([]);
@@ -167,14 +174,36 @@ describe("in an enforcing environment", () => {
       value: {
         platform: "ios",
         challenge: "the-challenge",
-        assertion: "attestation-object-for-app-attest-key-1",
+        assertion: "assertion-by-app-attest-key-1",
         keyId: "app-attest-key-1",
       },
     });
+    const registration = calls.find((each) => each.url.endsWith("/auth/attestation/ios/keys"));
+    expect(JSON.parse(registration?.body ?? "{}")).toEqual({
+      challenge: "the-challenge",
+      keyId: "app-attest-key-1",
+      attestation: "attestation-object-for-app-attest-key-1",
+    });
     expect(appIntegrity.calls).toEqual([
       "generateKeyAsync -> app-attest-key-1",
-      `attestKeyAsync app-attest-key-1 the-challenge${call?.body}`,
+      "attestKeyAsync app-attest-key-1 the-challenge",
+      `generateAssertionAsync app-attest-key-1 the-challenge${call?.body}`,
     ]);
+  });
+
+  test("an iPhone whose key registration is refused shows the code, sends nothing, and registers anew next time", async () => {
+    config.attestation = { mode: "enforce" };
+    registrationRefusal = { status: 403, body: { error: { code: "auth/attestation_failed", message: "No." } } };
+    await openSignIn("ios");
+    await send();
+    expect((await waitFor(() => screen.getByTestId("gate-refusal"))).textContent).toContain("auth/attestation_failed");
+    expect(sent().call).toBeUndefined();
+    registrationRefusal = null;
+    await send();
+    await waitFor(() => expect(sent().call).toBeDefined());
+    expect(appIntegrity.calls.filter((line) => line.startsWith("generateKeyAsync"))).toHaveLength(2);
+    const { attestation } = sent();
+    expect(attestation?.ok && attestation.value).toMatchObject({ keyId: "app-attest-key-2" });
   });
 
   test("an iPhone without App Attest keeps Turnstile", async () => {
