@@ -453,18 +453,30 @@ describe("an absolute origin, for a program this Worker does not serve", () => {
 
 describe("an attested send", () => {
   /** An attestation that records the body it was asked to attest over, and answers one header. */
-  function attesting(): AuthAttestation & { bodies: string[]; refusals: AuthFailure[] } {
+  function attesting(): AuthAttestation & {
+    bodies: string[];
+    refusals: AuthFailure[];
+    answered: Record<string, string>[];
+    refusedHeaders: Readonly<Record<string, string>>[];
+  } {
     const bodies: string[] = [];
     const refusals: AuthFailure[] = [];
+    const answered: Record<string, string>[] = [];
+    const refusedHeaders: Readonly<Record<string, string>>[] = [];
     return {
       bodies,
       refusals,
+      answered,
+      refusedHeaders,
       async attest(body) {
         bodies.push(body);
-        return { ok: true, value: { "x-pithy-attestation": "attested" } };
+        const headers = { "x-pithy-attestation": "attested" };
+        answered.push(headers);
+        return { ok: true, value: headers };
       },
-      refused(failure) {
+      refused(failure, headers) {
         refusals.push(failure);
+        refusedHeaders.push(headers);
       },
     };
   }
@@ -502,6 +514,8 @@ describe("an attested send", () => {
     const result = await sendOtp({ email: "a@b.c", type: "sign-in" }, { fetch: answering(403, refusal), attestation });
     expect(result.ok ? null : result.failure.code).toBe("auth/attestation_failed");
     expect(attestation.refusals.map((failure) => failure.code)).toEqual(["auth/attestation_failed"]);
+    // The very headers the refused send carried, so the attestation drops what that send used and nothing newer.
+    expect(attestation.refusedHeaders[0]).toBe(attestation.answered[0]);
   });
 
   test("a send that succeeded, failed for the server or was lost reports no refusal", async () => {

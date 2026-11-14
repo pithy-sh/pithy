@@ -35,6 +35,7 @@ import {
   AUTH_GITHUB_CREDENTIALS,
   AUTH_GOOGLE_CREDENTIALS,
   AUTH_MICROSOFT_CREDENTIALS,
+  AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT,
   AUTH_SESSION_SECRET,
   authSecretsRegistry,
 } from "./instance/secrets";
@@ -387,11 +388,12 @@ describe("auth client projection", () => {
     const both = { ios: true, android: true };
     expect(mode("dev")).toEqual({ mode: "test", platforms: both });
     expect(mode("staging")).toEqual({ mode: "test", platforms: both });
-    // This release verifies no real assertion, so under enforce every platform keeps Turnstile.
-    const neither = { ios: false, android: false };
-    expect(mode("prod")).toEqual({ mode: "enforce", platforms: neither });
+    // Under enforce, Android attests with Play Integrity where the block allows an Android app; iOS, allowed none
+    // here, keeps Turnstile.
+    const android = { ios: false, android: true };
+    expect(mode("prod")).toEqual({ mode: "enforce", platforms: android });
     // The Worker holds a declared environment to enforce whatever its block says, so the app is told so.
-    expect(mode("live")).toEqual({ mode: "enforce", platforms: neither });
+    expect(mode("live")).toEqual({ mode: "enforce", platforms: android });
     expect(mode("feature")).toBeUndefined();
     expect(mode("dev")).toBeDefined();
     expect(resolveClientProjection(build(), { environment: "dev" })).not.toHaveProperty("attestation");
@@ -472,7 +474,7 @@ describe("pithy.manifest.json", () => {
     }
   });
 
-  test("says where a human gets each OAuth pair, and where the same human rotates it", () => {
+  test("says where a human gets each provider credential, and where the same human rotates it", () => {
     // The honest floor. Nothing will ever mint a Google client secret, so the whole of what the kit can
     // do is name the page — and a client reading this renders a link instead of a bare "not set".
     const obtained = manifest.secrets.filter((secret) => secret.origin.kind === "obtained");
@@ -482,6 +484,7 @@ describe("pithy.manifest.json", () => {
       AUTH_FACEBOOK_CREDENTIALS,
       AUTH_GITHUB_CREDENTIALS,
       AUTH_MICROSOFT_CREDENTIALS,
+      AUTH_PLAY_INTEGRITY_SERVICE_ACCOUNT,
     ]);
     for (const secret of obtained) {
       expect(secret.rotation.kind).toBe("manual");
@@ -489,7 +492,7 @@ describe("pithy.manifest.json", () => {
     }
   });
 
-  test("mints only the session secret — the five OAuth credentials are registered with a provider", () => {
+  test("mints only the session secret — every other credential is registered with a provider", () => {
     // A generated Google client secret authenticates against nothing. It would replace a loud gap
     // with a quiet one.
     expect(manifest.devSecrets).toEqual([{ name: AUTH_SESSION_SECRET, devValue: "random" }]);

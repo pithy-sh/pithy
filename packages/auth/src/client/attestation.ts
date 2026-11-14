@@ -92,8 +92,11 @@ export interface Attester {
    * other throw with {@link ATTESTATION_UNAVAILABLE}.
    */
   attest(request: AttestationRequest, transport: AttestationTransport): Promise<AttestationProof>;
-  /** The Worker refused what this produced. An attester holding a key drops it, so the next send starts over. */
-  refused?(): Promise<void>;
+  /**
+   * The Worker refused `proof`, which this produced for one send. An attester drops the key that proof used, and
+   * only that key, so the next send starts over without losing a newer key another send registered.
+   */
+  refused?(proof: AttestationProof): Promise<void>;
 }
 
 /** The test assertion from `platform`. A `test` environment accepts it; nothing else does. */
@@ -136,9 +139,13 @@ function readKeyId(raw: string | null): string | null {
  * asserts with the key over its own challenge and exact body.
  *
  * **A key that stops working is replaced.** A key the device can no longer assert with, which is what a Keychain
- * entry outliving a reinstall or a restore leaves, is dropped and a new one registered on the same send. A send the
- * Worker refuses with `auth/attestation_failed` drops the key too, through {@link Attester.refused}, so the next
- * send registers a new one.
+ * entry outliving a reinstall or a restore leaves, is dropped and a new one registered on the same send, unless
+ * another send has registered one meanwhile, which this send then asserts with. A send the Worker refuses with
+ * `auth/attestation_failed` drops the key that send used, through {@link Attester.refused}, so the next send
+ * registers a new one; a refusal arriving after a newer key replaced it leaves the newer key alone.
+ *
+ * **Sends share their work.** The stored key id is read once per launch however many sends start together, and
+ * one registration at a time serves every send waiting on a key.
  *
  * **What the module is handed is what the Worker hashes.** `@expo/app-integrity` hashes the string it is handed into
  * `clientDataHash`. Registration hands it the challenge alone, whose SHA-256 is the binding over the challenge and an
@@ -152,16 +159,23 @@ export function appAttestAttester(input: {
   const { module, store } = input;
   const key = input.storageKey ?? APP_ATTEST_KEY_STORAGE_KEY;
   let held: string | null | undefined;
+  let loading: Promise<string | null> | null = null;
   let registering: Promise<string> | null = null;
 
-  async function load(): Promise<string | null> {
-    if (held !== undefined) return held;
-    try {
-      held = readKeyId(await store.getItem(key));
-    } catch {
-      held = null;
-    }
-    return held;
+  /** The key id in hand, read from `store` once. A key kept or forgotten while the read ran wins over it. */
+  function load(): Promise<string | null> {
+    if (held !== undefined) return Promise.resolve(held);
+    loading ??= (async () => {
+      let read: string | null;
+      try {
+        read = readKeyId(await store.getItem(key));
+      } catch {
+        read = null;
+      }
+      held ??= read;
+      return held;
+    })();
+    return loading;
   }
 
   async function keep(keyId: string): Promise<void> {
@@ -207,21 +221,24 @@ export function appAttestAttester(input: {
     available: module.isSupported,
     async attest(request, transport) {
       const message = `${request.challenge}${request.body}`;
-      const current = await load();
-      if (current !== null) {
+      const tried = new Set<string>();
+      let current = await load();
+      while (current !== null && !tried.has(current)) {
+        tried.add(current);
         try {
           return { assertion: await module.generateAssertionAsync(current, message), keyId: current };
         } catch {
-          // The Keychain outlives a reinstall, a restore and a migration; the key itself does not. Drop it and
-          // register a new one for this same send.
+          // The Keychain outlives a reinstall, a restore and a migration; the key itself does not. Drop it, unless
+          // another send has already replaced it, then assert with whatever key is held now.
           if (held === current) await forget();
         }
+        current = held ?? null;
       }
       const keyId = await registerOnce(transport);
       return { assertion: await module.generateAssertionAsync(keyId, message), keyId };
     },
-    async refused() {
-      await forget();
+    async refused(proof) {
+      if (proof.keyId !== undefined && proof.keyId === held) await forget();
     },
   };
 }
@@ -340,6 +357,9 @@ export function createAttestation(
   const { attester, digest: _digest, attestation: _attestation, gate: _gate, ...options } = input;
   const digest = input.digest ?? webDigest;
   const transport = transportOver(options);
+  // Each header object this answered, to the proof in it, so a refusal reaches the attester with the proof of the
+  // send the Worker refused rather than whatever proof is newest.
+  const proofs = new WeakMap<object, AttestationProof>();
   return {
     async attest(body): Promise<AuthResult<Record<string, string>>> {
       const issued = await transport.challenge();
@@ -367,11 +387,15 @@ export function createAttestation(
         assertion: proof.assertion,
         ...(proof.keyId === undefined ? {} : { keyId: proof.keyId }),
       };
-      return { ok: true, value: { [ATTESTATION_HEADER]: base64Url(encoder.encode(JSON.stringify(presented))) } };
+      const headers = { [ATTESTATION_HEADER]: base64Url(encoder.encode(JSON.stringify(presented))) };
+      proofs.set(headers, proof);
+      return { ok: true, value: headers };
     },
-    async refused() {
+    async refused(_failure, headers) {
+      const proof = proofs.get(headers);
+      if (proof === undefined) return;
       try {
-        await attester.refused?.();
+        await attester.refused?.(proof);
       } catch {
         // The refusal is the caller's answer either way.
       }

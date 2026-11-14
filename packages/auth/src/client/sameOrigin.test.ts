@@ -142,6 +142,8 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "A live integration test driving a real deployed Worker and Cloudflare's siteverify endpoint from Node, by absolute URL. Not a browser program.",
   "src/instance/githubUserInfo.ts":
     "The kit's GitHub identity resolver, reading api.github.com by absolute URL with the OAuth token this callback was issued. Server-side, inside the Worker, and never a browser program: it runs from Better Auth's `getUserInfo` and this Worker's session cookie has no business on github.com. The transport is injected (`FetchJson`) so every test drives it without a socket.",
+  "src/attestation/playIntegrity/verifier.ts":
+    "The Play Integrity verifier calling Google's token endpoint and `decodeIntegrityToken` by absolute HTTPS URL with a service account's access token, from inside the Worker. Not a browser program and never this Worker's origin, and no cookie goes with it. The transport is injected so every test drives it without a socket.",
   "src/mcp/http/routes.ts":
     "`app.fetch(...)` — the MCP endpoint dispatching a tool call into this Worker's own composed app, in process. No network, no browser and no cookie: the caller rides beside the request, never on it.",
   "src/mcp/clientMetadata.ts":

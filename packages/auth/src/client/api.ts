@@ -109,8 +109,11 @@ export type AuthGate = (body: Record<string, unknown>) => {
 export interface AuthAttestation {
   /** The headers to send with `body`, or the failure that stopped the attestation. */
   attest(body: string): Promise<AuthResult<Record<string, string>>>;
-  /** The Worker refused the attestation with `auth/attestation_failed`, so a key it named is not used again. */
-  refused?(failure: AuthFailure): void | Promise<void>;
+  /**
+   * The Worker refused the attestation in `headers`, the very object {@link AuthAttestation.attest} answered for the
+   * refused send, with `auth/attestation_failed`, so a key it named is not used again.
+   */
+  refused?(failure: AuthFailure, headers: Readonly<Record<string, string>>): void | Promise<void>;
 }
 
 /** What every call takes: where the routes are, and the seams a test replaces. */
@@ -356,7 +359,8 @@ async function gatedSend(
     options,
     isObject,
   );
-  if (!result.ok && result.failure.code === "auth/attestation_failed") await attestation.refused?.(result.failure);
+  if (!result.ok && result.failure.code === "auth/attestation_failed")
+    await attestation.refused?.(result.failure, attested.value);
   return result;
 }
 
