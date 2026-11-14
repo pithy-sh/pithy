@@ -122,6 +122,7 @@ function devLoginHref(presented = claim): string {
 beforeEach(async () => {
   for (const table of [
     "pithy_auth_accounts",
+    "pithy_auth_app_attest_keys",
     "pithy_auth_attestation_challenges",
     "pithy_auth_devices",
     "pithy_auth_jwks",

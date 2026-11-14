@@ -34,6 +34,7 @@ function provider(plugins: Parameters<typeof authPluginPlan>[0]): MigrationProvi
 
 const KIT_TABLES = [
   "pithy_auth_accounts",
+  "pithy_auth_app_attest_keys",
   "pithy_auth_attestation_challenges",
   "pithy_auth_devices",
   "pithy_auth_jwks",
@@ -46,12 +47,13 @@ const KIT_TABLES = [
   "pithy_auth_verifications",
 ];
 
-/** What stands once a rollback has stepped back past `0004`, `0006` and `0009`, the tables they created. */
+/** What stands once a rollback has stepped back past `0004`, `0006`, `0009` and `0010`, the tables they created. */
 const KIT_TABLES_BEFORE_0004 = KIT_TABLES.filter(
   (table) =>
     table !== "pithy_auth_user_lifecycle" &&
     table !== "pithy_auth_verification_outcomes" &&
-    table !== "pithy_auth_attestation_challenges",
+    table !== "pithy_auth_attestation_challenges" &&
+    table !== "pithy_auth_app_attest_keys",
 );
 
 const PLUGIN_TABLES = ["organization", "member", "invitation"];
@@ -115,6 +117,7 @@ describe("a plugin's tables through pithy migrate", () => {
       ["0300_auth_0007_erasure_record", "Success"],
       ["0300_auth_0008_last_active", "Success"],
       ["0300_auth_0009_attestation_challenges", "Success"],
+      ["0300_auth_0010_app_attest_keys", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
     // The half that is not a table: the plugin writes the active organization onto the session.
@@ -204,6 +207,7 @@ describe("a plugin's tables through pithy migrate", () => {
       "0300_auth_0007_erasure_record",
       "0300_auth_0008_last_active",
       "0300_auth_0009_attestation_challenges",
+      "0300_auth_0010_app_attest_keys",
     ]);
 
     // Back past the kit's own, then the organization plugin's. `admin`'s stays applied,

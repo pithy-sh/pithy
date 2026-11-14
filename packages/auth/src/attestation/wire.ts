@@ -13,7 +13,7 @@ import { AttestationPlatform } from "./config";
  */
 export const ATTESTATION_HEADER = "x-pithy-attestation";
 
-/** The longest header value read. A Play Integrity token or an App Attest attestation object fits well inside. */
+/** The longest header value read. A Play Integrity token or an App Attest assertion fits well inside. */
 export const MAX_ATTESTATION_HEADER = 16_384;
 
 /** What a client sends in {@link ATTESTATION_HEADER}, before its base64url encoding. */
@@ -29,7 +29,7 @@ export const PresentedAttestation = z
       .string()
       .min(1)
       .describe(
-        "What the platform produced over the request binding: an App Attest attestation object or assertion on iOS, a Play Integrity token on Android, base64 as the platform hands it over. Or the documented test assertion, in a `test` environment.",
+        "What the platform produced over the request binding: an App Attest assertion from a key already registered at `POST /auth/attestation/ios/keys` on iOS, a Play Integrity token on Android, base64 as the platform hands it over. Never the App Attest attestation object, which goes only to that registration route. Or the documented test assertion, in a `test` environment.",
       ),
     keyId: z.string().min(1).max(256).optional().describe("The App Attest key identifier on iOS. Android has none."),
   })

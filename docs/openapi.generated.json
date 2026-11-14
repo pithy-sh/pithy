@@ -7660,6 +7660,91 @@
         ]
       }
     },
+    "/auth/attestation/ios/keys": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthAttestationIosKeys",
+        "summary": "Register an iOS app's App Attest key, with Apple's attestation of it.",
+        "description": "Once per key, before its first assertion. The app asks for a challenge, passes SHA-256 of its characters to `attestKey` as the client data hash, and sends the key id and the attestation object here. The certificate chain must lead to Apple App Attestation Root CA, the `rpIdHash` must be an allowed app's, and the key must be from Apple's production environment, or from either in dev, staging and a feature deployment. Then each send carries an assertion by this key in `x-pithy-attestation`. Any check that fails, a key already registered included, answers `auth/attestation_failed`; an environment with no attestation block answers `auth/attestation_config`.",
+        "requestBody": {
+          "required": true,
+          "description": "A new App Attest key for this server to verify and register before the app makes assertions with it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "challenge": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "A challenge from `POST {base}/attestation/challenge`. The app passes SHA-256 of its characters to `attestKey` as the client data hash. Spent by this request, pass or fail."
+                  },
+                  "keyId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "description": "The key identifier `generateKey` returned, base64 as Apple hands it over."
+                  },
+                  "attestation": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16384,
+                    "description": "The attestation object `attestKey` returned, base64 as Apple hands it over."
+                  }
+                },
+                "required": [
+                  "challenge",
+                  "keyId",
+                  "attestation"
+                ],
+                "description": "A new App Attest key for this server to verify and register before the app makes assertions with it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An App Attest key this server verified and registered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keyId": {
+                      "type": "string",
+                      "description": "The key identifier, as the request sent it. Assertions name it as `keyId`."
+                    },
+                    "registeredAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the key was registered, ISO-8601."
+                    }
+                  },
+                  "required": [
+                    "keyId",
+                    "registeredAt"
+                  ],
+                  "description": "An App Attest key this server verified and registered."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
     "/auth/token/rotate": {
       "post": {
         "tags": [

@@ -37,6 +37,7 @@ describe("rollbackThrough", () => {
     expect(names.some((name) => name.endsWith("auth_0006_verification_outcomes"))).toBe(true);
     expect(names.some((name) => name.endsWith("auth_0007_erasure_record"))).toBe(false);
     expect(names.some((name) => name.endsWith("auth_0009_attestation_challenges"))).toBe(false);
+    expect(names.some((name) => name.endsWith("auth_0010_app_attest_keys"))).toBe(false);
   });
 
   test("refuses a migration that is not applied", async () => {
