@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import {
+  isRetained,
+  type PurgeContext,
+  type PurgeStep,
+  type RetainingPurgeContribution,
+} from "@pithy-sh/core/src/capability/purge";
 import { legalHolds } from "@pithy-sh/core/src/retention/holds";
 import {
   classifiedSteps,
@@ -21,20 +26,20 @@ import { organizationWorkflowRetry } from "./retryPolicy";
 import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type OrganizationPurgeParams } from "./specs";
 
 /**
- * The organization purge, as steps (#623) — the bodies `./workflow.ts` hands a Workflow's step runner to.
+ * The organization purge, as steps — the bodies `./workflow.ts` hands a Workflow's step runner to.
  *
  * 1. **`due`** — is the organization deleted, and has its window closed? A restored one, one inside its window, and
  *    one already erased all end the run here, having erased nothing.
  * 2. **`erase <capability>`** — one step per composed contribution for the `organization` subject, in composition
  *    order, each recording that it ran in `pithy_organization_lifecycle`. Handed to the platform's retry
  *    unclassified (`./retryPolicy.ts`): a failing contribution retries alone, and the ones that finished are
- *    served from the journal. A contribution that **retains** its rows (#814) is a `retain <capability>` step
+ *    served from the journal. A contribution that **retains** its rows is a `retain <capability>` step
  *    instead: it erases nothing, and records `purge_retained` with the basis it gave.
  * 3. **`erase organization`** — this capability's own contribution, last: every other capability's step may still
  *    read a membership while it erases, and this one takes the memberships with the organization.
  * 4. **`complete`** — the `purged` record and `onOrganizationPurged`. Once.
  *
- * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites. A step
+ * Every step from 2 on records an audit event as well as its row, which the erasure attestation cites. A step
  * that exhausts its retries is caught once, recorded in its own `fail` step with the step it stopped at, and thrown
  * on unchanged, so the instance fails exactly as it did and the record does not read as a purge still running.
  *
@@ -50,15 +55,15 @@ export interface OrganizationPurgeOps {
   due(organizationId: string): Promise<"due" | "not_due" | "gone">;
   /** Record that one capability's step erased its rows. */
   recordStep(organizationId: string, step: string, summary: string): Promise<void>;
-  /** Record that one capability's step kept its rows, and why (#814). */
-  recordRetained(organizationId: string, step: string, basis: string): Promise<void>;
+  /** Record that one capability's step kept its rows, and why. */
+  recordRetained(organizationId: string, step: string, retain: RetainingPurgeContribution["retain"]): Promise<void>;
   /** Write the `purged` record and fire the hook. Says whether this call wrote them. */
   complete(organizationId: string): Promise<boolean>;
-  /** Record that the purge gave up at `step`, in the history and the trail (#823). */
+  /** Record that the purge gave up at `step`, in the history and the trail. */
   fail(organizationId: string, step: string): Promise<void>;
 }
 
-/** The audit events a purge owes the trail (#823). Each is the caller's to write, as every event here is. */
+/** The audit events a purge owes the trail. Each is the caller's to write, as every event here is. */
 export interface OrganizationPurgeAudit {
   /** One step erased or kept a capability's rows. */
   step(organizationId: string, step: string, disposition: "erased" | "retained"): Promise<void>;
@@ -86,8 +91,14 @@ export function organizationPurgeOps(
       await recordOrganizationPurgeStep(deps, { organizationId, step, summary });
       await audit.step(organizationId, step, "erased");
     },
-    recordRetained: async (organizationId, step, basis) => {
-      await recordOrganizationPurgeStep(deps, { organizationId, step, summary: basis, retained: true });
+    recordRetained: async (organizationId, step, retain) => {
+      await recordOrganizationPurgeStep(deps, {
+        organizationId,
+        step,
+        summary: retain.basis,
+        retained: true,
+        ...(retain.basisKey === undefined ? {} : { basisKey: retain.basisKey }),
+      });
       await audit.step(organizationId, step, "retained");
     },
     complete: async (organizationId) => {
@@ -110,7 +121,7 @@ export interface OrganizationPurgeOutcome {
   readonly state: "purged" | "not_due" | "gone" | "held";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
-  /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
+  /** Every step that kept its rows under a stated basis, in the order it ran. */
   readonly retained: readonly string[];
 }
 
@@ -156,7 +167,7 @@ export async function purgeOrganization(
       const { contribution } = each;
       current = each.step;
       if (isRetained(contribution)) {
-        retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, organizationId));
+        retained.push(await retainStep(step, run.ops, each.step, contribution.retain, organizationId));
       } else {
         erased.push(await eraseStep(step, run.ops, each, context));
       }
@@ -204,16 +215,16 @@ function eraseStep(
   });
 }
 
-/** One capability's retained step (#814): nothing is erased, and the record says the rows were kept and why. */
+/** One capability's retained step: nothing is erased, and the record says the rows were kept and why. */
 function retainStep(
   step: WorkflowStepLike,
   ops: OrganizationPurgeOps,
   name: string,
-  basis: string,
+  retain: RetainingPurgeContribution["retain"],
   organizationId: string,
 ): Promise<string> {
   return step.do(`retain ${name}`, async () => {
-    await ops.recordRetained(organizationId, name, basis);
+    await ops.recordRetained(organizationId, name, retain);
     return name;
   });
 }

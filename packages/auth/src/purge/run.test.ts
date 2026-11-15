@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import { PURGE_START_PAGE, type PurgeOps, purgeUser, startDuePurges } from "./run";
 
 /**
- * The purge's step structure (#622), against a step runner that behaves the way a Workflow does: a finished
+ * The purge's step structure, against a step runner that behaves the way a Workflow does: a finished
  * step is served from the journal and never re-run, a step body that throws is attempted again up to the
  * platform's limit, and an instance that failed is replayed from the top against the same journal.
  */
@@ -66,7 +66,8 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due", held: () =>
   return {
     due: async () => due,
     recordStep: async (userId, step, summary) => void log.push(`record ${step} ${userId}: ${summary}`),
-    recordRetained: async (userId, step, basis) => void log.push(`retained ${step} ${userId}: ${basis}`),
+    recordRetained: async (userId, step, retain) =>
+      void log.push(`retained ${step} ${userId}: ${retain.basis}${retain.basisKey ? ` [${retain.basisKey}]` : ""}`),
     address: async (userId) => {
       log.push(`address ${userId}`);
       return due === "gone" ? null : "ada@example.test";
@@ -103,7 +104,24 @@ function retaining(name: string, log: string[]): PurgeStep {
 }
 
 describe("purgeUser", () => {
-  test("a retained step is recorded as retained, in its own step, and nothing of it is erased (#814)", async () => {
+  test("a retained step records its basis key beside the basis, for the erasure record to carry", async () => {
+    const log: string[] = [];
+    const kept = retaining("payments", log);
+    const keyed: PurgeStep = {
+      ...kept,
+      contribution: {
+        ...kept.contribution,
+        retain: { basis: "Kept by payments.", basisKey: "payments/purge.retained" },
+      },
+    } as PurgeStep;
+    const { step } = workflow();
+    await purgeUser({ steps: [keyed, contribution("auth", log)], env: {}, ops: ops(log) }, step, Terminal, {
+      userId: "u1",
+    });
+    expect(log).toContain("retained payments u1: Kept by payments. [payments/purge.retained]");
+  });
+
+  test("a retained step is recorded as retained, in its own step, and nothing of it is erased", async () => {
     const log: string[] = [];
     const auth = contribution("auth", log);
     const payments = retaining("payments", log);
@@ -133,7 +151,7 @@ describe("purgeUser", () => {
     expect(log.filter((line) => line.startsWith("export"))).toEqual([]);
   });
 
-  test("a step reads the account's address only when it asks, inside the step (#814)", async () => {
+  test("a step reads the account's address only when it asks, inside the step", async () => {
     const log: string[] = [];
     const seen: (string | null)[] = [];
     const testers: PurgeStep = {
@@ -226,7 +244,7 @@ describe("purgeUser", () => {
     expect(log.filter((line) => line === "mail u1")).toHaveLength(1);
   });
 
-  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have (#823)", async () => {
+  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have", async () => {
     const log: string[] = [];
     const ledger = contribution("ledger", log, 3);
     const { step, ran } = workflow(3);
@@ -236,7 +254,7 @@ describe("purgeUser", () => {
     expect(ran.at(-1)).toBe("fail");
   });
 
-  test("a failure at the mail or the completion names that step (#823)", async () => {
+  test("a failure at the mail or the completion names that step", async () => {
     const log: string[] = [];
     const broken = { ...ops(log), mailComplete: async () => Promise.reject(new Terminal("mail binding down")) };
     const { step } = workflow();
@@ -246,7 +264,7 @@ describe("purgeUser", () => {
     expect(log).toContain("fail u1 at mail");
   });
 
-  test("a failure the purge cannot record still reports the failure that stopped it (#823)", async () => {
+  test("a failure the purge cannot record still reports the failure that stopped it", async () => {
     const log: string[] = [];
     const broken = { ...ops(log), fail: async () => Promise.reject(new Error("database gone")) };
     const { step } = workflow();

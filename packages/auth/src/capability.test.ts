@@ -77,6 +77,7 @@ describe("auth capability", () => {
       "0008_last_active",
       "0009_attestation_challenges",
       "0010_app_attest_keys",
+      "0011_retained_basis_key",
     ]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
@@ -177,6 +178,7 @@ describe("additional Better Auth plugins", () => {
       "0008_last_active",
       "0009_attestation_challenges",
       "0010_app_attest_keys",
+      "0011_retained_basis_key",
     ]);
     expect(cap.extensions).toEqual([]);
   });
@@ -194,6 +196,7 @@ describe("additional Better Auth plugins", () => {
       "0008_last_active",
       "0009_attestation_challenges",
       "0010_app_attest_keys",
+      "0011_retained_basis_key",
       "0002_plugin_organization",
     ]);
   });

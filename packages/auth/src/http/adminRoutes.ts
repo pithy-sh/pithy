@@ -9,6 +9,7 @@ import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
+import { composedTranslator } from "@pithy-sh/core/src/i18n/composed";
 import { workflowBindingFor } from "@pithy-sh/core/src/workflow/dispatch";
 import type { Context, Hono } from "hono";
 import type { z } from "zod";
@@ -859,13 +860,19 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           { action: AuthAuditActions.adminUserExported, ...call.audit },
           async () => {
             const database = db(c, wiring);
-            await requirePresent(database, userId);
-            return purgeExports(wiring.purgeSteps ?? [], {
-              subject: { type: "user", id: userId },
-              env: c.env as Record<string, unknown>,
-              // A capability holding rows by address — a suppression, a tester's membership — reads it here.
-              address: () => purgeAddress(database, userId),
-            });
+            const { locale } = await requirePresent(database, userId);
+            // A retained basis is told to the person, so it is read in their stored locale, never the caller's.
+            const t = composedTranslator(wiring.composed ?? [], locale);
+            return purgeExports(
+              wiring.purgeSteps ?? [],
+              {
+                subject: { type: "user", id: userId },
+                env: c.env as Record<string, unknown>,
+                // A capability holding rows by address — a suppression, a tester's membership — reads it here.
+                address: () => purgeAddress(database, userId),
+              },
+              t ? (key) => t.maybe(key) : undefined,
+            );
           },
           () => false,
         );

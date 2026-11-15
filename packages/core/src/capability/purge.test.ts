@@ -60,7 +60,7 @@ describe("the purge contribution on the Capability contract", () => {
     );
   });
 
-  test("an export that is not a function is refused, because the export route would call it (#622)", () => {
+  test("an export that is not a function is refused, because the export route would call it", () => {
     const broken = { ...recording([]), export: "everything" } as unknown as PurgeContribution;
     expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [broken] })).toThrow(/media.*export/);
   });
@@ -70,7 +70,7 @@ describe("the purge contribution on the Capability contract", () => {
     expect(PurgeSubject.safeParse("tenant").success).toBe(false);
   });
 
-  test("one capability may declare a contribution per subject, so a user's and an organization's sit side by side (#623)", () => {
+  test("one capability may declare a contribution per subject, so a user's and an organization's sit side by side", () => {
     const capability = defineCapability({
       name: "media",
       requiredBindings: [],
@@ -101,7 +101,7 @@ describe("purgeSteps", () => {
   });
 });
 
-describe("purgeExports (#622)", () => {
+describe("purgeExports", () => {
   const SUBJECT = { type: "user", id: "u1" } as const;
 
   test("one entry per step, in step order: what each exported, said none, or could not read", async () => {
@@ -172,7 +172,7 @@ describe("purgeExports (#622)", () => {
   });
 });
 
-/** A contribution that keeps the subject's rows, with the basis it gives the person (#814). */
+/** A contribution that keeps the subject's rows, with the basis it gives the person. */
 function retaining(basis = "Kept for tax records."): PurgeContribution {
   return {
     subject: "user",
@@ -182,7 +182,7 @@ function retaining(basis = "Kept for tax records."): PurgeContribution {
   };
 }
 
-describe("retain, the third disposition (#814)", () => {
+describe("retain, the third disposition", () => {
   test("defineCapability accepts a contribution that keeps the rows and says why", () => {
     const contribution = retaining();
     const capability = defineCapability({ name: "payments", requiredBindings: [], purge: [contribution] });
@@ -251,7 +251,89 @@ describe("retain, the third disposition (#814)", () => {
   });
 });
 
-describe("the helpers a contribution is written with (#814)", () => {
+describe("a retained basis that names a catalog key", () => {
+  const keyed = (basisKey: string): PurgeContribution => ({
+    subject: "user",
+    summary: "Keeps the user's purchases.",
+    retain: { basis: "Kept for tax records.", basisKey },
+    export: async ({ subject }) => ({ purchases: [{ subjectId: subject.id }] }),
+  });
+
+  test("defineCapability accepts a basisKey under the capability's own domain", () => {
+    const contribution = keyed("payments/purge.retained");
+    expect(defineCapability({ name: "payments", requiredBindings: [], purge: [contribution] }).purge).toEqual([
+      contribution,
+    ]);
+  });
+
+  test("a basisKey under another capability's domain is refused, naming the capability and the key", () => {
+    const define = () =>
+      defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("auth/purge.retained")] });
+    expect(define).toThrow(PithyError);
+    expect(define).toThrow(/payments/);
+    try {
+      define();
+    } catch (error) {
+      const { message, action, detail } = error as PithyError & { action?: string; detail?: string };
+      expect(`${message} ${action} ${detail}`).toContain("auth/purge.retained");
+    }
+  });
+
+  test("a basisKey that is not a catalog key at all is refused, naming it", () => {
+    expect(() =>
+      defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("payments/Not A Key")] }),
+    ).toThrow(/payments\/Not A Key/);
+    expect(() => defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("" as string)] })).toThrow(
+      PithyError,
+    );
+  });
+
+  test("the export translates the key, and carries it beside the translated basis", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("payments/purge.retained")] }),
+    ];
+    const spanish = (key: string) =>
+      key === "payments/purge.retained" ? "Se conservan por obligaciones fiscales." : null;
+    const [entry] = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT_U1, env: {} }, spanish);
+    expect(entry).toMatchObject({
+      disposition: "retain",
+      basis: "Se conservan por obligaciones fiscales.",
+      basisKey: "payments/purge.retained",
+      state: "exported",
+    });
+  });
+
+  test("a key the translator has no entry for answers with the basis", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("payments/purge.retained")] }),
+    ];
+    const [entry] = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT_U1, env: {} }, () => null);
+    expect(entry).toMatchObject({ basis: "Kept for tax records.", basisKey: "payments/purge.retained" });
+  });
+
+  test("with no translator the basis is the English one, and a contribution with only a basis carries no key", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({ name: "payments", requiredBindings: [], purge: [keyed("payments/purge.retained")] }),
+      defineCapability({ name: "audit", requiredBindings: [], purge: [retaining()] }),
+    ];
+    const translate = (key: string) => `translated ${key}`;
+    const [keyedEntry] = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT_U1, env: {} });
+    expect(keyedEntry).toMatchObject({ basis: "Kept for tax records.", basisKey: "payments/purge.retained" });
+    const [, plain] = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT_U1, env: {} }, translate);
+    expect(plain).toEqual({
+      capability: "audit",
+      summary: "Keeps the user's purchases.",
+      disposition: "retain",
+      basis: "Kept for tax records.",
+      state: "exported",
+      data: { purchases: [{ subjectId: "u1" }] },
+    });
+  });
+});
+
+const SUBJECT_U1 = { type: "user", id: "u1" } as const;
+
+describe("the helpers a contribution is written with", () => {
   test("purgeBinding hands back the binding, or refuses naming the capability and the binding", () => {
     const db = { prepare: () => null };
     expect(purgeBinding({ DB: db }, "DB", "ledger")).toBe(db);
@@ -267,7 +349,7 @@ describe("the helpers a contribution is written with (#814)", () => {
   });
 });
 
-describe("credentialFields (#814)", () => {
+describe("credentialFields", () => {
   test("names every field, at any depth, that holds a credential", () => {
     expect(
       credentialFields({

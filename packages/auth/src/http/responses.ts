@@ -475,7 +475,13 @@ const exportEntry = {
     .string()
     .optional()
     .describe(
-      "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+      "For a `retain` entry, why the rows are kept, in one sentence written for the person and in their stored locale where a catalog translates it — `Kept for tax records.` Absent for `erase`.",
+    ),
+  basisKey: z
+    .string()
+    .optional()
+    .describe(
+      "For a `retain` entry, the catalog key `basis` was translated from, under the capability's own domain — `payments/purge.retained`. Absent when the capability names none, for `erase`, and from a Worker that predates it.",
     ),
 };
 

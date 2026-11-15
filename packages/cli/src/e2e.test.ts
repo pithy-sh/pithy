@@ -223,6 +223,7 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     "0300_auth_0008_last_active",
     "0300_auth_0009_attestation_challenges",
     "0300_auth_0010_app_attest_keys",
+    "0300_auth_0011_retained_basis_key",
   ]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,

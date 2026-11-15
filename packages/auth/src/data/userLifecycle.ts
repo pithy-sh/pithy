@@ -87,6 +87,13 @@ export const UserLifecycleEvent = z
       .describe(
         "For a `deleted` row, when its purge comes due — kept here because the purge erases the account's own column. Null for every other row, and before `0007_erasure_record` (#823). Ms-epoch in SQLite.",
       ),
+    basisKey: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "For a `purge_retained` row, the catalog key its basis in `reason` translates through, under the retaining capability's own domain — `payments/purge.retained`. Null for every other row, for a retained step that names no key, and before `0011_retained_basis_key`.",
+      ),
     createdAt: SQLiteDate.describe("When the transition happened. Ms-epoch in SQLite; a `Date` in app code."),
   })
   .describe(

@@ -25,7 +25,7 @@ import { audit_0003_call_index } from "./migrations/0003_call_index";
 import { audit_0004_request_index } from "./migrations/0004_request_index";
 import { audit_0005_chain } from "./migrations/0005_chain";
 import { audit_0006_sinks } from "./migrations/0006_sinks";
-import { auditUserPurge } from "./purge/contribution";
+import { AUDIT_MESSAGES, auditUserPurge } from "./purge/contribution";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
 import { auditShipConsumer } from "./ship/consumer";
@@ -184,6 +184,7 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     // Every event where a person is the actor is kept through their purge, as the record of who acted, and exported
     // on an access request with the basis that keeps it.
     purge: [auditUserPurge(resolved.database)],
+    messages: AUDIT_MESSAGES,
     // The same recorder for code with no request — a Workflow step, which has `env` and nothing else.
     // Built over the binding this config names, stamped with the env's own origin, and non-fatal on the same
     // terms as the middleware's: a missing binding or a failed insert drops the event and logs it, and the

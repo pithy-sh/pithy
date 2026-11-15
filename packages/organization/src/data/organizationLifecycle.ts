@@ -5,7 +5,7 @@ import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 
 /**
- * `pithy_organization_lifecycle` — every transition an organization went through, who made it, and why (#623).
+ * `pithy_organization_lifecycle` — every transition an organization went through, who made it, and why.
  *
  * **The four columns on `pithy_organization_organizations` answer "what is true now"; this table answers "what
  * happened, and who did it".** `../lifecycle/transitions.ts` writes the two together, in one `d1.batch()`, and
@@ -21,7 +21,7 @@ import { z } from "zod";
 export const OrganizationLifecycleAction = z
   .enum(["suspended", "reinstated", "deleted", "restored", "purge_step", "purge_retained", "purge_failed", "purged"])
   .describe(
-    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; `purge_retained`, one capability's rows kept through a purge under the basis in `reason` (#814); `purge_failed`, the purge gave up at the step named in `step`, until the next daily pass (#823); and `purged`, the erasure finished.",
+    "The transition: `suspended` and `reinstated`; `deleted` and `restored` inside the purge window; `purge_step`, one capability's rows erased during a purge, named in `step`; `purge_retained`, one capability's rows kept through a purge under the basis in `reason`; `purge_failed`, the purge gave up at the step named in `step`, until the next daily pass; and `purged`, the erasure finished.",
   );
 export type OrganizationLifecycleAction = z.output<typeof OrganizationLifecycleAction>;
 
@@ -71,12 +71,19 @@ export const OrganizationLifecycleEvent = z
       .nullable()
       .default(null)
       .describe(
-        "For a `deleted` row, how the deletion was asked for: `soft` with a window, `hard` with none — a hard deletion bringing a soft one forward writes its own `hard` row. Null for every other row, and for a deletion recorded before `0004_erasure_record` (#823).",
+        "For a `deleted` row, how the deletion was asked for: `soft` with a window, `hard` with none — a hard deletion bringing a soft one forward writes its own `hard` row. Null for every other row, and for a deletion recorded before `0004_erasure_record`.",
       ),
     purgeAfter: SQLiteDate.nullable()
       .default(null)
       .describe(
-        "For a `deleted` row, when its purge comes due — kept here because the purge erases the organization's own column. Null for every other row, and before `0004_erasure_record` (#823).",
+        "For a `deleted` row, when its purge comes due — kept here because the purge erases the organization's own column. Null for every other row, and before `0004_erasure_record`.",
+      ),
+    basisKey: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "For a `purge_retained` row, the catalog key its basis in `reason` translates through, under the retaining capability's own domain. Null for every other row, for a retained step that names no key, and before `0006_retained_basis_key`.",
       ),
     createdAt: SQLiteDate.describe("When the transition happened. Ms-epoch in SQLite; a `Date` in app code."),
   })

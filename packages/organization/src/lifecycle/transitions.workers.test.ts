@@ -11,6 +11,7 @@ import { ACTING_TABLE, LIFECYCLE_TABLE, ORGANIZATIONS_TABLE, organizationDatabas
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import { organizationPurgeOps } from "../purge/run";
+import { organizationErasureReader } from "./erasure";
 import type { OrganizationLifecycleHookEvent } from "./hooks";
 import {
   checkSuspension,
@@ -374,10 +375,23 @@ describe("the purge's own records", () => {
     expect(await history()).toEqual([{ action: "purge_retained", reason: "Kept for tax records." }]);
   });
 
+  test("a retained step records the catalog key its basis translates through, and the erasure reader hands it on", async () => {
+    const ops = organizationPurgeOps(deps());
+    await ops.recordRetained(ACME, "books", { basis: "Kept for tax records.", basisKey: "books/purge.retained" });
+    await ops.recordRetained(ACME, "ledger", { basis: "Kept as the ledger." });
+    await ops.recordStep(ACME, "media", "Deletes media.");
+    const read = await organizationErasureReader(organizationDatabase(env.DB)).history([ACME]);
+    expect(read.map((row) => [row.action, row.step, row.basisKey])).toEqual([
+      ["purge_retained", "books", "books/purge.retained"],
+      ["purge_retained", "ledger", null],
+      ["purge_step", "media", null],
+    ]);
+  });
+
   test("the purge ops record an erased step and a retained one each as itself", async () => {
     const ops = organizationPurgeOps(deps());
     await ops.recordStep(ACME, "media", "Deletes media.");
-    await ops.recordRetained(ACME, "books", "Kept for tax records.");
+    await ops.recordRetained(ACME, "books", { basis: "Kept for tax records." });
     expect(await history()).toEqual([
       { action: "purge_step", reason: "Deletes media." },
       { action: "purge_retained", reason: "Kept for tax records." },

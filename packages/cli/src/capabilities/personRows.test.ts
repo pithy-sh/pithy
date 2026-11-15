@@ -220,6 +220,22 @@ describe("a project composing the whole kit answers an export from every one of 
     expect(kept.sort()).toEqual(["audit", "consent", "controlplane", "email", "payments"]);
   });
 
+  test("every step that keeps rows names a basis key whose English, in its own capability's messages, is its basis", () => {
+    const bases = purgeSteps(capabilities, "user").flatMap(({ step, contribution }) => {
+      if (!isRetained(contribution)) return [];
+      const english = capabilities.find((capability) => capability.name === step)?.messages?.en ?? {};
+      const key = contribution.retain.basisKey;
+      return [[step, key, key === undefined ? undefined : english[key] === contribution.retain.basis]];
+    });
+    expect(bases.sort()).toEqual([
+      ["audit", "audit/purge.retained", true],
+      ["consent", "consent/purge.retained", true],
+      ["controlplane", "controlplane/purge.retained", true],
+      ["email", "email/purge.retained", true],
+      ["payments", "payments/purge.retained", true],
+    ]);
+  });
+
   test("and every step that erases runs against the composed tables", async () => {
     for (const { step, contribution } of purgeSteps(capabilities, "user")) {
       if (isRetained(contribution)) continue;

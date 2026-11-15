@@ -15,7 +15,7 @@ import type { OrganizationLifecycleHookEvent, OrganizationLifecycleHooks } from 
 import { OrganizationLifecycleColumns, organizationStanding } from "./state";
 
 /**
- * The organization-lifecycle transitions — the one place an organization's state is ever changed (#623).
+ * The organization-lifecycle transitions — the one place an organization's state is ever changed.
  *
  * The control-plane routes and the purge Workflow call these and write nothing themselves, so each transition
  * happens the same way whoever asked for it. The shape is `@pithy-sh/auth`'s user transitions', deliberately:
@@ -66,10 +66,12 @@ interface HistoryRow {
   readonly at: Date;
   readonly suspendedUntil?: Date | null;
   readonly step?: string | null;
-  /** A deletion's mode, kept for the erasure attestation (#823). */
+  /** A deletion's mode, kept for the erasure attestation. */
   readonly mode?: OrganizationDeletionMode | null;
-  /** When a deletion's purge comes due, kept for the erasure attestation (#823). */
+  /** When a deletion's purge comes due, kept for the erasure attestation. */
   readonly purgeAfter?: Date | null;
+  /** A retained step's catalog key for the basis in `reason`. */
+  readonly basisKey?: string | null;
 }
 
 /** The history row's values, as the table stores them. */
@@ -84,6 +86,7 @@ function encoded(row: HistoryRow) {
     step: row.step ?? null,
     mode: row.mode ?? null,
     purgeAfter: row.purgeAfter ? SQLiteDate.encode(row.purgeAfter) : null,
+    basisKey: row.basisKey ?? null,
     createdAt: SQLiteDate.encode(row.at),
   };
 }
@@ -243,7 +246,7 @@ export interface SuspensionTerms {
 /**
  * Everything a suspension refuses, asked without suspending — an end that is not in the future, an organization
  * that is not there, one that is deleted. {@link suspendOrganization} begins here, and so does the preview of a
- * suspension's cascade (#813), so a preview is refused exactly where the write would be, with the same error.
+ * suspension's cascade, so a preview is refused exactly where the write would be, with the same error.
  * Writes nothing.
  */
 export async function checkSuspension(
@@ -420,7 +423,7 @@ export async function removeOrganization(
   const purgeAfter = hard ? at : new Date(at.getTime() + input.purgeAfterDays * 86_400_000);
   const columns = await columnsOf(deps, input.organizationId);
   // The mode and the due instant ride on the row, because the purge erases the organization's own column and the
-  // erasure attestation still has to say both (#823).
+  // erasure attestation still has to say both.
   const row: HistoryRow = {
     organizationId: input.organizationId,
     action: "deleted",
@@ -522,7 +525,7 @@ export async function restoreOrganization(
 
 /**
  * The instant a purge-window guard compares against, read when the statement runs — the database's own clock on
- * the system's, so a restore and a purge's `due` check agree whichever lands first (auth's `windowClock`, #622).
+ * the system's, so a restore and a purge's `due` check agree whichever lands first (auth's `windowClock`).
  */
 function windowClock(deps: OrganizationLifecycleDeps) {
   return deps.now
@@ -583,11 +586,12 @@ export async function dueOrganizationPurges(
 
 /**
  * Record that one purge step — one capability's contribution — erased its rows, with what it said it erases. With
- * `retained`, the step kept its rows instead (#814): the row is `purge_retained`, its reason the basis given.
+ * `retained`, the step kept its rows instead: the row is `purge_retained`, its reason the basis given, and
+ * its `basisKey` the catalog key that translates it, when the capability names one.
  */
 export async function recordOrganizationPurgeStep(
   deps: OrganizationLifecycleDeps,
-  input: { organizationId: string; step: string; summary: string; retained?: boolean },
+  input: { organizationId: string; step: string; summary: string; retained?: boolean; basisKey?: string },
 ): Promise<void> {
   await deps.db
     .insertInto(LIFECYCLE_TABLE)
@@ -599,13 +603,14 @@ export async function recordOrganizationPurgeStep(
         reason: input.summary.trim() || null,
         at: nowOf(deps),
         step: input.step,
+        basisKey: input.retained ? (input.basisKey ?? null) : null,
       }),
     )
     .execute();
 }
 
 /**
- * Record that a purge gave up at `step` (#823), until the next daily pass starts it again. The failure's message is
+ * Record that a purge gave up at `step`, until the next daily pass starts it again. The failure's message is
  * never written: it is code the kit did not write. The trail's event is the caller's, as every purge event here is.
  */
 export async function recordOrganizationPurgeFailure(

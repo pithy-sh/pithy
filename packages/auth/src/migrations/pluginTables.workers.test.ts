@@ -118,6 +118,7 @@ describe("a plugin's tables through pithy migrate", () => {
       ["0300_auth_0008_last_active", "Success"],
       ["0300_auth_0009_attestation_challenges", "Success"],
       ["0300_auth_0010_app_attest_keys", "Success"],
+      ["0300_auth_0011_retained_basis_key", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
     // The half that is not a table: the plugin writes the active organization onto the session.
@@ -208,6 +209,7 @@ describe("a plugin's tables through pithy migrate", () => {
       "0300_auth_0008_last_active",
       "0300_auth_0009_attestation_challenges",
       "0300_auth_0010_app_attest_keys",
+      "0300_auth_0011_retained_basis_key",
     ]);
 
     // Back past the kit's own, then the organization plugin's. `admin`'s stays applied,

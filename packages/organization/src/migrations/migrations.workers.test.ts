@@ -12,6 +12,7 @@ import { organization_0002_seat_limit } from "./0002_seat_limit";
 import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
 import { organization_0004_erasure_record } from "./0004_erasure_record";
 import { organization_0005_founding_record } from "./0005_founding_record";
+import { organization_0006_retained_basis_key } from "./0006_retained_basis_key";
 
 /**
  * The one migration, both ways, against real D1.
@@ -411,5 +412,53 @@ describe("0005_founding_record", () => {
     for (const name of ADDED) expect(await catalog()).not.toContain(name);
     await organization_0005_founding_record.up(db());
     expect(await catalog()).toEqual(expect.arrayContaining(ADDED));
+  });
+});
+
+describe("0006_retained_basis_key", () => {
+  const ACME = "11111111-1111-4111-8111-111111111111";
+
+  async function lifecycleColumns(): Promise<string[]> {
+    const { results } = await env.DB.prepare("PRAGMA table_info(pithy_organization_lifecycle)").all<{ name: string }>();
+    return results.map((row) => row.name);
+  }
+
+  beforeEach(async () => {
+    await organization_0001_init.up(db());
+    await organization_0002_seat_limit.up(db());
+    await organization_0003_organization_lifecycle.up(db());
+    await organization_0004_erasure_record.up(db());
+    await organization_0005_founding_record.up(db());
+  });
+
+  test("up adds a retained step's basis key, nullable, and a row carrying it round-trips", async () => {
+    await organization_0006_retained_basis_key.up(db());
+    expect(await lifecycleColumns()).toContain("basis_key");
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, reason, step, basis_key, created_at) values (?, 'purge_retained', 'system', 'Kept.', 'app', 'app/purge.kept', 1), (?, 'purged', 'system', null, null, null, 2)",
+    )
+      .bind(ACME, ACME)
+      .run();
+    const rows = await createDatabase(env.DB, { pithyOrganizationLifecycle: OrganizationLifecycleEvent })
+      .selectFrom("pithyOrganizationLifecycle")
+      .selectAll()
+      .orderBy("id")
+      .execute();
+    expect(rows.map((row) => OrganizationLifecycleEvent.parse(row).basisKey)).toEqual(["app/purge.kept", null]);
+  });
+
+  test("down takes the column back out, the history stays, and up after down is clean", async () => {
+    await organization_0006_retained_basis_key.up(db());
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, basis_key, created_at) values (?, 'purge_retained', 'system', 'app/purge.kept', 1)",
+    )
+      .bind(ACME)
+      .run();
+    await organization_0006_retained_basis_key.down?.(db());
+    expect(await lifecycleColumns()).not.toContain("basis_key");
+    const left = await env.DB.prepare("select count(*) as n from pithy_organization_lifecycle").first<{ n: number }>();
+    expect(left?.n).toBe(1);
+    await organization_0006_retained_basis_key.up(db());
+    expect(await lifecycleColumns()).toContain("basis_key");
   });
 });

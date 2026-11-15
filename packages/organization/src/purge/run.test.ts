@@ -12,7 +12,7 @@ import {
 } from "./run";
 
 /**
- * The organization purge's step structure (#623), against a step runner that behaves the way a Workflow does: a
+ * The organization purge's step structure, against a step runner that behaves the way a Workflow does: a
  * finished step is served from the journal, a step body that throws is attempted again up to a limit, and an
  * instance replayed from the top runs only what had not finished.
  */
@@ -71,8 +71,10 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
   return {
     due: async () => due,
     recordStep: async (organizationId, step, summary) => void log.push(`record ${step} ${organizationId}: ${summary}`),
-    recordRetained: async (organizationId, step, basis) =>
-      void log.push(`retained ${step} ${organizationId}: ${basis}`),
+    recordRetained: async (organizationId, step, retain) =>
+      void log.push(
+        `retained ${step} ${organizationId}: ${retain.basis}${retain.basisKey ? ` [${retain.basisKey}]` : ""}`,
+      ),
     complete: async (organizationId) => {
       log.push(`complete ${organizationId}`);
       const first = !completed;
@@ -84,7 +86,7 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
 }
 
 describe("purgeOrganization", () => {
-  test("a retained step is recorded as retained, in its own step, and nothing of it is erased (#814)", async () => {
+  test("a retained step is recorded as retained, in its own step, and nothing of it is erased", async () => {
     const log: string[] = [];
     const own = contribution("organization", log);
     const ledgerKept: PurgeStep = {
@@ -92,7 +94,7 @@ describe("purgeOrganization", () => {
       contribution: {
         subject: "organization",
         summary: "Keeps the organization's invoices.",
-        retain: { basis: "Kept for tax records." },
+        retain: { basis: "Kept for tax records.", basisKey: "books/purge.retained" },
         export: async () => ({}),
       },
     };
@@ -107,7 +109,7 @@ describe("purgeOrganization", () => {
       "erase organization",
       "complete",
     ]);
-    expect(log).toContain(`retained books ${ACME}: Kept for tax records.`);
+    expect(log).toContain(`retained books ${ACME}: Kept for tax records. [books/purge.retained]`);
   });
 
   test("one step per contribution, in composition order, this capability's last, each recorded", async () => {
@@ -180,7 +182,7 @@ describe("purgeOrganization", () => {
     expect(media.erases()).toBe(1);
   });
 
-  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have (#823)", async () => {
+  test("a purge that gives up records the step it stopped at, in its own step, and fails as it would have", async () => {
     const log: string[] = [];
     const { step, ran } = workflow(3);
     const run = {
@@ -193,7 +195,7 @@ describe("purgeOrganization", () => {
     expect(ran.at(-1)).toBe("fail");
   });
 
-  test("a failure the purge cannot record still reports the failure that stopped it (#823)", async () => {
+  test("a failure the purge cannot record still reports the failure that stopped it", async () => {
     const log: string[] = [];
     const broken = { ...ops(log), fail: async () => Promise.reject(new Error("database gone")) };
     const { step } = workflow();

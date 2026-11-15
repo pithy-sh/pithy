@@ -3,6 +3,7 @@
 
 import { personRowsExport } from "@pithy-sh/core/src/capability/personRows";
 import type { RetainingPurgeContribution } from "@pithy-sh/core/src/capability/purge";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PaymentsMeterCounter } from "../data/meterCounter";
 import { PaymentsOverride } from "../data/override";
@@ -19,7 +20,7 @@ import {
 import { PaymentsUsageReport } from "../data/usageReport";
 
 /**
- * What a person's purge means for `@pithy-sh/payments` (#814): **nothing is erased, and the export says so and why.**
+ * What a person's purge means for `@pithy-sh/payments`: **nothing is erased, and the export says so and why.**
  *
  * A purchase is a financial record, and the law that makes a business keep one for years — for tax, for an audit, for
  * a chargeback — does not end when the buyer's account does. So this contribution **retains**: the purge records the
@@ -46,6 +47,12 @@ export const PAYMENTS_PURGE_SUMMARY =
 /** Why, in the sentence the person is told. */
 export const PAYMENTS_RETENTION_BASIS =
   "Kept for tax and accounting records, which the law requires a business to hold after an account is closed.";
+
+/** The catalog key that translates {@link PAYMENTS_RETENTION_BASIS}. */
+export const PAYMENTS_RETENTION_BASIS_KEY = "payments/purge.retained";
+
+/** This capability's own English, contributed as its `messages`: the basis, under its key. */
+export const PAYMENTS_MESSAGES: LocaleCatalogs = { en: { [PAYMENTS_RETENTION_BASIS_KEY]: PAYMENTS_RETENTION_BASIS } };
 
 /** A person's rows only — an organization's share the id column and are the organization's. */
 const USER = { subjectType: "user" } as const;
@@ -74,7 +81,7 @@ export function paymentsUserPurge(database = "DB"): RetainingPurgeContribution {
   return {
     subject: "user",
     summary: PAYMENTS_PURGE_SUMMARY,
-    retain: { basis: PAYMENTS_RETENTION_BASIS },
+    retain: { basis: PAYMENTS_RETENTION_BASIS, basisKey: PAYMENTS_RETENTION_BASIS_KEY },
     export: personRowsExport({
       capability: "payments",
       database,

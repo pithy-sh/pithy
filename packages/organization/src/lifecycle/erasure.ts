@@ -10,7 +10,7 @@ import { OrganizationLifecycleEvent } from "../data/organizationLifecycle";
 import { type OrganizationDatabase, organizationDatabase } from "../data/tables";
 
 /**
- * **An organization's erasure record, read back for the control plane's attestation (#823).**
+ * **An organization's erasure record, read back for the control plane's attestation.**
  *
  * `pithy_organization_lifecycle` is the one `pithy_organization_*` table a purge leaves behind, and it names the
  * organization by id and nothing else. This reads the rows an erasure is made of and hands them to core through the
@@ -46,6 +46,7 @@ export function organizationErasureReader(db: OrganizationDatabase): ErasureHist
           actorType: row.actorType,
           reason: row.reason,
           step: row.step,
+          basisKey: row.basisKey,
           mode: row.mode,
           purgeAfter: row.purgeAfter,
           at: row.createdAt,

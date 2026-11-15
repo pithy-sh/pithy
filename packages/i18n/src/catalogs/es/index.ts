@@ -5,16 +5,17 @@
 
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { esErrors } from "./errors";
+import { esRetention } from "./retention";
 import { esScreens } from "./screens";
 
 /**
  * The kit's Spanish, in one catalog.
  *
- * Two files rather than one because they answer to different gates: the error keys are pinned to
- * `KitErrorCode` and the screen keys to what the templates render. Split, a failure names which of
- * the two drifted.
+ * Three files rather than one because they answer to different gates: the error keys are pinned to
+ * `KitErrorCode`, the screen keys to what the templates render, and the retention keys to each capability's
+ * retained purge basis. Split, a failure names which of them drifted.
  *
- * **The email copy is not here, and that is deliberate (#442).** `@pithy-sh/email` carries its own
+ * **The email copy is not here, and that is deliberate.** `@pithy-sh/email` carries its own
  * `email/` translations beside its English, because the send Worker has to be *built* with them —
  * anything it does not bundle is stamped into it as configuration, every provision run, against a
  * 5 KB per-variable ceiling. A capability owning its own domain in every language is also what the
@@ -27,4 +28,4 @@ import { esScreens } from "./screens";
  * honest, and holding the machinery hostage to a reviewer who does not yet exist is not. Corrections
  * arrive by contribution.
  */
-export const es: MessageCatalog = { ...esErrors, ...esScreens };
+export const es: MessageCatalog = { ...esErrors, ...esScreens, ...esRetention };

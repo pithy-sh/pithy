@@ -9,6 +9,7 @@ import {
   type RetainingPurgeContribution,
 } from "@pithy-sh/core/src/capability/purge";
 import type { FieldKeys } from "@pithy-sh/core/src/crypto/fieldKeys";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { consentDatabase } from "../data/tables";
 import { recordView } from "../http/views";
 import { consentStore } from "../record/store";
@@ -34,12 +35,18 @@ export const CONSENT_PURGE_SUMMARY = "Keeps every consent the user gave or withd
 export const CONSENT_RETENTION_BASIS =
   "Kept as the proof of what you agreed to and when you withdrew it, which the law asks us to be able to show.";
 
+/** The catalog key that translates {@link CONSENT_RETENTION_BASIS}. */
+export const CONSENT_RETENTION_BASIS_KEY = "consent/purge.retained";
+
+/** This capability's own English, contributed as its `messages`: the basis, under its key. */
+export const CONSENT_MESSAGES: LocaleCatalogs = { en: { [CONSENT_RETENTION_BASIS_KEY]: CONSENT_RETENTION_BASIS } };
+
 /** The user contribution `consent()` declares. */
 export function consentUserPurge(visitorWindowMs: number): RetainingPurgeContribution {
   return {
     subject: "user",
     summary: CONSENT_PURGE_SUMMARY,
-    retain: { basis: CONSENT_RETENTION_BASIS },
+    retain: { basis: CONSENT_RETENTION_BASIS, basisKey: CONSENT_RETENTION_BASIS_KEY },
     export: async (context: PurgeContext) => {
       const d1 = purgeBinding<D1Database>(context.env, "DB", "consent");
       // The catalog is not needed to read rows back; an empty one answers every standing as unknown, which an

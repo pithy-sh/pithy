@@ -155,6 +155,7 @@ describe("migrations", () => {
       "0003_organization_lifecycle",
       "0004_erasure_record",
       "0005_founding_record",
+      "0006_retained_basis_key",
     ]);
   });
 

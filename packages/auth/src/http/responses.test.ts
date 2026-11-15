@@ -91,7 +91,7 @@ const DEVICE: Device = {
   createdAt: new Date("2026-06-01T00:00:00.000Z"),
 };
 
-describe("the deletion lifecycle's responses (#622)", () => {
+describe("the deletion lifecycle's responses", () => {
   const at = new Date("2026-10-20T12:00:00.000Z");
   const later = new Date("2026-11-19T12:00:00.000Z");
 
@@ -176,6 +176,7 @@ describe("the deletion lifecycle's responses (#622)", () => {
           notify: null,
           mode: "soft",
           purgeAfter: at,
+          basisKey: null,
           createdAt: at,
         },
       ],
@@ -222,7 +223,7 @@ describe("the deletion lifecycle's responses (#622)", () => {
       },
     ]);
     accepts(AdminUserExportResponse, document);
-    // A Worker that predates `retain` (#814) sends neither field, and its document still parses.
+    // A Worker that predates `retain` sends neither field, and its document still parses.
     const older = AdminUserExportResponse.parse({
       ...document,
       capabilities: [{ capability: "auth", summary: "Deletes the account.", state: "not_exported" }],
@@ -242,7 +243,7 @@ describe("the deletion lifecycle's responses (#622)", () => {
 });
 
 describe("auth admin response schemas", () => {
-  test("the suspension projection is exactly what its schema declares, both outcomes (#621)", () => {
+  test("the suspension projection is exactly what its schema declares, both outcomes", () => {
     const at = new Date("2026-10-20T12:00:00.000Z");
     const until = new Date("2026-10-27T12:00:00.000Z");
     const suspended = suspensionView(
@@ -269,7 +270,7 @@ describe("auth admin response schemas", () => {
     expect(restated).toMatchObject({ outcome: "updated", suspendedUntil: until.toISOString(), mailed: false });
   });
 
-  test("the reinstatement projection is exactly what its schema declares, both outcomes (#621)", () => {
+  test("the reinstatement projection is exactly what its schema declares, both outcomes", () => {
     const lifted = reinstatementView("u-1", { changed: true, mailed: true });
     accepts(AdminUserReinstateResponse, lifted);
     expect(lifted).toEqual({ userId: "u-1", state: "active", outcome: "reinstated", mailed: true });
@@ -313,7 +314,7 @@ describe("auth admin response schemas", () => {
       sessions: { state: "read", items: [sessionView(SESSION)], truncated: false },
       devices: { state: "read", items: [deviceView(DEVICE)], truncated: true },
     });
-    // And the state each list takes when its read failed (#380): no rows, no truncation flag, no
+    // And the state each list takes when its read failed: no rows, no truncation flag, no
     // reason. A client that reached for `items` here would not compile.
     accepts(AdminUserResponse, {
       user: userView(USER, NOW),
@@ -334,7 +335,7 @@ describe("auth admin response schemas", () => {
 });
 
 /**
- * A Worker one release behind still renders its pane (#450).
+ * A Worker one release behind still renders its pane.
  *
  * These schemas are read across a version boundary: the dashboard validates every response with the
  * capability's own exported schema, against *other people's* Workers at whatever kit version each is
@@ -366,7 +367,7 @@ describe("a response from a Worker that predates a field", () => {
 });
 
 /**
- * Where the user stands, on both reads that return them (#813) — the organization view's shape, from
+ * Where the user stands, on both reads that return them — the organization view's shape, from
  * `accountStanding`, so a pane can offer suspend or reinstate without sending a write to find out.
  */
 describe("AdminUserView's standing", () => {
@@ -419,7 +420,7 @@ describe("AdminUserView's standing", () => {
   });
 });
 
-describe("the verification ledger's response (#829)", () => {
+describe("the verification ledger's response", () => {
   const ROW = {
     id: 7,
     verificationId: "v-1",

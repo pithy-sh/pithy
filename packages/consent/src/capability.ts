@@ -16,7 +16,7 @@ import { type ConsentRoutesOptions, registerConsentRoutes } from "./http/routes"
 import { consentAdminRoutes } from "./http/scopes";
 import { consent_0001_init } from "./migrations/0001_init";
 import { CONSENT_PROCESSING } from "./processing/activities";
-import { consentUserPurge } from "./purge/contribution";
+import { CONSENT_MESSAGES, consentUserPurge } from "./purge/contribution";
 import { consentStandings } from "./record/standings";
 import { consentStore } from "./record/store";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -140,6 +140,7 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
     // The record is the proof processing was allowed and that it stopped: kept through a purge, with its basis, and
     // exported on an access request.
     purge: [consentUserPurge(visitorWindowMs)],
+    messages: CONSENT_MESSAGES,
     processing: CONSENT_PROCESSING,
   });
 
