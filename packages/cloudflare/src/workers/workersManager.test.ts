@@ -9,8 +9,8 @@ import { CloudflareWorkersManager } from "./workersManager";
  * The date these cases upload at. Written down rather than imported: `compatibility.ts` sits at the
  * repository root and `packages/cloudflare`'s `rootDir` is `src`, so no module here can reach it. A
  * fixture naming a date it then asserts passes through unchanged is right to name any date, which is
- * what `compatibilityDates.test.ts` says about fixtures in as many words — and after #396 the manager
- * has no default for a stale one here to hide.
+ * what `compatibilityDates.test.ts` says about fixtures in as many words — and the manager has no
+ * default for a stale one here to hide.
  */
 const KIT_DATE = "2026-06-01";
 
@@ -21,6 +21,7 @@ const mockSubdomainCreate = vi.fn();
 const mockSubdomainGet = vi.fn();
 const mockSettingsEdit = vi.fn();
 const mockScriptAndVersionSettingsGet = vi.fn();
+const mockScriptAndVersionSettingsEdit = vi.fn();
 const mockVersionsList = vi.fn();
 const mockVersionsGet = vi.fn();
 const mockDeploymentsList = vi.fn();
@@ -54,7 +55,7 @@ vi.mock("cloudflare", () => ({
         delete: mockScriptsDelete,
         subdomain: { create: mockSubdomainCreate },
         settings: { edit: mockSettingsEdit },
-        scriptAndVersionSettings: { get: mockScriptAndVersionSettingsGet },
+        scriptAndVersionSettings: { get: mockScriptAndVersionSettingsGet, edit: mockScriptAndVersionSettingsEdit },
         versions: { list: mockVersionsList, get: mockVersionsGet },
         deployments: { list: mockDeploymentsList, get: mockDeploymentsGet, create: mockDeploymentsCreate },
         secrets: { update: mockSecretsUpdate, delete: mockSecretsDelete, list: mockSecretsList },
@@ -154,7 +155,7 @@ describe("CloudflareWorkersManager", () => {
   });
 
   describe("createWorker", () => {
-    /** The upload's path, its metadata part parsed, and every other part by name. #373 is a wire bug. */
+    /** The upload's path, its metadata part parsed, and every other part by name: the wire is what is tested. */
     async function uploadSent(): Promise<{
       path: string;
       metadata: Record<string, unknown>;
@@ -196,9 +197,9 @@ describe("CloudflareWorkersManager", () => {
     });
 
     it("never pins a Content-Type on the request — the FormData body decides it", async () => {
-      // The whole of #373: `workers.scripts.update` sent `Content-Type: application/javascript` with a
-      // multipart body, so Cloudflare parsed the `------WebKit…` boundary as a classic script and
-      // answered `10021 … Invalid left-hand side expression in prefix operation at worker.js:1:4`.
+      // A pinned `Content-Type: application/javascript` on a multipart body makes Cloudflare parse the
+      // `------WebKit…` boundary as a classic script and answer `10021 … Invalid left-hand side expression
+      // in prefix operation at worker.js:1:4`, which is what `workers.scripts.update` sends.
       mockPut.mockResolvedValue({ result: { id: "new-1" } });
       await manager.createWorker("w1", KIT_DATE);
       const headers: unknown = mockPut.mock.calls[0]?.[1]?.headers;
@@ -228,14 +229,14 @@ describe("CloudflareWorkersManager", () => {
       await manager.createWorker("w1", "2025-01-01", { main_module: "wrong.js" });
 
       const { metadata } = await uploadSent();
-      // Whatever the caller names, uploaded verbatim. There is no default underneath it any more (#396).
+      // Whatever the caller names, uploaded verbatim. There is no default underneath it.
       expect(metadata.compatibility_date).toBe("2025-01-01");
       expect(metadata.main_module).toBe("index.js");
     });
 
     it("refuses a compatibility date stated twice rather than picking a winner", async () => {
-      // The defect #396 removed was a date nobody chose. Admitting a second way to state it would put
-      // one back — a precedence rule, which is a thing to remember rather than a contract to read.
+      // A date nobody chose is what the required argument keeps out. Admitting a second way to state it would
+      // let one back in — a precedence rule, which is a thing to remember rather than a contract to read.
       await expect(manager.createWorker("w1", KIT_DATE, { compatibility_date: "2025-01-01" })).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
       );
@@ -289,7 +290,7 @@ describe("CloudflareWorkersManager", () => {
   });
 
   /**
-   * The read #537's deploy gate is built on. A kit Worker's configuration is stamped into its vars at
+   * The read the deploy gate is built on. A kit Worker's configuration is stamped into its vars at
    * provision time — it has no request and no access to `pithy.config.ts` — so the vars are the only
    * place a deployed Worker can say what it was deployed from.
    */
@@ -344,6 +345,62 @@ describe("CloudflareWorkersManager", () => {
           payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "nope" }),
         }),
       );
+    });
+  });
+
+  /**
+   * The write that records a finished deploy. A settings edit replaces the binding list, so every binding but
+   * the one being set is sent as `inherit` and carries over from the deployed version untouched.
+   */
+  describe("setWorkerVar", () => {
+    it("sets one plain-text var and inherits every other binding, secrets and resources included", async () => {
+      mockScriptAndVersionSettingsGet.mockResolvedValue({
+        bindings: [
+          { type: "plain_text", name: "BASE_URL", text: "https://acme.example" },
+          { type: "plain_text", name: "PITHY_DEPLOY_STAMP", text: "unfinished" },
+          { type: "secret_text", name: "SIGNING_KEY" },
+          { type: "d1", name: "DB", id: "db-1" },
+        ],
+      });
+      mockScriptAndVersionSettingsEdit.mockResolvedValue({});
+      await manager.setWorkerVar("acme-prod-email", "PITHY_DEPLOY_STAMP", "0.1.7/aaaaaaaaaaaaaaaa");
+      expect(mockScriptAndVersionSettingsEdit).toHaveBeenCalledWith(
+        "acme-prod-email",
+        {
+          account_id: "acct-1",
+          settings: {
+            bindings: [
+              { type: "inherit", name: "BASE_URL" },
+              { type: "inherit", name: "SIGNING_KEY" },
+              { type: "inherit", name: "DB" },
+              { type: "plain_text", name: "PITHY_DEPLOY_STAMP", text: "0.1.7/aaaaaaaaaaaaaaaa" },
+            ],
+          },
+        },
+        expect.anything(),
+      );
+    });
+
+    it("adds the var to a Worker that had none", async () => {
+      mockScriptAndVersionSettingsGet.mockResolvedValue({});
+      mockScriptAndVersionSettingsEdit.mockResolvedValue({});
+      await manager.setWorkerVar("acme-prod-email", "PITHY_DEPLOY_STAMP", "abc");
+      expect(mockScriptAndVersionSettingsEdit).toHaveBeenCalledWith(
+        "acme-prod-email",
+        {
+          account_id: "acct-1",
+          settings: { bindings: [{ type: "plain_text", name: "PITHY_DEPLOY_STAMP", text: "abc" }] },
+        },
+        expect.anything(),
+      );
+    });
+
+    it("throws when the edit is refused, and edits nothing when the read is", async () => {
+      mockScriptAndVersionSettingsGet.mockRejectedValue(Object.assign(new Error("nope"), { status: 403 }));
+      await expect(manager.setWorkerVar("acme-prod-email", "X", "1")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      );
+      expect(mockScriptAndVersionSettingsEdit).not.toHaveBeenCalled();
     });
   });
 

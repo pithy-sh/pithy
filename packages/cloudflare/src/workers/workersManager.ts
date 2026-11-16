@@ -5,7 +5,10 @@ import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import type { Cloudflare } from "cloudflare";
 import type { RouteCreateResponse, RouteListResponse } from "cloudflare/resources/workers/routes";
 import type { Deployment } from "cloudflare/resources/workers/scripts/deployments";
-import type { ScriptAndVersionSettingGetResponse } from "cloudflare/resources/workers/scripts/script-and-version-settings";
+import type {
+  ScriptAndVersionSettingEditParams,
+  ScriptAndVersionSettingGetResponse,
+} from "cloudflare/resources/workers/scripts/script-and-version-settings";
 import type { Script } from "cloudflare/resources/workers/scripts/scripts";
 import type { SecretListResponse } from "cloudflare/resources/workers/scripts/secrets";
 import type { SettingEditParams } from "cloudflare/resources/workers/scripts/settings";
@@ -104,31 +107,21 @@ export class CloudflareWorkersManager extends CloudflareManager {
    * is merged into the upload's metadata — bindings, compatibility flags, tags — and this method
    * fixes `main_module`.
    *
-   * **`compatibilityDate` is required, and there is no default (#396).** This method used to supply
-   * `2026-04-07` when the caller named none, which is one date below the floor `compatibility.ts`
-   * holds every other Worker in this repository to, and the one date #388's gate could not reach —
-   * because it is TypeScript rather than a `wrangler.jsonc`, and the gate reads manifests.
-   *
-   * Moving it to the floor was the obvious answer and it is the wrong one. **A compatibility date is a
-   * behavior contract, not a version number** — it is the date workerd pretends it is — and this one
-   * lands on Workers in accounts that are not ours. Re-picking the number changes what an existing
-   * caller's Workers run, silently, for somebody who never asked; and the new number is stale on
-   * exactly the schedule the old one was, with the same gate unable to see it. `compatibility.ts` makes
-   * that argument about `2026-03-03` in as many words: *the minimum that fixes the last bug is exactly
-   * the number `2025-01-01` once was.*
-   *
-   * Requiring the date removes the class instead of re-picking the number, which is the move #377, #366
-   * and #394 each took. It is also the cheaper break: a caller who wanted `2026-04-07` writes
-   * `2026-04-07` and gets precisely what they had, and everyone else finds out at compile time rather
-   * than from a behavior change in production. `WorkersProvisioner` already promised this — *"it
-   * carries no environment- or product-specific defaults — every name, command, and env var is supplied
-   * by the caller"* — and the manager under it was the one place that was untrue.
+   * **`compatibilityDate` is required, and there is no default.** A compatibility date is a behavior
+   * contract, not a version number — it is the date workerd pretends it is — and this one lands on Workers
+   * in accounts that are not ours. A default would decide what a caller's Workers run without their asking,
+   * and it would go stale where no gate can see it: `compatibility.ts`'s gate reads manifests, and this is
+   * TypeScript. A floor is no better, because *the minimum that fixes the last bug is exactly the number
+   * `2025-01-01` once was*, as `compatibility.ts` puts it. So the caller names the date and gets exactly that
+   * date, and a missing one is a compile error rather than a behavior change in production. It is what
+   * `WorkersProvisioner` promises of the layer it sits on: *"it carries no environment- or product-specific
+   * defaults — every name, command, and env var is supplied by the caller"*.
    *
    * `metadata` may **not** also carry `compatibility_date`. Two ways to state one contract is a
    * precedence rule to remember, and this method exists to have one statement rather than two.
    *
    * **The multipart request is built here rather than through `workers.scripts.update`, and that is
-   * a fix rather than a preference (#373).** The typed SDK's `update` pins
+   * a requirement rather than a preference.** The typed SDK's `update` pins
    * `Content-Type: application/javascript` on the request and *then* lets its uploader turn the body
    * into `FormData`. Cloudflare believes the header, parses the multipart envelope as a classic
    * service-worker script, and rejects every upload with `10021 Uncaught SyntaxError: Invalid
@@ -229,7 +222,7 @@ export class CloudflareWorkersManager extends CloudflareManager {
    * `null` for a missing Worker rather than a throw, because "there is no such Worker" is an ordinary
    * answer to this question — it is what a first deploy looks like. Every other failure throws, so a
    * caller can tell *not deployed* from *the account would not answer*: {@link CloudflareWorkersManager}
-   * has no business collapsing those two into one silence, and #537's gate reports them differently.
+   * has no business collapsing those two into one silence, and the deploy gate reports them differently.
    */
   async getWorkerVars(scriptName: string): Promise<Record<string, string> | null> {
     return cloudflareRequest(`get vars for '${scriptName}'`, async () => {
@@ -249,6 +242,34 @@ export class CloudflareWorkersManager extends CloudflareManager {
         if (binding.type === "plain_text") vars[binding.name] = binding.text;
       }
       return vars;
+    });
+  }
+
+  /**
+   * Set one plain-text var on a deployed Worker, and change nothing else about it.
+   *
+   * A settings edit **replaces** the binding list, so the deployed list is read first and every other binding is
+   * sent back as `inherit`: a secret, whose value the API never returns, and a resource reference both carry over
+   * from the deployed version as they are. Cloudflare records the edit as a new version of the same code, deployed
+   * in its place. It throws when either call fails, and a failed read edits nothing.
+   */
+  async setWorkerVar(scriptName: string, name: string, text: string): Promise<void> {
+    await cloudflareRequest(`set var '${name}' on '${scriptName}'`, async () => {
+      const settings = await this.getClient().workers.scripts.scriptAndVersionSettings.get(
+        scriptName,
+        { account_id: this.accountId },
+        requestOptions,
+      );
+      const bindings: NonNullable<ScriptAndVersionSettingEditParams.Settings["bindings"]> = [];
+      for (const binding of settings.bindings ?? []) {
+        if (binding.name !== name) bindings.push({ type: "inherit", name: binding.name });
+      }
+      bindings.push({ type: "plain_text", name, text });
+      await this.getClient().workers.scripts.scriptAndVersionSettings.edit(
+        scriptName,
+        { account_id: this.accountId, settings: { bindings } },
+        requestOptions,
+      );
     });
   }
 

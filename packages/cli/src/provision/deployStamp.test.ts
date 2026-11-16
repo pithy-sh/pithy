@@ -3,7 +3,18 @@
 
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { describe, expect, test } from "vitest";
-import { configHash, DEPLOY_STAMP_VAR, deployStamp, parseDeployStamp, stampConfig, stampVerdict } from "./deployStamp";
+import {
+  bundleStampVerdict,
+  configHash,
+  DEPLOY_STAMP_VAR,
+  deployStamp,
+  parseDeployStamp,
+  readDeployedStamp,
+  recordDeployStamp,
+  stampConfig,
+  stampVerdict,
+  UNFINISHED_STAMP,
+} from "./deployStamp";
 
 /** A resolved host config, the shape a provisioner hands to `wrangler deploy --config`. */
 function config(overrides: Partial<WorkflowHostTemplate> = {}): WorkflowHostTemplate {
@@ -51,14 +62,14 @@ describe("configHash", () => {
     // The var holds the hash. Left in, every run would hash a config carrying the previous run's hash
     // and never converge — the gate would be decoration that redeploys everything forever.
     const bare = config();
-    const stamped = stampConfig(bare, "0.1.7");
+    const stamped = stampConfig(bare, deployStamp(bare, "0.1.7"));
     expect(stamped.vars?.[DEPLOY_STAMP_VAR]).toBeDefined();
     expect(configHash(stamped)).toBe(configHash(bare));
   });
 
   test("stamping a config twice reaches the same stamp, so a redeploy of an unchanged config skips", () => {
-    const once = stampConfig(config(), "0.1.7");
-    const twice = stampConfig(once, "0.1.7");
+    const once = stampConfig(config(), deployStamp(config(), "0.1.7"));
+    const twice = stampConfig(once, deployStamp(once, "0.1.7"));
     expect(twice.vars?.[DEPLOY_STAMP_VAR]).toBe(once.vars?.[DEPLOY_STAMP_VAR]);
   });
 
@@ -76,12 +87,14 @@ describe("configHash", () => {
   test("a config with no vars at all hashes, and stamping it is what adds the block", () => {
     const bare = config({ vars: undefined });
     expect(configHash(bare)).toMatch(/^[0-9a-f]{16}$/);
-    expect(stampConfig(bare, "0.1.7").vars).toEqual({ [DEPLOY_STAMP_VAR]: deployStamp(bare, "0.1.7") });
+    expect(stampConfig(bare, deployStamp(bare, "0.1.7")).vars).toEqual({
+      [DEPLOY_STAMP_VAR]: deployStamp(bare, "0.1.7"),
+    });
   });
 
   test("stamping leaves the caller's config alone", () => {
     const original = config();
-    stampConfig(original, "0.1.7");
+    stampConfig(original, deployStamp(original, "0.1.7"));
     expect(original.vars?.[DEPLOY_STAMP_VAR]).toBeUndefined();
   });
 });
@@ -188,5 +201,116 @@ describe("stampVerdict", () => {
       { state: "unreadable", detail: "401" },
     ] as const;
     for (const deployed of states) expect(stampVerdict({ ...base, deployed }).reason).not.toBe("");
+  });
+});
+
+describe("bundleStampVerdict", () => {
+  const current = "b".repeat(32);
+
+  test("a live stamp equal to this bundle's is the one branch that skips", () => {
+    expect(bundleStampVerdict({ current, deployed: { state: "read", stamp: current } })).toEqual({
+      deploy: false,
+      reason: "This bundle and configuration are already deployed.",
+    });
+  });
+
+  test("a different stamp deploys", () => {
+    expect(bundleStampVerdict({ current, deployed: { state: "read", stamp: "a".repeat(32) } })).toEqual({
+      deploy: true,
+      reason: "Its bundle or resolved configuration changed.",
+    });
+  });
+
+  test("--force deploys over a matching stamp", () => {
+    expect(bundleStampVerdict({ current, force: true, deployed: { state: "read", stamp: current } })).toEqual({
+      deploy: true,
+      reason: "--force was given.",
+    });
+  });
+
+  test("every way of not knowing deploys, with the kit's own sentences", () => {
+    expect(bundleStampVerdict({ current, deployed: { state: "absent" } }).reason).toBe("It was not on the account.");
+    expect(bundleStampVerdict({ current, deployed: { state: "unstamped" } }).reason).toBe(
+      "It carried no deploy stamp.",
+    );
+    expect(bundleStampVerdict({ current, deployed: { state: "unreadable", detail: "401" } })).toEqual({
+      deploy: true,
+      reason: "Its deploy stamp could not be read. 401",
+    });
+  });
+});
+
+describe("readDeployedStamp", () => {
+  test("no reader is unreadable, not absent", async () => {
+    expect(await readDeployedStamp(undefined, "acme-prod-web")).toEqual({
+      state: "unreadable",
+      detail: "No Cloudflare client was available to read it.",
+    });
+  });
+
+  test("no Worker, a Worker with no stamp, and a stamp are three states", async () => {
+    expect(await readDeployedStamp(async () => null, "w")).toEqual({ state: "absent" });
+    expect(await readDeployedStamp(async () => ({ A: "1" }), "w")).toEqual({ state: "unstamped" });
+    expect(await readDeployedStamp(async () => ({ [DEPLOY_STAMP_VAR]: "x" }), "w")).toEqual({
+      state: "read",
+      stamp: "x",
+    });
+  });
+
+  test("a Worker holding the unfinished marker is its own state, and both kinds of Worker deploy over it", async () => {
+    const deployed = await readDeployedStamp(async () => ({ [DEPLOY_STAMP_VAR]: UNFINISHED_STAMP }), "w");
+    expect(deployed).toEqual({ state: "unfinished" });
+    const reason = "Its last deploy did not record that it finished.";
+    expect(bundleStampVerdict({ current: UNFINISHED_STAMP, deployed })).toEqual({ deploy: true, reason });
+    expect(stampVerdict({ worker: "w", pkg: "@pithy-sh/email", current: "0.1.7/abc", deployed })).toEqual({
+      deploy: true,
+      reason,
+    });
+  });
+
+  test("a read that throws is unreadable, with the reason", async () => {
+    const read = async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    };
+    expect(await readDeployedStamp(read, "w")).toEqual({ state: "unreadable", detail: "getaddrinfo ENOTFOUND" });
+  });
+
+  test("it asks for the script it was given", async () => {
+    const asked: string[] = [];
+    await readDeployedStamp(async (script) => {
+      asked.push(script);
+      return null;
+    }, "acme-prod-web");
+    expect(asked).toEqual(["acme-prod-web"]);
+  });
+});
+
+describe("recordDeployStamp", () => {
+  test("writes the stamp over the marker, on the script it was given, and answers nothing", async () => {
+    const writes: string[][] = [];
+    const note = await recordDeployStamp(
+      async (script, name, value) => {
+        writes.push([script, name, value]);
+      },
+      "acme-prod-web",
+      "abc",
+    );
+    expect(note).toBeUndefined();
+    expect(writes).toEqual([["acme-prod-web", DEPLOY_STAMP_VAR, "abc"]]);
+  });
+
+  test("a write that fails never throws, and says the next deploy uploads again", async () => {
+    const note = await recordDeployStamp(
+      async () => {
+        throw new Error("403 Forbidden");
+      },
+      "w",
+      "abc",
+    );
+    expect(note).toBe("Its deploy stamp could not be recorded, so the next deploy uploads it again. 403 Forbidden");
+  });
+
+  test("no writer records nothing, and adds nothing to a reason that already said no client was available", async () => {
+    expect(await recordDeployStamp(undefined, "w", "abc")).toBeUndefined();
   });
 });

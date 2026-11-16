@@ -324,6 +324,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       dir,
       env,
       readVars: (script) => this.#cf.workers().getWorkerVars(script),
+      writeVar: (script, name, value) => this.#cf.workers().setWorkerVar(script, name, value),
       account: { accountId: this.#accountId, apiToken: this.#apiToken },
     });
   }

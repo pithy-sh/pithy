@@ -8,7 +8,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { configFromArgs, NO_PROVISION_ARG, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
-import { DEPLOY_STAMP_VAR, deployStamp } from "../provision/deployStamp";
+import { DEPLOY_STAMP_VAR, deployStamp, UNFINISHED_STAMP } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import { deployHostWorker, type HostDeployOptions, planHostDeploy } from "./hostDeploy";
 
@@ -24,9 +24,13 @@ let dir: string;
 /** Every `wrangler deploy` this run made, in order — the argv, and the config that argv names. */
 let deploys: { args: readonly string[]; configPath: string; dir: string; config: WorkflowHostTemplate }[];
 
+/** Every var written onto a deployed Worker after its deploy: script, name, value. */
+let written: string[][];
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-host-deploy-"));
   deploys = [];
+  written = [];
 });
 
 afterEach(async () => {
@@ -55,6 +59,9 @@ function run(options: Partial<HostDeployOptions> & { vars?: Record<string, strin
     dir,
     env: "prod",
     readVars: async () => vars ?? null,
+    writeVar: async (script, name, value) => {
+      written.push([script, name, value]);
+    },
     runDeploy: async (args, cwd) => {
       // Read back through the argv, the way wrangler resolves it, rather than through a path this test
       // rebuilt: an argv that stopped naming the generated config would otherwise still look like one.
@@ -70,13 +77,13 @@ const CURRENT = deployStamp(config(), "0.1.7");
 
 /**
  * The account a host deploy authenticates as travels as a {@link WranglerAccount}, and the distinction
- * between its three values is load-bearing (#555).
+ * between its three values is load-bearing.
  *
  * `deployKit` passes the project's *selection*, so the `cloudflare.accountId` pin reaches
- * `cloudflareChildEnv` and #206's mismatch refusal can fire. A provisioner passes the *pair* its command
- * already resolved. `null` means the project claims no account — and it must never be used to mean "the
- * pair came back incomplete", because that resolves the default `<config>/cloudflare.json` rather than
- * the project's named one.
+ * `cloudflareChildEnv` and a mismatch is refused. A provisioner passes the *pair* its command already
+ * resolved. `null` means the project claims no account — and it must never be used to mean "the pair came
+ * back incomplete", because that resolves the default `<config>/cloudflare.json` rather than the project's
+ * named one.
  */
 describe("the account a host deploy ships under", () => {
   test("the selection reaches the runner, pin included, rather than being flattened to a pair", async () => {
@@ -101,7 +108,7 @@ describe("the account a host deploy ships under", () => {
 });
 
 describe("deployHostWorker", () => {
-  test("stamps the config it deploys with the package version and the config hash", async () => {
+  test("uploads the unfinished marker, and stamps the version and config hash once the deploy has finished", async () => {
     const outcome = await run({ vars: null });
     expect(outcome).toEqual({
       capability: "email",
@@ -109,10 +116,39 @@ describe("deployHostWorker", () => {
       outcome: "deployed",
       reason: "It was not on the account.",
     });
-    expect(deploys[0]?.config.vars?.[DEPLOY_STAMP_VAR]).toBe(CURRENT);
-    // The stamp ships inside the config wrangler deploys, so the bundle and its claim are one atomic
-    // write. A second API call could succeed against a deploy that failed.
+    // wrangler sets the triggers after the upload, so the upload's own var cannot say the deploy finished.
+    expect(deploys[0]?.config.vars?.[DEPLOY_STAMP_VAR]).toBe(UNFINISHED_STAMP);
+    expect(written).toEqual([["acme-prod-email", DEPLOY_STAMP_VAR, CURRENT]]);
     expect(deploys[0]?.dir).toBe(dir);
+  });
+
+  test("a deploy that fails after its upload records no stamp, so the next run deploys again", async () => {
+    await expect(
+      run({
+        vars: null,
+        runDeploy: async () => {
+          throw new InternalError({ message: "wrangler deploy failed. A custom domain is already in use." });
+        },
+      }),
+    ).rejects.toThrowError(/custom domain/);
+    expect(written).toEqual([]);
+    // What the failed upload left behind reads as unfinished, which deploys.
+    const rerun = await run({ vars: { [DEPLOY_STAMP_VAR]: UNFINISHED_STAMP } });
+    expect(rerun.outcome).toBe("deployed");
+    expect(rerun.reason).toBe("Its last deploy did not record that it finished.");
+  });
+
+  test("a stamp that cannot be recorded leaves the Worker deployed, and the row says the next run uploads again", async () => {
+    const outcome = await run({
+      vars: null,
+      writeVar: async () => {
+        throw new Error("403 Forbidden");
+      },
+    });
+    expect(outcome.outcome).toBe("deployed");
+    expect(outcome.reason).toBe(
+      "It was not on the account. Its deploy stamp could not be recorded, so the next deploy uploads it again. 403 Forbidden",
+    );
   });
 
   test("skips a Worker whose version and hash both match, and says which version is live", async () => {
@@ -181,6 +217,7 @@ describe("deployHostWorker", () => {
       expect(outcome.outcome).toBe("deployed");
       expect(outcome.reason).toBe("@pithy-sh/email's version could not be read, so it was deployed unstamped.");
       expect(deploys[0]?.config.vars?.[DEPLOY_STAMP_VAR]).toBeUndefined();
+      expect(written).toEqual([]);
     });
   });
 
@@ -210,6 +247,68 @@ describe("deployHostWorker", () => {
     });
   });
 
+  describe("a Worker Cloudflare has not propagated yet", () => {
+    /** wrangler's failure when its read-back of a brand-new Worker answers 10007. */
+    const unseen = () =>
+      new InternalError({
+        message:
+          "wrangler deploy failed.\n  ✘ [ERROR] A request to the Cloudflare API (/accounts/a/workers/workers/acme-prod-email) failed.\n    This Worker does not exist on your account. [code: 10007]",
+      });
+
+    test("is deployed once more after a wait, and reported deployed when that succeeds", async () => {
+      const waits: number[] = [];
+      let attempts = 0;
+      const outcome = await run({
+        vars: null,
+        retryWait: async (ms) => {
+          waits.push(ms);
+        },
+        runDeploy: async (args) => {
+          attempts += 1;
+          // The temporary config is still there for the second attempt.
+          expect(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")).name).toBe("acme-prod-email");
+          if (attempts === 1) throw unseen();
+        },
+      });
+      expect(attempts).toBe(2);
+      expect(waits).toHaveLength(1);
+      expect(outcome.outcome).toBe("deployed");
+      expect(written).toEqual([["acme-prod-email", DEPLOY_STAMP_VAR, CURRENT]]);
+      expect(await readdir(dir)).toEqual([]);
+    });
+
+    test("a second 10007 fails as any failure does, with no third attempt", async () => {
+      let attempts = 0;
+      await expect(
+        run({
+          vars: null,
+          retryWait: async () => {},
+          runDeploy: async () => {
+            attempts += 1;
+            throw unseen();
+          },
+        }),
+      ).rejects.toThrowError(/10007/);
+      expect(attempts).toBe(2);
+      expect(written).toEqual([]);
+    });
+
+    test("any other wrangler failure is not retried", async () => {
+      let attempts = 0;
+      await expect(
+        run({
+          vars: null,
+          retryWait: async () => {},
+          runDeploy: async () => {
+            attempts += 1;
+            throw new InternalError({ message: "wrangler deploy failed. [code: 10021]" });
+          },
+        }),
+      ).rejects.toThrowError(/10021/);
+      expect(attempts).toBe(1);
+    });
+  });
+
   describe("the temporary config", () => {
     test("is removed after a successful deploy", async () => {
       await run({ vars: null });
@@ -236,7 +335,7 @@ describe("deployHostWorker", () => {
 });
 
 /**
- * **`pithy deploy --dry-run` asks the gate and stops there (#697).** The verdict is the one a real deploy
+ * **`pithy deploy --dry-run` asks the gate and stops there.** The verdict is the one a real deploy
  * would reach — the stamp read, the reason worded the same — and nothing after it happens: no temporary
  * config beside the package, no wrangler, no narration of an upload that is not coming.
  */
@@ -293,13 +392,11 @@ describe("planHostDeploy", () => {
 });
 
 /**
- * **One place, and every command that ships a kit Worker inherits it (#578).**
+ * **One place, and every command that ships a kit Worker inherits it.**
  *
  * `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` — through an
- * orchestrator and a provisioner class in a kit package, neither of which carries a progress parameter
- * and neither of which should grow one. Narrating at the spawn is what enrolls all of them at once,
- * which is the opposite of what #531 did: it named the seam for provisioning, filed it under
- * `provision/`, and `deploy` never found it.
+ * orchestrator and a provisioner class in a kit package, neither of which carries a progress parameter.
+ * Narrating at the spawn enrolls all of them at once.
  */
 describe("a kit Worker's upload announces itself", () => {
   /** Every progress event one run raised. */
@@ -336,17 +433,13 @@ describe("a kit Worker's upload announces itself", () => {
 });
 
 /**
- * **#584: the third producer of one class, and the one with no symptom in the shell that wrote it.**
+ * **The stanza a kit Worker publishes under is stated on its argv, so the operator's shell cannot choose it.**
  *
- * The argv was `["deploy", "--config", <generated>]` — no stanza named, no gate. wrangler resolves its
- * environment as `args.env ?? CLOUDFLARE_ENV` and the child inherits the operator's shell, so an
- * exported `CLOUDFLARE_ENV=prod` published `acme-prod-email-prod`: `appendEnvName` runs whether or not
- * the stanza exists, and a generated host config has no `env` section for wrangler to complain about.
- * A Worker under a name nothing references, while every binding pointing at `acme-prod-email` resolves
- * to the old script or to nothing.
- *
- * The stanza is stated on the argv now, in wrangler's own spelling for the top level, and the gate reads
- * the argv rather than its own answer — so a build that stopped stating it reddens these in any shell.
+ * wrangler resolves its environment as `args.env ?? CLOUDFLARE_ENV` and the child inherits the shell, and
+ * `appendEnvName` runs whether or not the stanza exists. An argv naming no stanza would publish
+ * `acme-prod-email-prod` for an operator with `CLOUDFLARE_ENV=prod` exported: a Worker under a name nothing
+ * references. The gate reads the argv rather than its own answer, so an argv that stopped stating the stanza
+ * reddens these in any shell.
  */
 describe("the stanza a kit Worker is published under", () => {
   test("is stated on the argv, so the shell is not what decides it", async () => {
@@ -392,11 +485,11 @@ describe("the stanza a kit Worker is published under", () => {
 });
 
 /**
- * **`pithy deploy --kit` creates nothing, and a bucket name is not an id anything can check (#589).**
+ * **`pithy deploy --kit` creates nothing, and a bucket name is not an id anything can check.**
  *
  * Media and storage derive their bucket from the project and nothing confirms it exists, so under
- * wrangler's default a kit deploy against an environment that never ran `pithy media provision` *made
- * the bucket*. For R2 the name is the id: no offline read of this config can tell a real bucket from one
+ * wrangler's default a kit deploy against an environment that never ran `pithy media provision` would make
+ * the bucket. For R2 the name is the id: no offline read of this config can tell a real bucket from one
  * wrangler is about to create. What stops it is the argv, so that is what is asserted — on the config a
  * provisioner hands over, bucket and all.
  */

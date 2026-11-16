@@ -18,6 +18,7 @@ import { establishedPending } from "../migrations/pendingCount";
 import { planMigrateProject, readProjectLedger } from "../migrations/run";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { type DeployPrivacy, deployPrivacy, unverifiableGateLine } from "../privacy/deployGate";
+import { accountVarsReader, accountVarWriter } from "../project/accountVars";
 import { assertAttestationDeployable } from "../project/attestationMode";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import {
@@ -115,51 +116,37 @@ export function deploySelection(args: { apps: boolean; kit: boolean }): { apps: 
 /**
  * Refuse the flag combinations that could only ever be misunderstandings.
  *
- * **`--apps --force`.** The adopter's Workers are never gated — their code is the thing that changed,
- * and the CLI cannot see a bundle — so `--force` has nothing to override there. Accepting it silently
- * is how a flag comes to mean nothing.
+ * **`--kit` with no `--env`.** A kit Worker is deployed per environment, always: its configuration is stamped
+ * into its vars, so `<project>-staging-email` and `<project>-prod-email` are separate Workers and there is no
+ * top-level stanza to fall back on. A bare `pithy deploy` is not refused here: its kit half says it needed an
+ * environment, because asking for both halves and getting one is a different fact from asking for the kit half
+ * by name and getting silence. It is refused elsewhere, by `assertEnvironmentProvisioned`, whenever the
+ * top-level stanza has a D1 or KV binding with no id.
  *
- * **`--kit`, or `--force`, with no `--env`.** A kit Worker is deployed per environment, always: its
- * configuration is stamped into its vars, so `<project>-staging-email` and `<project>-prod-email` are
- * genuinely separate Workers and there is no top-level stanza to fall back on. A bare `pithy deploy` is
- * not refused *here* — its kit half says it needed an environment — because asking for both halves and
- * getting one is a different fact from asking for the kit half by name and getting silence, which is the
- * thing that must not happen. It is refused elsewhere, by `assertEnvironmentProvisioned`, whenever the
- * top-level stanza has a D1 or KV binding with no id — the shape `pithy add` writes one in.
+ * **`--kit` with `--env dev`.** There is no deployed kit Worker in `dev`: it runs locally under `pithy dev`. So
+ * a run narrowed to the kit half in `dev` has nothing to do. `pithy deploy --env dev` is not refused here: its
+ * kit half says the Workers are local.
  *
- * **`--kit`, or `--force`, with `--env dev`.** There is no deployed kit Worker in `dev`: it runs
- * locally under `pithy dev`, and `pithy <capability> provision` fans out over the managed environments
- * only. So a run narrowed to the kit half in `dev` has nothing whatever to do, and `--force` has no
- * deploy to force. `pithy deploy --env dev` is not refused here — its kit half says the Workers are local,
- * the same trade the bare deploy makes — and meets the same id-less binding refusal the bare deploy does.
+ * **`--force` is refused nowhere.** Every Worker a deploy ships is gated, the adopter's by a hash of its bundle
+ * and the kit's by its stamp, so there is always a stamp for it to override.
  *
- * **Every one of these is asked of {@link deploySelection}, not of the raw flags.** `--apps --kit` is
- * the same selection as naming neither, and it was the one combination that disagreed with its own
- * documentation: it threw `--kit needs an environment.` where a bare `pithy deploy` succeeded.
+ * **Each is asked of {@link deploySelection}, not of the raw flags.** `--apps --kit` is the same selection as
+ * naming neither.
  */
 export function assertDeployFlags(args: { apps: boolean; kit: boolean; force: boolean; env?: string }): void {
   const selection = deploySelection(args);
-  if (args.force && !selection.kit) {
-    throw new ValidationError({
-      message: "--force has nothing to do with --apps.",
-      action: "Drop --force, or drop --apps: only the kit's Workers are gated.",
-      detail: "Workers under apps/ are deployed unconditionally, so there is no stamp for --force to override.",
-    });
-  }
-  // Narrowed *to* the kit half — which `--apps --kit` is not, because naming both narrows nothing.
-  const kitOnly = selection.kit && !selection.apps;
-  const flag = kitOnly ? "--kit" : args.force ? "--force" : undefined;
-  if (flag === undefined) return;
+  // Narrowed *to* the kit half, which `--apps --kit` is not, because naming both narrows nothing.
+  if (!(selection.kit && !selection.apps)) return;
   if (args.env === undefined) {
     throw new ValidationError({
-      message: `${flag} needs an environment.`,
+      message: "--kit needs an environment.",
       action: "Add --env staging or --env prod.",
       detail: "A kit Worker's configuration is stamped into its vars at deploy time, so it is per environment.",
     });
   }
   if (args.env === LOCAL_ENVIRONMENT) {
     throw new ValidationError({
-      message: `${flag} has nothing to deploy in dev.`,
+      message: "--kit has nothing to deploy in dev.",
       action: `Run ${pithyCommand("dev")} to run the kit's Workers locally, or pass --env staging or --env prod.`,
       detail: `A kit Worker in dev is materialized under .wrangler/pithy/hosts and run by ${commandName("dev")}, never deployed.`,
     });
@@ -211,6 +198,13 @@ const DeployedWorker = z
     versionId: z.string().optional().describe("The deployed version id, when wrangler printed one."),
     url: z.string().optional().describe("The Worker's public URL, when wrangler printed one."),
     built: z.boolean().optional().describe("Whether its UI build succeeded. Absent when it declares no UI."),
+    outcome: z
+      .enum(["deployed", "unchanged"])
+      .optional()
+      .describe(
+        "`deployed` — wrangler uploaded it. `unchanged` — its live stamp matched this bundle and configuration, so nothing was uploaded. Under `--dry-run`, what the deploy would do. Absent on a failure.",
+      ),
+    reason: z.string().optional().describe("Why the outcome is what it is, in one sentence. Absent on a failure."),
     error: z.string().optional().describe("Why it failed. Present only when `ok` is false."),
     exit: z
       .number()
@@ -305,7 +299,7 @@ export default withContract(
       env: optionalEnvArg("Target environment (omit for each worker's top-level config)"),
       apps: { type: "boolean", default: false, description: "Deploy only the Workers under apps/" },
       kit: { type: "boolean", default: false, description: "Deploy only the kit's Workers" },
-      force: { type: "boolean", default: false, description: "Deploy every kit Worker, changed or not" },
+      force: { type: "boolean", default: false, description: "Deploy every Worker, changed or not" },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
       events: EVENTS_ARG,
@@ -430,9 +424,18 @@ export default withContract(
           const kitFirst = runKit && selection.apps && (await bindsKitWorker({ projectDir }));
           const kitEarly = kitFirst ? await deployKit() : null;
 
-          // **The adopter's Workers, ungated.** Their code is the thing that changed.
+          // The adopter's Workers, each gated on a hash of the bundle wrangler would upload.
           const deploys = selection.apps
-            ? await deployProject({ projectDir, account, env, audit, privacy: privacy?.attestation })
+            ? await deployProject({
+                projectDir,
+                account,
+                env,
+                audit,
+                privacy: privacy?.attestation,
+                force: args.force,
+                readVars: await accountVarsReader(account),
+                writeVar: await accountVarWriter(account),
+              })
             : [];
           // A deploy that shipped but is not the thing answering at the declared address is a failure too,
           // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
@@ -505,10 +508,7 @@ export default withContract(
     mutates: true,
     idempotent: true,
     needsNetwork: true,
-    flagGroups: [
-      { kind: "requires", flag: "--force", needs: ["--env"], any: false, rule: "--force needs an environment." },
-      EVENTS_NEED_JSON,
-    ],
+    flagGroups: [EVENTS_NEED_JSON],
   },
 );
 
@@ -531,8 +531,8 @@ interface PlanDeployOptions {
  * first: the migrations the environment has not applied, named — the deploy leaves them to `pithy migrate`, and
  * says so. Then each app Worker is built, in a private copy of the project, and handed to `wrangler deploy
  * --dry-run`, under its own step, so a bundle that does not build fails here with the build's error rather than
- * at the deploy. The kit half reads
- * each stamp and plans the uploads it would make. Nothing is uploaded and nothing is audited.
+ * at the deploy, and its stamp is compared as the deploy compares it. The kit half reads each stamp and plans the
+ * uploads it would make. Nothing is uploaded and nothing is audited.
  *
  * It exits the way the real deploy would have: 0, or 1 for a Worker that would fail — a report with a failed
  * row, as the deploy's own is (`docs/CLI.md` §3.8).
@@ -549,7 +549,15 @@ async function planDeploy(options: PlanDeployOptions): Promise<void> {
     }),
   );
   const deploys = selection.apps
-    ? await deployProject({ projectDir, account, env, dryRun: true, privacy: options.privacy?.attestation })
+    ? await deployProject({
+        projectDir,
+        account,
+        env,
+        dryRun: true,
+        privacy: options.privacy?.attestation,
+        force: options.force,
+        readVars: await accountVarsReader(account),
+      })
     : [];
   const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
   const kit: KitDeployReport | null = runKit

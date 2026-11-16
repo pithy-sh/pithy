@@ -119,9 +119,13 @@ describe("pithy deploy --env staging --dry-run", () => {
     await expectConforms("deploy", written);
     const payload = JSON.parse(written.join(""));
     expect(payload).toMatchObject({ command: "deploy", env: "staging", dryRun: true, pendingMigrations: 1 });
-    expect(payload.workers).toEqual([{ name: "acme-api", ok: true }]);
+    expect(payload.workers).toEqual([
+      { name: "acme-api", ok: true, outcome: "deployed", reason: "It was not on the account." },
+    ]);
     const plan = Plan.parse(payload.plan);
-    expect(plan.resources).toEqual([{ kind: "worker", name: "acme-api", env: "staging", action: "upload" }]);
+    expect(plan.resources).toEqual([
+      { kind: "worker", name: "acme-api", env: "staging", action: "upload", reason: "It was not on the account." },
+    ]);
     expect(plan.migrations).toEqual([]);
     expect(plan.notes).toEqual([
       "1 migration unapplied for staging: 1000_app_0001_things. Deploy does not migrate — run pithy migrate --env staging.",
@@ -132,7 +136,7 @@ describe("pithy deploy --env staging --dry-run", () => {
     expect(observed.order).toEqual([
       "migrations",
       expect.stringMatching(
-        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{"classes":\[\],"consoleGate":"not_required",.*\} --dry-run$/,
+        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{"classes":\[\],"consoleGate":"not_required",.*\} --dry-run --outdir \S+$/,
       ),
     ]);
     expect(payload.privacy).toEqual({ declared: [], consoleGate: "not_required", reason: null });
@@ -203,20 +207,23 @@ describe("pithy deploy --env staging --dry-run", () => {
     const written = captureStdout();
     await runCommand(await commandAt("deploy"), { rawArgs: ["--env", "staging", "--dry-run"] });
     const lines = written.join("").trimEnd().split("\n");
-    expect(lines).toContain("acme-api: would deploy.");
+    expect(lines).toContain("acme-api: would deploy. It was not on the account.");
     expect(lines).toContain("Would upload worker acme-api (staging).");
     expect(lines.at(-1)).toBe("Dry run. Nothing uploaded.");
     expect(lines).not.toContain("Done.");
     expect(await snapshotTree(dir)).toEqual(before);
   });
 
-  test("the real deploy never adds --dry-run, and says so in its payload", async () => {
+  test("the real deploy bundles with --dry-run, then uploads without it, and says so in its payload", async () => {
     const written = await runCaptured("deploy", ["--env", "staging", "--apps", "--json"]);
     expect(JSON.parse(written.join(""))).toMatchObject({ dryRun: false });
     expect(JSON.parse(written.join(""))).not.toHaveProperty("plan");
     expect(observed.order.filter((entry) => entry.startsWith("wrangler"))).toEqual([
       expect.stringMatching(
-        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{.*\}$/,
+        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{.*\} --dry-run --outdir \S+$/,
+      ),
+      expect.stringMatching(
+        /^wrangler deploy --env staging --experimental-provision=false --var PITHY_PRIVACY:\{.*\} --var PITHY_DEPLOY_STAMP:unfinished$/,
       ),
     ]);
   });

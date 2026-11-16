@@ -716,6 +716,8 @@ Measured on a real account, 2026-08-10, which is what turned that from a reading
 - **Every `wrangler deploy` mints a new version**, even for a one-character change. An ordinary redeploy therefore always moves the id and is never invisible.
 - **Propagation lags.** Twenty seconds after wrangler reported the rollback at 100%, the URL still answered from the older version. A client watching closely sees the pair flip and settle — the platform converging, not two deploys.
 
+**`pithy deploy` moves the id twice, or not at all.** It uploads a Worker, then records the deploy stamp on it through the Workers API, and Cloudflare records that as a second version of the same code, so a client sees the id move twice for one deploy. A run that finds a Worker's bundle and configuration already live uploads nothing and moves nothing ([`pithy deploy`](commands/deploy.md)).
+
 **So the third row above is not reachable on today's platform, and it stays anyway.** A total comparison is the correct shape: a rule that enumerates which fields are allowed to move is wrong the day the platform moves a different one, and it is wrong silently, as "nothing changed". It costs one branch. Do not read it as rollback detection.
 
 **Nothing inside a Worker can observe a deployment.** That is a boundary of what the runtime exposes, not a gap in this seam, and no header could close it — the only in-Worker signal anyone could synthesize is isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day. A client that needs to know a deployment changed reads Cloudflare's deployments API, in the customer's own account.

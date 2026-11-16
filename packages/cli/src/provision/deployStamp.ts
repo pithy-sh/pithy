@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash } from "node:crypto";
+import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { setStanzaVar } from "../project/stanzaVars";
 
@@ -16,10 +17,12 @@ import { setStanzaVar } from "../project/stanzaVars";
  * at provision time: `EMAIL_THEME`, `BASE_URL`, one `EMAIL_MESSAGES_<locale>` per locale, resolved binding ids,
  * the cron. Edit a theme and the kit's Worker keeps sending the old one. Nothing fails.
  *
- * So the deployed Worker carries one var naming what it was deployed from. It ships **inside the
- * config wrangler deploys**, which is what makes it trustworthy: the bundle and its stamp are written
- * by one atomic operation, so the stamp can never claim a deploy that did not happen. There is no
- * second API write and nothing to clean up.
+ * So the deployed Worker carries one var naming what it was deployed from, and it is written **only once
+ * the whole deploy has finished**. wrangler sets a Worker's triggers after its upload — the `workers.dev`
+ * subdomain, routes, custom domains, crons — and an app Worker is then probed at its declared address, so
+ * a deploy can fail with its code already live. The upload therefore carries {@link UNFINISHED_STAMP},
+ * which matches nothing, and the real stamp replaces it through {@link recordDeployStamp} after every step
+ * has passed. A deploy that fails anywhere leaves `unfinished`, and the next run deploys again.
  *
  * ## Two inputs, because they answer two questions
  *
@@ -45,6 +48,12 @@ import { setStanzaVar } from "../project/stanzaVars";
  */
 export const DEPLOY_STAMP_VAR = "PITHY_DEPLOY_STAMP";
 
+/**
+ * The value an upload carries in {@link DEPLOY_STAMP_VAR} until its deploy finishes. It parses as no stamp
+ * either kind of Worker writes, so a Worker left holding it is never skipped.
+ */
+export const UNFINISHED_STAMP = "unfinished";
+
 /** How many hex characters of the digest the stamp carries. Change detection, not a signature. */
 const HASH_LENGTH = 16;
 
@@ -68,7 +77,7 @@ const SEPARATOR = "/";
  * reordering there is a real change. `comment-json`'s parse hangs its comments off symbol keys, which
  * `Object.keys` does not see, so a template's comments are outside the hash by construction.
  */
-function canonicalize(value: unknown): unknown {
+export function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value === null || typeof value !== "object") return value;
   const source = value as Record<string, unknown>;
@@ -99,17 +108,17 @@ export function deployStamp(config: WorkflowHostTemplate, version: string): stri
 }
 
 /**
- * The config as it will be deployed: the caller's, plus its stamp.
+ * The config as it will be uploaded: the caller's, with `stamp` in {@link DEPLOY_STAMP_VAR}.
  *
  * A copy rather than a mutation, because the caller's config is what a test compares against and what
  * a resolver may hand to something else on the same run.
  */
-export function stampConfig(config: WorkflowHostTemplate, version: string): WorkflowHostTemplate {
+export function stampConfig(config: WorkflowHostTemplate, stamp: string): WorkflowHostTemplate {
   // The vars are copied one by one into a block of the copy's own, so the stamp never lands in the caller's.
   const { vars = {}, ...rest } = config;
   const stamped: WorkflowHostTemplate = rest;
   for (const [name, value] of Object.entries(vars)) setStanzaVar(stamped, name, value);
-  setStanzaVar(stamped, DEPLOY_STAMP_VAR, deployStamp(config, version));
+  setStanzaVar(stamped, DEPLOY_STAMP_VAR, stamp);
   return stamped;
 }
 
@@ -138,7 +147,7 @@ export function parseDeployStamp(raw: string | undefined | null): ParsedStamp | 
 }
 
 /**
- * What reading the deployed stamp established. Four states, and three of them are ways of not knowing.
+ * What reading the deployed stamp established. Five states, and four of them are ways of not knowing.
  *
  * Separated rather than collapsed into `string | null` because the *reason* is what the row prints,
  * and "there is no such Worker" and "the account would not answer" send an operator to different
@@ -151,6 +160,8 @@ export type DeployedStamp =
   | { readonly state: "absent" }
   /** The Worker is there and carries no stamp: deployed by a release older than this gate. */
   | { readonly state: "unstamped" }
+  /** The Worker carries {@link UNFINISHED_STAMP}: its last deploy failed after the upload, or was never stamped. */
+  | { readonly state: "unfinished" }
   /** The read itself failed — no credentials, an unreachable account, a 500. */
   | { readonly state: "unreadable"; readonly detail: string };
 
@@ -184,19 +195,10 @@ export interface StampVerdict {
  */
 export function stampVerdict(comparison: StampComparison): StampVerdict {
   const { pkg, current, deployed } = comparison;
-  if (comparison.force) return { deploy: true, reason: "--force was given." };
-  // **Past tense, because the reason is read after the outcome.** The row prints `<worker>: deployed.
-  // <reason>`, so a reason in the present tense describes an account the deploy has just changed:
-  // `acme-prod-email: deployed. acme-prod-email is not deployed.` is two statements, and the second is
-  // false by the time anybody reads it. Each sentence here is about what the account held before this run,
-  // which stays true whatever the run then did — and names nothing the row has not already named.
-  if (deployed.state === "absent") return { deploy: true, reason: "It was not on the account." };
-  if (deployed.state === "unstamped") return { deploy: true, reason: "It carried no deploy stamp." };
-  if (deployed.state === "unreadable") {
-    return { deploy: true, reason: `Its deploy stamp could not be read. ${deployed.detail}` };
-  }
+  const doubt = doubtVerdict(deployed, comparison.force);
+  if (doubt) return doubt;
 
-  const live = parseDeployStamp(deployed.stamp);
+  const live = parseDeployStamp(deployed.state === "read" ? deployed.stamp : null);
   const mine = parseDeployStamp(current);
   // `mine` is built two lines from here by this same module, so an unreadable one is not an adopter's
   // problem — but it is still doubt, and doubt deploys rather than throws inside a deploy.
@@ -213,4 +215,100 @@ export function stampVerdict(comparison: StampComparison): StampVerdict {
   if (moved) return { deploy: true, reason: `${pkg} moved from ${live.version} to ${mine.version}.` };
   if (changed) return { deploy: true, reason: "Its resolved configuration changed." };
   return { deploy: false, reason: `${pkg} ${mine.version} is deployed with this configuration.` };
+}
+
+/**
+ * The verdict every state but a readable stamp reaches, or `undefined` when the stamp is there to compare.
+ * Shared by {@link stampVerdict} and {@link bundleStampVerdict}, so a kit Worker and an app Worker give the
+ * same sentence for the same doubt.
+ */
+function doubtVerdict(deployed: DeployedStamp, force: boolean | undefined): StampVerdict | undefined {
+  if (force) return { deploy: true, reason: "--force was given." };
+  // **Past tense, because the reason is read after the outcome.** The row prints `<worker>: deployed.
+  // <reason>`, so a reason in the present tense describes an account the deploy has just changed:
+  // `acme-prod-email: deployed. acme-prod-email is not deployed.` is two statements, and the second is
+  // false by the time anybody reads it. Each sentence here is about what the account held before this run,
+  // which stays true whatever the run then did — and names nothing the row has not already named.
+  if (deployed.state === "absent") return { deploy: true, reason: "It was not on the account." };
+  if (deployed.state === "unstamped") return { deploy: true, reason: "It carried no deploy stamp." };
+  if (deployed.state === "unfinished")
+    return { deploy: true, reason: "Its last deploy did not record that it finished." };
+  if (deployed.state === "unreadable") {
+    return { deploy: true, reason: `Its deploy stamp could not be read. ${deployed.detail}` };
+  }
+  return undefined;
+}
+
+/** What an app Worker's gate compares: the stamp this deploy would write, and what the account holds. */
+export interface BundleStampComparison {
+  /** The hash of the bundle wrangler would upload, with its resolved configuration. */
+  current: string;
+  /** What reading the deployed Worker established. */
+  deployed: DeployedStamp;
+  /** `--force`: ship regardless. */
+  force?: boolean;
+}
+
+/**
+ * Whether an app Worker needs deploying, and why. Its stamp is the bundle hash alone: the adopter's code has
+ * no package version, so the one skip is a live stamp equal to the hash this deploy would write.
+ */
+export function bundleStampVerdict(comparison: BundleStampComparison): StampVerdict {
+  const { current, deployed } = comparison;
+  const doubt = doubtVerdict(deployed, comparison.force);
+  if (doubt) return doubt;
+  if (deployed.state === "read" && deployed.stamp === current) {
+    return { deploy: false, reason: "This bundle and configuration are already deployed." };
+  }
+  return { deploy: true, reason: "Its bundle or resolved configuration changed." };
+}
+
+/** Read a deployed Worker's plain-text vars. `null` means the account holds no Worker of that name. */
+export type ReadWorkerVars = (scriptName: string) => Promise<Record<string, string> | null>;
+
+/**
+ * What the deployed Worker says about itself, in the five states the verdicts branch on.
+ *
+ * Every failure becomes a state rather than a throw. The account may be unreachable, the token may lack
+ * Workers Read, the API may 500: none of those is a reason to stop a deploy, and all of them are reasons to
+ * run one.
+ */
+export async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: string): Promise<DeployedStamp> {
+  if (!read) return { state: "unreadable", detail: "No Cloudflare client was available to read it." };
+  try {
+    const vars = await read(scriptName);
+    if (vars === null) return { state: "absent" };
+    const stamp = vars[DEPLOY_STAMP_VAR];
+    if (stamp === UNFINISHED_STAMP) return { state: "unfinished" };
+    return stamp ? { state: "read", stamp } : { state: "unstamped" };
+  } catch (error) {
+    return { state: "unreadable", detail: error instanceof PithyError ? error.payload.message : messageOf(error) };
+  }
+}
+
+/** Set one plain-text var on a deployed Worker, leaving every other binding as it is. */
+export type WriteWorkerVar = (scriptName: string, name: string, value: string) => Promise<void>;
+
+/**
+ * Record that a deploy finished, by writing its stamp over the {@link UNFINISHED_STAMP} its upload carried.
+ * Called only after every step of the deploy has passed.
+ *
+ * It never throws: the deploy it records has already succeeded. It answers the sentence a row carries when
+ * the write failed, or `undefined`. An unwritten stamp leaves `unfinished`, so the next run uploads again rather
+ * than skipping. No writer answers `undefined` too: the writer and the reader come from the same account, so the
+ * row's reason has already said that no Cloudflare client was available.
+ */
+export async function recordDeployStamp(
+  write: WriteWorkerVar | undefined,
+  scriptName: string,
+  stamp: string,
+): Promise<string | undefined> {
+  if (!write) return undefined;
+  try {
+    await write(scriptName, DEPLOY_STAMP_VAR, stamp);
+    return undefined;
+  } catch (error) {
+    const detail = error instanceof PithyError ? error.payload.message : messageOf(error);
+    return `Its deploy stamp could not be recorded, so the next deploy uploads it again. ${detail}`;
+  }
 }

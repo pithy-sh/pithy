@@ -9,10 +9,11 @@ import { deployFailureExit, type WorkerDeploy } from "./deploy";
 import { type KitDeployReport, kitDeployFailed } from "./deployKit";
 
 /**
- * **`pithy deploy --dry-run`'s plan (#697).**
+ * **`pithy deploy --dry-run`'s plan.**
  *
  * Deploy uploads Workers and does nothing else, so a plan's `resources` are its uploads: each app Worker whose
- * bundle `wrangler deploy --dry-run` accepted, and each kit Worker whose stamp says the run would ship it.
+ * bundle `wrangler deploy --dry-run` accepted and whose stamp says the run would ship it, and each kit Worker
+ * whose stamp says the same.
  * `files`, `migrations`, `secrets` and `data` stay empty, because a deploy writes none of them.
  *
  * **What a deploy does not do goes in `notes`.** The migrations it would leave unapplied are named there,
@@ -73,7 +74,9 @@ export function deployPlan(input: DeployPlanInput): Plan {
   const plan = emptyPlan();
   const env = input.env === undefined ? {} : { env: input.env };
   for (const deploy of input.deploys) {
-    if (deploy.ok) plan.resources.push({ kind: "worker", name: deploy.name, ...env, action: "upload" });
+    if (!deploy.ok || deploy.outcome === "unchanged") continue;
+    const upload: PlanResource = { kind: "worker", name: deploy.name, ...env, action: "upload" };
+    plan.resources.push(deploy.reason === undefined ? upload : { ...upload, reason: deploy.reason });
   }
   for (const planned of input.kit?.planned ?? []) {
     const upload: PlanResource = { kind: "worker", name: planned.worker, ...env, action: "upload" };

@@ -247,6 +247,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
         dir,
         env,
         readVars: (script) => this.#cf.workers().getWorkerVars(script),
+        writeVar: (script, name, value) => this.#cf.workers().setWorkerVar(script, name, value),
         account: { accountId: this.#account.accountId, apiToken: this.#apiToken },
       });
       // A skipped deploy shipped nothing, so it records nothing. An audit row saying a Worker was

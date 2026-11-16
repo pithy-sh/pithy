@@ -743,14 +743,6 @@ export const COMMANDS = {
     "groups": [
       {
         "kind": "requires",
-        "flag": "--force",
-        "needs": [
-          "--env"
-        ],
-        "any": false
-      },
-      {
-        "kind": "requires",
         "flag": "--events",
         "needs": [
           "--json"

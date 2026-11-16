@@ -20,7 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { z } from "zod";
 import { readHostTemplate } from "../capabilities/hostRegistry";
 import { featureOwnedIds } from "../feature/hosts";
-import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
+import { DEPLOY_STAMP_VAR, UNFINISHED_STAMP } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
@@ -52,6 +52,8 @@ import type { WorkerTarget } from "./workers";
 let projectDir: string;
 /** Every config handed to `wrangler deploy --config` this run, parsed. */
 let deployed: WorkflowHostTemplate[];
+/** The stamp each finished deploy recorded, in order. */
+let recorded: string[];
 
 /** A minimal committed template — the real one's shape, without its comment essay. */
 const template: WorkflowHostTemplate = {
@@ -152,6 +154,7 @@ beforeEach(async () => {
   for (const name of ["email", "media", "secrets"])
     await symlink(join(kitCopies, "node_modules", "@pithy-sh", name), join(scope, name));
   deployed = [];
+  recorded = [];
   // **The account's Secrets Store id, which every host that binds the store now requires.** Unset by
   // `vitest.shared`'s `NO_ACCOUNT` for every unit test, so a case that wants a deploy has to say so —
   // which is the same thing a CI runner has to do, and the whole point of the skip below.
@@ -203,6 +206,9 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
     capabilitiesFor: options.capabilitiesFor ?? (async () => options.composes ?? [EMAIL]),
     readTemplate: options.readTemplate ?? (async () => structuredClone(template)),
     readVars: async () => options.vars ?? null,
+    writeVar: async (_script, name, value) => {
+      if (name === DEPLOY_STAMP_VAR) recorded.push(value);
+    },
     runDeploy: async (args) => {
       const { readFile } = await import("node:fs/promises");
       const { configFromArgs } = await import("./effectiveConfig");
@@ -261,9 +267,10 @@ describe("deployKitWorkers", () => {
     // created to learn them, which is the whole difference between deploying and provisioning.
     expect(config?.d1_databases?.find((entry) => entry.binding === "DB")?.database_id).toBe("db-1");
     expect(config?.vars?.BASE_URL).toBe("https://acme.example");
-    expect(config?.vars?.[DEPLOY_STAMP_VAR]).toBe(
-      `${PACKAGE_VERSION}/${config?.vars?.[DEPLOY_STAMP_VAR]?.split("/")[1]}`,
-    );
+    // The upload carries the marker; the version and config hash are recorded once the deploy has finished.
+    expect(config?.vars?.[DEPLOY_STAMP_VAR]).toBe(UNFINISHED_STAMP);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.split("/")).toEqual([PACKAGE_VERSION, expect.stringMatching(/^[0-9a-f]{16}$/)]);
     // **The adopter's configuration, off the composed capability.** The Secrets Store entry proves the
     // id reached the resolver rather than `""`; the theme proves the config did.
     expect(config?.secrets_store_secrets?.[0]?.store_id).toBe("store-1a2b3c");
@@ -305,7 +312,7 @@ describe("deployKitWorkers", () => {
   test("skips a Worker whose stamp matches, and says which version is live", async () => {
     const first = await run();
     expect(first[0]?.outcome).toBe("deployed");
-    const stamp = deployed[0]?.vars?.[DEPLOY_STAMP_VAR] as string;
+    const stamp = recorded[0] as string;
     deployed = [];
     const second = await run({ vars: { [DEPLOY_STAMP_VAR]: stamp } });
     expect(second[0]).toEqual({
@@ -319,7 +326,7 @@ describe("deployKitWorkers", () => {
 
   test("a changed base URL redeploys the Worker the stamp said was current", async () => {
     await run();
-    const stamp = deployed[0]?.vars?.[DEPLOY_STAMP_VAR] as string;
+    const stamp = recorded[0] as string;
     deployed = [];
     const rows = await run({ baseUrl: "https://acme.dev", vars: { [DEPLOY_STAMP_VAR]: stamp } });
     expect(rows[0]?.outcome).toBe("deployed");
@@ -329,7 +336,7 @@ describe("deployKitWorkers", () => {
 
   test("--force deploys a Worker whose stamp matches", async () => {
     await run();
-    const stamp = deployed[0]?.vars?.[DEPLOY_STAMP_VAR] as string;
+    const stamp = recorded[0] as string;
     deployed = [];
     const rows = await run({ force: true, vars: { [DEPLOY_STAMP_VAR]: stamp } });
     expect(rows[0]).toMatchObject({ outcome: "deployed", reason: "--force was given." });
@@ -736,7 +743,7 @@ describe("deployKitWorkers under --dry-run", () => {
 
   test("a current Worker is the row the run would print, and nothing is planned for it", async () => {
     await run();
-    const stamp = deployed[0]?.vars?.[DEPLOY_STAMP_VAR] as string;
+    const stamp = recorded[0] as string;
     deployed = [];
     const report = await runReport({ vars: { [DEPLOY_STAMP_VAR]: stamp }, dryRun: true });
     expect(report.workers.map((row) => row.outcome)).toEqual(["unchanged"]);

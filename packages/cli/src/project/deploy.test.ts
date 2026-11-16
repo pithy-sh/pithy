@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -27,6 +27,18 @@ import {
 import { NO_PROVISION_ARG } from "./effectiveConfig";
 import { runWrangler, WranglerCredentialsError } from "./wrangler";
 
+/** The marker an upload carries, after the deploy's own switches, until the deploy has finished. */
+const STAMPED = ["--var", "PITHY_DEPLOY_STAMP:unfinished"];
+
+/** Whether an argv is the bundle pass, `wrangler deploy --dry-run --outdir`, rather than the upload. */
+const bundling = (args: readonly string[]): boolean => args.includes("--outdir");
+
+/** The outcome every row reaches when no stamp reader was given. */
+const UNREAD = {
+  outcome: "deployed",
+  reason: "Its deploy stamp could not be read. No Cloudflare client was available to read it.",
+} as const;
+
 /** Representative `wrangler deploy` output — the lines deploy scrapes for the version id and url. */
 function wranglerOutput(name: string, version: string): string {
   return [
@@ -42,24 +54,19 @@ function wranglerOutput(name: string, version: string): string {
  *
  * It is gated on `metricsConfig.permission.enabled && permission.bannerLastShown !== wranglerVersion`
  * (wrangler 4.125.0, `cli.js:179249-179258`), so it appears once per wrangler version per machine and
- * only where telemetry is on — which is why #683 read as "on occasion" rather than every deploy.
+ * only where telemetry is on, so a scrape that took it for an address would fail only on occasion.
  */
 const TELEMETRY_NOTICE =
   "\nCloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md";
 
 /**
- * The staging deploy that produced #683: one custom domain, `workers_dev: false`, and the telemetry
- * notice as the only `https://` anywhere in the capture.
+ * A staging deploy with one custom domain, `workers_dev: false`, and the telemetry notice as the only
+ * `https://` anywhere in the capture.
  *
- * **A reconstruction, and the issue's own second criterion cannot be met.** `pithy deploy` captures
- * wrangler's stdout rather than streaming it, so the CI log of `pithy-sh/dashboard` run 37073087026
- * holds only pithy's own `--json` row; wrangler's raw output was never written anywhere and cannot be
- * recovered. Every line here is instead quoted from the printers in wrangler 4.125.0 — the version
- * this repo resolves — `Total Upload:` (`cli.js:143316`), `Worker Startup Time:` (`cli.js:150645`),
- * the triggers block and its two-space-indented target (`cli.js:142868-142871`), `renderRoute`'s
- * custom-domain suffix (`cli.js:141870-141871`) and `Current Version ID:` (`cli.js:143479`). The
- * worker name, version id, domain and zone come from that run's JSON row and the dashboard's own
- * `wrangler.jsonc`. The version is named so the next wrangler rewording is traceable.
+ * Every line is quoted from the printers in wrangler 4.125.0 — `Total Upload:` (`cli.js:143316`),
+ * `Worker Startup Time:` (`cli.js:150645`), the triggers block and its two-space-indented target
+ * (`cli.js:142868-142871`), `renderRoute`'s custom-domain suffix (`cli.js:141870-141871`) and
+ * `Current Version ID:` (`cli.js:143479`). The version is named so the next wrangler rewording is traceable.
  */
 function wranglerOutputWithTelemetryNotice(): string {
   return [
@@ -73,8 +80,8 @@ function wranglerOutputWithTelemetryNotice(): string {
 }
 
 /**
- * A stand-in for `vite build` through `@cloudflare/vite-plugin`, faithful to the three behaviors #579
- * turns on — measured against the plugin at 1.54.7 and wrangler at 4.125.0, not assumed:
+ * A stand-in for `vite build` through `@cloudflare/vite-plugin`, faithful to the three behaviors the
+ * environment gate turns on — measured against the plugin at 1.54.7 and wrangler at 4.125.0, not assumed:
  *
  * 1. the wrangler environment is selected from **`CLOUDFLARE_ENV`**, never from `ENVIRONMENT`;
  * 2. the config it reads is `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` when that is set, else the Worker's own;
@@ -82,7 +89,7 @@ function wranglerOutputWithTelemetryNotice(): string {
  *    at it, which is what a following `wrangler deploy` reads instead of the source.
  *
  * The kit has no `@cloudflare/vite-plugin` dependency, so this is how the end-to-end shape is exercised
- * without one. Its value is that it fails the way the real thing failed: unset `CLOUDFLARE_ENV` and it
+ * without one. Its value is that it fails the way the real plugin does: unset `CLOUDFLARE_ENV` and it
  * emits the dev stanza.
  */
 const VITE_BUILD_STANDIN = `import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -178,22 +185,34 @@ describe("deployProject", () => {
       projectDir: dir,
       env: "prod",
       runDeploy: async (target, args) => {
-        calls.push({ name: target.name, args });
+        if (!bundling(args)) calls.push({ name: target.name, args });
         return wranglerOutput(target.name, `ver-${target.name}`);
       },
     });
 
     expect(calls).toEqual([
-      { name: "pithy-api", args: ["deploy", "--env", "prod", "--experimental-provision=false"] },
-      { name: "pithy-web", args: ["deploy", "--env", "prod", "--experimental-provision=false"] },
+      { name: "pithy-api", args: ["deploy", "--env", "prod", "--experimental-provision=false", ...STAMPED] },
+      { name: "pithy-web", args: ["deploy", "--env", "prod", "--experimental-provision=false", ...STAMPED] },
     ]);
     expect(results).toEqual([
-      { name: "pithy-api", ok: true, versionId: "ver-pithy-api", url: "https://pithy-api.acme.workers.dev" },
-      { name: "pithy-web", ok: true, versionId: "ver-pithy-web", url: "https://pithy-web.acme.workers.dev" },
+      {
+        name: "pithy-api",
+        ok: true,
+        ...UNREAD,
+        versionId: "ver-pithy-api",
+        url: "https://pithy-api.acme.workers.dev",
+      },
+      {
+        name: "pithy-web",
+        ok: true,
+        ...UNREAD,
+        versionId: "ver-pithy-web",
+        url: "https://pithy-web.acme.workers.dev",
+      },
     ]);
   });
 
-  test("carries the privacy attestation into every Worker as one --var, after the deploy's own switches (#132)", async () => {
+  test("carries the privacy attestation into every Worker as one --var, after the deploy's own switches", async () => {
     await writeWorker("api", "pithy-api");
     const calls: string[][] = [];
     const privacy = {
@@ -208,7 +227,7 @@ describe("deployProject", () => {
       env: "prod",
       privacy,
       runDeploy: async (target, args) => {
-        calls.push(args);
+        if (!bundling(args)) calls.push(args);
         return wranglerOutput(target.name, "ver-1");
       },
     });
@@ -220,12 +239,13 @@ describe("deployProject", () => {
         "--experimental-provision=false",
         "--var",
         `PITHY_PRIVACY:${JSON.stringify(privacy)}`,
+        ...STAMPED,
       ],
     ]);
   });
 
   /**
-   * **A binding's target ships before the Worker that binds it (#617).** Cloudflare refuses an upload whose
+   * **A binding's target ships before the Worker that binds it.** Cloudflare refuses an upload whose
    * service binding names a script that does not exist yet, so on a first deploy the order is the difference
    * between a project that ships and one that fails on its first Worker.
    */
@@ -241,8 +261,8 @@ describe("deployProject", () => {
       account: null,
       projectDir: dir,
       env: "prod",
-      runDeploy: async (target) => {
-        order.push(target.name);
+      runDeploy: async (target, args) => {
+        if (!bundling(args)) order.push(target.name);
         return wranglerOutput(target.name, "v1");
       },
     });
@@ -261,8 +281,8 @@ describe("deployProject", () => {
       account: null,
       projectDir: dir,
       env: "prod",
-      runDeploy: async (target) => {
-        order.push(target.name);
+      runDeploy: async (target, args) => {
+        if (!bundling(args)) order.push(target.name);
         return wranglerOutput(target.name, "v1");
       },
     });
@@ -270,13 +290,10 @@ describe("deployProject", () => {
   });
 
   /**
-   * **`pithy deploy` printed nothing at all until it had finished. For minutes (#578).**
-   *
-   * The wrangler spawn under each of these is captured on purpose — its output is summarized, not
-   * streamed, which is the brand voice — and capturing it removed the only evidence the command was
-   * alive. So the loop says what it is on before it starts, and says how it went as it settles: the
-   * pair is what an interrupted run is read back from, and the settled line **moves** here out of the
-   * command's end-of-run block rather than being printed twice.
+   * **Each Worker is narrated as it runs.** The wrangler spawn under each is captured on purpose — its output
+   * is summarized, not streamed — so the loop says what it is on before it starts, and how it went as it
+   * settles: the pair is what an interrupted run is read back from, and the settled line is printed here
+   * rather than a second time at the end of the run.
    */
   test("says which worker it is on before it starts, and how it went as it settles", async () => {
     await writeWorker("api", "pithy-api");
@@ -295,9 +312,9 @@ describe("deployProject", () => {
       },
     );
 
-    // Each settle carries the row its line was written from, for an `--events` reader (#697).
+    // Each settle carries the row its line was written from, for an `--events` reader.
     const row = (name: string) => ({
-      worker: { name, ok: true, url: `https://${name}.acme.workers.dev`, versionId: `ver-${name}` },
+      worker: { name, ok: true, ...UNREAD, url: `https://${name}.acme.workers.dev`, versionId: `ver-${name}` },
     });
     expect(events).toEqual([
       { phase: "start", what: "pithy-api" },
@@ -363,12 +380,12 @@ describe("deployProject", () => {
       account: null,
       projectDir: dir,
       runDeploy: async (_target, args) => {
-        calls.push(args);
+        if (!bundling(args)) calls.push(args);
         return wranglerOutput("pithy-app", "v1");
       },
     });
 
-    expect(calls).toEqual([["deploy", "--experimental-provision=false"]]);
+    expect(calls).toEqual([["deploy", "--experimental-provision=false", ...STAMPED]]);
   });
 
   test("records a failed worker, keeps deploying the rest, and reports the failure", async () => {
@@ -392,7 +409,7 @@ describe("deployProject", () => {
   });
 
   /**
-   * **Credentials Cloudflare refused stop the run, exit 3, while nothing has shipped (#697).** They are the
+   * **Credentials Cloudflare refused stop the run, exit 3, while nothing has shipped.** They are the
    * same for every Worker, so the first refusal is every Worker's: a row per Worker would report one
    * precondition as N failures and exit 1. Once a Worker has shipped, the credentials were good for it, so a
    * later refusal is that Worker's row — and the report of what is already live is not thrown away.
@@ -439,7 +456,7 @@ describe("deployProject", () => {
   });
 
   /**
-   * **A refusal after an earlier Worker's own failure keeps that failure's row (#697 review).** Thrown, the run
+   * **A refusal after an earlier Worker's own failure keeps that failure's row.** Thrown, the run
    * would exit 3 with nothing on stdout, and `--json` would never report that `pithy-api`'s build had failed. The
    * run stops only when no Worker has a row yet; after that, the refusal is its Worker's row, carrying the exit its
    * class names, and the report exits with that class.
@@ -491,7 +508,7 @@ describe("deployProject", () => {
   });
 
   /**
-   * **A row's `error` is wrangler's words without wrangler's color (#697)** — stripped where the output is
+   * **A row's `error` is wrangler's words without wrangler's color** — stripped where the output is
    * captured, since the `--json` encoder writes every value as it is. The real `runWrangler`, against a stand-in
    * that fails in red.
    */
@@ -522,7 +539,7 @@ describe("deployProject", () => {
       runDeploy: async () => "Deployed. No parseable details here.",
     });
 
-    expect(results).toEqual([{ name: "pithy-app", ok: true }]);
+    expect(results).toEqual([{ name: "pithy-app", ok: true, ...UNREAD }]);
   });
 
   test("fails when the project has no deployable workers", async () => {
@@ -548,13 +565,13 @@ describe("deployProject", () => {
         order.push(`build:${target.name}`);
         builds.push({ command, args, cwd: target.dir });
       },
-      runDeploy: async (target) => {
-        order.push(`deploy:${target.name}`);
+      runDeploy: async (target, args) => {
+        order.push(`${bundling(args) ? "bundle" : "deploy"}:${target.name}`);
         return wranglerOutput(target.name, "v1");
       },
     });
 
-    expect(order).toEqual(["build:pithy-web", "deploy:pithy-web"]);
+    expect(order).toEqual(["build:pithy-web", "bundle:pithy-web", "deploy:pithy-web"]);
     // No lockfile in the temp project, so the adopter's manager resolves to npm — never a hardcoded npx call.
     expect(builds).toEqual([{ command: "npx", args: ["vite", "build"], cwd: join(dir, "apps", "web") }]);
     expect(results[0]).toMatchObject({ name: "pithy-web", ok: true, built: true, versionId: "v1" });
@@ -623,7 +640,7 @@ describe("deployProject", () => {
     expect(builds).toBe(0);
     // The field is absent, not false: there was nothing to build.
     expect(results).toEqual([
-      { name: "pithy-api", ok: true, versionId: "v1", url: "https://pithy-api.acme.workers.dev" },
+      { name: "pithy-api", ok: true, ...UNREAD, versionId: "v1", url: "https://pithy-api.acme.workers.dev" },
     ]);
   });
 
@@ -640,8 +657,8 @@ describe("deployProject", () => {
       runBuild: async () => {
         throw new InternalError({ message: "npx vite build failed.", detail: "exit 1\nCould not resolve ./client" });
       },
-      runDeploy: async (target) => {
-        deployed.push(target.name);
+      runDeploy: async (target, args) => {
+        if (!bundling(args)) deployed.push(target.name);
         return wranglerOutput(target.name, "v3");
       },
     });
@@ -664,13 +681,13 @@ describe("deployProject", () => {
       env: "staging",
       runBuild: async () => {},
       runDeploy: async (_target, args) => {
-        calls.push(args);
+        if (!bundling(args)) calls.push(args);
         return wranglerOutput("pithy-web", "v1");
       },
     });
 
     // vite build writes .wrangler/deploy/config.json, which redirects the plain deploy — no -c, no new flag.
-    expect(calls).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
+    expect(calls).toEqual([["deploy", "--env", "staging", "--experimental-provision=false", ...STAMPED]]);
   });
 
   test("audits a failed build as a failed deploy of that worker, tagged with the stage", async () => {
@@ -738,7 +755,7 @@ describe("deployProject", () => {
   });
 
   /**
-   * **`pithy deploy --dry-run` (#697): the build, then `wrangler deploy --dry-run`, and no upload.** wrangler
+   * **`pithy deploy --dry-run`: the build, then `wrangler deploy --dry-run --outdir`, and no upload.** wrangler
    * bundles and validates and stops, so a bundle that does not build fails here, on the Worker's row, rather
    * than at the real deploy. Nothing that only follows an upload happens: no probe of a version that was never
    * shipped, and no audit of a deploy that never ran.
@@ -764,8 +781,10 @@ describe("deployProject", () => {
         audit: async (event) => void audited.push(event),
       });
 
-      expect(calls).toEqual([["deploy", "--env", "prod", "--experimental-provision=false", "--dry-run"]]);
-      expect(results).toEqual([{ name: "pithy-api", ok: true }]);
+      expect(calls).toEqual([
+        ["deploy", "--env", "prod", "--experimental-provision=false", "--dry-run", "--outdir", expect.any(String)],
+      ]);
+      expect(results).toEqual([{ name: "pithy-api", ok: true, ...UNREAD }]);
       expect(audited).toEqual([]);
     });
 
@@ -781,13 +800,13 @@ describe("deployProject", () => {
         dryRun: true,
         runBuild: async (target) => void order.push(`build:${target.name}`),
         runDeploy: async (target, args) => {
-          order.push(`${args.at(-1)}:${target.name}`);
+          order.push(`${args.includes("--dry-run") ? "--dry-run" : "deploy"}:${target.name}`);
           return "";
         },
       });
 
       expect(order).toEqual(["build:pithy-web", "--dry-run:pithy-web"]);
-      expect(results).toEqual([{ name: "pithy-web", ok: true, built: true }]);
+      expect(results).toEqual([{ name: "pithy-web", ok: true, built: true, ...UNREAD }]);
     });
 
     test("a bundle that does not build fails its row with wrangler's error, and the next Worker is still checked", async () => {
@@ -815,7 +834,7 @@ describe("deployProject", () => {
       expect(checked).toEqual(["pithy-api", "pithy-web"]);
       expect(results).toEqual([
         { name: "pithy-api", ok: false, error: 'X [ERROR] Could not resolve "./missing"' },
-        { name: "pithy-web", ok: true },
+        { name: "pithy-web", ok: true, ...UNREAD },
       ]);
     });
 
@@ -844,7 +863,7 @@ describe("deployProject", () => {
     });
 
     /**
-     * **`--dry-run` writes nothing in the project, the build's output included (#697).** A front end's build writes
+     * **`--dry-run` writes nothing in the project, the build's output included.** A front end's build writes
      * `dist/`, runs whatever hooks its package declares, and leaves a `.wrangler/deploy/config.json` redirect;
      * wrangler bundles under `.wrangler/tmp`. In the project, every one of those is a write a plan said it would not
      * make. So the Workers are built and bundled in a private copy, and the project is byte-identical afterwards —
@@ -881,7 +900,7 @@ describe("deployProject", () => {
         },
       });
 
-      expect(results).toEqual([{ name: "pithy-web", ok: true, built: true }]);
+      expect(results).toEqual([{ name: "pithy-web", ok: true, built: true, ...UNREAD }]);
       expect(at).toHaveLength(2);
       for (const path of at) expect(path.startsWith(dir)).toBe(false);
       expect(await snapshotTree(dir)).toEqual(before);
@@ -918,19 +937,23 @@ describe("deployProject", () => {
 
       expect(events).toEqual([
         { phase: "start", what: "pithy-api" },
-        { phase: "settled", line: "pithy-api: would deploy.", data: { worker: { name: "pithy-api", ok: true } } },
+        {
+          phase: "settled",
+          line: `pithy-api: would deploy. ${UNREAD.reason}`,
+          data: { worker: { name: "pithy-api", ok: true, ...UNREAD } },
+        },
       ]);
     });
   });
 });
 
 /**
- * **A deploy cannot publish a configuration that is not the requested environment's (#579).**
+ * **A deploy cannot publish a configuration that is not the requested environment's.**
  *
- * `pithy deploy --env staging` shipped a Worker composed as `dev`, publicly, and said `deployed.`. The
- * build was handed `ENVIRONMENT`, which `@cloudflare/vite-plugin` does not read to select a wrangler
- * environment, so it emitted the top-level stanza; the `.wrangler/deploy/config.json` it writes then
- * redirected `wrangler deploy` to that flattened output, where `--env staging` matched nothing.
+ * A build handed only `ENVIRONMENT`, which `@cloudflare/vite-plugin` does not read to select a wrangler
+ * environment, emits the top-level stanza; the `.wrangler/deploy/config.json` it writes then redirects
+ * `wrangler deploy` to that flattened output, where `--env staging` matches nothing, and a Worker composed
+ * as `dev` would ship publicly as staging.
  *
  * These drive the real mechanism rather than a stub of it. {@link VITE_BUILD_STANDIN} is a build that
  * behaves the way the plugin measurably does — it selects the stanza from `CLOUDFLARE_ENV`, reads the
@@ -992,13 +1015,13 @@ describe("deployProject refuses a configuration that is not the requested enviro
       env: "staging",
       runBuild: runStandin(),
       runDeploy: async (_target, args) => {
-        argv.push(args);
+        if (!bundling(args)) argv.push(args);
         return wranglerOutput("acme-web-staging", "v1");
       },
     });
 
     expect(results[0]).toMatchObject({ name: "acme-web", ok: true, built: true });
-    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
+    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false", ...STAMPED]]);
     // The acceptance criterion, read off disk: the built config is staging's, not the top level's.
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as {
       name: string;
@@ -1060,13 +1083,13 @@ describe("deployProject refuses a configuration that is not the requested enviro
       projectDir: dir,
       runBuild: runStandin(),
       runDeploy: async (_target, args) => {
-        argv.push(args);
+        if (!bundling(args)) argv.push(args);
         return wranglerOutput("acme-web", "v1");
       },
     });
 
     expect(results[0]).toMatchObject({ ok: true });
-    expect(argv).toEqual([["deploy", "--experimental-provision=false"]]);
+    expect(argv).toEqual([["deploy", "--experimental-provision=false", ...STAMPED]]);
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as { name: string };
     expect(built.name).toBe("acme-web");
   });
@@ -1117,19 +1140,19 @@ describe("deployProject refuses a configuration that is not the requested enviro
       projectDir: dir,
       env: "staging",
       runDeploy: async (_target, args) => {
-        argv.push(args);
+        if (!bundling(args)) argv.push(args);
         return wranglerOutput("acme-api-staging", "v1");
       },
     });
 
     expect(results[0]).toMatchObject({ ok: true });
-    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
+    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false", ...STAMPED]]);
   });
 
   test("a feature environment builds against its generated config and stops passing --config", async () => {
-    // The other half of #579, failing in the opposite direction: `--config` beats the redirect, and the
-    // source config has no `assets.directory`, so a UI Worker's feature deploy failed on it every time.
-    // The generated config reaches the build instead, which is where the asset wiring is written.
+    // `--config` beats the redirect, and the source config has no `assets.directory`, so a UI Worker's
+    // feature deploy must not pass it. The generated config reaches the build instead, which is where the
+    // asset wiring is written.
     const at = await writeUiWorker("acme-web", "staging");
     await mkdir(join(at, ".wrangler", "pithy"), { recursive: true });
     await writeFile(
@@ -1148,13 +1171,13 @@ describe("deployProject refuses a configuration that is not the requested enviro
       env: "feature",
       runBuild: runStandin(),
       runDeploy: async (_target, args) => {
-        argv.push(args);
+        if (!bundling(args)) argv.push(args);
         return wranglerOutput("acme-web-pr-7", "v1");
       },
     });
 
     expect(results[0]).toMatchObject({ ok: true, built: true });
-    expect(argv).toEqual([["deploy", "--env", "feature", "--experimental-provision=false"]]);
+    expect(argv).toEqual([["deploy", "--env", "feature", "--experimental-provision=false", ...STAMPED]]);
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as { name: string };
     expect(built.name).toBe("acme-web-pr-7");
   });
@@ -1174,7 +1197,7 @@ describe("deployProject refuses a configuration that is not the requested enviro
       projectDir: dir,
       env: "feature",
       runDeploy: async (_target, args) => {
-        argv.push(args);
+        if (!bundling(args)) argv.push(args);
         return wranglerOutput("acme-api-pr-7", "v1");
       },
     });
@@ -1188,15 +1211,16 @@ describe("deployProject refuses a configuration that is not the requested enviro
         "--experimental-provision=false",
         "--config",
         join(at, ".wrangler", "pithy", "wrangler.feature.jsonc"),
+        ...STAMPED,
       ],
     ]);
   });
 });
 
 /**
- * **`pithy deploy --env feature` verifies what it just deployed (#643).** A feature's stanza lives in the
- * generated config, never in the tracked `wrangler.jsonc`, so a verification that read the tracked file found
- * no stanza, no address, and never probed. It reads the generated config the way `readAddressStanza` does.
+ * **`pithy deploy --env feature` verifies what it just deployed.** A feature's stanza lives in the generated
+ * config, never in the tracked `wrangler.jsonc`, so verification reads the generated config the way
+ * `readAddressStanza` does; reading the tracked file would find no stanza, no address, and never probe.
  */
 describe("a feature deploy's verification", () => {
   let dir: string;
@@ -1264,6 +1288,348 @@ describe("a feature deploy's verification", () => {
   });
 });
 
+/**
+ * **An app Worker is uploaded only when its bundle or configuration moved.** Its stamp is a hash of what
+ * `wrangler deploy --dry-run --outdir` wrote and the configuration wrangler reads. The upload carries
+ * `unfinished`, and the stamp is recorded over it once the deploy and its verification have passed.
+ */
+describe("an app Worker's deploy stamp", () => {
+  let dir: string;
+  statesItsOwnEnvironment();
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-deploy-stamp-"));
+    const at = join(dir, "apps", "api");
+    await mkdir(at, { recursive: true });
+    await writeFile(
+      join(at, "wrangler.jsonc"),
+      JSON.stringify({ name: "acme-api", env: { prod: { name: "acme-prod-api" } } }),
+    );
+    await mkdir(join(dir, "node_modules", "dep"), { recursive: true });
+    calls = [];
+    written = [];
+    source = "var x = 1;";
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Every argv wrangler was handed, in order. */
+  let calls: string[][];
+  /** Every var recorded on a deployed Worker after its deploy: script, name, value. */
+  let written: string[][];
+  /** The code the bundle pass writes under a dependency's path comment, as esbuild writes it from where wrangler ran. */
+  let source: string;
+
+  const runDeploy = async (target: { dir: string }, args: string[]): Promise<string> => {
+    calls.push(args);
+    const outdir = args[args.indexOf("--outdir") + 1];
+    if (bundling(args) && outdir) {
+      const dep = relative(target.dir, join(await realpath(dir), "node_modules", "dep", "index.js"));
+      await writeFile(join(outdir, "index.js"), `// ${dep}\n${source}\n`);
+      await writeFile(join(outdir, "README.md"), `written at ${Math.random()}`);
+    }
+    return wranglerOutput("acme-prod-api", "v1");
+  };
+
+  /** The value the one upload carried in the stamp var. */
+  const uploadedStamp = (): string | undefined =>
+    calls
+      .filter((args) => !bundling(args))
+      .flat()
+      .find((arg) => arg.startsWith("PITHY_DEPLOY_STAMP:"))
+      ?.slice("PITHY_DEPLOY_STAMP:".length);
+
+  /** The stamp recorded after the deploy finished, or `undefined` when none was. */
+  const recordedStamp = (): string | undefined => written.find(([, name]) => name === "PITHY_DEPLOY_STAMP")?.[2];
+
+  const deploy = (options: Partial<Parameters<typeof deployProject>[0]> = {}) =>
+    deployProject({
+      account: null,
+      projectDir: dir,
+      env: "prod",
+      runDeploy,
+      writeVar: async (script, name, value) => void written.push([script, name, value]),
+      ...options,
+    });
+
+  /** Deploy once against an unstamped Worker, and return the stamp it recorded. */
+  async function firstDeploy(): Promise<string> {
+    await deploy({ readVars: async () => ({}) });
+    const stamp = recordedStamp();
+    calls = [];
+    written = [];
+    return stamp as string;
+  }
+
+  test("a Worker with no stamp deploys, uploads the unfinished marker, and records its stamp once it finished", async () => {
+    const results = await deploy({ readVars: async () => ({}) });
+    expect(results[0]).toMatchObject({ ok: true, outcome: "deployed", reason: "It carried no deploy stamp." });
+    expect(uploadedStamp()).toBe("unfinished");
+    expect(written).toEqual([["acme-prod-api", "PITHY_DEPLOY_STAMP", expect.stringMatching(/^[0-9a-f]{32}$/)]]);
+  });
+
+  test("a Worker left unfinished by a failed deploy deploys again, and says why", async () => {
+    const results = await deploy({ readVars: async () => ({ PITHY_DEPLOY_STAMP: "unfinished" }) });
+    expect(results[0]).toMatchObject({
+      ok: true,
+      outcome: "deployed",
+      reason: "Its last deploy did not record that it finished.",
+    });
+    expect(calls.filter((args) => !bundling(args))).toHaveLength(1);
+  });
+
+  test("a stamp that cannot be recorded leaves the row deployed, and says the next run uploads again", async () => {
+    const results = await deploy({
+      readVars: async () => ({}),
+      writeVar: async () => {
+        throw new Error("403 Forbidden");
+      },
+    });
+    expect(results[0]).toMatchObject({
+      ok: true,
+      outcome: "deployed",
+      reason:
+        "It carried no deploy stamp. Its deploy stamp could not be recorded, so the next deploy uploads it again. 403 Forbidden",
+    });
+  });
+
+  test("a Worker whose live stamp matches is unchanged, says why, and wrangler uploads nothing", async () => {
+    const stamp = await firstDeploy();
+    const audited: CliAuditEvent[] = [];
+    const asked: string[] = [];
+    const events: ProgressEvent[] = [];
+    const results = await narrate(
+      (event) => events.push(event),
+      () =>
+        deploy({
+          readVars: async (script) => {
+            asked.push(script);
+            return { PITHY_DEPLOY_STAMP: stamp };
+          },
+          audit: async (event) => void audited.push(event),
+          verifyDeploy: async () => {
+            throw new Error("An unchanged Worker was probed.");
+          },
+        }),
+    );
+    expect(results).toEqual([
+      {
+        name: "acme-api",
+        ok: true,
+        outcome: "unchanged",
+        reason: "This bundle and configuration are already deployed.",
+      },
+    ]);
+    expect(asked).toEqual(["acme-prod-api"]);
+    expect(calls.filter((args) => !bundling(args))).toEqual([]);
+    expect(audited).toEqual([]);
+    expect(events.at(-1)).toMatchObject({
+      line: "acme-api: unchanged. This bundle and configuration are already deployed.",
+    });
+  });
+
+  test("a change to the bundle changes the stamp and deploys", async () => {
+    const stamp = await firstDeploy();
+    source = "var x = 2;";
+    const results = await deploy({ readVars: async () => ({ PITHY_DEPLOY_STAMP: stamp }) });
+    expect(results[0]).toMatchObject({ outcome: "deployed", reason: "Its bundle or resolved configuration changed." });
+    expect(recordedStamp()).not.toBe(stamp);
+  });
+
+  test("a change to the configuration changes the stamp and deploys", async () => {
+    const stamp = await firstDeploy();
+    await writeFile(
+      join(dir, "apps", "api", "wrangler.jsonc"),
+      JSON.stringify({ name: "acme-api", env: { prod: { name: "acme-prod-api", vars: { FLAG: "on" } } } }),
+    );
+    const results = await deploy({ readVars: async () => ({ PITHY_DEPLOY_STAMP: stamp }) });
+    expect(results[0]).toMatchObject({ outcome: "deployed", reason: "Its bundle or resolved configuration changed." });
+  });
+
+  test("a run that differs only in when privacy was attested is unchanged", async () => {
+    const attested = (attestedAt: string) => ({
+      classes: [],
+      consoleGate: "not_required" as const,
+      reason: null,
+      attestedAt,
+    });
+    await deploy({ readVars: async () => ({}), privacy: attested("2026-10-20T12:00:00.000Z") });
+    const stamp = recordedStamp() as string;
+    calls = [];
+    const results = await deploy({
+      readVars: async () => ({ PITHY_DEPLOY_STAMP: stamp }),
+      privacy: attested("2026-10-21T08:30:00.000Z"),
+    });
+    expect(results[0]).toMatchObject({ outcome: "unchanged" });
+    expect(calls.filter((args) => !bundling(args))).toEqual([]);
+  });
+
+  test("--force uploads an unchanged Worker, and reads nothing", async () => {
+    const stamp = await firstDeploy();
+    let read = 0;
+    const results = await deploy({
+      force: true,
+      readVars: async () => {
+        read += 1;
+        return { PITHY_DEPLOY_STAMP: stamp };
+      },
+    });
+    expect(results[0]).toMatchObject({ outcome: "deployed", reason: "--force was given." });
+    expect(read).toBe(0);
+    expect(recordedStamp()).toBe(stamp);
+  });
+
+  test("a deploy that fails after its upload records no stamp, so the re-run deploys again", async () => {
+    // wrangler uploads, then fails setting a trigger: the code is live carrying only the marker.
+    const results = await deploy({
+      readVars: async () => null,
+      runDeploy: async (target, args) => {
+        if (!bundling(args)) {
+          calls.push(args);
+          throw new InternalError({ message: "wrangler deploy failed.", detail: "A custom domain is already in use." });
+        }
+        return runDeploy(target, args);
+      },
+    });
+    expect(results[0]).toMatchObject({ ok: false });
+    expect(results[0]).not.toHaveProperty("outcome");
+    expect(uploadedStamp()).toBe("unfinished");
+    expect(written).toEqual([]);
+
+    calls = [];
+    const rerun = await deploy({ readVars: async () => ({ PITHY_DEPLOY_STAMP: "unfinished" }) });
+    expect(rerun[0]).toMatchObject({ ok: true, outcome: "deployed" });
+    expect(calls.filter((args) => !bundling(args))).toHaveLength(1);
+  });
+
+  describe("a deploy whose declared address is checked", () => {
+    beforeEach(async () => {
+      await writeFile(
+        join(dir, "apps", "api", "wrangler.jsonc"),
+        JSON.stringify({
+          name: "acme-api",
+          env: { prod: { name: "acme-prod-api", vars: { BASE_URL: "https://api.acme.example" } } },
+        }),
+      );
+    });
+
+    const probing = (status: "verified" | "mismatch" | "unreachable" | "inconclusive") => async () => ({
+      status,
+      observed: ["v0"],
+      attempts: 3,
+      detail: `https://api.acme.example is ${status}.`,
+    });
+
+    test("records its stamp once the address serves the version just shipped", async () => {
+      const results = await deploy({ readVars: async () => ({}), verifyDeploy: probing("verified") });
+      expect(results[0]).toMatchObject({ ok: true, verification: "verified" });
+      expect(recordedStamp()).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    test("an inconclusive check does not fail the deploy, so it records its stamp", async () => {
+      await deploy({ readVars: async () => ({}), verifyDeploy: probing("inconclusive") });
+      expect(recordedStamp()).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    test.each(["mismatch", "unreachable"] as const)(
+      "a %s records no stamp, so a re-run with nothing fixed uploads and probes again",
+      async (status) => {
+        const failed = await deploy({ readVars: async () => ({}), verifyDeploy: probing(status) });
+        expect(failed[0]).toMatchObject({ ok: true, verification: status });
+        expect(deployVerificationFailed(failed)).toBe(true);
+        expect(written).toEqual([]);
+
+        calls = [];
+        let probed = 0;
+        const rerun = await deploy({
+          readVars: async () => ({ PITHY_DEPLOY_STAMP: "unfinished" }),
+          verifyDeploy: async () => {
+            probed += 1;
+            return probing(status)();
+          },
+        });
+        expect(rerun[0]).toMatchObject({ outcome: "deployed", verification: status });
+        expect(probed).toBe(1);
+        expect(deployVerificationFailed(rerun)).toBe(true);
+      },
+    );
+  });
+
+  test("--dry-run reaches the deploy's verdict, bundled in a copy of the project", async () => {
+    const stamp = await firstDeploy();
+    const planned = await deploy({ dryRun: true, readVars: async () => ({ PITHY_DEPLOY_STAMP: stamp }) });
+    expect(planned).toEqual([
+      {
+        name: "acme-api",
+        ok: true,
+        outcome: "unchanged",
+        reason: "This bundle and configuration are already deployed.",
+      },
+    ]);
+    // The copy is somewhere else, so the dependency's path comment differed; the stamp did not.
+    expect(calls.every(bundling)).toBe(true);
+
+    source = "var x = 3;";
+    const moved = await deploy({ dryRun: true, readVars: async () => ({ PITHY_DEPLOY_STAMP: stamp }) });
+    expect(moved[0]).toMatchObject({ outcome: "deployed", reason: "Its bundle or resolved configuration changed." });
+  });
+
+  describe("a first deploy Cloudflare has not propagated yet", () => {
+    const unseen = () =>
+      new InternalError({
+        message: "wrangler deploy failed.",
+        detail:
+          "exit 1\n✘ [ERROR] A request to the Cloudflare API (/accounts/a/workers/workers/acme-prod-api) failed.\n  This Worker does not exist on your account. [code: 10007]",
+      });
+
+    test("is uploaded once more after a wait, and reported deployed", async () => {
+      let uploads = 0;
+      const waits: number[] = [];
+      const results = await deploy({
+        retryWait: async (ms) => void waits.push(ms),
+        runDeploy: async (target, args) => {
+          if (!bundling(args) && ++uploads === 1) throw unseen();
+          return runDeploy(target, args);
+        },
+      });
+      expect(uploads).toBe(2);
+      expect(waits).toHaveLength(1);
+      expect(results[0]).toMatchObject({ ok: true, outcome: "deployed", versionId: "v1" });
+      expect(recordedStamp()).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    test("a second 10007 fails the row, with no third attempt", async () => {
+      let uploads = 0;
+      const results = await deploy({
+        retryWait: async () => {},
+        runDeploy: async (target, args) => {
+          if (bundling(args)) return runDeploy(target, args);
+          uploads += 1;
+          throw unseen();
+        },
+      });
+      expect(uploads).toBe(2);
+      expect(results[0]).toMatchObject({ ok: false });
+      expect(results[0]?.error).toContain("[code: 10007]");
+      expect(written).toEqual([]);
+    });
+
+    test("any other failure is not retried", async () => {
+      let uploads = 0;
+      const results = await deploy({
+        retryWait: async () => {},
+        runDeploy: async (target, args) => {
+          if (bundling(args)) return runDeploy(target, args);
+          uploads += 1;
+          throw new InternalError({ message: "wrangler deploy failed.", detail: "exit 1\n[code: 10021]" });
+        },
+      });
+      expect(uploads).toBe(1);
+      expect(results[0]).toMatchObject({ ok: false });
+    });
+  });
+});
+
 describe("uiBuildEnvironment", () => {
   test("names the wrangler stanza as well as the runtime environment — two variables, two jobs", () => {
     expect(uiBuildEnvironment("staging", "/p/apps/web")).toEqual({ ENVIRONMENT: "staging", CLOUDFLARE_ENV: "staging" });
@@ -1319,7 +1685,7 @@ describe("summarizeDeploy", () => {
 
   /**
    * The color and the exit code read the same rule, so the line an adopter sees cannot say "routine" over
-   * a verification that fails the command (#264).
+   * a verification that fails the command.
    */
   test("a verification that fails the command is reported as a failure line", () => {
     const unreachable = summarizeDeploy({
@@ -1335,9 +1701,9 @@ describe("summarizeDeploy", () => {
   });
 
   /**
-   * #579: `dash-board: deployed.` with the probe's finding indented underneath it is how a Worker
-   * composed as `dev` was reported live on a public URL. The upload happened and the line still says so;
-   * what it must not say is that the deploy was fine.
+   * `deployed.` with the probe's finding indented underneath would report a Worker composed as `dev` as live
+   * on a public URL. The upload happened and the line still says so; what it must not say is that the deploy
+   * was fine.
    */
   test("a probe that could not reach the declared origin is not a success line", () => {
     const line = summarizeDeploy({
@@ -1396,18 +1762,16 @@ describe("pendingWarning", () => {
 });
 
 /**
- * The scrape of wrangler's own output — `#612`, then `#683`.
+ * The scrape of wrangler's own output.
  *
- * #612: a deploy reported `https://staging.app.pithy.sh")` as the address a Worker had been deployed
- * to, because `\S+` runs to the next space and wrangler had wrapped the address in a quote and a
- * bracket. An address that reaches nothing when copied is worse than no address at all: the line is
- * read as a fact and the punctuation is invisible at a glance.
+ * `\S+` runs to the next space, and wrangler wraps an address in a quote or a bracket, so a scrape that kept
+ * them would report `https://staging.app.pithy.sh")` as an address: one that reaches nothing when copied, read
+ * as a fact with the punctuation invisible at a glance.
  *
- * #683: the same deploy later reported wrangler's telemetry documentation as the address, because the
- * scrape took the last URL anywhere in stdout and `wrangler deploy` prints a telemetry notice after
- * the deploy summary. The address now comes from wrangler's own `Deployed <name> triggers` block and
- * only from a target that is an address, so every case below is written the way wrangler prints it —
- * a heading with its targets indented beneath it — rather than as a sentence wrangler never emits.
+ * And `wrangler deploy` prints a telemetry notice after the deploy summary, so a scrape that took the last URL
+ * in stdout would report its documentation link. The address comes from wrangler's own `Deployed <name>
+ * triggers` block and only from a target that is an address, so every case below is written the way wrangler
+ * prints it — a heading with its targets indented beneath it.
  */
 describe("what a deploy reports, scraped out of wrangler's prose", () => {
   const parse = deployOutput.parse;
@@ -1454,7 +1818,7 @@ describe("what a deploy reports, scraped out of wrangler's prose", () => {
   });
 
   test("an address wrapped by the sentence around it comes back as an address", () => {
-    // #612's shape, quoted inside a bracket, now read as the target it would have been.
+    // Quoted inside a bracket, read as the target it is.
     expect(parse(triggers('("https://staging.app.pithy.sh")')).url).toBe("https://staging.app.pithy.sh");
   });
 

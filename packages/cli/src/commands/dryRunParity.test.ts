@@ -41,14 +41,18 @@ vi.mock("../cloudflare/clients", async (importOriginal) => ({
   cloudflareClients: () => cloudflare.current.clients(),
 }));
 
-/** What the stub wrangler saw: the Worker's entry, read from where it ran, as a bundle would read it. */
+/**
+ * What the stub wrangler bundled: the Worker's entry, read from where it ran, on each `--dry-run` pass. The real
+ * deploy bundles the same way before its upload, so the two runs' bundle passes are what is compared.
+ */
 const bundled = vi.hoisted(() => ({ entries: [] as (string | null)[] }));
 vi.mock("../project/wrangler", async (importOriginal) => {
   const { readFile: read } = await import("node:fs/promises");
   const { join: joined } = await import("node:path");
   return {
     ...(await importOriginal<typeof import("../project/wrangler")>()),
-    runWrangler: async (_args: string[], options: { cwd?: string }) => {
+    runWrangler: async (args: string[], options: { cwd?: string }) => {
+      if (!args.includes("--dry-run")) return { stdout: "", stderr: "" };
       bundled.entries.push(await read(joined(options.cwd ?? ".", "src", "index.ts"), "utf8").catch(() => null));
       return { stdout: "", stderr: "" };
     },
