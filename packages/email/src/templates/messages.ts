@@ -4,6 +4,7 @@
 import { type LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { parseLocale } from "@pithy-sh/core/src/i18n/locale";
 import { createTranslator, DEFAULT_LOCALE, type Translator } from "@pithy-sh/core/src/i18n/translator";
+import { EMAIL_RETENTION_BASIS, EMAIL_RETENTION_BASIS_KEY } from "../purge/contribution";
 import { EMAIL_ES } from "./messages.es";
 
 /**
@@ -209,6 +210,9 @@ const EMAIL_EN: MessageCatalog = {
   "email/lead_capture.ready": "Your copy of {asset} is ready.",
   "email/lead_capture.cta": "Download now",
   "email/lead_capture.text_ready": "Your copy of {asset} is ready:",
+
+  // --- The purge: why a deleted account's rows are kept, read back in its export ---
+  [EMAIL_RETENTION_BASIS_KEY]: EMAIL_RETENTION_BASIS,
 };
 
 /**

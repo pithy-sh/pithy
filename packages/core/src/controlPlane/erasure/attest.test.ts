@@ -124,6 +124,34 @@ describe("attest", () => {
     expect(step).toMatchObject({ disposition: "retained", reason: "Kept for tax records.", summary: null });
   });
 
+  test("a retained step carries the catalog key its basis translates through, so a client can read it in its language", () => {
+    const rows = [
+      deleted(0),
+      row("purge_retained", 30 * DAY, {
+        step: "payments",
+        reason: "Kept for tax records.",
+        basisKey: "payments/purge.retained",
+      }),
+      row("purge_retained", 30 * DAY + 1, { step: "app", reason: "Kept for the history." }),
+      row("purge_step", 30 * DAY + 2, { step: "media", reason: "Erases uploads." }),
+    ];
+    const attestation = attest(input(rows));
+    expect(ErasureAttestation.parse(attestation)).toEqual(attestation);
+    expect(attestation?.steps.map((step) => [step.capability, step.reason, step.basisKey])).toEqual([
+      ["payments", "Kept for tax records.", "payments/purge.retained"],
+      ["app", "Kept for the history.", null],
+      ["media", null, null],
+    ]);
+  });
+
+  test("a step view from a Worker that predates the basis key still parses", () => {
+    const rows = [deleted(0), row("purge_retained", 30 * DAY, { step: "payments", reason: "Kept for tax records." })];
+    const attestation = attest(input(rows));
+    if (!attestation) throw new Error("expected an attestation");
+    const older = { ...attestation, steps: attestation.steps.map(({ basisKey: _key, ...rest }) => rest) };
+    expect(ErasureAttestation.parse(older).steps[0]?.basisKey).toBeUndefined();
+  });
+
   test("an erased step carries its summary, never a reason", () => {
     const rows = [deleted(0), row("purge_step", 30 * DAY, { step: "media", reason: "Erases uploads." })];
     expect(attest(input(rows))?.steps[0]).toMatchObject({

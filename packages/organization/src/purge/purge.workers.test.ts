@@ -467,7 +467,7 @@ describe("the erasure record", () => {
     });
     const ops = organizationPurgeOps(deps(), audit);
     await ops.recordStep(ACME, "media", "Erases uploads.");
-    await ops.recordRetained(ACME, "books", "Kept for tax records.");
+    await ops.recordRetained(ACME, "books", { basis: "Kept for tax records." });
     await ops.fail(ACME, "storage");
     const rows = await organizationErasureReader(db()).history([ACME, BETA]);
     expect(rows.map((row) => [row.action, row.mode, row.purgeAfter?.getTime() ?? null, row.step])).toEqual([

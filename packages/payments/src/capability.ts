@@ -29,7 +29,7 @@ import { payments_0002_allowances } from "./migrations/0002_allowances";
 import { payments_0003_webhook_targets } from "./migrations/0003_webhook_targets";
 import { type PaymentsPeer, paymentsPeer } from "./peer";
 import { paymentsProcessing } from "./processing/activities";
-import { paymentsUserPurge } from "./purge/contribution";
+import { PAYMENTS_MESSAGES, paymentsUserPurge } from "./purge/contribution";
 import { paymentsInapplicableSecrets, paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
@@ -517,6 +517,7 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // A person's purchases and what they granted are kept through their purge, for tax law, and exported on an access
     // request with the basis that keeps them.
     purge: [paymentsUserPurge()],
+    messages: PAYMENTS_MESSAGES,
     // Each rail the config turns on is named as a recipient of the purchases made on it.
     processing: paymentsProcessing(resolved.rails),
   });

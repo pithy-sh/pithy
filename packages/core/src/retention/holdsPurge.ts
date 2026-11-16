@@ -5,6 +5,7 @@ import { personRowsExport } from "../capability/personRows";
 import type { RetainingPurgeContribution } from "../capability/purge";
 import { LegalHold } from "../controlPlane/data/hold";
 import { CONTROL_PLANE_HOLDS_TABLE } from "../controlPlane/data/tables";
+import type { LocaleCatalogs } from "../i18n/catalog";
 
 /**
  * What a person's purge means for the legal holds: **nothing is erased, and the export says so and why.**
@@ -25,12 +26,18 @@ export const HOLDS_PURGE_SUMMARY = "Keeps every legal hold placed on the user.";
 /** Why, in the sentence the person is told. */
 export const HOLDS_RETENTION_BASIS = "Kept as the record that a legal hold stood, when it was placed and why it ended.";
 
+/** The catalog key that translates {@link HOLDS_RETENTION_BASIS}. */
+export const HOLDS_RETENTION_BASIS_KEY = "controlplane/purge.retained";
+
+/** This capability's own English, contributed as its `messages`: the basis, under its key. */
+export const CONTROL_PLANE_MESSAGES: LocaleCatalogs = { en: { [HOLDS_RETENTION_BASIS_KEY]: HOLDS_RETENTION_BASIS } };
+
 /** The user contribution the control plane declares, over the app database its holds live in. */
 export function holdsUserPurge(database = "DB"): RetainingPurgeContribution {
   return {
     subject: "user",
     summary: HOLDS_PURGE_SUMMARY,
-    retain: { basis: HOLDS_RETENTION_BASIS },
+    retain: { basis: HOLDS_RETENTION_BASIS, basisKey: HOLDS_RETENTION_BASIS_KEY },
     export: personRowsExport({
       capability: "controlplane",
       database,

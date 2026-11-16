@@ -6,6 +6,7 @@ import { organization_0002_seat_limit } from "./0002_seat_limit";
 import { organization_0003_organization_lifecycle } from "./0003_organization_lifecycle";
 import { organization_0004_erasure_record } from "./0004_erasure_record";
 import { organization_0005_founding_record } from "./0005_founding_record";
+import { organization_0006_retained_basis_key } from "./0006_retained_basis_key";
 
 /**
  * Every migration `@pithy-sh/organization` ships, keyed as `pithy migrate` composes them.
@@ -23,4 +24,5 @@ export const ORGANIZATION_MIGRATIONS = {
   "0003_organization_lifecycle": organization_0003_organization_lifecycle,
   "0004_erasure_record": organization_0004_erasure_record,
   "0005_founding_record": organization_0005_founding_record,
+  "0006_retained_basis_key": organization_0006_retained_basis_key,
 } as const;

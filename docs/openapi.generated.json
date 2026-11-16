@@ -4530,7 +4530,14 @@
                                 "description": "`erased`, the rows were deleted or anonymized; `retained`, the capability kept them under the reason it stated (#814). A retained step never reads as erased."
                               },
                               "reason": {
-                                "description": "For a retained step, the basis the capability stated, written for the person. Null for an erased step.",
+                                "description": "For a retained step, the basis the capability stated, written for the person, in English. Null for an erased step.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "basisKey": {
+                                "description": "For a retained step, the catalog key that translates `reason`, under the capability's own domain — `payments/purge.retained` — so a client can show the basis in its reader's language. Null for an erased step and for a retained step that names none. Absent from a Worker that predates it.",
                                 "type": [
                                   "string",
                                   "null"
@@ -10495,7 +10502,11 @@
                                 ]
                               },
                               "basis": {
-                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person and in their stored locale where a catalog translates it — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
+                              },
+                              "basisKey": {
+                                "description": "For a `retain` entry, the catalog key `basis` was translated from, under the capability's own domain — `payments/purge.retained`. Absent when the capability names none, for `erase`, and from a Worker that predates it.",
                                 "type": "string"
                               },
                               "state": {
@@ -10540,7 +10551,11 @@
                                 ]
                               },
                               "basis": {
-                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person and in their stored locale where a catalog translates it — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
+                              },
+                              "basisKey": {
+                                "description": "For a `retain` entry, the catalog key `basis` was translated from, under the capability's own domain — `payments/purge.retained`. Absent when the capability names none, for `erase`, and from a Worker that predates it.",
                                 "type": "string"
                               },
                               "state": {
@@ -10576,7 +10591,11 @@
                                 ]
                               },
                               "basis": {
-                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person — `Kept for tax records.` Absent for `erase`.",
+                                "description": "For a `retain` entry, why the rows are kept, in one sentence written for the person and in their stored locale where a catalog translates it — `Kept for tax records.` Absent for `erase`.",
+                                "type": "string"
+                              },
+                              "basisKey": {
+                                "description": "For a `retain` entry, the catalog key `basis` was translated from, under the capability's own domain — `payments/purge.retained`. Absent when the capability names none, for `erase`, and from a Worker that predates it.",
                                 "type": "string"
                               },
                               "state": {

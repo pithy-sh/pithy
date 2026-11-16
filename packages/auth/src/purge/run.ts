@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { isRetained, type PurgeContext, type PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import {
+  isRetained,
+  type PurgeContext,
+  type PurgeStep,
+  type RetainingPurgeContribution,
+} from "@pithy-sh/core/src/capability/purge";
 import type { LegalHolds } from "@pithy-sh/core/src/retention/holds";
 import {
   classifiedSteps,
@@ -23,7 +28,7 @@ import { authWorkflowRetry } from "./retryPolicy";
 import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "./specs";
 
 /**
- * The purge, as steps (#622) — the bodies `./workflow.ts` hands a Workflow's step runner to.
+ * The purge, as steps — the bodies `./workflow.ts` hands a Workflow's step runner to.
  *
  * ## One step per contribution, and the order they run in
  *
@@ -31,7 +36,7 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  *    and one already erased all end the run here, having erased nothing. This is the one check a cron-started
  *    purge and a hard deletion's both pass through, so re-running a purge for the same subject exits cleanly.
  * 2. **`erase <capability>`** — one step per composed contribution, in composition order, each recording that it
- *    ran in `pithy_auth_user_lifecycle`. A contribution that **retains** its rows (#814) is a `retain <capability>`
+ *    ran in `pithy_auth_user_lifecycle`. A contribution that **retains** its rows is a `retain <capability>`
  *    step instead: it erases nothing, and records `purge_retained` with the basis it gave. Handed to the platform's retry unclassified: an `erase` is idempotent by
  *    contract and runs code the kit did not write, so any fault in it is worth another attempt (`./retryPolicy.ts`).
  *    A failing contribution retries alone, and the ones that finished are served from the journal.
@@ -41,7 +46,7 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  * 4. **`erase auth`** — auth's own contribution, last for that reason.
  * 5. **`complete`** — the `purged` record, the audit event, `onUserPurged`. Once.
  *
- * Every step from 2 on records an audit event as well as its row (#823), which the erasure attestation cites.
+ * Every step from 2 on records an audit event as well as its row, which the erasure attestation cites.
  *
  * ## A legal hold stops it
  *
@@ -52,7 +57,7 @@ import { AUTH_CAPABILITY, type AuthPurgeDueParams, type AuthPurgeParams } from "
  * erase where the first one did and carry on from there. A hold that cannot be read fails its step, which retries:
  * a purge never erases past a hold it could not see.
  *
- * ## A purge that gives up says where (#823)
+ * ## A purge that gives up says where
  *
  * A step that exhausts its retries fails the instance, and the daily pass starts a fresh one tomorrow. Until then the
  * record would read as a purge still running. So the failure is caught once, recorded in its own `fail` step —
@@ -66,10 +71,10 @@ export interface PurgeOps {
   due(userId: string): Promise<"due" | "not_due" | "gone">;
   /** Record that one capability's step erased its rows. */
   recordStep(userId: string, step: string, summary: string): Promise<void>;
-  /** Record that one capability's step kept its rows, and why (#814). */
-  recordRetained(userId: string, step: string, basis: string): Promise<void>;
+  /** Record that one capability's step kept its rows, and why: its basis, and the catalog key that translates it. */
+  recordRetained(userId: string, step: string, retain: RetainingPurgeContribution["retain"]): Promise<void>;
   /**
-   * The account's address, read now, or `null` once it is gone (#814). Handed to each step as
+   * The account's address, read now, or `null` once it is gone. Handed to each step as
    * `PurgeContext.address`, so a capability holding rows by address reads it inside its own step.
    */
   address(userId: string): Promise<string | null>;
@@ -80,7 +85,7 @@ export interface PurgeOps {
   mailComplete(userId: string, notify: boolean | undefined): Promise<boolean>;
   /** Write the `purged` record, the audit event and the hook. Says whether this call wrote them. */
   complete(userId: string): Promise<boolean>;
-  /** Record that the purge gave up at `step`, in the history and the trail (#823). */
+  /** Record that the purge gave up at `step`, in the history and the trail. */
   fail(userId: string, step: string): Promise<void>;
   /** Whether a legal hold stands on the account. Throws when it cannot say. */
   held(userId: string): Promise<boolean>;
@@ -91,13 +96,20 @@ export function purgeOps(deps: LifecycleDeps, holds: LegalHolds): PurgeOps {
   return {
     due: async (userId) => (await purgeSubject(deps, userId)).state,
     recordStep: (userId, step, summary) => recordPurgeStep(deps, { userId, step, summary }),
-    recordRetained: (userId, step, basis) => recordPurgeStep(deps, { userId, step, summary: basis, retained: true }),
+    recordRetained: (userId, step, retain) =>
+      recordPurgeStep(deps, {
+        userId,
+        step,
+        summary: retain.basis,
+        retained: true,
+        ...(retain.basisKey === undefined ? {} : { basisKey: retain.basisKey }),
+      }),
     address: (userId) => purgeAddress(deps.db, userId),
     mailComplete: async (userId, notify) => {
       const subject = await purgeSubject(deps, userId);
       if (subject.state !== "due") return false;
       // Either can silence it: the parameter a hard deletion started this purge with, or the choice that deletion
-      // wrote on its history row — the one a purge the daily pass started still has (#622).
+      // wrote on its history row — the one a purge the daily pass started still has.
       const silenced = notify === false || subject.notify === false;
       return (await mailPurgeComplete(deps, { recipient: subject.recipient, ...(silenced ? { notify: false } : {}) }))
         .mailed;
@@ -119,7 +131,7 @@ export interface PurgeOutcome {
   readonly state: "purged" | "not_due" | "gone" | "held";
   /** Every step that erased its rows, in the order it ran. Empty when nothing was erased. */
   readonly erased: readonly string[];
-  /** Every step that kept its rows under a stated basis (#814), in the order it ran. */
+  /** Every step that kept its rows under a stated basis, in the order it ran. */
   readonly retained: readonly string[];
   /** Whether the deletion-complete mail was enqueued. */
   readonly mailed: boolean;
@@ -165,7 +177,7 @@ export async function purgeUser(
     const { contribution } = each;
     current = each.step;
     if (isRetained(contribution))
-      retained.push(await retainStep(step, run.ops, each.step, contribution.retain.basis, userId));
+      retained.push(await retainStep(step, run.ops, each.step, contribution.retain, userId));
     else erased.push(await eraseStep(step, run.ops, each, context));
   };
   try {
@@ -218,18 +230,18 @@ function eraseStep(step: WorkflowStepLike, ops: PurgeOps, each: PurgeStep, conte
 }
 
 /**
- * One capability's retained step (#814): nothing is erased, and the record says the rows were kept and why. Its own
+ * One capability's retained step: nothing is erased, and the record says the rows were kept and why. Its own
  * step, so the trail names it in the order it would have run, and a replay serves it from the journal.
  */
 function retainStep(
   step: WorkflowStepLike,
   ops: PurgeOps,
   name: string,
-  basis: string,
+  retain: RetainingPurgeContribution["retain"],
   userId: string,
 ): Promise<string> {
   return step.do(`retain ${name}`, async () => {
-    await ops.recordRetained(userId, name, basis);
+    await ops.recordRetained(userId, name, retain);
     return name;
   });
 }
@@ -258,7 +270,7 @@ export interface PurgeDueRun {
 }
 
 /**
- * The daily pass (#622): list every account past its window, and start a purge for each — in pages, one step
+ * The daily pass: list every account past its window, and start a purge for each — in pages, one step
  * each, so a pass that dies part-way resumes after the page it finished rather than starting every purge
  * again. An account still inside its window is not listed, so it is not started.
  */

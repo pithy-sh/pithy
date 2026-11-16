@@ -6,6 +6,7 @@ import { MessageKey } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { esErrors } from "./errors";
 import { es } from "./index";
+import { esRetention } from "./retention";
 import { esScreens } from "./screens";
 
 /**
@@ -27,13 +28,14 @@ import { esScreens } from "./screens";
  * Spanish, and whether the three files can be merged without one silently eating another.
  */
 
-/** The three files, by the name a failure should send someone to. */
+/** The files, by the name a failure should send someone to. */
 const FILES = {
   errors: esErrors,
   screens: esScreens,
+  retention: esRetention,
 } as const;
 
-/** Every entry across all three, tagged with the file it came from. */
+/** Every entry across every file, tagged with the file it came from. */
 const ENTRIES = Object.entries(FILES).flatMap(([file, catalog]) =>
   Object.entries(catalog).map(([key, message]) => ({ file, key, message })),
 );
@@ -92,13 +94,13 @@ describe("the catalogs are the size they are", () => {
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 
-  test("the assembled catalog is every key from both, with nothing lost to the merge", () => {
-    // `es` is `{ ...esErrors, ...esScreens }`. Spreading is silent about a collision, so
+  test("the assembled catalog is every key from every file, with nothing lost to the merge", () => {
+    // `es` is `{ ...esErrors, ...esScreens, ...esRetention }`. Spreading is silent about a collision, so
     // the count is what says the merge kept everything.
     expect(Object.keys(es)).toHaveLength(ENTRIES.length);
   });
 
-  test("no key is written in two of the three files", () => {
+  test("no key is written in two of the files", () => {
     // The failure the count above would report as a number and this reports as a name. Two files
     // claiming one key means one of them is dead text, forever, and the surviving one depends on the
     // spread order in `index.ts` — which nobody would think to read.
@@ -132,6 +134,18 @@ describe("every key is a catalog key", () => {
     // that file for why the two SDKs share two of the four codes.
     const domains = [...new Set(Object.keys(esScreens).map((key) => key.split("/")[0]))].sort();
     expect(domains).toEqual(["app", "auth", "client", "consent", "organization", "payments"]);
+  });
+});
+
+describe("the retained purge bases", () => {
+  test("carry the four capabilities that keep rows and translate here, each under its own domain", () => {
+    // Email's basis is beside its English in `@pithy-sh/email`, with the rest of its copy.
+    expect(Object.keys(esRetention).sort()).toEqual([
+      "audit/purge.retained",
+      "consent/purge.retained",
+      "controlplane/purge.retained",
+      "payments/purge.retained",
+    ]);
   });
 });
 

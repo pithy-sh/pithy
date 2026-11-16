@@ -16,7 +16,7 @@ import { readRetirement } from "../privacy/fieldRotation";
 import { lazyPrivacyInventory } from "../privacy/inventory";
 import { composedRetention } from "../retention/composed";
 import { standingHolds } from "../retention/holds";
-import { holdsUserPurge } from "../retention/holdsPurge";
+import { CONTROL_PLANE_MESSAGES, holdsUserPurge } from "../retention/holdsPurge";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
@@ -224,6 +224,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     adminRoutes: controlPlaneRouteDescriptors(config.basePath),
     // A legal hold names the user it preserves, and outlives the purge it allowed: kept, and exported on request.
     purge: [holdsUserPurge()],
+    messages: CONTROL_PLANE_MESSAGES,
     // Two counts on the seam's own manifest entry, so a client sees *this environment is behind* on the read
     // it already makes and calls the route only to see what. Behind `migrations:read`, which the route above
     // requires — a connection without it gets no number rather than a zero. A database that cannot be read

@@ -3,10 +3,11 @@
 
 import { personRowsExport } from "@pithy-sh/core/src/capability/personRows";
 import type { RetainingPurgeContribution } from "@pithy-sh/core/src/capability/purge";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { AuditEventRow } from "../data/auditEvent";
 
 /**
- * What a person's purge means for `@pithy-sh/audit` (#814): **nothing is erased, and the export says so and why.**
+ * What a person's purge means for `@pithy-sh/audit`: **nothing is erased, and the export says so and why.**
  *
  * The audit trail is the record of who acted — who signed in, who changed a role, who deleted an organization — and
  * it is what a security review or a dispute is read against. A trail that forgot an actor on request would answer
@@ -24,12 +25,18 @@ export const AUDIT_PURGE_SUMMARY = "Keeps every audit event where the user is th
 export const AUDIT_RETENTION_BASIS =
   "Kept as the record of who did what, which a security review or a dispute is read against.";
 
+/** The catalog key that translates {@link AUDIT_RETENTION_BASIS}. */
+export const AUDIT_RETENTION_BASIS_KEY = "audit/purge.retained";
+
+/** This capability's own English, contributed as its `messages`: the basis, under its key. */
+export const AUDIT_MESSAGES: LocaleCatalogs = { en: { [AUDIT_RETENTION_BASIS_KEY]: AUDIT_RETENTION_BASIS } };
+
 /** The user contribution `audit()` declares, over the D1 binding its config names. */
 export function auditUserPurge(database = "DB"): RetainingPurgeContribution {
   return {
     subject: "user",
     summary: AUDIT_PURGE_SUMMARY,
-    retain: { basis: AUDIT_RETENTION_BASIS },
+    retain: { basis: AUDIT_RETENTION_BASIS, basisKey: AUDIT_RETENTION_BASIS_KEY },
     export: personRowsExport({
       capability: "audit",
       database,

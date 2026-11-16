@@ -492,7 +492,14 @@ export const ErasureStepView = z
       .string()
       .nullable()
       .describe(
-        "For a retained step, the basis the capability stated, written for the person. Null for an erased step.",
+        "For a retained step, the basis the capability stated, written for the person, in English. Null for an erased step.",
+      ),
+    basisKey: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "For a retained step, the catalog key that translates `reason`, under the capability's own domain — `payments/purge.retained` — so a client can show the basis in its reader's language. Null for an erased step and for a retained step that names none. Absent from a Worker that predates it.",
       ),
     summary: z
       .string()

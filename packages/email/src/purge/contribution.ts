@@ -10,7 +10,7 @@ import { EmailSuppression } from "../data/emailSuppression";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 
 /**
- * What a person's purge means for `@pithy-sh/email` (#814): **nothing is erased, and the export says so and why.**
+ * What a person's purge means for `@pithy-sh/email`: **nothing is erased, and the export says so and why.**
  *
  * A suppression has to outlive the person. It is the record that an address bounced, complained or asked not to be
  * mailed, and the list is checked before every send: erase the row and the next send — a newsletter to an address
@@ -34,12 +34,15 @@ export const EMAIL_PURGE_SUMMARY = "Keeps the user's address on the suppression 
 export const EMAIL_RETENTION_BASIS =
   "Kept so your unsubscribe holds: the address stays on the list of addresses not to mail, with the record of what was sent to it.";
 
+/** The catalog key that translates {@link EMAIL_RETENTION_BASIS}. */
+export const EMAIL_RETENTION_BASIS_KEY = "email/purge.retained";
+
 /** The user contribution `email()` declares, over its two D1 bindings. */
 export function emailUserPurge(database = "DB", suppressions = "EMAIL_SUPPRESSIONS"): RetainingPurgeContribution {
   return {
     subject: "user",
     summary: EMAIL_PURGE_SUMMARY,
-    retain: { basis: EMAIL_RETENTION_BASIS },
+    retain: { basis: EMAIL_RETENTION_BASIS, basisKey: EMAIL_RETENTION_BASIS_KEY },
     export: async (context) => {
       const read = await context.address?.();
       if (!read) return { suppressions: [], jobs: [], events: [] };

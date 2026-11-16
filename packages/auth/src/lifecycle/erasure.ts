@@ -9,7 +9,7 @@ import { UserLifecycleEvent } from "../data/userLifecycle";
 import { resolveDb } from "../http/resolve";
 
 /**
- * **A user's erasure record, read back for the control plane's attestation (#823).**
+ * **A user's erasure record, read back for the control plane's attestation.**
  *
  * `pithy_auth_user_lifecycle` is the one `pithy_auth_*` table a purge leaves behind, and it names the account by id
  * and nothing else. This reads the rows an erasure is made of — the deletion, any restore, each step, a failure, the
@@ -45,6 +45,7 @@ export function userErasureReader(db: AuthDatabase): ErasureHistoryReader {
           actorType: row.actorType,
           reason: row.reason,
           step: row.step,
+          basisKey: row.basisKey,
           mode: row.mode,
           purgeAfter: row.purgeAfter,
           at: row.createdAt,

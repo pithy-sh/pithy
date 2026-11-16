@@ -3,6 +3,7 @@
 
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import type { LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import { EMAIL_RETENTION_BASIS_KEY } from "../purge/contribution";
 import { EMAIL_MESSAGES, type EmailMessageLayers } from "../templates/messages";
 
 /**
@@ -17,11 +18,9 @@ import { EMAIL_MESSAGES, type EmailMessageLayers } from "../templates/messages";
  * template, and no `pithy.config.ts` of the adopter's is ever evaluated inside it. So the layers
  * cannot travel as a function; they travel as one JSON var, and this is what flattens them.
  *
- * Nothing wrote that var before pithy-sh/pithy#441's remediation, which made the whole translated-body
- * path dead in any real deployment: the send Workflow rendered the kit's English whatever tag was on
- * the row, and — because `runSend` overwrites the stored subject with its own fresh render — discarded
- * the translated subject the app worker had computed at enqueue as well. Two Workers, one message, and
- * they disagreed about its language.
+ * Without that var the send Workflow renders the kit's English whatever tag is on the row, and —
+ * because `runSend` overwrites the stored subject with its own fresh render — discards the translated
+ * subject the app worker computed at enqueue as well: two Workers, one message, two languages.
  *
  * ## What is dropped, and why dropping it changes nothing
  *
@@ -59,9 +58,9 @@ const EMAIL_ERROR_CODES: ReadonlySet<string> = new Set(
   KitErrorPayload.options.map((member) => member.shape.code.value).filter((code) => code.startsWith(EMAIL_KEY_PREFIX)),
 );
 
-/** Whether a key is copy this host will actually render. */
+/** Whether a key is copy this host will actually render. The purge's retained basis is read by the export alone. */
 function rendersOnTheHost(key: string): boolean {
-  return key.startsWith(EMAIL_KEY_PREFIX) && !EMAIL_ERROR_CODES.has(key);
+  return key.startsWith(EMAIL_KEY_PREFIX) && !EMAIL_ERROR_CODES.has(key) && key !== EMAIL_RETENTION_BASIS_KEY;
 }
 
 /**
@@ -82,7 +81,7 @@ export function emailHostCatalogs(locales: readonly string[], layersFor: EmailMe
         if (rendersOnTheHost(key)) merged[key] = value;
       }
     }
-    // **What travels is the adopter's diff, and nothing else (#442).**
+    // **What travels is the adopter's diff, and nothing else.**
     //
     // The host is deployed carrying `EMAIL_MESSAGES` — the kit's own copy in every language it is
     // written in — so a key whose merged value is already what the host holds for this locale is a

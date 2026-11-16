@@ -3,6 +3,7 @@
 
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
+import { EMAIL_RETENTION_BASIS_KEY } from "../purge/contribution";
 import { EMAIL_MESSAGES, type EmailMessageLayers } from "../templates/messages";
 import { emailHostCatalogs } from "./hostCatalogs";
 
@@ -38,15 +39,28 @@ describe("an error's translation is not template copy, and does not ride to the 
   });
 });
 
+describe("the purge's retained basis is read by the export, never by the host", () => {
+  test("an adopter's override of it does not ride to the host, and template copy beside it still does", () => {
+    const layers = (locale: string) => [
+      locale === "es"
+        ? { [EMAIL_RETENTION_BASIS_KEY]: "Lo guardamos.", "email/magic_link.subject": "Tu enlace propio" }
+        : undefined,
+      ...(EMAIL_MESSAGES[locale] ? [EMAIL_MESSAGES[locale]] : []),
+    ];
+    const carried = emailHostCatalogs(["es"], layers);
+    expect(carried.es?.[EMAIL_RETENTION_BASIS_KEY]).toBeUndefined();
+    expect(carried.es?.["email/magic_link.subject"]).toBe("Tu enlace propio");
+  });
+});
+
 describe("the host is built with the kit's words, not sent them", () => {
   /**
-   * **The whole of #442, stated as the property an adopter feels.**
+   * **The property an adopter feels: the host is built with the kit's translations.**
    *
    * The send Worker is a separate deploy with no request and no access to `pithy.config.ts`, so
-   * anything it does not bundle has to be stamped into it as configuration. Holding the kit's own
-   * translations in `@pithy-sh/i18n` meant static data traveled that channel on every provision run,
-   * against a 5 KB per-variable ceiling one language pack filled to 61%. Held beside the English they
-   * translate, the host is built with them and the variable carries only what an adopter changed.
+   * anything it does not bundle has to be stamped into it as configuration, against a 5 KB
+   * per-variable ceiling. The kit's own translations are bundled beside the English they translate, so
+   * the variable carries only what an adopter changed.
    */
   // Typed as the seam it stands in for, rather than passed `as never`. These cases rest entirely on
   // this helper answering the layers `catalogLayers` would, and `as never` turns off the one check

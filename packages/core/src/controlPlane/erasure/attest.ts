@@ -13,7 +13,7 @@ import type {
 } from "../http/responses";
 
 /**
- * **The erasure attestation, assembled (#823)** — pure functions over a subject's lifecycle rows and the audit events
+ * **The erasure attestation, assembled** — pure functions over a subject's lifecycle rows and the audit events
  * that name it, so every rule here is tested without a database.
  *
  * ## Which deletion
@@ -129,6 +129,7 @@ export function attest(input: AttestInput): ErasureAttestation | null {
       capability,
       disposition: retained ? "retained" : "erased",
       reason: retained ? row.reason : null,
+      basisKey: retained ? (row.basisKey ?? null) : null,
       summary: retained ? null : row.reason,
       completedAt: row.at.toISOString(),
       audit: cited(latest(citations, (each) => each.action === input.actions.step && each.step === capability)),
@@ -197,7 +198,7 @@ export function summarize(entries: readonly ErasurePeriodEntry[]) {
   return { counts, attention };
 }
 
-/** Every entry, oldest due first; a deletion recorded before #823 has no due instant and sorts last. */
+/** Every entry, oldest due first; a deletion recorded with no due instant sorts last. */
 export function byDue(entries: readonly ErasurePeriodEntry[]): ErasurePeriodEntry[] {
   const key = (entry: ErasurePeriodEntry) =>
     entry.purgeAfter ? Date.parse(entry.purgeAfter) : Number.MAX_SAFE_INTEGER;

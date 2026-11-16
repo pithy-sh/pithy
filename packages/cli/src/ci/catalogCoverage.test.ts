@@ -247,6 +247,14 @@ function capabilityFile(dir: string): string {
     : join(PACKAGES, dir, "src/capability.ts");
 }
 
+/**
+ * The capability a package declares — its directory's name, but for `core`, whose capability is `controlplane`. The
+ * domain its `messages` keys must carry.
+ */
+function capabilityName(dir: string): string {
+  return dir === "core" ? "controlplane" : dir;
+}
+
 /** `messages: <identifier>` on a capability literal — the contribution this file has to read. */
 const MESSAGES_CONTRIBUTION = /(?:^|[\s{,])messages:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,\n]/;
 
@@ -523,6 +531,29 @@ describe("the catalogs cover what the kit says", () => {
   });
 });
 
+describe("the retained purge bases are kit sentences like any other", () => {
+  /** Every kit contribution that keeps a person's rows through a purge, by the basis key it declares. */
+  const RETAINED_BASES = [
+    "audit/purge.retained",
+    "consent/purge.retained",
+    "controlplane/purge.retained",
+    "email/purge.retained",
+    "payments/purge.retained",
+  ];
+
+  test("each is contributed in English by the capability that keeps the rows", () => {
+    const english = new Set(CONTRIBUTED_EN.map(({ key }) => key));
+    expect(RETAINED_BASES.filter((key) => !english.has(key))).toEqual([]);
+  });
+
+  test("and each ships in every locale", () => {
+    const missing = SHIPPED.flatMap(({ locale, keys }) =>
+      RETAINED_BASES.filter((key) => !keys.includes(key)).map((key) => `${locale}: ${key}`),
+    );
+    expect(missing).toEqual([]);
+  });
+});
+
 describe("every capability that writes sentences is found, not remembered", () => {
   test("the sweep finds the capability packages at all", () => {
     // The guard over the derivation. A sweep that found no capability file would report no
@@ -619,7 +650,7 @@ describe("every key is namespaced to the domain that owns it", () => {
     const stray = CONTRIBUTED.flatMap(({ package: name, catalogs }) =>
       Object.values(catalogs).flatMap((catalog) =>
         Object.keys(catalog ?? {})
-          .filter((key) => messageDomain(key) !== name)
+          .filter((key) => messageDomain(key) !== capabilityName(name))
           .map((key) => `${name}: ${key}`),
       ),
     );

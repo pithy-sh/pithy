@@ -869,6 +869,26 @@ describe("the purge's records", () => {
     ]);
   });
 
+  test("a retained step records the catalog key its basis translates through, and the erasure reader hands it on", async () => {
+    const h = harness();
+    await recordPurgeStep(h.deps, {
+      userId: "u1",
+      step: "payments",
+      summary: "Kept for tax records.",
+      retained: true,
+      basisKey: "payments/purge.retained",
+    });
+    await purgeOps(h.deps, NO_HOLDS).recordRetained("u1", "audit", { basis: "Kept as the record." });
+    await recordPurgeStep(h.deps, { userId: "u1", step: "media", summary: "Deletes uploads.", basisKey: "media/x" });
+    expect((await history()).map((row) => [row.action, row.step, row.basisKey])).toEqual([
+      ["purge_retained", "payments", "payments/purge.retained"],
+      ["purge_retained", "audit", null],
+      ["purge_step", "media", null],
+    ]);
+    const read = await userErasureReader(h.deps.db).history(["u1"]);
+    expect(read.map((row) => row.basisKey)).toEqual(["payments/purge.retained", null, null]);
+  });
+
   test("mailPurgeComplete mails the address it is handed, in the account's language", async () => {
     // The purge Workflow captures the address before its steps erase it and hands it here, before
     // auth's own step erases the row the address lives on.
@@ -978,7 +998,7 @@ describe("the purge's operations over the transitions", () => {
     expect(await ops.mailComplete("u1", undefined)).toBe(true);
     expect((await jobs()).map((job) => [job.template, job.to])).toEqual([["deletionComplete", "u1@test.com"]]);
     await ops.recordStep("u1", "media", "Deletes uploads.");
-    await ops.recordRetained("u1", "payments", "Kept for tax records.");
+    await ops.recordRetained("u1", "payments", { basis: "Kept for tax records." });
     expect((await history()).slice(-2)).toEqual([
       expect.objectContaining({ action: "purge_step", step: "media", reason: "Deletes uploads." }),
       expect.objectContaining({ action: "purge_retained", step: "payments", reason: "Kept for tax records." }),

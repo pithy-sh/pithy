@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { InternalError, ValidationError } from "../error/pithyError";
+import { MessageKey, messageDomain } from "../i18n/catalog";
 
 /**
  * How a capability says what erasing one subject means for its own rows — the purge contribution.
@@ -17,13 +18,13 @@ import { InternalError, ValidationError } from "../error/pithyError";
  *
  * ## One capability, one step
  *
- * The purge Workflow (#622) runs every composed contribution as **its own step**, named for the
+ * The purge Workflow runs every composed contribution as **its own step**, named for the
  * capability. A step that fails retries alone, and the ones that finished are not re-run — which is why a
  * capability may declare at most one contribution per subject, and why every `erase` must be idempotent:
  * a step is retried after a failure that may have come after its rows were already gone, and erasing
  * nothing must then succeed.
  *
- * ## The same contribution answers an export (#622)
+ * ## The same contribution answers an export
  *
  * An access request arrives before an erasure, not after. So a contribution may also say what this capability
  * holds about the subject, on the read side: `export` answers one JSON object, and the control plane's export
@@ -31,7 +32,7 @@ import { InternalError, ValidationError } from "../error/pithyError";
  * contribution with no `export` is listed as holding rows it did not say how to export, which is the honest
  * answer and the one an operator can act on.
  *
- * ## Or it keeps them, and says why (#814)
+ * ## Or it keeps them, and says why
  *
  * Not every row about a person should go. A payment record is kept for tax law, a suppression has to outlive the
  * person or the unsubscribe stops holding, and the audit trail is the record of who acted. So a contribution has a
@@ -46,8 +47,8 @@ import { InternalError, ValidationError } from "../error/pithyError";
 
 /**
  * The kinds of subject a purge erases. Closed, so a typo is refused where it is written rather than becoming
- * a contribution no purge ever asks for. `organization` joined with organization state (#623): a capability
- * holding rows scoped to a tenant declares one for it, and the organization purge runs it.
+ * a contribution no purge ever asks for. A capability holding rows scoped to a tenant declares one for
+ * `organization`, and the organization purge runs it.
  */
 export const PurgeSubject = z
   .enum(["user", "organization"])
@@ -64,7 +65,7 @@ export interface PurgeContext {
   readonly env: Record<string, unknown>;
   /**
    * The subject's email address, read on demand from the capability that owns the subject — `null` when it has
-   * none, or no longer has one (#814). For a capability that holds rows by address rather than by id: a tester's
+   * none, or no longer has one. For a capability that holds rows by address rather than by id: a tester's
    * membership, a suppression, an invitation.
    *
    * **A function, never a value**, so the address is read inside the step that needs it and is never carried in
@@ -84,7 +85,7 @@ interface PurgeContributionBase {
    */
   readonly summary: string;
   /**
-   * What this capability holds about the subject, as one JSON object — the read side of `erase` (#622). It
+   * What this capability holds about the subject, as one JSON object — the read side of `erase`. It
    * answers an access request, so it carries the subject's own data and never a credential: no session token,
    * no provider token, no push token. Optional on an erasing contribution: one without it is listed in the
    * export as rows it erases and did not say how to export. A throw costs this capability's entry, never the
@@ -106,14 +107,18 @@ export interface ErasingPurgeContribution extends PurgeContributionBase {
 }
 
 /**
- * A contribution that **keeps** the subject's rows through a purge, and says why (#814). A payment record kept
+ * A contribution that **keeps** the subject's rows through a purge, and says why. A payment record kept
  * for tax law, a suppression that must outlive the person or the unsubscribe stops holding, the audit trail of
  * who acted. The purge records the step as retained and never erases a row of it; the export carries the rows
  * and the basis, because rows that are kept are rows that are answered for.
  */
 export interface RetainingPurgeContribution extends PurgeContributionBase {
-  /** Why the rows are kept, in one sentence written for the person — `Kept for tax records.` */
-  readonly retain: { readonly basis: string };
+  /**
+   * Why the rows are kept, in one sentence written for the person — `Kept for tax records.` `basisKey` names the
+   * catalog key that translates it, under this capability's own domain (`payments/purge.retained`); the export reads
+   * it in the person's locale. `basis` is the English, and what every reader gets when no catalog has the key.
+   */
+  readonly retain: { readonly basis: string; readonly basisKey?: string };
   /** Required: what is kept is exported. */
   readonly export: (context: PurgeContext) => Promise<Record<string, unknown>>;
   /** Never set on a retaining contribution. */
@@ -187,15 +192,20 @@ export function assertPurgeContributions(capability: string, contributions: read
   }
 }
 
-/** Refuse a retaining contribution the person could not be answered with: no basis, no export, or an erase too. */
+/**
+ * Refuse a retaining contribution the person could not be answered with: no basis, a basis key outside the
+ * capability's own domain, no export, or an erase too.
+ */
 function assertRetention(capability: string, subject: PurgeSubject, contribution: PurgeContribution): void {
-  const basis = (contribution.retain as { basis?: unknown } | undefined)?.basis;
+  const retain = contribution.retain as { basis?: unknown; basisKey?: unknown } | undefined;
+  const basis = retain?.basis;
   if (typeof basis !== "string" || basis.trim() === "") {
     throw new ValidationError({
       message: `The ${capability} capability's ${subject} purge retains the rows with no basis.`,
       action: "Say in one sentence, written for the person, why they are kept — `Kept for tax records.`",
     });
   }
+  if (retain?.basisKey !== undefined) assertBasisKey(capability, subject, retain.basisKey);
   if (typeof contribution.export !== "function") {
     throw new ValidationError({
       message: `The ${capability} capability's ${subject} purge retains the rows and has no export.`,
@@ -206,6 +216,28 @@ function assertRetention(capability: string, subject: PurgeSubject, contribution
     throw new ValidationError({
       message: `The ${capability} capability's ${subject} purge both retains and erases the rows.`,
       action: "Declare one disposition: `retain` with its basis, or `erase`.",
+    });
+  }
+}
+
+/**
+ * Refuse a basis key no catalog could hold for this capability — the rule `composeMessages` holds every `messages`
+ * key to: `<domain>/<path>`, and the domain is the contributing capability's own name.
+ */
+function assertBasisKey(capability: string, subject: PurgeSubject, key: unknown): void {
+  const shown = String(key);
+  if (!MessageKey.safeParse(key).success) {
+    throw new ValidationError({
+      message: `The ${capability} capability's ${subject} purge names the basis key \`${shown}\`, which is not a catalog key.`,
+      action: `Name it \`${capability}/<path>\`, as every message key is.`,
+    });
+  }
+  const domain = messageDomain(shown);
+  if (domain !== capability) {
+    throw new ValidationError({
+      message: `The ${capability} capability's ${subject} purge names the basis key \`${shown}\`, outside its own domain.`,
+      action: `Rename it to start with \`${capability}/\`: a capability may only contribute messages under its own domain.`,
+      detail: `\`${capability}\` named the basis key \`${shown}\`, whose domain is \`${domain}\`.`,
     });
   }
 }
@@ -227,11 +259,19 @@ export function purgeSteps(
 interface PurgeExportEntryBase {
   readonly capability: string;
   readonly summary: string;
-  /** `erase` — a purge erases or anonymizes these rows — or `retain`, a purge keeps them (#814). */
+  /** `erase` — a purge erases or anonymizes these rows — or `retain`, a purge keeps them. */
   readonly disposition: PurgeDisposition;
-  /** For `retain`, why the rows are kept, in the sentence the contribution wrote for the person. */
+  /**
+   * For `retain`, why the rows are kept, written for the person: the contribution's `basisKey` translated, or its
+   * English `basis` when nothing translates it.
+   */
   readonly basis?: string;
+  /** For `retain`, the catalog key the basis was translated from, when the contribution names one. */
+  readonly basisKey?: string;
 }
+
+/** A catalog lookup that answers `null` for a key it has no message for — `Translator.maybe`'s shape. */
+export type BasisTranslation = (key: string) => string | null;
 
 /** What one step's export answered: its data, that it declared none, or that it could not be read. */
 export type PurgeExportEntry =
@@ -245,19 +285,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Read every step's export for one subject — the export document's body, in step order (#622).
+ * Read every step's export for one subject — the export document's body, in step order.
  *
- * **Each read is guarded on its own and they run concurrently**, the shape the user pane's sub-reads have
- * (#380): one capability whose table will not read costs its own entry as `unavailable`, and the rest of the
- * document still answers the request. What the read threw is not carried — it names a query and a table, and
+ * **Each read is guarded on its own and they run concurrently**, the same shape as the user pane's guarded
+ * sub-reads: one capability whose table will not read costs its own entry as `unavailable`, and the rest of
+ * the document still answers the request. What the read threw is not carried — it names a query and a table, and
  * the document crosses a trust boundary. An answer that is not one object is `unavailable` too, because the
  * document promises an object per capability and a client validates it.
  */
-export async function purgeExports(steps: readonly PurgeStep[], context: PurgeContext): Promise<PurgeExportEntry[]> {
+export async function purgeExports(
+  steps: readonly PurgeStep[],
+  context: PurgeContext,
+  translate?: BasisTranslation,
+): Promise<PurgeExportEntry[]> {
   return Promise.all(
     steps.map(async ({ step, contribution }): Promise<PurgeExportEntry> => {
       const base: PurgeExportEntryBase = isRetained(contribution)
-        ? { capability: step, summary: contribution.summary, disposition: "retain", basis: contribution.retain.basis }
+        ? {
+            capability: step,
+            summary: contribution.summary,
+            disposition: "retain",
+            ...retainedBasis(contribution, translate),
+          }
         : { capability: step, summary: contribution.summary, disposition: "erase" };
       const read = contribution.export;
       if (read === undefined) return { ...base, state: "not_exported" };
@@ -271,8 +320,18 @@ export async function purgeExports(steps: readonly PurgeStep[], context: PurgeCo
   );
 }
 
+/** A retained contribution's basis as the person reads it: its key translated, else its English basis. */
+function retainedBasis(
+  contribution: RetainingPurgeContribution,
+  translate: BasisTranslation | undefined,
+): { basis: string; basisKey?: string } {
+  const { basis, basisKey } = contribution.retain;
+  if (basisKey === undefined) return { basis };
+  return { basis: translate?.(basisKey) ?? basis, basisKey };
+}
+
 /**
- * One binding a contribution opens off a run's env — or a wiring fault naming it and the capability (#814). The
+ * One binding a contribution opens off a run's env — or a wiring fault naming it and the capability. The
  * purge and the export both run in the adopter's Worker, so a missing binding is that Worker's wiring, and the
  * fault says which binding to add rather than failing deep inside a query.
  */
@@ -294,7 +353,7 @@ export function purgeBinding<T>(
 }
 
 /**
- * Rows as an export carries them (#814): plain JSON, a `Date` as its ISO-8601 string — the shape the export
+ * Rows as an export carries them: plain JSON, a `Date` as its ISO-8601 string — the shape the export
  * document crosses the wire in, so what a contribution answers is what a reader parses, and a test compares
  * exactly that.
  */
@@ -304,7 +363,7 @@ export function exportRows<T>(rows: readonly T[]): Record<string, unknown>[] {
 
 /**
  * A field name that holds a credential — a token, a secret, a password, a digest of one, a sealed value. What an
- * export never carries (#814): an access request is answered with what is held, never with the means to act as
+ * export never carries: an access request is answered with what is held, never with the means to act as
  * the person or to reach what they shared.
  */
 const CREDENTIAL_FIELD = /secret|token|password|credential|digest|private_?key|encrypted/i;
@@ -312,7 +371,7 @@ const CREDENTIAL_FIELD = /secret|token|password|credential|digest|private_?key|e
 /**
  * Every path in an export's data whose field name holds a credential — empty for an export that carries none.
  * Each capability's export test asserts it empty, so a column added later with a token in it fails the build
- * rather than reaching an access request (#814).
+ * rather than reaching an access request.
  */
 export function credentialFields(value: unknown, path = ""): string[] {
   if (Array.isArray(value)) return value.flatMap((item, index) => credentialFields(item, `${path}[${index}]`));

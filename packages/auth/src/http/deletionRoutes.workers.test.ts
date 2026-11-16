@@ -26,6 +26,7 @@ import { EMAIL_MIGRATION_ORDER, email } from "@pithy-sh/email/src/capability";
 import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
+import { EMAIL_RETENTION_BASIS } from "@pithy-sh/email/src/purge/contribution";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
@@ -235,6 +236,17 @@ const hook =
   (event: UserLifecycleHookEvent): void =>
     void fired.push({ hook: name, event });
 
+/**
+ * An i18n capability as `@pithy-sh/i18n` publishes one — `layersFor` and its resolved config — with Spanish for
+ * email's basis and nothing for French. Composed only by the tests that set {@link withI18n}.
+ */
+const i18nCapability = Object.assign(defineCapability({ name: "i18n", requiredBindings: [] }), {
+  i18nConfig: { defaultLocale: "en", supportedLocales: ["en", "es", "fr"] },
+  layersFor: (locale: string) =>
+    locale === "es" ? [{ "email/purge.retained": "Se conserva para que tu baja siga vigente." }] : [],
+});
+let withI18n = false;
+
 /** The composed backend, with the Worker's `retention` block when a test records one. */
 function buildApp(retention?: unknown) {
   return createBackend({
@@ -255,6 +267,7 @@ function buildApp(retention?: unknown) {
       silentCapability,
       recorderCapability,
       captureCapability,
+      ...(withI18n ? [i18nCapability] : []),
     ],
     app: appCapability,
   });
@@ -534,6 +547,7 @@ beforeEach(async () => {
   started = [];
   bindPurge = true;
   failSilent = false;
+  withI18n = false;
   drafts.clear();
   await grant([AUTH_USERS_DELETE_SCOPE, AUTH_USERS_EXPORT_SCOPE, AUTH_USERS_SUSPEND_SCOPE]);
 });
@@ -1257,6 +1271,33 @@ describe("POST /auth/admin/users/:userId/export", () => {
     for (const credential of ["token-u-1", "access-u-1", "refresh-u-1", "push-u-1"]) {
       expect(JSON.stringify(raw)).not.toContain(credential);
     }
+  });
+
+  test("a retained basis is read in the person's own locale, with its key beside it", async () => {
+    await seedAccountFootprint(env.DB, "u-1");
+    await env.DB.prepare("update pithy_auth_users set locale = 'es' where id = 'u-1'").run();
+    withI18n = true;
+    const document = AdminUserExportResponse.parse(await (await exportOf("u-1", "Access request 4411.")).json());
+    const emailPart = document.capabilities.find((entry) => entry.capability === "email");
+    expect(emailPart?.basis).toBe("Se conserva para que tu baja siga vigente.");
+    expect(emailPart?.basisKey).toBe("email/purge.retained");
+  });
+
+  test("a locale the catalogs hold no entry for reads the English basis", async () => {
+    await seedAccountFootprint(env.DB, "u-1");
+    await env.DB.prepare("update pithy_auth_users set locale = 'fr' where id = 'u-1'").run();
+    withI18n = true;
+    const document = AdminUserExportResponse.parse(await (await exportOf("u-1", "Access request 4411.")).json());
+    const emailPart = document.capabilities.find((entry) => entry.capability === "email");
+    expect(emailPart?.basis).toBe(EMAIL_RETENTION_BASIS);
+    expect(emailPart?.basisKey).toBe("email/purge.retained");
+  });
+
+  test("with no i18n composed, a Spanish account reads the English basis, as it always did", async () => {
+    await seedAccountFootprint(env.DB, "u-1");
+    await env.DB.prepare("update pithy_auth_users set locale = 'es' where id = 'u-1'").run();
+    const document = AdminUserExportResponse.parse(await (await exportOf("u-1", "Access request 4411.")).json());
+    expect(document.capabilities.find((entry) => entry.capability === "email")?.basis).toBe(EMAIL_RETENTION_BASIS);
   });
 
   test("is audited as a disclosure, with the caller and the reason and never the data", async () => {

@@ -4,16 +4,16 @@
 import type { PurgeSubject } from "./purge";
 
 /**
- * **The erasure record (#823): what a capability that runs a purge kept about it, read back.**
+ * **The erasure record: what a capability that runs a purge kept about it, read back.**
  *
- * A purge (#620, #623) records its progress in the lifecycle table of the capability that owns the subject:
+ * A purge records its progress in the lifecycle table of the capability that owns the subject:
  * `pithy_auth_user_lifecycle` for a user, `pithy_organization_lifecycle` for an organization. Each holds the
- * deletion, one row per step (erased, or retained with its basis under #814), a failure when the purge gave up, and
+ * deletion, one row per step (erased, or retained with its basis and the key that translates it), a failure when the purge gave up, and
  * the `purged` row at the end, keyed by the subject's id and nothing else.
  *
  * The control plane's erasure attestation assembles those rows into a record an auditor can be handed. It cannot
  * import auth or organization (principle 4), so the capability that owns a subject declares how its rows are read,
- * here, and which audit actions its purge records — so the attestation can cite them in the chain (#822).
+ * here, and which audit actions its purge records — so the attestation can cite them in the chain.
  *
  * **Nothing about the person crosses this seam** beyond the id the trail already keeps: no address, no name.
  */
@@ -36,9 +36,14 @@ export interface ErasureHistoryRow {
   readonly reason: string | null;
   /** The purge step a step, retained or failed row names — the capability, or the purge's own step. */
   readonly step: string | null;
-  /** On a `deleted` row written since #823, how the deletion was asked for. Null before. */
+  /**
+   * On a retained step, the catalog key its basis in `reason` translates through. Null on every other row and on a
+   * retained step that names none; absent from a reader that does not record it.
+   */
+  readonly basisKey?: string | null;
+  /** On a `deleted` row, how the deletion was asked for. Null on a deletion recorded before the table kept it. */
   readonly mode: ErasureDeletionMode | null;
-  /** On a `deleted` row written since #823, when its purge comes due. Null before. */
+  /** On a `deleted` row, when its purge comes due. Null on a deletion recorded before the table kept it. */
   readonly purgeAfter: Date | null;
   /** When it happened. */
   readonly at: Date;

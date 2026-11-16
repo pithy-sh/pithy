@@ -8,12 +8,11 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 /**
  * The kit-authored email copy, in Spanish.
  *
- * **Beside the English rather than in `@pithy-sh/i18n`, and that is the point of #442.** The send
- * Workflow runs in its own Worker, deployed by `pithy email provision` with no request and no access
- * to the adopter's config — so anything it does not *bundle* has to be stamped into it as a variable.
- * Held in the translations package, the kit's own Spanish was static data traveling through a
- * configuration channel every provision run, against a 5 KB per-variable ceiling. Held here, the host
- * is built with it and the variable carries only what an adopter changed, which is usually nothing.
+ * **Beside the English rather than in `@pithy-sh/i18n`.** The send Workflow runs in its own Worker,
+ * deployed by `pithy email provision` with no request and no access to the adopter's config — so
+ * anything it does not *bundle* has to be stamped into it as a variable, against a 5 KB per-variable
+ * ceiling. Held here, the host is built with it and the variable carries only what an adopter changed,
+ * which is usually nothing.
  *
  * It also puts this file where the domain rule already says it belongs: a capability may only declare
  * keys under its own name, and `@pithy-sh/email` contributes `email/` in every language it has rather
@@ -183,4 +182,8 @@ export const EMAIL_ES: MessageCatalog = {
   "email/lead_capture.ready": "Tu copia de {asset} ya está lista.",
   "email/lead_capture.cta": "Descargar ahora",
   "email/lead_capture.text_ready": "Tu copia de {asset} ya está lista:",
+
+  // --- The purge: why a deleted account's rows are kept, read back in its export ---
+  "email/purge.retained":
+    "Se conserva para que tu baja siga vigente: la dirección sigue en la lista de direcciones a las que no se escribe, con el registro de lo que se le envió.",
 };

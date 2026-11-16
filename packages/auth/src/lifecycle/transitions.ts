@@ -21,9 +21,9 @@ import { MAX_REASON } from "./reason";
 import { accountStanding, LifecycleColumns } from "./state";
 
 /**
- * The account-lifecycle transitions — the one place an account's state is ever changed (#620).
+ * The account-lifecycle transitions — the one place an account's state is ever changed.
  *
- * The admin routes (#621, #622), the self-service deletion, and the purge Workflow call these and write
+ * The admin routes, the self-service deletion, and the purge Workflow call these and write
  * nothing themselves, so each transition happens the same way whoever asked for it:
  *
  * 1. **The columns move, conditionally, and the history row is written with them.** The `update` names the
@@ -102,7 +102,7 @@ export interface LifecycleTransition {
 /** What a suspension did, and the suspension it left in force. */
 export interface SuspendTransition extends LifecycleTransition {
   /**
-   * True when the account was already suspended and this call restated the reason and the end instead (#621).
+   * True when the account was already suspended and this call restated the reason and the end instead.
    * That is not a transition — `changed` is false and no hook fires — but it is written, audited and mailed.
    */
   readonly updated: boolean;
@@ -167,10 +167,12 @@ interface HistoryRow {
   readonly step?: string | null;
   /** A hard deletion's choice for the purge's last mail; see `UserLifecycleEvent.notify`. */
   readonly notify?: boolean | null;
-  /** A deletion's mode, kept for the erasure attestation (#823). */
+  /** A deletion's mode, kept for the erasure attestation. */
   readonly mode?: DeletionMode | null;
-  /** When a deletion's purge comes due, kept for the erasure attestation (#823). */
+  /** When a deletion's purge comes due, kept for the erasure attestation. */
   readonly purgeAfter?: Date | null;
+  /** A retained step's catalog key for the basis in `reason`. */
+  readonly basisKey?: string | null;
 }
 
 /** The history row's values, as the table stores them. */
@@ -186,6 +188,7 @@ function encoded(row: HistoryRow) {
     notify: row.notify === undefined || row.notify === null ? null : SQLiteBoolean.encode(row.notify),
     mode: row.mode ?? null,
     purgeAfter: row.purgeAfter ? SQLiteDate.encode(row.purgeAfter) : null,
+    basisKey: row.basisKey ?? null,
     createdAt: SQLiteDate.encode(row.at),
   };
 }
@@ -338,7 +341,7 @@ function raced(userId: string): ConflictError {
 }
 
 /**
- * The instant a purge-window guard compares against, **read when the statement runs**, as ms-epoch (#622).
+ * The instant a purge-window guard compares against, **read when the statement runs**, as ms-epoch.
  *
  * A restore and a purge's `due` check race for one account, and each has to see the window the other saw. A
  * timestamp the restore took before its statement went out is stale by the time D1 runs it: the window can
@@ -369,7 +372,7 @@ function windowClosed(userId: string, closes: Date): ConflictError {
  * conflict rather than a no-op, and names `restoreRoute` when the caller gives one. A suspension whose end has
  * passed is not in force, and a new one replaces it.
  *
- * **An account already suspended has its terms restated (#621).** The reason and the end are replaced, a
+ * **An account already suspended has its terms restated.** The reason and the end are replaced, a
  * `suspended` row records the new reason — the newest one is what the person is shown — and the audit event
  * and the mail say so. The start is kept, and no hook fires: the account was suspended and still is, so
  * nothing transitioned. A fresh suspension that loses the race to another suspension finds the account
@@ -559,7 +562,7 @@ export interface DeleteTransition extends LifecycleTransition {
  * Restorable until then. The deletion-scheduled mail carries the purge date and, when the config names one,
  * the restore path. A deleted account deleted softly again is no transition.
  *
- * **Hard** (#622): `purgeAfter` is now, so the window is already closed — nothing can restore it — and the
+ * **Hard**: `purgeAfter` is now, so the window is already closed — nothing can restore it — and the
  * caller starts the purge. No deletion-scheduled mail, because nothing is scheduled; the purge sends the
  * deletion-complete one. An account already deleted softly has its purge brought forward to now, which is
  * written and audited but fires no hook: the account was deleted and still is. One already due is unchanged.
@@ -577,9 +580,9 @@ export async function deleteUser(
   const purgeAfter = hard ? at : new Date(at.getTime() + userPurgeWindowDays(deps.config) * 86_400_000);
   const subject = await subjectOf(deps.db, input.userId);
   // A hard deletion's `notify` is the purge's to read, so it is written on the row: the purge that sends the last
-  // mail may be one the daily pass started, with no request to carry it (#622).
+  // mail may be one the daily pass started, with no request to carry it.
   // The mode and the due instant ride on the row too, because the purge erases the account's own column and the
-  // erasure attestation still has to say both (#823).
+  // erasure attestation still has to say both.
   const row: HistoryRow = {
     userId: input.userId,
     action: "deleted",
@@ -748,13 +751,17 @@ async function purgedRefusal(db: AuthDatabase, userId: string): Promise<NotFound
 }
 
 /**
- * The account's row, or the refusal for one that is not there — the 404 that says the data is gone when the
- * purge erased it, and the plain one otherwise. For a route that reads an account outside a transition: the
- * export.
+ * The account's stored locale, or the refusal for an account that is not there — the 404 that says the data is gone
+ * when the purge erased it, and the plain one otherwise. For a route that reads an account outside a transition: the
+ * export, which answers in the person's own language.
  */
-export async function requirePresent(db: AuthDatabase, userId: string): Promise<void> {
-  const row = await db.selectFrom("pithyAuthUsers").select("id").where("id", "=", userId).executeTakeFirst();
-  if (row) return;
+export async function requirePresent(db: AuthDatabase, userId: string): Promise<{ locale: string | null }> {
+  const row = await db
+    .selectFrom("pithyAuthUsers")
+    .select(["id", "locale"])
+    .where("id", "=", userId)
+    .executeTakeFirst();
+  if (row) return { locale: row.locale ?? null };
   throw (
     (await purgedRefusal(db, userId)) ??
     new NotFoundError({ message: "No such user.", detail: `no pithy_auth_users row for ${userId}` })
@@ -772,7 +779,7 @@ export interface PurgeRecipient {
 }
 
 /**
- * Whether one account is due for its purge, who its last mail goes to, and whether it goes (#622).
+ * Whether one account is due for its purge, who its last mail goes to, and whether it goes.
  *
  * `due` only for an account that is deleted and whose `purgeAfter` has passed — the cron and a hard deletion
  * both start a purge, and this is the one check either passes through, so an account restored in between is
@@ -790,7 +797,7 @@ export async function purgeSubject(
   { state: "due"; recipient: PurgeRecipient; notify: boolean | null } | { state: "not_due" } | { state: "gone" }
 > {
   // The instant is the database's, read in the same statement as the row — the clock `restoreUser` guards on, so
-  // a restore and this check agree on whether the window has closed, whichever runs first (#622).
+  // a restore and this check agree on whether the window has closed, whichever runs first.
   const row = await deps.db
     .selectFrom("pithyAuthUsers")
     .select(["email", "name", "locale", "suspendedAt", "suspendedUntil", "deletedAt", "purgeAfter"])
@@ -816,7 +823,7 @@ export async function purgeSubject(
 }
 
 /**
- * The account's address, as a purge step reads it (#814) — `null` when there is no account, or no address. Read
+ * The account's address, as a purge step reads it — `null` when there is no account, or no address. Read
  * inside the step that asks, so it is never carried in a Workflow's journal.
  */
 export async function purgeAddress(db: AuthDatabase, userId: string): Promise<string | null> {
@@ -831,7 +838,7 @@ export interface DuePurge {
 }
 
 /**
- * The accounts whose purge is due — deleted, with `purgeAfter` passed — oldest first, at most `limit` (#622).
+ * The accounts whose purge is due — deleted, with `purgeAfter` passed — oldest first, at most `limit`.
  * What the daily cron starts a purge for. An account still inside its window is not here, and neither is one
  * that was restored. Each carries its deletion's start, which names the purge's instance (`../purge/start.ts`).
  */
@@ -853,23 +860,25 @@ export async function duePurges(deps: LifecycleDeps, limit: number): Promise<Due
 /**
  * Record that one purge step — one capability's contribution — erased its rows. The contribution's summary is
  * the row's reason, so the history says what the step erased and not only that it ran. With `retained`, the step
- * kept its rows instead (#814): the row is `purge_retained`, and its reason is the basis the capability gave.
+ * kept its rows instead: the row is `purge_retained`, its reason is the basis the capability gave, and its
+ * `basisKey` the catalog key that translates it, when the capability names one.
  */
 export async function recordPurgeStep(
   deps: LifecycleDeps,
-  input: { userId: string; step: string; summary?: string | null; retained?: boolean },
+  input: { userId: string; step: string; summary?: string | null; retained?: boolean; basisKey?: string },
 ): Promise<void> {
   const at = (deps.now ?? (() => new Date()))();
   await record(deps, {
     userId: input.userId,
-    // A retained step kept its rows (#814): its own action, so the trail never reads a kept step as an erased one.
+    // A retained step kept its rows: its own action, so the trail never reads a kept step as an erased one.
     action: input.retained ? "purge_retained" : "purge_step",
     actor: PURGE,
     reason: input.summary?.trim() ? input.summary.trim().slice(0, MAX_REASON) : null,
     at,
     step: input.step,
+    basisKey: input.retained ? (input.basisKey ?? null) : null,
   });
-  // The trail's record of the step, which the erasure attestation cites by id and chain position (#823). The step's
+  // The trail's record of the step, which the erasure attestation cites by id and chain position. The step's
   // name and disposition only: the summary is the row's, and the trail never holds anything about the person.
   await audit(deps, AuthAuditActions.adminUserPurgeStep, input.userId, PURGE, {
     step: input.step,
@@ -878,7 +887,7 @@ export async function recordPurgeStep(
 }
 
 /**
- * Record that a purge gave up (#823): the step it stopped at, in the history and in the trail. The daily pass starts
+ * Record that a purge gave up: the step it stopped at, in the history and in the trail. The daily pass starts
  * the purge again tomorrow, so this is where it stands until then, not an end. The failure's message is never
  * written: it is code the kit did not write, and it may name the person.
  */
@@ -896,7 +905,7 @@ export async function recordPurgeFailure(deps: LifecycleDeps, input: { userId: s
 }
 
 /**
- * The deletion-complete mail, sent **before the address is erased** (#622). The purge calls this after every
+ * The deletion-complete mail, sent **before the address is erased**. The purge calls this after every
  * other capability's rows are gone and before auth's own, which holds the address, so the last mail is
  * enqueued while there is still an account to have sent it to. The address is handed in, captured before the
  * first step. `notify: false` sends nothing, whatever the config says.
