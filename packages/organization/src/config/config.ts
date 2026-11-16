@@ -103,6 +103,19 @@ export const OrganizationConfig = z
       })
       .prefault({})
       .describe("How long a deleted organization is kept before it is purged (#623)."),
+    ownerDelete: z
+      .object({
+        members: z
+          .enum(["none", "sole"])
+          .default("none")
+          .describe(
+            "Whose accounts an owner's deletion takes with it. `none`, the default, deletes nobody's account. `sole` deletes, hard and through `@pithy-sh/auth`'s own lifecycle, the accounts of the members whose only organization this is — the operator route's `members: \"sole\"` cascade. A member of any other organization is never modified, and the owner who deleted it never is.",
+          ),
+      })
+      .prefault({})
+      .describe(
+        "What an owner's `DELETE {base}/current` does beyond the organization. It always shuts the organization and starts its purge, which runs every composed `organization` purge contribution.",
+      ),
     lifecycleEmails: z
       .object({
         organizationSuspended: z

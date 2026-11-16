@@ -7,8 +7,8 @@
  *
  * Deliberately narrow: the capability factory and its type guard, the configuration schema, the two
  * things the scaffolded role module needs (`defineRoles` and the kit's reserved power names), the five
- * table schemas with their Kysely map, the three gates an adopter's own routes compose, and the
- * control-plane scopes a management client reads. Every other module is reached by deep path
+ * table schemas with their Kysely map, the three gates an adopter's own routes compose, the owner's deletion an
+ * adopter's own route may run behind checks of its own, and the control-plane scopes a management client reads. Every other module is reached by deep path
  * (`@pithy-sh/organization/src/...`); this is the documented contract, not a barrel over the package.
  *
  * **`defineRoles` is here and nothing else in `roles/` is**, which is what makes the scaffolded module's
@@ -90,6 +90,12 @@ export {
   type OrganizationAdminRouteOptions,
   organizationAdminRoutes,
 } from "./http/scopes";
+export {
+  deleteOrganizationAsOwner,
+  OWNER_DELETE_REASON,
+  type OwnerDeletion,
+  type OwnerDeletionRequest,
+} from "./lifecycle/ownerDelete";
 export { requireMayAssign } from "./members/members";
 export { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 export { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";

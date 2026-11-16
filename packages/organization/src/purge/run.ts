@@ -4,6 +4,7 @@
 import {
   isRetained,
   type PurgeContext,
+  type PurgeDeletion,
   type PurgeStep,
   type RetainingPurgeContribution,
 } from "@pithy-sh/core/src/capability/purge";
@@ -18,6 +19,7 @@ import {
   type DueOrganizationPurge,
   dueOrganizationPurges,
   type OrganizationLifecycleDeps,
+  organizationDeletion,
   organizationPurgeSubject,
   recordOrganizationPurgeFailure,
   recordOrganizationPurgeStep,
@@ -31,7 +33,8 @@ import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type Organiza
  * 1. **`due`** — is the organization deleted, and has its window closed? A restored one, one inside its window, and
  *    one already erased all end the run here, having erased nothing.
  * 2. **`erase <capability>`** — one step per composed contribution for the `organization` subject, in composition
- *    order, each recording that it ran in `pithy_organization_lifecycle`. Handed to the platform's retry
+ *    order, each recording that it ran in `pithy_organization_lifecycle`. Each is handed the deletion it runs under,
+ *    read inside the step from the history, so the reason is never written into the Workflow's journal. Handed to the platform's retry
  *    unclassified (`./retryPolicy.ts`): a failing contribution retries alone, and the ones that finished are
  *    served from the journal. A contribution that **retains** its rows is a `retain <capability>` step
  *    instead: it erases nothing, and records `purge_retained` with the basis it gave.
@@ -53,6 +56,8 @@ import { ORGANIZATION_CAPABILITY, type OrganizationPurgeDueParams, type Organiza
 export interface OrganizationPurgeOps {
   /** Whether the organization is due: deleted, with its window closed. `gone` when there is none. */
   due(organizationId: string): Promise<"due" | "not_due" | "gone">;
+  /** The deletion the purge runs under, off the newest `deleted` history row, or undefined when there is none. */
+  deletion(organizationId: string): Promise<PurgeDeletion | undefined>;
   /** Record that one capability's step erased its rows. */
   recordStep(organizationId: string, step: string, summary: string): Promise<void>;
   /** Record that one capability's step kept its rows, and why. */
@@ -87,6 +92,7 @@ export function organizationPurgeOps(
 ): OrganizationPurgeOps {
   return {
     due: (organizationId) => organizationPurgeSubject(deps, organizationId),
+    deletion: (organizationId) => organizationDeletion(deps, organizationId),
     recordStep: async (organizationId, step, summary) => {
       await recordOrganizationPurgeStep(deps, { organizationId, step, summary });
       await audit.step(organizationId, step, "erased");
@@ -209,7 +215,8 @@ function eraseStep(
   context: PurgeContext,
 ): Promise<string> {
   return step.do(`erase ${each.step}`, async () => {
-    await each.contribution.erase?.(context);
+    const deletion = await ops.deletion(context.subject.id);
+    await each.contribution.erase?.(deletion ? { ...context, deletion } : context);
     await ops.recordStep(context.subject.id, each.step, each.contribution.summary);
     return each.step;
   });

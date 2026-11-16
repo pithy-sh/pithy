@@ -610,6 +610,15 @@ describe("route contract: every route is described for the OpenAPI contract", ()
     expect(Object.keys(document.paths).length).toBeGreaterThan(0);
     expect(undescribedFields(document)).toEqual([]);
   });
+
+  test("an owner's DELETE /current publishes its body as optional, so a generated client may send none", () => {
+    const document = openApiDocument({ title: "organization", version: "0" }, groups());
+    const path = Object.keys(document.paths).find((each) => each.endsWith("/current"));
+    const operation = (document.paths as Record<string, Record<string, { requestBody?: { required?: boolean } }>>)[
+      path ?? ""
+    ]?.delete;
+    expect(operation?.requestBody?.required).toBe(false);
+  });
 });
 
 describe("the declared strategy and the contract agree", () => {

@@ -33,7 +33,7 @@ export type UserLifecycleAction = z.output<typeof UserLifecycleAction>;
 export const UserLifecycleActorType = z
   .enum(["control-plane", "user", "system"])
   .describe(
-    "Who made the transition: `control-plane` (a management client, under a scoped grant), `user` (the account's own holder, deleting their own account), or `system` (the scheduled purge, with nobody calling).",
+    "Who made the transition: `control-plane` (a management client, under a scoped grant), `user` (a signed-in person: the account's own holder deleting it, or an organization's owner whose deletion of that organization reached it through the sole-member cascade), or `system` (the scheduled purge, with nobody calling).",
   );
 export type UserLifecycleActorType = z.output<typeof UserLifecycleActorType>;
 
@@ -55,7 +55,7 @@ export const UserLifecycleEvent = z
       .string()
       .nullable()
       .describe(
-        "The acting principal's id — the user's own id for a self-service deletion, the connection's for a management client. Null for `system`, and for a management client that named none.",
+        "The acting principal's id — the user's own id for a self-service deletion, the deleting owner's for an organization's cascade, the connection's for a management client. Null for `system`, and for a management client that named none.",
       ),
     reason: z
       .string()

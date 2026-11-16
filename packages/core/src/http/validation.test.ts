@@ -144,6 +144,28 @@ describe("validate", () => {
     expect(requestContractOf(middleware)).toEqual({ target: "json", schema: Body });
   });
 
+  test("a JSON body the schema lets be absent may be sent empty under a JSON content type", async () => {
+    const Optional = z.strictObject({ reason: z.string().max(5).optional() }).optional();
+    const a = new Hono();
+    a.onError(pithyErrorHandler);
+    a.post("/optional", validate("json", Optional), (c) => c.json({ body: c.req.valid("json") ?? null }));
+    a.post("/required", validate("json", Body), (c) => c.json(c.req.valid("json")));
+    const post = (path: string, body?: string, type = "application/json") =>
+      a.request(path, { method: "POST", headers: { "content-type": type }, ...(body === undefined ? {} : { body }) });
+
+    expect(await (await post("/optional")).json()).toEqual({ body: null });
+    expect(await (await post("/optional", "  ")).json()).toEqual({ body: null });
+    expect(await (await post("/optional", JSON.stringify({ reason: "why" }))).json()).toEqual({
+      body: { reason: "why" },
+    });
+    const tooLong = await post("/optional", JSON.stringify({ reason: "far too long" }));
+    expect(tooLong.status).toBe(400);
+    expect((await errorOf(tooLong)).code).toBe("validation/invalid_input");
+    expect((await post("/optional", "{ not json")).status).toBe(400);
+    // A body that must be present is still refused when it is empty.
+    expect((await post("/required")).status).toBe(400);
+  });
+
   test("a bare zValidator, or anything else, carries no contract", () => {
     expect(requestContractOf(zValidator("json", Body, validationHook))).toBeUndefined();
     expect(requestContractOf(() => undefined)).toBeUndefined();

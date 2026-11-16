@@ -165,7 +165,7 @@ They are two settings because they are two things: one is where this capability'
 | `POST {base}/acting` | Choose which organization this session acts in | session | — |
 | `GET {base}/current` | The organization in force | session | `organization:read` |
 | `PATCH {base}/current` | Rename it, or set its mark | session | `organization:manage` |
-| `DELETE {base}/current` | End it, and everything belonging to it | session | `organization:delete` |
+| `DELETE {base}/current` | Shut it now and start its purge, which erases it from every capability that declares an organization purge contribution. Optional `reason` in the body ([lifecycle](docs/organization-lifecycle.md#the-owners-deletion)) | session | `organization:delete` |
 | `GET {base}/current/members` | The roster, resolved through auth's published reader | session | `organization:read` |
 | `PATCH {base}/current/members/:membershipId` | Change somebody's role | session | `organization:manage` |
 | `DELETE {base}/current/members/:membershipId` | Remove somebody | session | `organization:manage` |
@@ -212,7 +212,7 @@ A name that reduces to nothing keeps a short name of its own. `Café Ñandú` is
 
 **`POST {base}` refuses everybody when `allowSelfService` is false**, rather than gating on a power nobody holds. There is no organization in force yet and therefore no role to read, so the only honest shape of that setting is a route that says no to every caller — the operator included, who provisions through their own code with an actor they can name. It also does not move the acting selection: creating a second account from a settings pane must not silently move somebody out of the one they were working in.
 
-**`idempotencyKey` on `POST {base}` makes a retry safe.** A client that lost the answer to a founding cannot tell whether it landed, and names are not unique, so a retry without a key founds a second organization. Send a key the client chooses once per organization, 1 to 200 characters. The first request founds and answers 201. A repeat by the same person with the same key, `name` and `slug` answers 200 with the organization the key founded, read as it is now, and writes nothing: no second audit event, and `onCreate` and `onJoin` do not run. The same key with a different `name` or `slug` refuses with `organization/idempotency_key_reused` (409). Two concurrent requests with one key found one organization, and the loser answers 200 with it. Keys are per person: somebody else's identical key founds their own. A repeat for an organization that is soft-deleted answers `organization/not_found` (404), and for one that is suspended `organization/organization_suspended` (403), as every other door does. The key is freed when the organization is erased: by an owner's `DELETE {base}/current`, by an operator's hard deletion, or by the purge once a soft deletion's window closes. After that the same key founds a new organization and answers 201. A person's own purge erases their founding records too. `createOrganization` takes the same `idempotencyKey`, and returns `replayed: true` for a repeat.
+**`idempotencyKey` on `POST {base}` makes a retry safe.** A client that lost the answer to a founding cannot tell whether it landed, and names are not unique, so a retry without a key founds a second organization. Send a key the client chooses once per organization, 1 to 200 characters. The first request founds and answers 201. A repeat by the same person with the same key, `name` and `slug` answers 200 with the organization the key founded, read as it is now, and writes nothing: no second audit event, and `onCreate` and `onJoin` do not run. The same key with a different `name` or `slug` refuses with `organization/idempotency_key_reused` (409). Two concurrent requests with one key found one organization, and the loser answers 200 with it. Keys are per person: somebody else's identical key founds their own. A repeat for an organization that is soft-deleted answers `organization/not_found` (404), and for one that is suspended `organization/organization_suspended` (403), as every other door does. The key is freed when the purge erases the organization: at once after an owner's `DELETE {base}/current` or an operator's hard deletion, once the window closes after a soft one. After that the same key founds a new organization and answers 201. A person's own purge erases their founding records too. `createOrganization` takes the same `idempotencyKey`, and returns `replayed: true` for a repeat.
 
 **The three ownership routes mount only where a project declares the pair of roles a transfer moves.** A catalog with no two-party transfer has no ownership surface at all, rather than one that answers 404 for reasons a client has to guess.
 
@@ -261,15 +261,15 @@ With no email composed nothing is sent and nothing is refused: the change has al
 organization({
   roles,
   // A role changed. `powersLost` is what the old role held and the new one does not, from the catalog's nesting; empty for a promotion.
-  onMemberRoleChanged: async ({ organizationId, userId, previousRole, role, powersLost, actor, at }, d1, runtime) => {},
+  onMemberRoleChanged: async ({ organizationId, membershipId, userId, previousRole, role, powersLost, actor, at }, d1, runtime) => {},
   // A membership ended: removed, left (`left: true`), removed by an operator, or removed by a forced transfer.
-  onMemberRemoved: async ({ organizationId, userId, role, left, actor, at }, d1, runtime) => {},
+  onMemberRemoved: async ({ organizationId, membershipId, userId, role, left, actor, at }, d1, runtime) => {},
 });
 ```
 
 `runtime` is `{ env, waitUntil? }`: the request's Worker env, typed as your own when you call `organization.withEnv<Env>()({ … })`, and its `waitUntil`, so a hook can start a Workflow or call out. [Config, mail and hooks](docs/organization-lifecycle.md#config-mail-and-hooks) has the example.
 
-`actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. A hook cannot undo the write it heard about. A row that must begin with a membership belongs in `onJoin`, below. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
+`membershipId` names the membership that changed or ended, so a revocation keyed on it reaches exactly what that membership authorized. `actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. A hook cannot undo the write it heard about. A row that must begin with a membership belongs in `onJoin`, below. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
 
 **`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
 

@@ -2,24 +2,32 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { D1Database } from "@cloudflare/workers-types";
 import { AUTH_MIGRATION_ORDER } from "@pithy-sh/auth/src/migrations/0001_init";
 import { AUTH_MIGRATIONS } from "@pithy-sh/auth/src/migrations/set";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { forgetComposition, recordComposition } from "@pithy-sh/core/src/capability/composition";
+import type { PurgeDeletion, PurgeStep } from "@pithy-sh/core/src/capability/purge";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import type { ControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
-import { ForbiddenError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ForbiddenError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import type { SameOriginGate } from "@pithy-sh/core/src/http/sameOrigin";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import type { WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import { Hono } from "hono";
+import type { Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { organization } from "../capability";
 import { OrganizationConfig } from "../config/config";
 import { Membership } from "../data/membership";
@@ -32,13 +40,18 @@ import {
   organizationDatabase,
 } from "../data/tables";
 import type { UserLifecycleWiring } from "../lifecycle/cascade";
+import { organizationErasureReader } from "../lifecycle/erasure";
 import type { OrganizationLifecycleHookEvent } from "../lifecycle/hooks";
+import { deleteOrganizationAsOwner, OWNER_DELETE_REASON } from "../lifecycle/ownerDelete";
 import type { EnqueueInvitation } from "../mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "../migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "../migrations/set";
 import type { OwnershipRoles } from "../ownership/ownership";
+import { organizationPurgeContribution } from "../purge/contribution";
+import { organizationPurgeOps, purgeOrganization } from "../purge/run";
 import { ORGANIZATION_PURGE_BINDING } from "../purge/specs";
 import { defineRoles } from "../roles/roles";
+import { type OrganizationHonoEnv, requireOrganization } from "./guard";
 import {
   AdminMemberCascadePreviewResponse,
   AdminOrganizationDeleteResponse,
@@ -46,6 +59,7 @@ import {
   AdminOrganizationRestoreResponse,
   AdminOrganizationSuspendResponse,
   AdminOrganizationsResponse,
+  DeletedOrganizationResponse,
 } from "./responses";
 import { registerOrganizationRoutes } from "./routes";
 import {
@@ -286,6 +300,8 @@ async function call(
   options: {
     as?: string;
     body?: unknown;
+    /** Sent verbatim under a JSON content type, for a body that is not a serialized value. */
+    rawBody?: string;
     app?: Hono<PithyHonoEnv>;
     env?: Record<string, unknown>;
     executionCtx?: { waitUntil(promise: Promise<unknown>): void };
@@ -293,10 +309,11 @@ async function call(
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   if (options.as) headers["x-test-user"] = options.as;
-  if (options.body !== undefined) headers["content-type"] = "application/json";
+  if (options.body !== undefined || options.rawBody !== undefined) headers["content-type"] = "application/json";
+  const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
   return await (options.app ?? app).request(
     path,
-    { method, headers, ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) },
+    { method, headers, ...(body === undefined ? {} : { body }) },
     { DB: env.DB, ...options.env } as unknown as Record<string, unknown>,
     options.executionCtx as never,
   );
@@ -1234,4 +1251,411 @@ describe("previewing a member cascade", () => {
     // The gate records the call it let through, as it does for every control-plane call; nothing past it wrote.
     expect(events.filter((event) => !event.action.startsWith("controlplane/"))).toEqual([]);
   });
+});
+
+describe("an owner's DELETE /current", () => {
+  /** A Workflow's journal and retry loop, in miniature: enough to run the purge the route starts. */
+  function workflowStep(): WorkflowStepLike {
+    const journal = new Map<string, unknown>();
+    return {
+      async do<T>(name: string, configOrFn: unknown, maybeFn?: () => Promise<T>): Promise<T> {
+        const fn = (typeof configOrFn === "function" ? configOrFn : maybeFn) as () => Promise<T>;
+        if (journal.has(name)) return journal.get(name) as T;
+        const value = await fn();
+        journal.set(name, value);
+        return value;
+      },
+    } as WorkflowStepLike;
+  }
+
+  /** The history rows one organization's deletion wrote. */
+  async function deletions(organizationId: string) {
+    return db()
+      .selectFrom(LIFECYCLE_TABLE)
+      .select(["action", "actorType", "actorId", "reason", "mode"])
+      .where("organizationId", "=", organizationId)
+      .where("action", "=", "deleted")
+      .execute();
+  }
+
+  test("shuts the organization through the lifecycle: refused to every member, gone from every list, recorded with the owner", async () => {
+    await choose(ADA, ACME);
+    const response = await call("DELETE", `${BASE}/current`, { as: ADA });
+    expect(response.status).toBe(200);
+    expect(await bound(response, DeletedOrganizationResponse)).toEqual({
+      organizationId: ACME,
+      deletedAt: NOW.toISOString(),
+      purge: "pending",
+    });
+    // A request with no body records the fixed reason, hard, with the owner as the actor.
+    expect(await deletions(ACME)).toEqual([
+      { action: "deleted", actorType: "owner", actorId: ADA, reason: OWNER_DELETE_REASON, mode: "hard" },
+    ]);
+    for (const member of [ADA, BOB, CAI]) expect(await listed(member)).not.toContain(ACME);
+    expect((await choose(BOB, ACME)).status).toBe(404);
+    expect(await selection()).toBeUndefined();
+    // Ada carries on in Beta.
+    expect(await listed(ADA)).toContain(BETA);
+    expect(hooked).toEqual([
+      {
+        name: "deleted",
+        event: {
+          organizationId: ACME,
+          actor: { type: "owner", id: ADA },
+          reason: OWNER_DELETE_REASON,
+          at: NOW,
+          purgeAfter: NOW,
+        },
+      },
+    ]);
+    const event = events.find((each) => each.action === "organization/deleted");
+    expect(event).toMatchObject({ actorType: "user", actorId: ADA, tenant: ACME });
+    expect(event?.metadata).toMatchObject({ mode: "hard", purge: "pending", members: "none" });
+    expect(event?.metadata).not.toHaveProperty("reason");
+    // Nothing is erased by the request: the memberships wait for the purge.
+    const kept = await db().selectFrom(MEMBERSHIPS_TABLE).select("id").where("organizationId", "=", ACME).execute();
+    expect(kept).toHaveLength(3);
+  });
+
+  test("takes a reason held to the operator's rules, and refuses a bad one before anything moves", async () => {
+    await choose(ADA, ACME);
+    for (const reason of ["", "x".repeat(501), "Mail ada@example.com instead."]) {
+      const refusal = await call("DELETE", `${BASE}/current`, { as: ADA, body: { reason } });
+      expect(refusal.status, JSON.stringify(reason).slice(0, 40)).toBe(400);
+    }
+    expect((await call("DELETE", `${BASE}/current`, { as: ADA, body: { reason: REASON, mode: "soft" } })).status).toBe(
+      400,
+    );
+    expect(await deletions(ACME)).toEqual([]);
+    const response = await call("DELETE", `${BASE}/current`, { as: ADA, body: { reason: `  ${REASON}  ` } });
+    expect(response.status).toBe(200);
+    expect(await deletions(ACME)).toEqual([
+      { action: "deleted", actorType: "owner", actorId: ADA, reason: REASON, mode: "hard" },
+    ]);
+    expect(events.find((each) => each.action === "organization/deleted")?.metadata).toMatchObject({ reason: REASON });
+  });
+
+  test("an empty body under a JSON content type is a request with no body", async () => {
+    await choose(ADA, ACME);
+    const response = await call("DELETE", `${BASE}/current`, { as: ADA, rawBody: "" });
+    expect(response.status).toBe(200);
+    expect(await deletions(ACME)).toEqual([
+      { action: "deleted", actorType: "owner", actorId: ADA, reason: OWNER_DELETE_REASON, mode: "hard" },
+    ]);
+  });
+
+  test("a purge Workflow whose start throws leaves the deletion standing and answers pending", async () => {
+    await choose(ADA, ACME);
+    const binding = {
+      create: async () => {
+        throw new Error("the Workflow service is unavailable");
+      },
+      get: async () => {
+        throw new Error("no such instance");
+      },
+    };
+    const response = await call("DELETE", `${BASE}/current`, {
+      as: ADA,
+      env: { [ORGANIZATION_PURGE_BINDING]: binding },
+    });
+    expect(response.status).toBe(200);
+    expect((await bound(response, DeletedOrganizationResponse)).purge).toBe("pending");
+    expect(await deletions(ACME)).toHaveLength(1);
+    expect(await listed(BOB)).not.toContain(ACME);
+    expect(events.find((each) => each.action === "organization/deleted")?.metadata).toMatchObject({
+      purge: "pending",
+    });
+  });
+
+  test("starts the purge Workflow when it is bound, under the deletion's own instance", async () => {
+    await choose(ADA, ACME);
+    const created: { id?: string; params?: unknown }[] = [];
+    const binding = {
+      create: async (instance?: { id?: string; params?: unknown }) => void created.push(instance ?? {}),
+      get: async () => ({}),
+    };
+    const response = await call("DELETE", `${BASE}/current`, {
+      as: ADA,
+      env: { [ORGANIZATION_PURGE_BINDING]: binding },
+    });
+    expect((await bound(response, DeletedOrganizationResponse)).purge).toBe("started");
+    expect(created.map((instance) => instance.params)).toEqual([{ organizationId: ACME }]);
+  });
+
+  test("takes a member who is not an owner nowhere", async () => {
+    await choose(BOB, ACME);
+    expect((await call("DELETE", `${BASE}/current`, { as: BOB })).status).toBe(403);
+    expect(await deletions(ACME)).toEqual([]);
+    expect(hooked).toEqual([]);
+  });
+
+  test("the purge it leaves runs every composed contribution with the deletion, organization's last, then fires onOrganizationPurged and leaves the attestation's record", async () => {
+    await choose(ADA, ACME);
+    expect((await call("DELETE", `${BASE}/current`, { as: ADA, body: { reason: REASON } })).status).toBe(200);
+    await env.DB.prepare("drop table if exists adopter_projects").run();
+    await env.DB.prepare("create table adopter_projects (id text primary key, organization_id text not null)").run();
+    await env.DB.prepare("insert into adopter_projects (id, organization_id) values ('p-acme', ?), ('p-beta', ?)")
+      .bind(ACME, BETA)
+      .run();
+
+    const order: string[] = [];
+    const handed: (PurgeDeletion | undefined)[] = [];
+    const files: PurgeStep = {
+      step: "files",
+      contribution: {
+        subject: "organization",
+        summary: "Deletes the organization's stored files.",
+        erase: async (context) => {
+          order.push("files");
+          handed.push(context.deletion);
+        },
+      },
+    };
+    const own: PurgeStep = {
+      step: "organization",
+      contribution: organizationPurgeContribution("DB", (d1, organizationId) => {
+        order.push("organization");
+        return [
+          (createDatabase(d1, {}) as unknown as Kysely<Record<string, Record<string, unknown>>>)
+            .deleteFrom("adopterProjects")
+            .where("organizationId", "=", organizationId),
+        ];
+      }),
+    };
+    const purged: OrganizationLifecycleHookEvent[] = [];
+    const deps = {
+      db: db(),
+      d1: env.DB,
+      hooks: { onOrganizationPurged: (event: OrganizationLifecycleHookEvent) => void purged.push(event) },
+      runtime: { env: { DB: env.DB } },
+      now: () => NOW,
+    };
+    const outcome = await purgeOrganization(
+      { steps: [own, files], env: { DB: env.DB }, ops: organizationPurgeOps(deps), held: async () => false },
+      workflowStep(),
+      Error as never,
+      { organizationId: ACME },
+    );
+    expect(outcome).toMatchObject({ state: "purged", erased: ["files", "organization"] });
+    expect(order).toEqual(["files", "organization"]);
+    expect(handed).toEqual([{ actor: { type: "owner", id: ADA }, reason: REASON, mode: "hard", at: NOW }]);
+    // The app's onDelete rows went in organization's own step; Beta's are untouched.
+    const { results } = await env.DB.prepare("select id from adopter_projects").all();
+    expect(results).toEqual([{ id: "p-beta" }]);
+    expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("id", "=", ACME).execute()).toEqual([]);
+    expect(purged.map((event) => event.organizationId)).toEqual([ACME]);
+    const record = await organizationErasureReader(db()).history([ACME]);
+    expect(record.map((row) => [row.action, row.actorType, row.mode])).toEqual([
+      ["deleted", "owner", "hard"],
+      ["purge_step", "system", null],
+      ["purge_step", "system", null],
+      ["purged", "system", null],
+    ]);
+  });
+});
+
+describe("ownerDelete.members", () => {
+  const SOLE = { config: { ownerDelete: { members: "sole" as const } } };
+
+  test("`sole` deletes, hard, the accounts of the members whose only organization this is, and never the owner's", async () => {
+    await choose(DEE, BETA);
+    // Beta holds Dee (owner, Beta only) and Ada (also in Acme). Dee is sole and is the actor; Ada belongs elsewhere.
+    const response = await call("DELETE", `${BASE}/current`, { as: DEE, app: buildApp(SOLE) });
+    expect(response.status).toBe(200);
+    expect((await bound(response, DeletedOrganizationResponse)).members).toEqual({
+      mode: "sole",
+      reached: [],
+      skipped: [
+        { userId: ADA, reason: "member_elsewhere" },
+        { userId: DEE, reason: "actor" },
+      ],
+    });
+    expect((await account(DEE)).deleted_at).toBeNull();
+    expect((await account(ADA)).deleted_at).toBeNull();
+  });
+
+  test("`sole` reaches the sole members through auth's own lifecycle, with the owner as the actor", async () => {
+    await choose(ADA, ACME);
+    const response = await call("DELETE", `${BASE}/current`, {
+      as: ADA,
+      app: buildApp(SOLE),
+      body: { reason: REASON },
+    });
+    expect((await bound(response, DeletedOrganizationResponse)).members).toEqual({
+      mode: "sole",
+      reached: [
+        { userId: BOB, outcome: "deleted" },
+        { userId: CAI, outcome: "deleted" },
+      ],
+      skipped: [{ userId: ADA, reason: "member_elsewhere" }],
+    });
+    expect((await account(BOB)).deleted_at).not.toBeNull();
+    expect((await account(ADA)).deleted_at).toBeNull();
+    const history = await env.DB.prepare(
+      "select actor_type, actor_id, reason from pithy_auth_user_lifecycle where user_id = ? and action = 'deleted'",
+    )
+      .bind(BOB)
+      .all();
+    expect(history.results).toEqual([{ actor_type: "user", actor_id: ADA, reason: REASON }]);
+  });
+
+  test("the default, `none`, deletes nobody's account and names no cascade", async () => {
+    await choose(ADA, ACME);
+    const response = await call("DELETE", `${BASE}/current`, { as: ADA });
+    expect(await bound(response, DeletedOrganizationResponse)).not.toHaveProperty("members");
+    for (const member of [BOB, CAI]) expect((await account(member)).deleted_at).toBeNull();
+  });
+
+  test("`sole` with no auth composed is refused before the organization moves", async () => {
+    await choose(ADA, ACME);
+    const response = await call("DELETE", `${BASE}/current`, {
+      as: ADA,
+      app: buildApp({ ...SOLE, userLifecycle: null }),
+    });
+    expect(response.status).toBe(500);
+    expect(await listed(BOB)).toContain(ACME);
+  });
+});
+
+describe("deleteOrganizationAsOwner", () => {
+  afterEach(() => forgetComposition());
+
+  test("an app route that checks a typed name first runs the same deletion through the composed capability", async () => {
+    const composed = organization({
+      roles: catalog,
+      baseUrl: "https://app.example.test",
+      ownership: OWNERSHIP,
+      sendInvitationEmail: false,
+    });
+    composed.compose?.({ capabilities: [composed] });
+    recordComposition([composed]);
+    const guard = {
+      catalog,
+      database: (bindings: Record<string, unknown>) => organizationDatabase(bindings.DB as D1Database),
+      now: () => NOW,
+    };
+    const routes = (app: Hono<PithyHonoEnv>) => {
+      const typed = app as unknown as Hono<OrganizationHonoEnv<Role>>;
+      typed.post(
+        "/settings/close",
+        requireOrganization(guard),
+        validate("json", z.object({ name: z.string().describe("The organization's name, typed.") })),
+        async (c) => {
+          if (c.req.valid("json").name !== c.var.acting.name) {
+            throw new ValidationError({ message: "Type the organization's name to close it." });
+          }
+          const deleted = await deleteOrganizationAsOwner(c, { reason: "Closed from settings." });
+          return c.json({ organizationId: deleted.organizationId, purge: deleted.purge });
+        },
+      );
+    };
+    const appWithRoute = buildApp({ routes });
+    await choose(ADA, ACME);
+    expect((await call("POST", "/settings/close", { as: ADA, app: appWithRoute, body: { name: "Acme" } })).status).toBe(
+      400,
+    );
+    expect(await deletions()).toEqual([]);
+    const closed = await call("POST", "/settings/close", { as: ADA, app: appWithRoute, body: { name: "Acme Games" } });
+    expect(await closed.json()).toEqual({ organizationId: ACME, purge: "pending" });
+    expect(await deletions()).toEqual([{ actorType: "owner", actorId: ADA, reason: "Closed from settings." }]);
+    expect(await listed(BOB)).not.toContain(ACME);
+  });
+
+  test("holds an app route's reason to the operator's rules, refusing a bad one before anything is written", async () => {
+    const composed = organization({
+      roles: catalog,
+      baseUrl: "https://app.example.test",
+      ownership: OWNERSHIP,
+      sendInvitationEmail: false,
+    });
+    composed.compose?.({ capabilities: [composed] });
+    recordComposition([composed]);
+    const guard = {
+      catalog,
+      database: (bindings: Record<string, unknown>) => organizationDatabase(bindings.DB as D1Database),
+      now: () => NOW,
+    };
+    const routes = (app: Hono<PithyHonoEnv>) => {
+      const typed = app as unknown as Hono<OrganizationHonoEnv<Role>>;
+      typed.post(
+        "/settings/close",
+        requireOrganization(guard),
+        validate("json", z.object({ reason: z.string().describe("Whatever the app passes on, unchecked.") })),
+        async (c) => {
+          const deleted = await deleteOrganizationAsOwner(c, { reason: c.req.valid("json").reason });
+          return c.json({ purge: deleted.purge });
+        },
+      );
+    };
+    const appWithRoute = buildApp({ routes });
+    await choose(ADA, ACME);
+    for (const reason of ["", "x".repeat(501), "Mail ada@example.com instead."]) {
+      const refusal = await call("POST", "/settings/close", { as: ADA, app: appWithRoute, body: { reason } });
+      expect(refusal.status, JSON.stringify(reason).slice(0, 40)).toBe(400);
+      expect((await errorOf(refusal)).code).toBe("validation/invalid_input");
+    }
+    expect(await deletions()).toEqual([]);
+    expect(await listed(BOB)).toContain(ACME);
+    expect(events.filter((each) => each.action === "organization/deleted")).toEqual([]);
+  });
+
+  test("refuses a caller whose role does not hold organization:delete, even behind the app's own gates", async () => {
+    const composed = organization({
+      roles: catalog,
+      baseUrl: "https://app.example.test",
+      ownership: OWNERSHIP,
+      sendInvitationEmail: false,
+    });
+    composed.compose?.({ capabilities: [composed] });
+    recordComposition([composed]);
+    const guard = {
+      catalog,
+      database: (bindings: Record<string, unknown>) => organizationDatabase(bindings.DB as D1Database),
+      now: () => NOW,
+    };
+    const routes = (app: Hono<PithyHonoEnv>) => {
+      const typed = app as unknown as Hono<OrganizationHonoEnv<Role>>;
+      typed.post("/settings/close", requireOrganization(guard), async (c) => {
+        await deleteOrganizationAsOwner(c);
+        return c.json({});
+      });
+    };
+    await choose(BOB, ACME);
+    expect((await call("POST", "/settings/close", { as: BOB, app: buildApp({ routes }) })).status).toBe(403);
+    expect(await deletions()).toEqual([]);
+  });
+
+  test("refuses an app route that never mounted requireOrganization(), even for the owner, before anything is written", async () => {
+    const composed = organization({
+      roles: catalog,
+      baseUrl: "https://app.example.test",
+      ownership: OWNERSHIP,
+      sendInvitationEmail: false,
+    });
+    composed.compose?.({ capabilities: [composed] });
+    recordComposition([composed]);
+    const routes = (app: Hono<PithyHonoEnv>) => {
+      const typed = app as unknown as Hono<OrganizationHonoEnv<Role>>;
+      typed.post("/settings/close", async (c) => {
+        await deleteOrganizationAsOwner(c, { reason: "Closed from settings." });
+        return c.json({});
+      });
+    };
+    await choose(ADA, ACME);
+    const refusal = await call("POST", "/settings/close", { as: ADA, app: buildApp({ routes }) });
+    expect(refusal.status).toBe(403);
+    expect((await errorOf(refusal)).code).toBe("organization/forbidden");
+    expect(await deletions()).toEqual([]);
+    expect(await listed(BOB)).toContain(ACME);
+    expect(events.filter((each) => each.action === "organization/deleted")).toEqual([]);
+  });
+
+  async function deletions() {
+    return db()
+      .selectFrom(LIFECYCLE_TABLE)
+      .select(["actorType", "actorId", "reason"])
+      .where("organizationId", "=", ACME)
+      .where("action", "=", "deleted")
+      .execute();
+  }
 });

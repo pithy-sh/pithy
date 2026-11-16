@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { AdminOrganizationsResponse, OrganizationsResponse } from "./responses";
+import { AdminOrganizationsResponse, DeletedOrganizationResponse, OrganizationsResponse } from "./responses";
 
 /**
  * The response schemas are exported, so a client reads them across a version boundary: a key added to one is
@@ -60,5 +60,24 @@ describe("AdminOrganizationsResponse.nextCursor", () => {
   test("the published document does not require it", () => {
     const schema = AdminOrganizationsResponse.toJSONSchema() as { required?: string[] };
     expect(schema.required).not.toContain("nextCursor");
+  });
+});
+
+describe("DeletedOrganizationResponse", () => {
+  const ACME = "11111111-1111-4111-8111-111111111111";
+
+  test("a Worker that erased at once sends only the id, and its answer still parses", () => {
+    expect(DeletedOrganizationResponse.parse({ organizationId: ACME })).toEqual({ organizationId: ACME });
+  });
+
+  test("a current Worker's deletion instant and purge state are kept, and a state that is not one is refused", () => {
+    const current = { organizationId: ACME, deletedAt: "2026-10-23T12:00:00.000Z", purge: "pending" };
+    expect(DeletedOrganizationResponse.parse(current)).toEqual(current);
+    expect(DeletedOrganizationResponse.safeParse({ ...current, purge: "scheduled" }).success).toBe(false);
+  });
+
+  test("the published document requires only the id", () => {
+    const schema = DeletedOrganizationResponse.toJSONSchema() as { required?: string[] };
+    expect(schema.required).toEqual(["organizationId"]);
   });
 });

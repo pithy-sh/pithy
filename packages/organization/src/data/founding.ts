@@ -23,8 +23,8 @@ export const FoundingIdempotencyKey = z.string().min(1).max(200);
  * slug is read from the organization's own row. A repeat that asks for a different name or slug is a different
  * request reusing the key, and is refused.
  *
- * The row is deleted with its organization, in `deleteOrganization`'s batch, so a key whose organization was
- * erased founds a new one. A soft deletion leaves it, so the key stays spent until the purge. A person's purge
+ * The row is deleted with its organization when the purge erases it, so a key whose organization was erased founds a
+ * new one. A deletion, an owner's or an operator's, leaves it, so the key stays spent until the purge. A person's purge
  * deletes every row they founded, and their export returns them.
  */
 export const OrganizationFounding = z

@@ -4380,7 +4380,7 @@
                             },
                             "actorType": {
                               "type": "string",
-                              "description": "Who deleted it: `control-plane` (a management client), `user` (the account's own holder) or `system`."
+                              "description": "Who deleted it: `control-plane` (a management client), `user` (a signed-in person: the account's own holder, or an organization's owner whose deletion of that organization reached the account through the sole-member cascade), `owner` (an organization's owner deleting that organization) or `system`."
                             },
                             "reason": {
                               "description": "Why, in the words of whoever deleted it. Null when nobody had to say.",
@@ -43272,7 +43272,7 @@
                     "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
                   },
                   "idempotencyKey": {
-                    "description": "A key the client chooses, once per organization it means to found, so a retry after a lost answer cannot found a second one. A repeat by the same person with the same key, name and slug answers 200 with the organization the key founded and writes nothing; the same key with a different name or slug refuses with 409 `organization/idempotency_key_reused`. Keys are per person. A repeat for a soft-deleted organization answers 404 `organization/not_found` and for a suspended one 403 `organization/organization_suspended`. The key is freed when the organization is erased: by an owner's `DELETE {base}/current`, an operator's hard deletion, or the purge after a soft deletion. Omit it and every request founds.",
+                    "description": "A key the client chooses, once per organization it means to found, so a retry after a lost answer cannot found a second one. A repeat by the same person with the same key, name and slug answers 200 with the organization the key founded and writes nothing; the same key with a different name or slug refuses with 409 `organization/idempotency_key_reused`. Keys are per person. A repeat for a soft-deleted organization answers 404 `organization/not_found` and for a suspended one 403 `organization/organization_suspended`. The key is freed when the purge erases the organization, after an owner's `DELETE {base}/current`, an operator's hard deletion, or the end of a soft deletion's window; until then a repeat answers 404. Omit it and every request founds.",
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200
@@ -43760,11 +43760,33 @@
           "organization"
         ],
         "operationId": "deleteOrganizationsCurrent",
-        "summary": "Delete the organization in force.",
-        "description": "Requires the `organization:delete` power in the acting organization.",
+        "summary": "Delete the organization in force: shut now, then purged from every capability that declares an organization purge contribution.",
+        "description": "Requires the `organization:delete` power in the acting organization. A hard deletion through the organization lifecycle: refused to every member and gone from every list at once, recorded with the owner as its actor, and purged by the organization purge Workflow. The body is optional; `reason` defaults to `Deleted by its owner.`.",
+        "requestBody": {
+          "required": false,
+          "description": "An owner deleting the organization in force. The body is optional; a request with none deletes it too.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "An owner deleting the organization in force. The body is optional; a request with none deletes it too.",
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "description": "Why the owner is deleting it. At most 500 characters, carrying no email address. Recorded verbatim on the history row and the audit event, and handed to every purge contribution's `erase`. Absent, `Deleted by its owner.` is recorded.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "freeText": true
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "What the heaviest act in the capability left behind.",
+            "description": "An owner's deletion: which organization, when, and what becomes of its purge.",
             "content": {
               "application/json": {
                 "schema": {
@@ -43774,13 +43796,102 @@
                       "type": "string",
                       "format": "uuid",
                       "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                      "description": "The organization that was deleted, with every membership, invitation and selection of it. Echoed so a client can clear exactly what it held rather than guessing from its own state."
+                      "description": "The organization that was deleted. Shut at once: refused to every member and gone from every list. Echoed so a client can clear exactly what it held rather than guessing from its own state."
+                    },
+                    "deletedAt": {
+                      "description": "When it was deleted, ISO-8601. Absent from a Worker that erased it at once, with no lifecycle.",
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "purge": {
+                      "description": "What became of its purge, which erases its rows from every composed capability that declares an organization purge contribution: `started` now; `pending` when this Worker binds no purge Workflow or the start failed — it is due, and the daily pass starts it. Absent from a Worker that erased it at once.",
+                      "type": "string",
+                      "enum": [
+                        "started",
+                        "pending"
+                      ]
+                    },
+                    "members": {
+                      "description": "What `ownerDelete.members: \"sole\"` did to the members' own accounts. Absent when the cascade is `none`, the default.",
+                      "type": "object",
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "sole"
+                          ],
+                          "description": "Which members it reached for: `none`, nobody, or `sole`, those whose only organization this is."
+                        },
+                        "reached": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "outcome": {
+                                "type": "string",
+                                "enum": [
+                                  "suspended",
+                                  "deleted"
+                                ],
+                                "description": "What the user lifecycle did to their own account, with this tenant's reason."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "outcome"
+                            ],
+                            "description": "One member whose own account the cascade suspended or deleted."
+                          },
+                          "description": "The members whose own accounts it suspended or deleted. Empty for `none`."
+                        },
+                        "skipped": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "userId": {
+                                "type": "string",
+                                "description": "The member, as `pithy_auth_users` ids them."
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "member_elsewhere",
+                                  "actor",
+                                  "already_suspended",
+                                  "account_deleted",
+                                  "no_account",
+                                  "failed"
+                                ],
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                              }
+                            },
+                            "required": [
+                              "userId",
+                              "reason"
+                            ],
+                            "description": "One member the cascade left alone, and why."
+                          },
+                          "description": "The members it left alone, and why. Empty for `none`."
+                        }
+                      },
+                      "required": [
+                        "mode",
+                        "reached",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
                     "organizationId"
                   ],
-                  "description": "What the heaviest act in the capability left behind."
+                  "description": "An owner's deletion: which organization, when, and what becomes of its purge."
                 }
               }
             }
@@ -46072,12 +46183,13 @@
                                 "type": "string",
                                 "enum": [
                                   "member_elsewhere",
+                                  "actor",
                                   "already_suspended",
                                   "account_deleted",
                                   "no_account",
                                   "failed"
                                 ],
-                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
                               }
                             },
                             "required": [
@@ -46293,12 +46405,13 @@
                                 "type": "string",
                                 "enum": [
                                   "member_elsewhere",
+                                  "actor",
                                   "already_suspended",
                                   "account_deleted",
                                   "no_account",
                                   "failed"
                                 ],
-                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
                               }
                             },
                             "required": [
@@ -46473,12 +46586,13 @@
                                 "type": "string",
                                 "enum": [
                                   "member_elsewhere",
+                                  "actor",
                                   "already_suspended",
                                   "account_deleted",
                                   "no_account",
                                   "failed"
                                 ],
-                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
                               }
                             },
                             "required": [
@@ -46782,12 +46896,13 @@
                                 "type": "string",
                                 "enum": [
                                   "member_elsewhere",
+                                  "actor",
                                   "already_suspended",
                                   "account_deleted",
                                   "no_account",
                                   "failed"
                                 ],
-                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
+                                "description": "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why."
                               }
                             },
                             "required": [

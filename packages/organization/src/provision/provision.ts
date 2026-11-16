@@ -142,8 +142,8 @@ export interface CreateOrganizationInput {
    * `slug` returns the organization the key founded, with `replayed` set and nothing written. A repeat with a
    * different `name` or `slug` refuses with {@link OrganizationIdempotencyKeyReusedError}. A repeat for an
    * organization that is soft-deleted refuses with {@link OrganizationNotFoundError}, and for a suspended one with
-   * {@link OrganizationSuspendedError}. The key is freed when {@link deleteOrganization} erases the organization:
-   * an owner's own deletion, an operator's hard deletion, or the purge after a soft deletion.
+   * {@link OrganizationSuspendedError}. The key is freed when the purge erases the organization: at once after an
+   * owner's deletion or an operator's hard one, once the window closes after a soft one.
    */
   readonly idempotencyKey?: string;
   /** The clock. One instant for both rows, injected so a test is deterministic. */
@@ -875,6 +875,11 @@ export type OrganizationDeleteSweep = (d1: D1Database, organizationId: string) =
 
 /**
  * Delete an organization, and everything that pointed at it — **including the adopter's own rows.**
+ *
+ * **The organization purge's own step, and nothing else's.** Every deletion goes through `removeOrganization` and
+ * the purge Workflow, whose last step is this capability's contribution, which calls this. A second caller would
+ * erase an organization with no history row and no other capability's contribution run; `deleteCallers.test.ts`
+ * fails on one.
  *
  * **Children first, in one batch.** Referential integrity across a capability boundary is held by the
  * writers rather than by a constraint (see the migration for what D1 actually enforces), and

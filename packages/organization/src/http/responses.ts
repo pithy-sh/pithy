@@ -210,18 +210,6 @@ export const RemovedMemberResponse = z
   .describe("Which membership ended, and whose decision it was.");
 export type RemovedMemberResponse = z.output<typeof RemovedMemberResponse>;
 
-/** `DELETE {base}/current` — the account is gone. */
-export const DeletedOrganizationResponse = z
-  .object({
-    organizationId: z
-      .uuid()
-      .describe(
-        "The organization that was deleted, with every membership, invitation and selection of it. Echoed so a client can clear exactly what it held rather than guessing from its own state.",
-      ),
-  })
-  .describe("What the heaviest act in the capability left behind.");
-export type DeletedOrganizationResponse = z.output<typeof DeletedOrganizationResponse>;
-
 /**
  * One outstanding offer.
  *
@@ -568,9 +556,9 @@ export const AdminMemberCascade = z
           .object({
             userId: z.string().describe("The member, as `pithy_auth_users` ids them."),
             reason: z
-              .enum(["member_elsewhere", "already_suspended", "account_deleted", "no_account", "failed"])
+              .enum(["member_elsewhere", "actor", "already_suspended", "account_deleted", "no_account", "failed"])
               .describe(
-                "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why.",
+                "Why they were left alone: `member_elsewhere`, they belong to another organization and are never modified; `actor`, they are the owner who deleted it, whose own account a deletion never touches; `already_suspended`, their own suspension stands as it was; `account_deleted`, their account is already deleted; `no_account`, the membership names no account; `failed`, the user transition refused — the log says why.",
               ),
           })
           .describe("One member the cascade left alone, and why."),
@@ -579,6 +567,31 @@ export const AdminMemberCascade = z
   })
   .describe("What a tenant's suspension or deletion did to the people in it.");
 export type AdminMemberCascade = z.output<typeof AdminMemberCascade>;
+
+/** `DELETE {base}/current` — the organization is shut, and its purge is on its way. */
+export const DeletedOrganizationResponse = z
+  .object({
+    organizationId: z
+      .uuid()
+      .describe(
+        "The organization that was deleted. Shut at once: refused to every member and gone from every list. Echoed so a client can clear exactly what it held rather than guessing from its own state.",
+      ),
+    deletedAt: z.iso
+      .datetime()
+      .optional()
+      .describe("When it was deleted, ISO-8601. Absent from a Worker that erased it at once, with no lifecycle."),
+    purge: z
+      .enum(["started", "pending"])
+      .optional()
+      .describe(
+        "What became of its purge, which erases its rows from every composed capability that declares an organization purge contribution: `started` now; `pending` when this Worker binds no purge Workflow or the start failed — it is due, and the daily pass starts it. Absent from a Worker that erased it at once.",
+      ),
+    members: AdminMemberCascade.optional().describe(
+      'What `ownerDelete.members: "sole"` did to the members\' own accounts. Absent when the cascade is `none`, the default.',
+    ),
+  })
+  .describe("An owner's deletion: which organization, when, and what becomes of its purge.");
+export type DeletedOrganizationResponse = z.output<typeof DeletedOrganizationResponse>;
 
 /**
  * `POST {base}/admin/organizations/:organizationId/suspend/preview` and `…/delete/preview`.

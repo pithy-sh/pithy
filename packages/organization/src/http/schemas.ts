@@ -71,7 +71,7 @@ export const CreateOrganization = z
         'The URL-safe short name, unique across all organizations. Lowercase alphanumerics and single hyphens, bounded — the column\'s own rule, read from it rather than restated, so a form and a column can never disagree about what a slug is. Omit it and the server derives one from the name; supply it and a collision refuses rather than renaming, because an address somebody picked is theirs to keep or to be told is gone. A project configured `slugs: "derived"` refuses a supplied one.',
       ),
     idempotencyKey: FoundingIdempotencyKey.optional().describe(
-      "A key the client chooses, once per organization it means to found, so a retry after a lost answer cannot found a second one. A repeat by the same person with the same key, name and slug answers 200 with the organization the key founded and writes nothing; the same key with a different name or slug refuses with 409 `organization/idempotency_key_reused`. Keys are per person. A repeat for a soft-deleted organization answers 404 `organization/not_found` and for a suspended one 403 `organization/organization_suspended`. The key is freed when the organization is erased: by an owner's `DELETE {base}/current`, an operator's hard deletion, or the purge after a soft deletion. Omit it and every request founds.",
+      "A key the client chooses, once per organization it means to found, so a retry after a lost answer cannot found a second one. A repeat by the same person with the same key, name and slug answers 200 with the organization the key founded and writes nothing; the same key with a different name or slug refuses with 409 `organization/idempotency_key_reused`. Keys are per person. A repeat for a soft-deleted organization answers 404 `organization/not_found` and for a suspended one 403 `organization/organization_suspended`. The key is freed when the purge erases the organization, after an owner's `DELETE {base}/current`, an operator's hard deletion, or the end of a soft deletion's window; until then a repeat answers 404. Omit it and every request founds.",
     ),
   })
   .describe("What founding an organization takes. The founder's role is the catalog's and is not in the request.");
@@ -534,3 +534,17 @@ export const AdminDeleteOrganization = z
   })
   .describe("An operator deleting a tenant, softly or hard, with a reason.");
 export type AdminDeleteOrganization = z.output<typeof AdminDeleteOrganization>;
+
+/**
+ * The body of `DELETE {base}/current`, which may be absent. Its reason is held to {@link OperatorReason}'s rules,
+ * because it lands on the same history row and the same audit event an operator's does.
+ */
+export const OwnerDeleteOrganization = z
+  .strictObject({
+    reason: OperatorReason.optional().describe(
+      "Why the owner is deleting it. At most 500 characters, carrying no email address. Recorded verbatim on the history row and the audit event, and handed to every purge contribution's `erase`. Absent, `Deleted by its owner.` is recorded.",
+    ),
+  })
+  .optional()
+  .describe("An owner deleting the organization in force. The body is optional; a request with none deletes it too.");
+export type OwnerDeleteOrganization = z.output<typeof OwnerDeleteOrganization>;

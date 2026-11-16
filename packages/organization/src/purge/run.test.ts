@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import type { PurgeContext, PurgeDeletion, PurgeStep } from "@pithy-sh/core/src/capability/purge";
 import type { WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import { describe, expect, test } from "vitest";
 import {
@@ -66,10 +66,11 @@ function contribution(name: string, log: string[], failures = 0): PurgeStep & { 
   };
 }
 
-function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): OrganizationPurgeOps {
+function ops(log: string[], due: "due" | "not_due" | "gone" = "due", deletion?: PurgeDeletion): OrganizationPurgeOps {
   let completed = false;
   return {
     due: async () => due,
+    deletion: async () => deletion,
     recordStep: async (organizationId, step, summary) => void log.push(`record ${step} ${organizationId}: ${summary}`),
     recordRetained: async (organizationId, step, retain) =>
       void log.push(
@@ -86,6 +87,32 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due"): Organizati
 }
 
 describe("purgeOrganization", () => {
+  test("every erasing contribution is handed the deletion the history recorded, and none when it recorded none", async () => {
+    const deletion: PurgeDeletion = {
+      actor: { type: "owner", id: "user_ada" },
+      reason: "Deleted by its owner.",
+      mode: "hard",
+      at: new Date("2026-10-23T12:00:00.000Z"),
+    };
+    const seen: (PurgeContext["deletion"] | "none")[] = [];
+    const watching = (name: string): PurgeStep => ({
+      step: name,
+      contribution: {
+        subject: "organization",
+        summary: `Erases ${name}'s rows.`,
+        erase: async (context) => void seen.push(context.deletion ?? "none"),
+      },
+    });
+    const steps = [watching("organization"), watching("media")];
+    await purgeOrganization({ steps, env: {}, ops: ops([], "due", deletion) }, workflow().step, Terminal, {
+      organizationId: ACME,
+    });
+    expect(seen).toEqual([deletion, deletion]);
+    seen.length = 0;
+    await purgeOrganization({ steps, env: {}, ops: ops([]) }, workflow().step, Terminal, { organizationId: ACME });
+    expect(seen).toEqual(["none", "none"]);
+  });
+
   test("a retained step is recorded as retained, in its own step, and nothing of it is erased", async () => {
     const log: string[] = [];
     const own = contribution("organization", log);

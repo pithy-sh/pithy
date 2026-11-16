@@ -57,15 +57,14 @@ describe("OrganizationAuditActions", () => {
     // codes themselves are stable forever once a row holds one: a renamed code orphans every event already
     // written under the old one, and nothing in this package can repair that.
     expect([...codes].sort()).toEqual([
-      // An operator's acts, through the control plane (#624). Their own codes, not the member codes with
-      // another actor.
+      // An operator's acts, through the control plane: their own codes, not the member codes with another actor.
       "organization/admin_invitation_resent",
       "organization/admin_invitation_revoked",
       "organization/admin_invitations_listed",
       "organization/admin_member_added",
       "organization/admin_member_removed",
       "organization/admin_member_role_changed",
-      // The organization's own lifecycle (#623).
+      // The organization's own lifecycle.
       "organization/admin_organization_deleted",
       "organization/admin_organization_hard_deleted",
       "organization/admin_organization_reinstated",
@@ -86,10 +85,10 @@ describe("OrganizationAuditActions", () => {
       "organization/ownership_accepted",
       "organization/ownership_nominated",
       "organization/ownership_withdrawn",
-      // What a purge records, step by step and when it gives up (#823).
+      // What a purge records, step by step and when it gives up.
       "organization/purge_failed",
       "organization/purge_step",
-      // Not an act anybody took: the purge, with nobody calling, erased a deleted organization (#623).
+      // Not an act anybody took: the purge, with nobody calling, erased a deleted organization.
       "organization/purged",
       // Not an act somebody took, but an act somebody was stopped from taking — recorded because a
       // refusal of a caller the account had already let in is what an intrusion looks like from inside.
@@ -120,6 +119,33 @@ describe("recordOrganizationAction", () => {
     expect(event?.resourceType).toBe("membership");
     expect(event?.resourceId).toBe("m-1");
     expect(event?.outcome).toBe("success");
+  });
+
+  test("a reason is recorded trimmed ahead of the facts, a reason that does not fit only as rejected, and none as nothing", async () => {
+    const { emit, written } = collecting();
+    const base = { action: OrganizationAuditActions.deleted, actor: ACTOR, resource: RESOURCE } as const;
+    await recordOrganizationAction(emit, { ...base, reason: "  Closing the studio.  " });
+    await recordOrganizationAction(emit, {
+      ...base,
+      reason: "  Closing.  ",
+      facts: { reason: "a fact", mode: "hard" },
+    });
+    for (const reason of ["   ", "x".repeat(MAX_OPERATOR_REASON_LENGTH + 1), "Mail ada@example.com instead."]) {
+      await recordOrganizationAction(emit, { ...base, reason, facts: { mode: "hard" } });
+    }
+    await recordOrganizationAction(emit, base);
+
+    expect(written.map((event) => event.metadata)).toEqual([
+      { reason: "Closing the studio." },
+      // A fact by the same name is the caller's own and is kept over the reason.
+      { reason: "a fact", mode: "hard" },
+      { reasonRejected: true, mode: "hard" },
+      { reasonRejected: true, mode: "hard" },
+      { reasonRejected: true, mode: "hard" },
+      undefined,
+    ]);
+    expect(JSON.stringify(written)).not.toContain("ada@example.com");
+    expect(written.at(-1)).not.toHaveProperty("metadata");
   });
 
   test("the actor and the tenant arrive as one object, so they cannot be transposed", () => {

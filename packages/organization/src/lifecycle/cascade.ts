@@ -12,7 +12,7 @@ import {
 import { MEMBERSHIPS_TABLE, type OrganizationDatabase } from "../data/tables";
 
 /**
- * What an organization's suspension or deletion does to the people in it (#623).
+ * What an organization's suspension or deletion does to the people in it.
  *
  * ## The rule: a member is reached only when this is their only organization
  *
@@ -36,7 +36,7 @@ import { MEMBERSHIPS_TABLE, type OrganizationDatabase } from "../data/tables";
  * ## Selected once, so it can be previewed
  *
  * Who a cascade reaches is decided by one function, `selectCascade`, before anything is applied. The write runs
- * what it selects; the preview routes answer with it and stop (#813). A preview therefore cannot name a member the
+ * what it selects; the preview routes answer with it and stop. A preview therefore cannot name a member the
  * write would then treat differently — on the same data. Between the two, a membership can change, and the write's
  * own response stays the record of what happened.
  *
@@ -50,7 +50,13 @@ import { MEMBERSHIPS_TABLE, type OrganizationDatabase } from "../data/tables";
 export type MemberCascade = "none" | "sole";
 
 /** Why a member was not reached. */
-export type CascadeSkip = "member_elsewhere" | "already_suspended" | "account_deleted" | "no_account" | "failed";
+export type CascadeSkip =
+  | "member_elsewhere"
+  | "actor"
+  | "already_suspended"
+  | "account_deleted"
+  | "no_account"
+  | "failed";
 
 /** What the cascade did, member by member. */
 export interface CascadeOutcome {
@@ -161,7 +167,7 @@ const deletionJudge =
     standing.state === "deleted" && deletion === "soft" ? "account_deleted" : null;
 
 /**
- * **The cascade's selection, and the one place it is made** (#813): who a cascade would reach, and why each other
+ * **The cascade's selection, and the one place it is made**: who a cascade would reach, and why each other
  * member would be left alone. The preview answers with it and the cascade runs it, so a preview cannot name a
  * member the write then treats differently. It writes nothing; `reached` is the outcome the transition would give.
  */
@@ -171,6 +177,7 @@ async function selectCascade(
   mode: MemberCascade,
   judge: CascadeJudge,
   outcome: "suspended" | "deleted",
+  spare: readonly string[] = [],
 ): Promise<CascadeOutcome> {
   if (mode === "none") return NO_CASCADE;
   const { sole, elsewhere } = await classifyMembers(reads.db, organizationId);
@@ -179,8 +186,11 @@ async function selectCascade(
     userId,
     reason: "member_elsewhere",
   }));
-  const standings = await accountStandings(reads.auth, sole, reads.now);
-  for (const userId of sole) {
+  const spared = new Set(spare);
+  for (const userId of sole) if (spared.has(userId)) skipped.push({ userId, reason: "actor" });
+  const reachable = sole.filter((userId) => !spared.has(userId));
+  const standings = await accountStandings(reads.auth, reachable, reads.now);
+  for (const userId of reachable) {
     const standing = standings.get(userId);
     const skip = standing ? judge(standing) : "no_account";
     if (skip) skipped.push({ userId, reason: skip });
@@ -231,7 +241,7 @@ async function applyCascade(
 
 /**
  * Who suspending an organization with this cascade would reach, as things stand now, with nothing applied. What
- * the suspension's preview answers (#813).
+ * the suspension's preview answers.
  */
 export function planSuspension(
   reads: CascadeReads,
@@ -242,13 +252,13 @@ export function planSuspension(
 
 /**
  * Who deleting an organization with this cascade would reach, softly or hard, as things stand now, with nothing
- * applied. What the deletion's preview answers (#813).
+ * applied. What the deletion's preview answers.
  */
 export function planDeletion(
   reads: CascadeReads,
-  input: { organizationId: string; mode: MemberCascade; deletion: "soft" | "hard" },
+  input: { organizationId: string; mode: MemberCascade; deletion: "soft" | "hard"; spare?: readonly string[] },
 ): Promise<CascadeOutcome> {
-  return selectCascade(reads, input.organizationId, input.mode, deletionJudge(input.deletion), "deleted");
+  return selectCascade(reads, input.organizationId, input.mode, deletionJudge(input.deletion), "deleted", input.spare);
 }
 
 /**
@@ -270,7 +280,8 @@ export async function suspendSoleMembers(
  * Delete the accounts of the members whose only organization this is, softly or hard as the organization's own
  * deletion runs, with its reason. A suspended account is deleted too — deletion outranks a suspension. One
  * already deleted is left alone by a soft deletion; a hard one brings its purge forward to now. `onHard` is told
- * each account a hard deletion reached, so the caller can start that account's purge.
+ * each account a hard deletion reached, so the caller can start that account's purge. `spare` names accounts it never
+ * reaches — the owner deleting the organization — each skipped as `actor`.
  */
 export async function deleteSoleMembers(
   deps: CascadeDeps,
@@ -279,6 +290,7 @@ export async function deleteSoleMembers(
     mode: MemberCascade;
     reason: string;
     deletion: "soft" | "hard";
+    spare?: readonly string[];
     onHard?: (userId: string, deletedAt: Date) => Promise<void>;
   },
 ): Promise<CascadeOutcome> {

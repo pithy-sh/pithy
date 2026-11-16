@@ -19,6 +19,7 @@ import {
   completeOrganizationPurge,
   dueOrganizationPurges,
   type OrganizationLifecycleDeps,
+  organizationDeletion,
   organizationPurgeSubject,
   recordOrganizationPurgeStep,
   reinstateOrganization,
@@ -485,5 +486,46 @@ describe("the purge's own records", () => {
       { action: "purge_step", reason: "Deletes media." },
       { action: "purge_retained", reason: "Kept for tax records." },
     ]);
+  });
+});
+
+describe("organizationDeletion", () => {
+  test("reads the newest deletion: a hard one bringing a soft one forward is the one a purge runs under", async () => {
+    expect(await organizationDeletion(deps(), ACME)).toBeUndefined();
+    await removeOrganization(deps(), {
+      organizationId: ACME,
+      actor: { type: "owner", id: "user_ada" },
+      reason: "Closing.",
+      purgeAfterDays: 30,
+    });
+    expect(await organizationDeletion(deps(), ACME)).toEqual({
+      actor: { type: "owner", id: "user_ada" },
+      reason: "Closing.",
+      mode: "soft",
+      at: NOW,
+    });
+    const later = new Date(NOW.getTime() + 60_000);
+    await removeOrganization(deps(later), {
+      organizationId: ACME,
+      actor: { type: "control-plane", id: "operator-1" },
+      reason: "Now.",
+      mode: "hard",
+      purgeAfterDays: 30,
+    });
+    expect(await organizationDeletion(deps(), ACME)).toEqual({
+      actor: { type: "control-plane", id: "operator-1" },
+      reason: "Now.",
+      mode: "hard",
+      at: later,
+    });
+  });
+
+  test("a deletion recorded before the history kept a mode hands a purge no deletion", async () => {
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, actor_id, reason, created_at) values (?, 'deleted', 'control-plane', 'operator-1', 'Old.', 1)",
+    )
+      .bind(ACME)
+      .run();
+    expect(await organizationDeletion(deps(), ACME)).toBeUndefined();
   });
 });

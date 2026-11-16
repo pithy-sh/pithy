@@ -483,6 +483,7 @@ describe("the erasure record", () => {
       resourceType: "organization",
       auditActions: {
         deleted: [
+          OrganizationAuditActions.deleted,
           OrganizationAuditActions.adminOrganizationDeleted,
           OrganizationAuditActions.adminOrganizationHardDeleted,
         ],
