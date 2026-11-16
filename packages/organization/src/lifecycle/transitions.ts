@@ -487,8 +487,9 @@ function windowClosed(organizationId: string, closes: Date): ConflictError {
  *
  * Once `purgeAfter` has passed the purge is due and may already be erasing capabilities' rows, so that is a
  * conflict naming the date. After the purge there is no organization at all, and that is a 404 whose action says
- * the data is gone. One that is not deleted is no transition. A suspension it was under is still in force after,
- * and so is any member's own account suspension — a restore lifts neither.
+ * the data is gone. One that is not deleted is no transition, and fires nothing. A suspension it was under is still
+ * in force after, and so is any member's own account suspension — a restore lifts neither. `onOrganizationRestored`
+ * fires once the restore is written, so an adopter can undo what it did on `onOrganizationDeleted`.
  */
 export async function restoreOrganization(
   deps: OrganizationLifecycleDeps,
@@ -523,6 +524,12 @@ export async function restoreOrganization(
     if (closed && closed.getTime() <= nowOf(deps).getTime()) throw windowClosed(input.organizationId, closed);
     throw raced(input.organizationId);
   }
+  await fire(deps, "onOrganizationRestored", {
+    organizationId: input.organizationId,
+    actor: input.actor,
+    reason: input.reason,
+    at,
+  });
   return { changed: true, state };
 }
 

@@ -6,7 +6,7 @@ import type { UserLifecycleActorType } from "../data/userLifecycle";
 import type { HookRuntime } from "../hooks/runtime";
 
 /**
- * The four seams an adopter's own code follows the account lifecycle through, without polling.
+ * The five seams an adopter's own code follows the account lifecycle through, without polling.
  *
  * **On the transition, not on a route.** An account is suspended from the management surface today and may be
  * from somewhere else tomorrow; a listener hung off one route would miss the others, which is the argument
@@ -48,7 +48,7 @@ export type UserLifecycleListener<Env = Record<string, unknown>> = (
   runtime: HookRuntime<Env>,
 ) => void | Promise<void>;
 
-/** The four hooks, each optional. Passed to `auth()` beside the config; `Env` is the adopter's Worker env. */
+/** The five hooks, each optional. Passed to `auth()` beside the config; `Env` is the adopter's Worker env. */
 export interface UserLifecycleHooks<Env = Record<string, unknown>> {
   /** An account was suspended. */
   readonly onUserSuspended?: UserLifecycleListener<Env>;
@@ -56,6 +56,11 @@ export interface UserLifecycleHooks<Env = Record<string, unknown>> {
   readonly onUserReinstated?: UserLifecycleListener<Env>;
   /** An account was deleted — by an operator or by its owner — and its purge window began. */
   readonly onUserDeleted?: UserLifecycleListener<Env>;
+  /**
+   * A deleted account was restored inside its purge window. The undo for whatever `onUserDeleted` did: the account
+   * is back, and a suspension it was under is still in force.
+   */
+  readonly onUserRestored?: UserLifecycleListener<Env>;
   /** A deleted account's data was erased. The last thing that happens to it. */
   readonly onUserPurged?: UserLifecycleListener<Env>;
 }

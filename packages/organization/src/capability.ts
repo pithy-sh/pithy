@@ -272,6 +272,7 @@ export function organization<
     onOrganizationSuspended,
     onOrganizationReinstated,
     onOrganizationDeleted,
+    onOrganizationRestored,
     onOrganizationPurged,
     onMemberRoleChanged,
     onMemberRemoved,
@@ -283,6 +284,7 @@ export function organization<
     ...(onOrganizationSuspended ? { onOrganizationSuspended } : {}),
     ...(onOrganizationReinstated ? { onOrganizationReinstated } : {}),
     ...(onOrganizationDeleted ? { onOrganizationDeleted } : {}),
+    ...(onOrganizationRestored ? { onOrganizationRestored } : {}),
     ...(onOrganizationPurged ? { onOrganizationPurged } : {}),
   };
   const typedMembershipHooks: OrganizationMembershipHooks<Env> = {

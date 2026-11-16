@@ -93,7 +93,7 @@ POST   /auth/admin/users/:userId/export    { reason }
 
 The response says what happened: `outcome` is `deleted`, `brought_forward`, or `unchanged` for an account already deleted. `purge` is `scheduled` for a soft deletion, `started` when this call started the purge, and `pending` when the account is due and this Worker binds no purge Workflow to start. `notify: false` silences the mail this call sends: the deletion-scheduled notice for soft, the deletion-complete notice for hard.
 
-**Restore** clears both columns inside the window and records it. The person signs in again; no session comes back. A suspension the account was under before the deletion is still there, and the response says `state: "suspended"`. Once `purge_after` has passed the purge is due, so a restore is a 409 naming the date. The window is checked against the database's clock as the restore's write runs, the same clock the purge checks it against, so a restore and a purge that race always agree on which one won. A window that closes while a restore is in flight, or that a hard deletion brings forward, is the same 409. After the purge there is no account: a 404, whose action says the data is gone.
+**Restore** clears both columns inside the window, records it, and fires [`onUserRestored`](#hooks). The person signs in again; no session comes back. A suspension the account was under before the deletion is still there, and the response says `state: "suspended"`. Once `purge_after` has passed the purge is due, so a restore is a 409 naming the date. The window is checked against the database's clock as the restore's write runs, the same clock the purge checks it against, so a restore and a purge that race always agree on which one won. A window that closes while a restore is in flight, or that a hard deletion brings forward, is the same 409. After the purge there is no account: a 404, whose action says the data is gone.
 
 **Export** answers an access request. It returns one JSON document, validated by `AdminUserExportResponse` from `@pithy-sh/auth/src/http/responses`: the subject, when it was read, and one entry per composed capability that declares a purge contribution, in the order the purge runs them. Each entry says what a purge does with its rows — `disposition` is `erase` or `retain`, and a `retain` entry carries the `basis` it is kept on, in the sentence written for the person and in their stored locale where the contribution names a `basisKey` a catalog translates ([`docs/I18N.md`](../../../docs/I18N.md#a-purges-retained-basis-reads-in-the-persons-language)), with that `basisKey` beside it — and then what it answered: `exported` with that capability's data, `not_exported` when it erases rows it does not say how to export, or `unavailable` when its rows would not read. Every kit capability that holds rows about a person exports them, so `not_exported` is only ever an adopter's own capability; [what each one does](#what-each-capability-does-with-a-persons-rows) is below. Auth's own part is `AuthUserExport`: the account, its sessions, linked providers, devices, history, the sign-in links and codes the verification ledger records for it, and its rows in the user-keyed tables its Better Auth plugins created, and no credential — no session token, no provider token, no push token, no two-factor secret or backup code, no key. No kit capability's part carries one either: no opt-in token, no share link, no invitation digest, no provider payload, no Google Play purchase token, no message variables. It is audited as a disclosure, `auth/admin_user_exported`, with the operator, the reason, and which parts answered, never the data. An unknown or purged account is a 404.
 
@@ -192,11 +192,26 @@ auth({
   onUserSuspended: async (event, d1, runtime) => {},
   onUserReinstated: async (event, d1, runtime) => {},
   onUserDeleted: async (event, d1, runtime) => {},
+  onUserRestored: async (event, d1, runtime) => {},
   onUserPurged: async (event, d1, runtime) => {},
 });
 ```
 
 Each fires once per transition. A call that finds the account already where it asked to put it fires nothing, and neither does restating a suspension. A hook that throws is logged and changes nothing: the transition is already written.
+
+`onUserRestored` fires when a deleted account is restored inside its window, with the operator, the reason and `at`, the same event the other hooks get. Restoring an account that is not deleted fires nothing, and neither does a restore refused because the window closed. It is where you undo what `onUserDeleted` did:
+
+```ts
+auth({
+  baseURL: "https://api.example.com",
+  onUserDeleted: async ({ userId, at }, d1) => {
+    await d1.prepare("update members set removed_at = ? where user_id = ?").bind(at.getTime(), userId).run();
+  },
+  onUserRestored: async ({ userId }, d1) => {
+    await d1.prepare("update members set removed_at = null where user_id = ?").bind(userId).run();
+  },
+});
+```
 
 Each hook is handed the event, the D1 binding, and `runtime`: `{ env, waitUntil? }`. `env` is the Worker's environment, so a hook can read a secret, start a Workflow, send to a queue, or call out. Pass your own `Env` to `auth<Env>()` and `runtime.env` is typed as it, with no cast. `onSessionRevoked` is handed the same `runtime` as its third argument.
 

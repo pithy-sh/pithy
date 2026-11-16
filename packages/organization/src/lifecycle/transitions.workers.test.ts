@@ -78,6 +78,7 @@ function deps(at: Date = NOW, hooks: OrganizationLifecycleDeps["hooks"] | null =
       onOrganizationSuspended: (event, _d1, runtime) => void fired.push({ name: "suspended", event, runtime }),
       onOrganizationReinstated: (event, _d1, runtime) => void fired.push({ name: "reinstated", event, runtime }),
       onOrganizationDeleted: (event, _d1, runtime) => void fired.push({ name: "deleted", event, runtime }),
+      onOrganizationRestored: (event, _d1, runtime) => void fired.push({ name: "restored", event, runtime }),
       onOrganizationPurged: (event, _d1, runtime) => void fired.push({ name: "purged", event, runtime }),
     },
     runtime: RUNTIME,
@@ -337,11 +338,59 @@ describe("restoreOrganization", () => {
     expect((await history()).map((row) => row.action)).toEqual(["deleted", "restored"]);
   });
 
-  test("an organization that is not deleted is no transition", async () => {
+  test("an organization that is not deleted is no transition, and fires nothing", async () => {
     expect(await restoreOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "x" })).toEqual({
       changed: false,
       state: "active",
     });
+    expect(fired).toEqual([]);
+  });
+
+  test("fires onOrganizationRestored once, with the actor, the reason and when; a second restore fires nothing", async () => {
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", purgeAfterDays: 30 });
+    await restoreOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "back" });
+    await restoreOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "again" });
+    expect(fired.map((hook) => hook.name)).toEqual(["deleted", "restored"]);
+    expect(fired[1]?.event).toEqual({ organizationId: ACME, actor: OPERATOR, reason: "back", at: NOW });
+  });
+
+  test("a restore refused because the window closed fires nothing", async () => {
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", purgeAfterDays: 1 });
+    await expect(
+      restoreOrganization(deps(new Date(NOW.getTime() + 2 * DAY)), {
+        organizationId: ACME,
+        actor: OPERATOR,
+        reason: "x",
+      }),
+    ).rejects.toMatchObject({ payload: { code: "core/conflict" } });
+    expect(fired.map((hook) => hook.name)).toEqual(["deleted"]);
+  });
+
+  test("a throwing onOrganizationRestored is logged, and the restore stands", async () => {
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", purgeAfterDays: 30 });
+    const warnings: string[] = [];
+    const log = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: string) => void warnings.push(message),
+      error: () => {},
+      child: () => log,
+    };
+    const throwing = {
+      ...deps(NOW, {
+        onOrganizationRestored: () => {
+          throw new Error("adopter bug");
+        },
+      }),
+      log,
+    };
+    expect(await restoreOrganization(throwing, { organizationId: ACME, actor: OPERATOR, reason: "back" })).toEqual({
+      changed: true,
+      state: "active",
+    });
+    expect(await columns()).toMatchObject({ deletedAt: null, purgeAfter: null });
+    expect((await history()).map((row) => row.action)).toEqual(["deleted", "restored"]);
+    expect(warnings.some((message) => message.includes("onOrganizationRestored"))).toBe(true);
   });
 });
 
@@ -350,8 +399,17 @@ describe("the hooks' runtime", () => {
     await suspendOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", restoreRoute: RESTORE });
     await reinstateOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "ok", restoreRoute: RESTORE });
     await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "gone", purgeAfterDays: 1 });
+    await restoreOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "back" });
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "gone", purgeAfterDays: 1 });
     await completeOrganizationPurge(deps(), { organizationId: ACME });
-    expect(fired.map((hook) => hook.name)).toEqual(["suspended", "reinstated", "deleted", "purged"]);
+    expect(fired.map((hook) => hook.name)).toEqual([
+      "suspended",
+      "reinstated",
+      "deleted",
+      "restored",
+      "deleted",
+      "purged",
+    ]);
     for (const hook of fired) expect(hook.runtime).toBe(RUNTIME);
   });
 

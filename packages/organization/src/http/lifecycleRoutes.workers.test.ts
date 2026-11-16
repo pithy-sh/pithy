@@ -270,6 +270,7 @@ function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
       onOrganizationSuspended: (event) => void hooked.push({ name: "suspended", event }),
       onOrganizationReinstated: (event) => void hooked.push({ name: "reinstated", event }),
       onOrganizationDeleted: (event) => void hooked.push({ name: "deleted", event }),
+      onOrganizationRestored: (event) => void hooked.push({ name: "restored", event }),
     },
     userLifecycle: () => users,
     now: () => at,
@@ -864,6 +865,21 @@ describe("restoring an organization", () => {
     expect((await choose(ADA, ACME, later)).status).toBe(200);
   });
 
+  test("fires onOrganizationRestored once, as the operator, and a second restore fires nothing", async () => {
+    await call("DELETE", `${ADMIN}/${ACME}`, { body: { reason: REASON } });
+    expect((await call("POST", `${ADMIN}/${ACME}/restore`, { body: { reason: "Deleted by mistake." } })).status).toBe(
+      200,
+    );
+    expect((await call("POST", `${ADMIN}/${ACME}/restore`, { body: { reason: REASON } })).status).toBe(200);
+    expect(hooked.map((hook) => hook.name)).toEqual(["deleted", "restored"]);
+    expect(hooked[1]?.event).toMatchObject({
+      organizationId: ACME,
+      actor: { type: "control-plane" },
+      reason: "Deleted by mistake.",
+      at: NOW,
+    });
+  });
+
   test("a suspension it was under is still in force after", async () => {
     await call("POST", `${ADMIN}/${ACME}/suspend`, { body: { reason: REASON } });
     await call("DELETE", `${ADMIN}/${ACME}`, { body: { reason: REASON } });
@@ -881,6 +897,7 @@ describe("restoring an organization", () => {
     expect((await call("POST", `${ADMIN}/${ACME}/restore`, { body: { reason: REASON }, app: closed })).status).toBe(
       409,
     );
+    expect(hooked.map((hook) => hook.name)).toEqual(["deleted"]);
 
     // What the purge leaves behind: no organization, and its own record that it erased one.
     await env.DB.prepare("delete from pithy_organization_memberships where organization_id = ?").bind(ACME).run();
