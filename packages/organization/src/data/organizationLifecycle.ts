@@ -27,9 +27,9 @@ export type OrganizationLifecycleAction = z.output<typeof OrganizationLifecycleA
 
 /** Who made the transition. */
 export const OrganizationLifecycleActorType = z
-  .enum(["control-plane", "system"])
+  .enum(["control-plane", "owner", "system"])
   .describe(
-    "Who made the transition: `control-plane` (a management client, under a scoped grant) or `system` (the scheduled purge, with nobody calling).",
+    "Who made the transition: `control-plane` (a management client, under a scoped grant), `owner` (a member holding `organization:delete`, deleting it through `DELETE {base}/current` or `deleteOrganizationAsOwner`), or `system` (the scheduled purge, with nobody calling).",
   );
 export type OrganizationLifecycleActorType = z.output<typeof OrganizationLifecycleActorType>;
 
@@ -50,12 +50,14 @@ export const OrganizationLifecycleEvent = z
     actorId: z
       .string()
       .nullable()
-      .describe("The management client's verified `sub` — which person acted. Null for `system`."),
+      .describe(
+        "Which person acted: the management client's verified `sub`, or the owner's user id. Null for `system`.",
+      ),
     reason: z
       .string()
       .nullable()
       .describe(
-        "Why, in the operator's words. For a purge step, the contribution's summary, so the history says what the step erased. Null for a transition nobody had to justify.",
+        "Why, in the operator's or owner's words — an owner who gave none records `Deleted by its owner.`. For a purge step, the contribution's summary, so the history says what the step erased. Null for a transition nobody had to justify.",
       ),
     suspendedUntil: SQLiteDate.nullable().describe(
       "For a `suspended` row, when that suspension ends by itself; null for one that lasts until a reinstatement, and for every other action.",

@@ -1,6 +1,6 @@
 # Organization lifecycle
 
-An organization can be suspended or deleted. The kit holds the state, enforces it at every door a member uses, records every transition, and tells the owners. An operator suspends, reinstates, deletes and restores an organization through four control-plane routes, below. A purge erases a deleted organization's data, once its window closes, from every composed capability that declares an organization purge contribution: in the kit, organization, media and storage. It has the shape a user's account lifecycle has (`@pithy-sh/auth`'s `docs/account-lifecycle.md`), and one rule of its own about members.
+An organization can be suspended or deleted. The kit holds the state, enforces it at every door a member uses, records every transition, and tells the owners. An operator suspends, reinstates, deletes and restores an organization through four control-plane routes, below. An owner deletes one through `DELETE {base}/current`, the same hard deletion with the owner as its actor. A purge erases a deleted organization's data, once its window closes, from every composed capability that declares an organization purge contribution: in the kit, organization, media and storage. It has the shape a user's account lifecycle has (`@pithy-sh/auth`'s `docs/account-lifecycle.md`), and one rule of its own about members.
 
 ## Two states
 
@@ -23,7 +23,7 @@ Both live on `pithy_organization_organizations`, so the read that already joins 
 
 A deleted organization is refused as one that is not there: `organization/not_found`, to a member and a stranger alike, and every session's selection of it is cleared when it is deleted.
 
-**A repeated founding answers the same way.** A `POST {base}` that repeats an `idempotencyKey` whose organization is now deleted answers `organization/not_found`, and one whose organization is suspended answers `organization/organization_suspended`. The founding record stays through a soft deletion, so the key keeps answering that 404 until the purge erases the organization. A restore makes the repeat answer as the restored organization now stands: 200 with it, or the 403 while a suspension is still in force. An owner's `DELETE {base}/current` and an operator's hard deletion erase the founding record with the organization, so the key founds a new one at once.
+**A repeated founding answers the same way.** A `POST {base}` that repeats an `idempotencyKey` whose organization is now deleted answers `organization/not_found`, and one whose organization is suspended answers `organization/organization_suspended`. The founding record stays through a soft deletion, so the key keeps answering that 404 until the purge erases the organization. A restore makes the repeat answer as the restored organization now stands: 200 with it, or the 403 while a suspension is still in force. An owner's `DELETE {base}/current` and an operator's hard deletion start the purge at once, and the key is freed when the purge erases the founding record with the organization. From then on it founds a new one.
 
 **It takes nobody in.** An invitation to a suspended or deleted organization reads as a dead offer, `organization/invitation_invalid`, both on the accept screen's read and on the accept itself, so no membership is written into a shut tenant. The offer stays pending: once the organization is reinstated or restored, the link works again until it expires.
 
@@ -60,13 +60,41 @@ Every route takes a required `reason` in its JSON body, at most 500 characters a
 
 The management listing, `GET {base}/admin/organizations`, says where each tenant stands: `state`, `suspendedUntil` and `purgeAfter`. It narrows on it with `?state=active`, `suspended` or `deleted`, judged as every door judges it, and pages on `nextCursor`.
 
+## The owner's deletion
+
+`DELETE {base}/current`, under `organization:delete` in the acting organization, is a hard deletion through the lifecycle. The organization is shut at once: refused to every member, gone from every list, every selection of it cleared. A `deleted` row records actor type `owner`, the owner's user id, the reason and mode `hard`, `onOrganizationDeleted` fires, and the purge Workflow starts: every composed `organization` purge contribution as its own step, organization's own last, which runs your `onDelete` statements in its batch. Nothing is erased inside the request.
+
+The body is optional. `reason` follows an operator's rules: at most 500 characters, no email address. Absent, or with no body at all, `Deleted by its owner.` is recorded. The response is `{ organizationId, deletedAt, purge }`: `purge` is `started`, or `pending` when this Worker binds no `ORGANIZATION_PURGE` Workflow or the start failed, and the daily pass purges it. The audit event is `organization/deleted`, with the purge state, the cascade's counts, and the reason when the owner gave one.
+
+`ownerDelete.members` decides whose accounts go with it. `none`, the default, deletes nobody's. `sole` runs the operator's cascade, hard: the members whose only organization this is are deleted through `@pithy-sh/auth`'s own lifecycle, recorded with the owner as the acting user. The owner's own account is never touched; it is skipped as `actor`. With `sole`, the response's `members` says what the cascade did; with `none` it is absent.
+
+**Your own route can run the same deletion.** `deleteOrganizationAsOwner(c, { reason })`, from `@pithy-sh/organization`, is the code `DELETE {base}/current` runs, for a route that checks something first, such as a typed name. Mount `requireSameOrigin()` first, then `requireAuth()` and `requireOrganization()`, as the kit's own route does: a cookie session carries the deletion, so the route needs the same CSRF gate as every other mutating route ([`docs/UI.md`](../../../docs/UI.md)). It refuses a role without `organization:delete` itself, and checks no origin.
+
+```ts
+import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
+import { deleteOrganizationAsOwner, requireOrganization } from "@pithy-sh/organization";
+
+app.post(
+  "/settings/close",
+  requireSameOrigin(),
+  requireAuth(),
+  requireOrganization(deps),
+  validate("json", CloseBody),
+  async (c) => {
+    if (c.req.valid("json").name !== c.var.acting.name) throw new ValidationError({ message: "Type the name." });
+    const deleted = await deleteOrganizationAsOwner(c, { reason: "Closed from settings." });
+    return c.json({ purge: deleted.purge });
+  },
+);
+```
+
 ## The record
 
-`pithy_organization_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction. It has no foreign key to the organization, because a purge erases that row and this record must outlive it. A transition that finds the organization already where it was asked to put it writes no row and fires no hook.
+`pithy_organization_lifecycle` holds every transition: the action, the actor, the reason, the time. The columns say what is true now; the table says what happened and who did it. The two are written in one transaction. It has no foreign key to the organization, because a purge erases that row and this record must outlive it. The actor is `control-plane`, `owner` or `system`. A transition that finds the organization already where it was asked to put it writes no row and fires no hook.
 
 ## The purge
 
-A purge erases one deleted organization from every composed capability that declares what erasing it means. It runs as a Workflow, **one step per composed purge contribution for the `organization` subject**, named for its capability, so a capability that fails retries alone and the steps that finished are not run again. Each step records that it ran in `pithy_organization_lifecycle`, with the contribution's summary — or, for a contribution that retains its rows, `purge_retained` with the basis it gave and its `basisKey`, having erased nothing ([`account-lifecycle.md`](../../auth/docs/account-lifecycle.md#the-purge-contribution)). This capability's own step runs last, because the others may still read a membership: it deletes the organization, its memberships, invitations, ownership offer, founding records and selections, and your `onDelete` rows in the same batch. Once the founding record is gone, the key that founded it founds a new organization. Then the `purged` record, `organization/purged`, and `onOrganizationPurged`, once. Every step also records `organization/purge_step` in the organization's own audit chain, with the step's name and whether it erased or retained, and a purge that runs out of retries records `purge_failed` and `organization/purge_failed` naming the step before the instance fails. The `deleted` row keeps the deletion's mode and when its purge comes due. [The erasure attestation](../../../docs/CONTROL-PLANE.md#erasure) reads them: `GET /control-plane/erasure/organization/:organizationId`, under `erasure:read`.
+A purge erases one deleted organization from every composed capability that declares what erasing it means. It runs as a Workflow, **one step per composed purge contribution for the `organization` subject**, named for its capability, so a capability that fails retries alone and the steps that finished are not run again. Each contribution's `erase` is handed `deletion: { actor, reason, mode, at }` beside the subject, read from the newest `deleted` row, so it can tell members or record the act without reading this capability's tables. An owner's deletion and an operator's both fill it; a deletion recorded before the history kept a mode leaves it absent. Each step records that it ran in `pithy_organization_lifecycle`, with the contribution's summary — or, for a contribution that retains its rows, `purge_retained` with the basis it gave and its `basisKey`, having erased nothing ([`account-lifecycle.md`](../../auth/docs/account-lifecycle.md#the-purge-contribution)). This capability's own step runs last, because the others may still read a membership: it deletes the organization, its memberships, invitations, ownership offer, founding records and selections, and your `onDelete` rows in the same batch. Once the founding record is gone, the key that founded it founds a new organization. Then the `purged` record, `organization/purged`, and `onOrganizationPurged`, once. Every step also records `organization/purge_step` in the organization's own audit chain, with the step's name and whether it erased or retained, and a purge that runs out of retries records `purge_failed` and `organization/purge_failed` naming the step before the instance fails. The `deleted` row keeps the deletion's mode and when its purge comes due. [The erasure attestation](../../../docs/CONTROL-PLANE.md#erasure) reads them: `GET /control-plane/erasure/organization/:organizationId`, under `erasure:read`.
 
 Three kit capabilities declare one. Organization's own is above. `@pithy-sh/media` deletes every record whose `organizationId` is the organization's, with its bytes in R2, Cloudflare Images or Stream, and its dedup hashes. `@pithy-sh/storage` deletes every file whose `organizationId` is the organization's, with its bytes in R2 and every share link to it. Each deletes the bytes before the row, so a step that fails keeps the rows that say where the rest is, and retries. `@pithy-sh/payments` declares none: an organization's purchases and entitlements are billing records, and the purge leaves them. A capability that declares no contribution is not touched by the purge, whatever rows it holds, so declare one for your own tables on your `app` capability.
 
@@ -123,6 +151,8 @@ organization({
   roles,
   // How long a deleted organization waits before the purge erases it. 30 when nothing says otherwise.
   retention: { purgeAfterDays: 30 },
+  // Whose accounts an owner's DELETE {base}/current takes with it: "none", or "sole".
+  ownerDelete: { members: "none" },
   // All three send by default. Turn one off by setting it to false.
   lifecycleEmails: { organizationSuspended: true, organizationReinstated: true, organizationDeletionScheduled: true },
   onOrganizationSuspended: async (event, d1, runtime) => {},

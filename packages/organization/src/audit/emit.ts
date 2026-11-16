@@ -119,6 +119,11 @@ export interface OrganizationAuditEvent {
    */
   readonly facts?: Readonly<Record<string, unknown>>;
   /**
+   * Why, in the member's words, for the one act that takes one: an owner's deletion. Held to an operator reason's
+   * rule — one that does not fit is recorded as `reasonRejected` rather than written.
+   */
+  readonly reason?: string;
+  /**
    * The session the action was taken from, tying a chain of acts together.
    *
    * From `c.var.auth`, not from the acting selection: the session is who is signed in, and the selection
@@ -193,9 +198,20 @@ function checkFacts(facts: Readonly<Record<string, unknown>> | undefined): Check
  */
 export async function recordOrganizationAction(emit: AuditEmit, event: OrganizationAuditEvent): Promise<void> {
   const facts = checkFacts(event.facts);
-  const metadata: Record<string, unknown> | undefined = facts
-    ? { ...facts.kept, ...(facts.rejected.length > 0 ? { factsRejected: facts.rejected } : {}) }
-    : undefined;
+  const reason =
+    event.reason === undefined
+      ? undefined
+      : reasonFits(event.reason)
+        ? { reason: event.reason.trim() }
+        : { reasonRejected: true };
+  const metadata: Record<string, unknown> | undefined =
+    facts || reason
+      ? {
+          ...reason,
+          ...facts?.kept,
+          ...(facts && facts.rejected.length > 0 ? { factsRejected: facts.rejected } : {}),
+        }
+      : undefined;
 
   const input: AuditEventInput = {
     action: event.action,
@@ -274,7 +290,7 @@ function reasonFits(reason: string): boolean {
 }
 
 /**
- * Record one act an operator took inside an account, through the control plane (#624).
+ * Record one act an operator took inside an account, through the control plane.
  *
  * `actorType` is `control-plane` and never `user`: the operator holds no session and no membership, and
  * recording them as a user would put a support desk's id in the column an adopter reads to find out which

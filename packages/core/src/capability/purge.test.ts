@@ -79,6 +79,25 @@ describe("the purge contribution on the Capability contract", () => {
     expect(purgeSteps([capability], "organization").map((step) => step.step)).toEqual(["media"]);
     expect(purgeSteps([capability], "user").map((step) => step.step)).toEqual(["media"]);
   });
+
+  test("a contribution reads the deletion it runs under when one is handed, and runs the same without it", async () => {
+    const seen: (string | null)[] = [];
+    const contribution: PurgeContribution = {
+      subject: "organization",
+      summary: "Tells the members.",
+      erase: async ({ deletion }) => {
+        seen.push(deletion ? `${deletion.actor.type}:${deletion.mode}:${deletion.reason}` : null);
+      },
+    };
+    const subject = { type: "organization", id: "org-1" } as const;
+    await contribution.erase?.({
+      subject,
+      env: {},
+      deletion: { actor: { type: "owner", id: "u1" }, reason: "Closing.", mode: "hard", at: new Date(0) },
+    });
+    await contribution.erase?.({ subject, env: {} });
+    expect(seen).toEqual(["owner:hard:Closing.", null]);
+  });
 });
 
 describe("purgeSteps", () => {

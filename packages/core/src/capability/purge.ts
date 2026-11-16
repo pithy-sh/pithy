@@ -73,6 +73,27 @@ export interface PurgeContext {
    * contribution that needs it then finds nothing by address.
    */
   readonly address?: () => Promise<string | null>;
+  /**
+   * The deletion this purge erases under: who asked, why, how, and when. Filled for an `organization` subject from
+   * its lifecycle history, so a contribution can tell members or record the act without reading another
+   * capability's tables. Absent for a `user` subject, and for a deletion recorded before its history kept a mode.
+   */
+  readonly deletion?: PurgeDeletion;
+}
+
+/** The deletion a purge runs under, as the subject's lifecycle history recorded it. */
+export interface PurgeDeletion {
+  /**
+   * Who deleted it, as the owning capability's history names them: `type` is its actor kind (`owner`,
+   * `control-plane`, `system`), `id` the person or management client, null for `system`.
+   */
+  readonly actor: { readonly type: string; readonly id: string | null };
+  /** Why, in the deleter's words, or the fixed sentence the capability records when they gave none. */
+  readonly reason: string | null;
+  /** `soft`, with a window that has since closed, or `hard`, with none. */
+  readonly mode: "soft" | "hard";
+  /** When it was deleted. */
+  readonly at: Date;
 }
 
 /** What every contribution says, whichever its disposition. */

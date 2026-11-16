@@ -534,7 +534,7 @@ export const ErasureAttestation = z
         actorType: z
           .string()
           .describe(
-            "Who deleted it: `control-plane` (a management client), `user` (the account's own holder) or `system`.",
+            "Who deleted it: `control-plane` (a management client), `user` (a signed-in person: the account's own holder, or an organization's owner whose deletion of that organization reached the account through the sole-member cascade), `owner` (an organization's owner deleting that organization) or `system`.",
           ),
         reason: z.string().nullable().describe("Why, in the words of whoever deleted it. Null when nobody had to say."),
         mode: z

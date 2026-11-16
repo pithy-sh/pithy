@@ -12,8 +12,8 @@ const ORGANIZATION_INDEX = "pithyOrganizationFoundingsOrgIdx";
  * repeat of `POST /organizations` answers the organization it already founded.
  *
  * **The primary key is `(founderUserId, idempotencyKey)`**, and it is what decides between two concurrent
- * foundings carrying one key. No foreign key to the organization: `deleteOrganization` deletes the record in the
- * batch that deletes the organization.
+ * foundings carrying one key. No foreign key to the organization: the purge deletes the record in the batch
+ * that erases the organization.
  *
  * Appended as `0005`: `@pithy-sh/organization` has shipped. No backfill, because no founding before this carried
  * a key.

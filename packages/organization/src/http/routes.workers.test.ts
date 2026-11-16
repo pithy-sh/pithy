@@ -553,21 +553,22 @@ describe("the account in force", () => {
     expect((await call("PATCH", `${BASE}/current`, { as: ADA, body: {} })).status).toBe(400);
   });
 
-  test("deleting takes `organization:delete`, and takes every claim on the account with it", async () => {
+  test("deleting takes `organization:delete`, shuts the account at once and leaves its rows to the purge", async () => {
     await chooseActing(db(), { userId: BOB, sessionId: "session_bob", organizationId: ACME, now: NOW });
     // An admin runs the roster and does not end the account. The power is named, never the role.
     expect((await call("DELETE", `${BASE}/current`, { as: BOB, session: "session_bob" })).status).toBe(403);
 
     const gone = await call("DELETE", `${BASE}/current`, { as: ADA });
     expect(gone.status).toBe(200);
-    expect(await json(gone)).toEqual({ organizationId: ACME });
-    expect(await db().selectFrom(MEMBERSHIPS_TABLE).select("id").where("organizationId", "=", ACME).execute()).toEqual(
-      [],
-    );
-    // The selection went with it, so no live session is left pointed at an account that is not there.
+    expect(await json(gone)).toEqual({ organizationId: ACME, deletedAt: NOW.toISOString(), purge: "pending" });
+    // Shut, not erased: the memberships wait for the purge, and nobody acts in it from here.
+    expect(
+      await db().selectFrom(MEMBERSHIPS_TABLE).select("id").where("organizationId", "=", ACME).execute(),
+    ).toHaveLength(3);
     expect(
       await db().selectFrom(ACTING_TABLE).select("sessionId").where("organizationId", "=", ACME).execute(),
     ).toEqual([]);
+    expect((await call("GET", `${BASE}/current`, { as: BOB, session: "session_bob" })).status).toBe(404);
   });
 });
 

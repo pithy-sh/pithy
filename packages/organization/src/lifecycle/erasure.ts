@@ -105,7 +105,11 @@ export const organizationErasureRecords: ErasureRecords = {
   subject: "organization",
   resourceType: "organization",
   auditActions: {
-    deleted: [OrganizationAuditActions.adminOrganizationDeleted, OrganizationAuditActions.adminOrganizationHardDeleted],
+    deleted: [
+      OrganizationAuditActions.deleted,
+      OrganizationAuditActions.adminOrganizationDeleted,
+      OrganizationAuditActions.adminOrganizationHardDeleted,
+    ],
     step: OrganizationAuditActions.purgeStep,
     failed: OrganizationAuditActions.purgeFailed,
     purged: OrganizationAuditActions.purged,

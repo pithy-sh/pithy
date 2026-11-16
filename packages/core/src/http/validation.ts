@@ -73,7 +73,10 @@ export function validate<Target extends keyof ValidationTargets, Schema extends 
   onInvalid?: InvalidRequestListener,
 ) {
   const contract: RequestContract = { target, schema };
-  if (!onInvalid) return Object.assign(zValidator(target, schema, validationHook), { [REQUEST_CONTRACT]: contract });
+  if (!onInvalid) {
+    const middleware = zValidator(target, schema, validationHook);
+    return Object.assign(absentBodyAllowed(target, schema, middleware), { [REQUEST_CONTRACT]: contract });
+  }
   // What each refused request sent, keyed by its context, so the listener is handed the input without
   // reading the request raw — which no route may do.
   const refusedInput = new WeakMap<Context, unknown>();
@@ -95,7 +98,35 @@ export function validate<Target extends keyof ValidationTargets, Schema extends 
       throw error;
     }
   };
-  return Object.assign(listened as typeof middleware, { [REQUEST_CONTRACT]: contract });
+  return Object.assign(absentBodyAllowed(target, schema, listened as typeof middleware), {
+    [REQUEST_CONTRACT]: contract,
+  });
+}
+
+const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;|$)/i;
+
+/**
+ * A JSON body the schema lets be absent may also arrive empty under a JSON content type, which zValidator alone
+ * refuses as malformed JSON. The empty body is handed to the schema as `undefined`; any other body goes through the
+ * validator untouched.
+ */
+function absentBodyAllowed<Middleware extends MiddlewareHandler>(
+  target: keyof ValidationTargets,
+  schema: z.ZodType,
+  middleware: Middleware,
+): Middleware {
+  if (target !== "json" || !schema.safeParse(undefined).success) return middleware;
+  const allowing: MiddlewareHandler = async (c, next) => {
+    const type = c.req.header("Content-Type");
+    if (type && JSON_CONTENT_TYPE.test(type) && (await c.req.text()).trim() === "") {
+      const parsed = await schema.safeParseAsync(undefined);
+      if (!parsed.success) throw fromZodError(parsed.error as z.ZodError);
+      c.req.addValidatedData("json", parsed.data as object);
+      return next();
+    }
+    return middleware(c, next);
+  };
+  return allowing as Middleware;
 }
 
 /**

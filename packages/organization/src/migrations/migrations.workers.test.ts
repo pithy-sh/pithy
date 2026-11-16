@@ -447,6 +447,24 @@ describe("0006_retained_basis_key", () => {
     expect(rows.map((row) => OrganizationLifecycleEvent.parse(row).basisKey)).toEqual(["app/purge.kept", null]);
   });
 
+  test("the actor column is open text, so an owner's deletion stores and reads back with no migration of its own", async () => {
+    await organization_0006_retained_basis_key.up(db());
+    await env.DB.prepare(
+      "insert into pithy_organization_lifecycle (organization_id, action, actor_type, actor_id, reason, mode, purge_after, created_at) values (?, 'deleted', 'owner', 'user_ada', 'Deleted by its owner.', 'hard', 1, 1)",
+    )
+      .bind(ACME)
+      .run();
+    const [row] = await createDatabase(env.DB, { pithyOrganizationLifecycle: OrganizationLifecycleEvent })
+      .selectFrom("pithyOrganizationLifecycle")
+      .selectAll()
+      .execute();
+    expect(OrganizationLifecycleEvent.parse(row)).toMatchObject({
+      actorType: "owner",
+      actorId: "user_ada",
+      mode: "hard",
+    });
+  });
+
   test("down takes the column back out, the history stays, and up after down is clean", async () => {
     await organization_0006_retained_basis_key.up(db());
     await env.DB.prepare(

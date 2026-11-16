@@ -3,13 +3,18 @@
 
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import type { HookRuntime } from "@pithy-sh/auth/src/hooks/runtime";
+import type { PurgeDeletion } from "@pithy-sh/core/src/capability/purge";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { composedRetention } from "@pithy-sh/core/src/retention/composed";
 import { purgeWindowDays } from "@pithy-sh/core/src/retention/policy";
 import { type CompiledQuery, sql } from "kysely";
-import type { OrganizationLifecycleAction, OrganizationLifecycleActorType } from "../data/organizationLifecycle";
+import {
+  type OrganizationLifecycleAction,
+  type OrganizationLifecycleActorType,
+  OrganizationLifecycleEvent,
+} from "../data/organizationLifecycle";
 import { ACTING_TABLE, LIFECYCLE_TABLE, ORGANIZATIONS_TABLE, type OrganizationDatabase } from "../data/tables";
 import { OrganizationNotFoundError } from "../error/errors";
 import type { OrganizationLifecycleHookEvent, OrganizationLifecycleHooks } from "./hooks";
@@ -18,7 +23,7 @@ import { OrganizationLifecycleColumns, organizationStanding } from "./state";
 /**
  * The organization-lifecycle transitions — the one place an organization's state is ever changed.
  *
- * The control-plane routes and the purge Workflow call these and write nothing themselves, so each transition
+ * The control-plane routes, the owner's deletion and the purge Workflow call these and write nothing themselves, so each transition
  * happens the same way whoever asked for it. The shape is `@pithy-sh/auth`'s user transitions', deliberately:
  *
  * 1. **The columns move, conditionally, and the history row is written with them**, as the two statements of one
@@ -40,7 +45,7 @@ import { OrganizationLifecycleColumns, organizationStanding } from "./state";
 export interface OrganizationLifecycleActor {
   /** The kind of principal. */
   readonly type: OrganizationLifecycleActorType;
-  /** The management client's verified `sub`, or null for the purge. */
+  /** The management client's verified `sub`, the owner's user id, or null for the purge. */
   readonly id: string | null;
 }
 
@@ -567,6 +572,33 @@ export async function organizationPurgeSubject(
     return "not_due";
   }
   return "due";
+}
+
+/**
+ * The deletion an organization's purge runs under: the newest `deleted` history row, which a hard deletion bringing a
+ * soft one forward writes too. Undefined when there is none, or when it was recorded before the history kept a mode.
+ */
+export async function organizationDeletion(
+  deps: OrganizationLifecycleDeps,
+  organizationId: string,
+): Promise<PurgeDeletion | undefined> {
+  const raw = await deps.db
+    .selectFrom(LIFECYCLE_TABLE)
+    .selectAll()
+    .where("organizationId", "=", organizationId)
+    .where("action", "=", "deleted")
+    .orderBy("id", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (!raw) return undefined;
+  const row = OrganizationLifecycleEvent.parse(raw);
+  if (!row.mode) return undefined;
+  return {
+    actor: { type: row.actorType, id: row.actorId },
+    reason: row.reason,
+    mode: row.mode,
+    at: row.createdAt,
+  };
 }
 
 /** One organization whose purge is due: which, and the deletion it is due under — ms-epoch, for a journal. */

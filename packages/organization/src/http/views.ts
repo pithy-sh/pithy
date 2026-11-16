@@ -10,6 +10,7 @@ import type { Membership } from "../data/membership";
 import type { Organization } from "../data/organization";
 import type { OwnershipNomination } from "../data/ownershipNomination";
 import type { CascadeOutcome } from "../lifecycle/cascade";
+import type { OwnerDeletion } from "../lifecycle/ownerDelete";
 import { organizationStanding } from "../lifecycle/state";
 import type { OrganizationDeleteTransition, OrganizationSuspendTransition } from "../lifecycle/transitions";
 import { memberImagePath } from "../people/people";
@@ -20,6 +21,7 @@ import type {
   AdminOrganizationDeleteResponse,
   AdminOrganizationSuspendResponse,
   AdminOrganizationView,
+  DeletedOrganizationResponse,
   InvitationOfferResponse,
   InvitationView,
   MembershipView,
@@ -206,7 +208,7 @@ export function adminOrganizationView(
   members: number,
   now: Date = new Date(),
 ): AdminOrganizationView {
-  // Through `organizationStanding`, never off the raw columns: a suspension past its end is not one (#623).
+  // Through `organizationStanding`, never off the raw columns: a suspension past its end is not one.
   const standing = organizationStanding(organization, now);
   return {
     id: organization.id,
@@ -246,6 +248,16 @@ export function suspensionView(
     suspendedUntil: result.suspendedUntil?.toISOString() ?? null,
     mailed,
     members: memberCascadeView(members),
+  };
+}
+
+/** What an owner's deletion did, for `DELETE {base}/current`. The cascade is named only when one ran. */
+export function ownerDeletionView(deleted: OwnerDeletion): DeletedOrganizationResponse {
+  return {
+    organizationId: deleted.organizationId,
+    deletedAt: deleted.deletedAt.toISOString(),
+    purge: deleted.purge,
+    ...(deleted.members.mode === "none" ? {} : { members: memberCascadeView(deleted.members) }),
   };
 }
 

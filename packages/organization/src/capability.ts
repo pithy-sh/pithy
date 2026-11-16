@@ -16,11 +16,12 @@ import { actingOrganizationMiddleware } from "./acting/seam";
 import { OrganizationAuditActions } from "./audit/actions";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 import { organizationTables } from "./data/tables";
-import { registerOrganizationRoutes } from "./http/routes";
+import { type OrganizationRoutesOptions, ownerDeletionWiring, registerOrganizationRoutes } from "./http/routes";
 import { organizationAdminRoutes } from "./http/scopes";
 import type { UserLifecycleWiring } from "./lifecycle/cascade";
 import { organizationErasureRecords } from "./lifecycle/erasure";
 import type { OrganizationLifecycleHooks, OrganizationMembershipHooks } from "./lifecycle/hooks";
+import type { OwnerDeletionWiring } from "./lifecycle/ownerDelete";
 import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 import { ORGANIZATION_MIGRATIONS } from "./migrations/set";
@@ -176,7 +177,8 @@ export type OrganizationOptions<
    */
   readonly ownership?: OwnershipRoles<Role>;
   /**
-   * Your own tenanted rows, deleted in the transaction that deletes the account.
+   * Your own tenanted rows, deleted in the transaction that erases the organization: the purge's own last step,
+   * which runs once a deletion's window has closed, at once for an owner's deletion or an operator's hard one.
    *
    * Every adopter who composes this has tables keyed on `organizationId`; that is what tenancy is, and
    * this capability cannot see them. Without this it sweeps its own tables and stops, leaving your rows
@@ -235,6 +237,8 @@ export interface OrganizationCapability<Power extends string = string, Role exte
    * Workflow, which fires `onOrganizationPurged` with no request.
    */
   organizationLifecycleHooks: OrganizationLifecycleHooks;
+  /** What an owner's deletion runs with, the routes' own. Read by `deleteOrganizationAsOwner`. */
+  organizationOwnerDeletion: OwnerDeletionWiring;
   /**
    * Every composed capability's purge step for an organization, this one's among them, in composition order.
    * Empty until `compose` has run. Read by the purge Workflow, which runs in the Worker that composed it.
@@ -333,6 +337,24 @@ export function organization<
   // and it makes it through `@pithy-sh/auth`'s published reader rather than by naming its columns.
   const requiredBindings: BindingSpecInput[] = [{ type: "d1", name: "DB" }];
 
+  const routeOptions: OrganizationRoutesOptions<Power, Role> = {
+    catalog: roles,
+    config: resolved,
+    ownership,
+    onCreate,
+    onJoin,
+    lifecycleHooks,
+    membershipHooks,
+    userLifecycle: () => wiring.users,
+    enqueue: (env) => {
+      const enqueue = wiring.enqueue;
+      if (!enqueue) return undefined;
+      // The email capability owns the `DB` and `EMAIL_SENDER` bindings and the from-identity; tenancy
+      // passes only the request env and the high-level input, and never names an email binding itself.
+      return ((input) => enqueue(env as never, input)) as EnqueueInvitation;
+    },
+  };
+
   const capability = defineCapability({
     name: "organization",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -392,24 +414,7 @@ export function organization<
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/accounts`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: organizationAdminRoutes(resolved.basePath, { ownership: ownership !== undefined }),
-    routes: registerOrganizationRoutes({
-      catalog: roles,
-      config: resolved,
-      ownership,
-      onDelete,
-      onCreate,
-      onJoin,
-      lifecycleHooks,
-      membershipHooks,
-      userLifecycle: () => wiring.users,
-      enqueue: (env) => {
-        const enqueue = wiring.enqueue;
-        if (!enqueue) return undefined;
-        // The email capability owns the `DB` and `EMAIL_SENDER` bindings and the from-identity; tenancy
-        // passes only the request env and the high-level input, and never names an email binding itself.
-        return ((input) => enqueue(env as never, input)) as EnqueueInvitation;
-      },
-    }),
+    routes: registerOrganizationRoutes(routeOptions),
     // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's.
     // And a person's memberships, selections, offers and invitations: exported on an access request and erased
     // by their purge, as its own step in the adopter's Worker.
@@ -437,6 +442,7 @@ export function organization<
     organizationRoles: roles,
     organizationOwnership: ownership,
     organizationLifecycleHooks: lifecycleHooks,
+    organizationOwnerDeletion: ownerDeletionWiring(routeOptions),
     organizationPurgeSteps: steps,
     auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
   });

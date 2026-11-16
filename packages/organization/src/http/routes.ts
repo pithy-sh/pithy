@@ -76,6 +76,7 @@ import type {
   OrganizationMembershipHooks,
 } from "../lifecycle/hooks";
 import { listOrganizations } from "../lifecycle/listing";
+import { type OwnerDeletionWiring, runOwnerDeletion } from "../lifecycle/ownerDelete";
 import { organizationStanding } from "../lifecycle/state";
 import {
   absent,
@@ -113,9 +114,7 @@ import {
 import { MEMBERS_PATH_SEGMENT, readPeople } from "../people/people";
 import {
   createOrganization,
-  deleteOrganization,
   type OrganizationCreateStatements,
-  type OrganizationDeleteSweep,
   type OrganizationJoinStatements,
   renameOrganization,
   setLogo,
@@ -180,6 +179,7 @@ import {
   MembershipParam,
   NominateOwner,
   OrganizationMarkParam,
+  OwnerDeleteOrganization,
   UpdateOrganization,
 } from "./schemas";
 import {
@@ -204,6 +204,7 @@ import {
   memberView,
   nominationView,
   organizationView,
+  ownerDeletionView,
   suspensionView,
 } from "./views";
 
@@ -217,7 +218,7 @@ import {
  * | `POST   {base}/acting`                         | session        | —                     | json `ChooseOrganization`      |
  * | `GET    {base}/current`                        | session        | `organization:read`   | none                           |
  * | `PATCH  {base}/current`                        | session        | `organization:manage` | json `UpdateOrganization`      |
- * | `DELETE {base}/current`                        | session        | `organization:delete` | none                           |
+ * | `DELETE {base}/current`                        | session        | `organization:delete` | json `OwnerDeleteOrganization` |
  * | `GET    {base}/current/members`                | session        | `organization:read`   | none                           |
  * | `PATCH  {base}/current/members/:membershipId`  | session        | `organization:manage` | param + json `ChangeRole`      |
  * | `DELETE {base}/current/members/:membershipId`  | session        | `organization:manage` | param `MembershipParam`        |
@@ -580,8 +581,6 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
    * reading the constant from here is what does.
    */
   readonly ownership?: OwnershipRoles<Role>;
-  /** The adopter's own tenanted deletes, run in the transaction that deletes the account. */
-  readonly onDelete?: OrganizationDeleteSweep;
   /** The adopter's own rows for a new organization, written in the transaction that founds it. */
   readonly onCreate?: OrganizationCreateStatements;
   /** The adopter's own rows for a new membership, written in the transaction that begins it. */
@@ -607,6 +606,21 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
   readonly now?: () => Date;
   /** The id source. Injected for the same reason. */
   readonly newId?: () => string;
+}
+
+/** The owner's deletion, configured from the same options the routes are, so the route and the export agree. */
+export function ownerDeletionWiring<Power extends string, Role extends string>(
+  options: OrganizationRoutesOptions<Power, Role>,
+): OwnerDeletionWiring {
+  return {
+    catalog: options.catalog as unknown as OwnerDeletionWiring["catalog"],
+    config: options.config,
+    databaseBinding: options.databaseBinding ?? "DB",
+    lifecycleHooks: options.lifecycleHooks ?? {},
+    userLifecycle: () => options.userLifecycle?.(),
+    enqueue: options.enqueue,
+    now: options.now,
+  };
 }
 
 /**
@@ -648,6 +662,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
   const binding = options.databaseBinding ?? "DB";
   const clock = options.now ?? (() => new Date());
   const ids = options.newId ?? (() => crypto.randomUUID());
+  const ownerDeletion = ownerDeletionWiring(options);
 
   type Env = OrganizationHonoEnv<Role>;
   type Ctx = Context<Env>;
@@ -1411,27 +1426,21 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     app.delete(
       `${base}/current`,
       describeRoute({
-        summary: "Delete the organization in force.",
-        description: "Requires the `organization:delete` power in the acting organization.",
+        summary:
+          "Delete the organization in force: shut now, then purged from every capability that declares an organization purge contribution.",
+        description:
+          "Requires the `organization:delete` power in the acting organization. A hard deletion through the organization lifecycle: refused to every member and gone from every list at once, recorded with the owner as its actor, and purged by the organization purge Workflow. The body is optional; `reason` defaults to `Deleted by its owner.`.",
         verification: signedIn,
         responses: { 200: DeletedOrganizationResponse },
       }),
       csrf,
       requireOrganization(deps),
       requirePower<Power, Role>("organization:delete", deps),
+      validate("json", OwnerDeleteOrganization),
       async (c) => {
-        const acting = c.var.acting;
-        const who = session(c);
-        // The adopter's own tenanted rows go in the same transaction.
-        await deleteOrganization(d1(c), acting.organizationId, options.onDelete);
-        // Recorded against the account that no longer exists, which is the only record that it ever did.
-        await record(c, {
-          action: OrganizationAuditActions.deleted,
-          actor: { organizationId: acting.organizationId, userId: who.userId },
-          resource: { type: "organization", id: acting.organizationId },
-          severity: "warning",
-        });
-        return c.json({ organizationId: acting.organizationId } satisfies DeletedOrganizationResponse);
+        const body = c.req.valid("json");
+        const deleted = await runOwnerDeletion(ownerDeletion, c, { reason: body?.reason });
+        return c.json(ownerDeletionView(deleted) satisfies DeletedOrganizationResponse);
       },
     );
 

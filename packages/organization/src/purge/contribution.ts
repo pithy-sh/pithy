@@ -28,8 +28,8 @@ import { deleteOrganization, type OrganizationDeleteSweep } from "../provision/p
  *
  * **Every row keyed to the organization goes, except its history** — the organization, its memberships,
  * invitations, ownership offer, founding record and every session's selection of it — and, in the same transaction,
- * the adopter's own tenanted rows through `onDelete`: `deleteOrganization`'s one batch, so a hard deletion and a
- * purge erase exactly what an owner's own deletion does. `pithy_organization_lifecycle` stays: it is the
+ * the adopter's own tenanted rows through `onDelete`: `deleteOrganization`'s one batch, the only place an
+ * organization is ever erased, whoever deleted it. `pithy_organization_lifecycle` stays: it is the
  * record that the organization existed, was deleted and was erased.
  *
  * **Idempotent**, as the contract requires: an organization already erased is the 404 `deleteOrganization` raises,

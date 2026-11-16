@@ -30,7 +30,11 @@ export interface ErasureHistoryRow {
   readonly subjectId: string;
   /** What happened. */
   readonly action: ErasureHistoryAction;
-  /** Who did it: `control-plane`, `user` or `system`. */
+  /**
+   * Who did it: `control-plane`, `user` (a signed-in person — the account's own holder, or an organization's owner whose
+   * deletion of that organization reached the account through the sole-member cascade), `owner` (an organization's own,
+   * deleting it) or `system`.
+   */
   readonly actorType: string;
   /** Why, in whoever acted's words. A step's summary, a retained step's basis. Null when nobody had to say. */
   readonly reason: string | null;

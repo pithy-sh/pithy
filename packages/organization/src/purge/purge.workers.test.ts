@@ -163,12 +163,14 @@ describe("the organization purge", () => {
       purgeAfterDays: 30,
     });
     let mediaAttempts = 0;
+    const handed: unknown[] = [];
     const media: PurgeStep = {
       step: "media",
       contribution: {
         subject: "organization",
         summary: "Deletes the organization's uploads.",
-        erase: async () => {
+        erase: async (context) => {
+          handed.push(context.deletion);
           mediaAttempts += 1;
           if (mediaAttempts === 1) throw new Error("bucket unreachable");
         },
@@ -183,6 +185,9 @@ describe("the organization purge", () => {
       { organizationId: ACME },
     );
     expect(outcome).toEqual({ organizationId: ACME, state: "purged", erased: ["media", "organization"], retained: [] });
+    // Every attempt is handed the operator's deletion, read from the history inside the step.
+    const operatorDeletion = { actor: { type: "control-plane", id: "operator-1" }, reason: "r", mode: "hard", at: NOW };
+    expect(handed).toEqual([operatorDeletion, operatorDeletion]);
     expect(ran.filter((name) => !name.startsWith("hold "))).toEqual([
       "due",
       "erase media",
