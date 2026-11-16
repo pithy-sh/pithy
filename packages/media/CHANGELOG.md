@@ -1,5 +1,15 @@
 # @pithy-sh/media
 
+## 0.8.10
+
+### Patch Changes
+
+- Updated dependencies [[`334ffe3`](https://github.com/pithy-sh/pithy/commit/334ffe39d4f28c12d6c80b40327df60f46011e50)]:
+  - @pithy-sh/core@0.26.0
+  - @pithy-sh/cloudflare@0.11.0
+  - @pithy-sh/secrets@0.6.14
+  - @pithy-sh/storage@0.7.12
+
 ## 0.8.9
 
 ### Patch Changes

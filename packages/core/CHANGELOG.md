@@ -1,5 +1,11 @@
 # @pithy-sh/core
 
+## 0.26.0
+
+### Minor Changes
+
+- [#1054](https://github.com/pithy-sh/pithy/pull/1054) [`334ffe3`](https://github.com/pithy-sh/pithy/commit/334ffe39d4f28c12d6c80b40327df60f46011e50) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy deploy` gets through a Worker's first deploy even when Cloudflare is slow to show the new Worker, and skips an app Worker whose built bundle and config are already live.
+
 ## 0.25.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @pithy-sh/ledger
 
+## 0.6.12
+
+### Patch Changes
+
+- Updated dependencies [[`334ffe3`](https://github.com/pithy-sh/pithy/commit/334ffe39d4f28c12d6c80b40327df60f46011e50)]:
+  - @pithy-sh/core@0.26.0
+
 ## 0.6.11
 
 ### Patch Changes
