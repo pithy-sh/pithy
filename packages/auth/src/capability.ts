@@ -487,6 +487,7 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
     onUserSuspended,
     onUserReinstated,
     onUserDeleted,
+    onUserRestored,
     onUserPurged,
     ...config
   } = options;
@@ -497,6 +498,7 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
     ...(onUserSuspended ? { onUserSuspended } : {}),
     ...(onUserReinstated ? { onUserReinstated } : {}),
     ...(onUserDeleted ? { onUserDeleted } : {}),
+    ...(onUserRestored ? { onUserRestored } : {}),
     ...(onUserPurged ? { onUserPurged } : {}),
   };
   // Every fire site hands these the Worker's own env, which is what `Env` names, so widening it here is the one

@@ -261,6 +261,7 @@ function buildApp(retention?: unknown) {
         retention: { purgeAfterDays: WINDOW_DAYS },
         onUserSuspended: hook("onUserSuspended"),
         onUserDeleted: hook("onUserDeleted"),
+        onUserRestored: hook("onUserRestored"),
         onUserPurged: hook("onUserPurged"),
       }),
       controlplane(),
@@ -799,6 +800,25 @@ describe("POST /auth/admin/users/:userId/restore", () => {
     ]);
   });
 
+  test("fires onUserRestored once, as the operator, and a second restore fires nothing", async () => {
+    await seedUser("u-1");
+    await remove("u-1", { reason: "x" });
+    expect((await restore("u-1", { reason: "Changed their mind." })).status).toBe(200);
+    expect((await restore("u-1", { reason: "Again." })).status).toBe(200);
+    const restored = fired.filter((each) => each.hook === "onUserRestored");
+    expect(restored).toEqual([
+      {
+        hook: "onUserRestored",
+        event: {
+          userId: "u-1",
+          actor: { type: "control-plane", id: SUBJECT },
+          reason: "Changed their mind.",
+          at: expect.any(Date),
+        },
+      },
+    ]);
+  });
+
   test("after a purge it answers 404, and the refusal is audited", async () => {
     await seedAccountFootprint(env.DB, "u-1");
     await remove("u-1", { mode: "hard", reason: "x" });
@@ -818,6 +838,7 @@ describe("POST /auth/admin/users/:userId/restore", () => {
     const res = await restore("u-1", { reason: "y" });
     expect(res.status).toBe(409);
     expect((await columns("u-1")).deleted_at).not.toBeNull();
+    expect(fired.filter((each) => each.hook === "onUserRestored")).toEqual([]);
   });
 
   test("a request with no reason is refused validation/invalid_input", async () => {

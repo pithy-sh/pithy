@@ -96,6 +96,11 @@ export interface OrganizationLifecycleHooks<Env = Record<string, unknown>> {
   readonly onOrganizationReinstated?: OrganizationLifecycleListener<Env>;
   /** An organization was deleted, and its purge window began — or, for a hard deletion, closed at once. */
   readonly onOrganizationDeleted?: OrganizationLifecycleListener<Env>;
+  /**
+   * A deleted organization was restored inside its purge window, with every membership it had. The undo for whatever
+   * `onOrganizationDeleted` did; a suspension it was under is still in force.
+   */
+  readonly onOrganizationRestored?: OrganizationLifecycleListener<Env>;
   /** A deleted organization's data was erased. The last thing that happens to it. */
   readonly onOrganizationPurged?: OrganizationLifecycleListener<Env>;
 }

@@ -530,6 +530,13 @@ describe("the organization lifecycle", () => {
     expect(capability.organizationLifecycleHooks).toEqual({ onOrganizationSuspended });
   });
 
+  test("carries onOrganizationRestored beside the other lifecycle hooks", () => {
+    const onOrganizationDeleted = () => {};
+    const onOrganizationRestored = () => {};
+    const capability = organization({ ...BASE, onOrganizationDeleted, onOrganizationRestored });
+    expect(capability.organizationLifecycleHooks).toEqual({ onOrganizationDeleted, onOrganizationRestored });
+  });
+
   test("the retention window and the three notices default, and each can be set", () => {
     expect(organization(BASE).organizationConfig.retention).toEqual({ purgeAfterDays: 30 });
     const configured = organization({ ...BASE, retention: { purgeAfterDays: 7 } });
@@ -559,6 +566,9 @@ describe("organization.withEnv<Env>()", () => {
       onMemberRemoved: (_event, _d1, runtime) => {
         expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
       },
+      onOrganizationRestored: (_event, _d1, { env }) => {
+        expectTypeOf(env).toEqualTypeOf<AdopterEnv>();
+      },
     });
     expect(capability.organizationLifecycleHooks.onOrganizationDeleted).toBeTypeOf("function");
 
@@ -566,6 +576,11 @@ describe("organization.withEnv<Env>()", () => {
       ...BASE,
       // @ts-expect-error a binding the adopter's Env does not declare
       onOrganizationPurged: (_event, _d1, { env }) => env.NOT_BOUND,
+    });
+    organization.withEnv<AdopterEnv>()({
+      ...BASE,
+      // @ts-expect-error a binding the adopter's Env does not declare
+      onOrganizationRestored: (_event, _d1, { env }) => env.NOT_BOUND,
     });
   });
 

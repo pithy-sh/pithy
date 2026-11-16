@@ -56,7 +56,7 @@ Every route takes a required `reason` in its JSON body, at most 500 characters a
 
 **Delete, soft**: shut now, gone from every list, every selection of it cleared, its memberships kept. `purge_after` is now plus the purge window: `retention.purgeWindows.organization` from the Worker's `retention` block in `pithy.config.ts` when it names one, otherwise organization's own `retention.purgeAfterDays`, 30 unless you set it. `purge` is `scheduled`. **Delete, hard**: the window closes now, nothing can restore it, and the purge starts in the same call — `purge` is `started`, or `pending` when this Worker binds no purge Workflow, and the daily pass starts it. A hard deletion of one already deleted softly brings its purge forward; `outcome` says `deleted`, `brought_forward` or `unchanged`.
 
-**Restore** clears both columns inside the window. Its memberships were never removed, so every member sees it again. A suspension it was under is still in force, and the response says `state: "suspended"`. Once `purge_after` has passed it is a 409 naming the date. After the purge there is no organization: a 404, whose action says the data is gone.
+**Restore** clears both columns inside the window and fires [`onOrganizationRestored`](#config-mail-and-hooks). Its memberships were never removed, so every member sees it again. A suspension it was under is still in force, and the response says `state: "suspended"`. Once `purge_after` has passed it is a 409 naming the date. After the purge there is no organization: a 404, whose action says the data is gone.
 
 The management listing, `GET {base}/admin/organizations`, says where each tenant stands: `state`, `suspendedUntil` and `purgeAfter`. It narrows on it with `?state=active`, `suspended` or `deleted`, judged as every door judges it, and pages on `nextCursor`.
 
@@ -128,6 +128,7 @@ organization({
   onOrganizationSuspended: async (event, d1, runtime) => {},
   onOrganizationReinstated: async (event, d1, runtime) => {},
   onOrganizationDeleted: async (event, d1, runtime) => {},
+  onOrganizationRestored: async (event, d1, runtime) => {},
   onOrganizationPurged: async (event, d1, runtime) => {},
 });
 ```
@@ -135,6 +136,20 @@ organization({
 The owners are told: the members holding the role your `ownership` pair confers, or, with no pair, the members whose role holds `organization:delete`. Three templates in `@pithy-sh/email`, all transactional, in each owner's own language: `organizationSuspended`, with the reason and any end — the suspended screen tells every member the owners were told why; an owner a `sole` cascade reached is sent their own account's suspension notice instead, because this one says their account is unaffected — `organizationReinstated`, and `organizationDeletionScheduled`, with the date the data is erased. A hard deletion sends none. With no email composed nothing is sent and nothing is refused, and the audit event records `mailed: null`.
 
 Each hook fires once per transition that happened, after it is written. A hook that throws is logged and swallowed, and the transition stands.
+
+`onOrganizationRestored` fires when a deleted organization is restored inside its window, with the operator, the reason and `at`. Restoring one that is not deleted fires nothing, and neither does a restore refused because the window closed. It is where you undo what `onOrganizationDeleted` did:
+
+```ts
+organization({
+  roles,
+  onOrganizationDeleted: async ({ organizationId, at }, d1) => {
+    await d1.prepare("update workspaces set archived_at = ? where org_id = ?").bind(at.getTime(), organizationId).run();
+  },
+  onOrganizationRestored: async ({ organizationId }, d1) => {
+    await d1.prepare("update workspaces set archived_at = null where org_id = ?").bind(organizationId).run();
+  },
+});
+```
 
 Each hook is handed the event, the D1 binding, and `runtime`: `{ env, waitUntil? }`. `env` is the Worker's environment, so a hook can read a secret, start a Workflow, send to a queue, or call out. Call `organization.withEnv<Env>()({ … })` with your own `Env` and `runtime.env` is typed as it, with no cast. The catalog's roles are still inferred from `roles`, so an `ownership` pair naming a role it does not declare is still a compile error. `organization<Env>()` would not do this: TypeScript infers all of a call's type arguments or none. The membership hooks are handed the same `runtime`.
 

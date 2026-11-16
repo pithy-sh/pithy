@@ -684,7 +684,8 @@ export interface RestoreTransition extends LifecycleTransition {
  * 404 whose action says the data is gone — read off the history row the purge leaves behind, so it is told
  * apart from an id that never existed.
  *
- * An account that is not deleted is no transition. A suspension it was under is still in force after.
+ * An account that is not deleted is no transition, and fires nothing. A suspension it was under is still in force
+ * after. `onUserRestored` fires once the restore is written, so an adopter can undo what it did on `onUserDeleted`.
  */
 export async function restoreUser(
   deps: LifecycleDeps,
@@ -729,6 +730,12 @@ export async function restoreUser(
   }
 
   await audit(deps, AuthAuditActions.adminUserRestored, input.userId, input.actor, { reason });
+  await fire(deps, "onUserRestored", deps.hooks.onUserRestored, {
+    userId: input.userId,
+    actor: input.actor,
+    reason,
+    at,
+  });
   return { changed: true, mailed: false, state };
 }
 

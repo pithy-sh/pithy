@@ -535,7 +535,7 @@ describe("the account lifecycle config", () => {
     expect(AuthConfig.shape.lifecycleEmails.description).toBeTruthy();
   });
 
-  test("the four hooks are behavior, not config: kept off the parse and handed to the wiring", () => {
+  test("the five hooks are behavior, not config: kept off the parse and handed to the wiring", () => {
     const calls: string[] = [];
     const cap = auth({
       baseURL: "https://api.example.com",
@@ -548,6 +548,9 @@ describe("the account lifecycle config", () => {
       onUserDeleted: () => {
         calls.push("deleted");
       },
+      onUserRestored: () => {
+        calls.push("restored");
+      },
       onUserPurged: () => {
         calls.push("purged");
       },
@@ -557,6 +560,7 @@ describe("the account lifecycle config", () => {
       "onUserDeleted",
       "onUserPurged",
       "onUserReinstated",
+      "onUserRestored",
       "onUserSuspended",
     ]);
   });
@@ -683,6 +687,9 @@ describe("auth<Env>()", () => {
       onUserSuspended: (_event, _d1, { env }) => {
         expectTypeOf(env.AGGREGATOR_SECRET).toEqualTypeOf<string>();
       },
+      onUserRestored: (_event, _d1, { env }) => {
+        expectTypeOf(env).toEqualTypeOf<AdopterEnv>();
+      },
       onSessionRevoked: async (_session, _d1, runtime) => {
         expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
       },
@@ -694,6 +701,11 @@ describe("auth<Env>()", () => {
       baseURL: "https://api.example.com",
       // @ts-expect-error a binding the adopter's Env does not declare
       onUserPurged: (_event, _d1, { env }) => env.NOT_BOUND,
+    });
+    auth<AdopterEnv>({
+      baseURL: "https://api.example.com",
+      // @ts-expect-error a binding the adopter's Env does not declare
+      onUserRestored: (_event, _d1, { env }) => env.NOT_BOUND,
     });
   });
 

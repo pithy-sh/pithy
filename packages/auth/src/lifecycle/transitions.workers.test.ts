@@ -121,6 +121,7 @@ function harness(
         onUserSuspended: record("onUserSuspended"),
         onUserReinstated: record("onUserReinstated"),
         onUserDeleted: record("onUserDeleted"),
+        onUserRestored: record("onUserRestored"),
         onUserPurged: record("onUserPurged"),
       },
       enqueueEmail: (input) => emailCap.enqueue(env, input),
@@ -408,10 +409,14 @@ describe("suspendUser", () => {
     await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
     await reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Cleared." });
     await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Gone." });
+    await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Back." });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Gone again." });
     await completePurge(h.deps, { userId: "u1" });
     expect(h.fired.map((call) => call.hook)).toEqual([
       "onUserSuspended",
       "onUserReinstated",
+      "onUserDeleted",
+      "onUserRestored",
       "onUserDeleted",
       "onUserPurged",
     ]);
@@ -776,6 +781,36 @@ describe("restoreUser", () => {
     expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_soft_deleted", "auth/admin_user_restored"]);
   });
 
+  test("fires onUserRestored once, after the deletion's hook, with the actor, the reason and when", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Changed their mind." });
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserDeleted", "onUserRestored"]);
+    expect(h.fired[1]?.event).toEqual({ userId: "u1", actor: OPERATOR, reason: "Changed their mind.", at: NOW });
+    expect(h.fired[1]?.runtime).toBe(h.runtime);
+  });
+
+  test("a second restore of the same account fires nothing more", async () => {
+    await seedUser();
+    const h = harness();
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" });
+    expect((await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" })).changed).toBe(false);
+    expect(h.fired.filter((call) => call.hook === "onUserRestored")).toHaveLength(1);
+  });
+
+  test("an onUserRestored that throws is logged, and the restore stands", async () => {
+    await seedUser();
+    const h = harness({ throwing: true });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "x" });
+    const result = await restoreUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "y" });
+    expect(result).toMatchObject({ changed: true, state: "active" });
+    expect((await readLifecycleColumns(h.deps.db, "u1"))?.deletedAt ?? null).toBeNull();
+    expect((await history()).map((row) => row.action)).toEqual(["deleted", "restored"]);
+    expect(h.warnings.some((message) => message.includes("onUserRestored"))).toBe(true);
+  });
+
   test("restoring a deleted account that was suspended leaves it suspended, and says so", async () => {
     await seedUser();
     const h = harness();
@@ -793,6 +828,7 @@ describe("restoreUser", () => {
       state: "active",
     });
     expect(await history()).toEqual([]);
+    expect(h.fired).toEqual([]);
   });
 
   test("once the window has closed it is a conflict, and nothing is written", async () => {
@@ -828,6 +864,7 @@ describe("restoreUser", () => {
     expect((await readLifecycleColumns(h.deps.db, "u1"))?.deletedAt).toBeInstanceOf(Date);
     expect((await history()).map((row) => row.action)).toEqual(["deleted"]);
     expect(h.events.map((event) => event.action)).toEqual(["auth/admin_user_soft_deleted"]);
+    expect(h.fired.map((call) => call.hook)).toEqual(["onUserDeleted"]);
     const later = { ...h.deps, now: () => new Date(NOW.getTime() + closes + 1) };
     expect((await purgeSubject(later, "u1")).state).toBe("due");
   });
