@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { HookRuntime } from "@pithy-sh/auth/src/hooks/runtime";
 import { AUTH_MIGRATION_ORDER } from "@pithy-sh/auth/src/migrations/0001_init";
 import { AUTH_MIGRATIONS } from "@pithy-sh/auth/src/migrations/set";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
@@ -153,6 +154,7 @@ let mailed: { to: string; template: string; payload: unknown }[] = [];
 let events: AuditEventInput[] = [];
 let roleChanges: MemberRoleChangedEvent[] = [];
 let removals: MemberRemovedEvent[] = [];
+let runtimes: { hook: string; runtime: HookRuntime }[] = [];
 let _refused: PithyError | null = null;
 
 const enqueue: EnqueueInvitation = async (input) => {
@@ -241,8 +243,14 @@ function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
     ownership: OWNERSHIP,
     enqueue: () => enqueue,
     membershipHooks: {
-      onMemberRoleChanged: (event) => void roleChanges.push(event),
-      onMemberRemoved: (event) => void removals.push(event),
+      onMemberRoleChanged: (event, _d1, runtime) => {
+        roleChanges.push(event);
+        runtimes.push({ hook: "onMemberRoleChanged", runtime });
+      },
+      onMemberRemoved: (event, _d1, runtime) => {
+        removals.push(event);
+        runtimes.push({ hook: "onMemberRemoved", runtime });
+      },
     },
     userLifecycle: () => users,
     now: () => at,
@@ -255,7 +263,13 @@ let app: Hono<PithyHonoEnv>;
 async function call(
   method: string,
   path: string,
-  options: { as?: string; body?: unknown; app?: Hono<PithyHonoEnv>; env?: Record<string, unknown> } = {},
+  options: {
+    as?: string;
+    body?: unknown;
+    app?: Hono<PithyHonoEnv>;
+    env?: Record<string, unknown>;
+    executionCtx?: { waitUntil(promise: Promise<unknown>): void };
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   if (options.as) headers["x-test-user"] = options.as;
@@ -264,6 +278,7 @@ async function call(
     path,
     { method, headers, ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) },
     { DB: env.DB, ...options.env } as unknown as Record<string, unknown>,
+    options.executionCtx as never,
   );
 }
 
@@ -296,6 +311,7 @@ beforeEach(async () => {
   events = [];
   roleChanges = [];
   removals = [];
+  runtimes = [];
   _refused = null;
   app = buildApp();
 });
@@ -386,6 +402,41 @@ describe("onMemberRoleChanged", () => {
       app: throwing,
     });
     expect(response.status).toBe(200);
+  });
+});
+
+describe("the membership hooks' runtime", () => {
+  test("each is handed this request's env, and waitUntil bound to its ExecutionContext", async () => {
+    const kept: Promise<unknown>[] = [];
+    const executionCtx = {
+      kept,
+      waitUntil(this: { kept: Promise<unknown>[] }, promise: Promise<unknown>): void {
+        this.kept.push(promise);
+      },
+      passThroughOnException: () => {},
+      props: {},
+    };
+    const requestEnv = { MARKER: "this request" };
+    await choose(ADA, ACME);
+    const bob = await membershipOf(ACME, BOB);
+    const cai = await membershipOf(ACME, CAI);
+    const changed = await call("PATCH", `${BASE}/current/members/${bob}`, {
+      as: ADA,
+      body: { role: "member" },
+      env: requestEnv,
+      executionCtx,
+    });
+    expect(changed.status).toBe(200);
+    const removed = await call("DELETE", `${BASE}/current/members/${cai}`, { as: ADA, env: requestEnv, executionCtx });
+    expect(removed.status).toBe(200);
+
+    expect(runtimes.map((each) => each.hook)).toEqual(["onMemberRoleChanged", "onMemberRemoved"]);
+    for (const { runtime } of runtimes) {
+      expect(runtime.env).toMatchObject({ DB: env.DB, MARKER: "this request" });
+      const work = Promise.resolve();
+      runtime.waitUntil?.(work);
+    }
+    expect(kept).toHaveLength(2);
   });
 });
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { HookRuntime } from "@pithy-sh/auth/src/hooks/runtime";
 import type { OrganizationLifecycleActorType } from "../data/organizationLifecycle";
 
 /**
@@ -32,10 +33,23 @@ export interface OrganizationLifecycleHookEvent {
   readonly purgeAfter?: Date | null;
 }
 
-/** One hook, handed the run's D1 binding for the reason auth's are: it almost certainly writes to that database. */
-export type OrganizationLifecycleListener = (
+/**
+ * One hook, handed the run's D1 binding for the reason auth's are: it almost certainly writes to that database. And
+ * handed the Worker it runs in, `runtime.env` typed as `organization.withEnv<Env>()` names it, so it can start a
+ * Workflow or call out. `runtime.waitUntil` is there in a request and absent in the purge Workflow. A hook that takes
+ * only `(event, d1)` is still one.
+ */
+export type OrganizationLifecycleListener<Env = Record<string, unknown>> = (
   event: OrganizationLifecycleHookEvent,
   d1: D1Database,
+  runtime: HookRuntime<Env>,
+) => void | Promise<void>;
+
+/** A membership hook: the event, the request's D1 binding, and the request's runtime. */
+export type MembershipListener<Event, Env = Record<string, unknown>> = (
+  event: Event,
+  d1: D1Database,
+  runtime: HookRuntime<Env>,
 ) => void | Promise<void>;
 
 /** Who changed a membership: a member through the app's own routes, or a management client over the control plane. */
@@ -75,21 +89,21 @@ export interface MemberRemovedEvent {
 }
 
 /** The organization lifecycle hooks, each optional. Passed to `organization()` beside the config. */
-export interface OrganizationLifecycleHooks {
+export interface OrganizationLifecycleHooks<Env = Record<string, unknown>> {
   /** An organization was suspended. */
-  readonly onOrganizationSuspended?: OrganizationLifecycleListener;
+  readonly onOrganizationSuspended?: OrganizationLifecycleListener<Env>;
   /** A suspended organization was reinstated. */
-  readonly onOrganizationReinstated?: OrganizationLifecycleListener;
+  readonly onOrganizationReinstated?: OrganizationLifecycleListener<Env>;
   /** An organization was deleted, and its purge window began — or, for a hard deletion, closed at once. */
-  readonly onOrganizationDeleted?: OrganizationLifecycleListener;
+  readonly onOrganizationDeleted?: OrganizationLifecycleListener<Env>;
   /** A deleted organization's data was erased. The last thing that happens to it. */
-  readonly onOrganizationPurged?: OrganizationLifecycleListener;
+  readonly onOrganizationPurged?: OrganizationLifecycleListener<Env>;
 }
 
 /** The membership hooks, each optional. Passed to `organization()` beside the lifecycle hooks. */
-export interface OrganizationMembershipHooks {
+export interface OrganizationMembershipHooks<Env = Record<string, unknown>> {
   /** A member's role changed, through any route: a member's, an ownership transfer, or an operator's. */
-  readonly onMemberRoleChanged?: (event: MemberRoleChangedEvent, d1: D1Database) => void | Promise<void>;
+  readonly onMemberRoleChanged?: MembershipListener<MemberRoleChangedEvent, Env>;
   /** A membership ended, through any route: removed, left, or removed by an operator. */
-  readonly onMemberRemoved?: (event: MemberRemovedEvent, d1: D1Database) => void | Promise<void>;
+  readonly onMemberRemoved?: MembershipListener<MemberRemovedEvent, Env>;
 }

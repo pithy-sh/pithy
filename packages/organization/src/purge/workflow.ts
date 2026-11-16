@@ -32,7 +32,7 @@ import {
 import { startOrganizationPurgeInstance } from "./start";
 
 /**
- * The organization purge's two Workflow bodies (#623) — run by classes **the adopter's own Worker** exports,
+ * The organization purge's two Workflow bodies — run by classes **the adopter's own Worker** exports,
  * beside the `createEntrypoint` it already exports, because a purge runs every composed capability's contribution
  * and those exist nowhere else:
  *
@@ -64,8 +64,11 @@ interface PurgeEvent {
   readonly instanceId?: string;
 }
 
-/** The lifecycle dependencies for a run with no request: this env, and the composition's hooks. */
-function lifecycleFor(
+/**
+ * The lifecycle dependencies for a run with no request: this env, and the composition's hooks. The hooks run in this
+ * env with no `waitUntil`, since a Workflow has no `ExecutionContext`.
+ */
+export function lifecycleFor(
   organization: OrganizationCapability,
   env: Record<string, unknown>,
   log: Logger,
@@ -82,6 +85,7 @@ function lifecycleFor(
     db: organizationDatabase(d1 as D1Database),
     d1: d1 as D1Database,
     hooks: organization.organizationLifecycleHooks,
+    runtime: { env },
     log,
   };
 }
@@ -96,7 +100,7 @@ function runLog(env: Record<string, unknown>, event: PurgeEvent, name: string): 
 }
 
 /**
- * The trail's record of a purge (#823): each step with its disposition, a failure with where it stopped, and the
+ * The trail's record of a purge: each step with its disposition, a failure with where it stopped, and the
  * end, written once by whichever purge finished it. Each in the organization's own chain, so the attestation cites
  * them there. A step's name and disposition only: nothing about the organization beyond its id.
  */

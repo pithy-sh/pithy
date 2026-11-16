@@ -12,6 +12,7 @@ import type { Context } from "hono";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeSendAuthEmail, type ResolveRecipientLocale } from "../email/send";
+import { requestRuntime } from "../hooks/runtime";
 import { type AuthInstance, makeAuth } from "../instance/auth";
 import { ensureJwksSealedUnderCurrent } from "../instance/jwksReencryption";
 import { resolveProvider } from "../instance/providers";
@@ -133,10 +134,13 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   const baseURL = baseURLResolver(cfg.baseURL)(c.req.raw);
   return makeAuth({
     db: authDatabase(d1),
-    // The adopter's listener, bound to *this* request's binding. The instance is built per request, so
-    // there is a real binding to hand over here and nowhere earlier — `auth()` runs at compose time and
-    // has none.
-    ...(listener ? { onSessionRevoked: (session: { id: string; userId: string }) => listener(session, d1) } : {}),
+    // The adopter's listener, bound to *this* request's binding and runtime. The instance is built per request, so
+    // there is a real binding to hand over here and nowhere earlier — `auth()` runs at compose time and has none.
+    ...(listener
+      ? {
+          onSessionRevoked: (session: { id: string; userId: string }) => listener(session, d1, requestRuntime(c)),
+        }
+      : {}),
     secret,
     sessionSecrets,
     // Never `cfg.baseURL` directly. The instance derives the session cookie's name, the OAuth callback

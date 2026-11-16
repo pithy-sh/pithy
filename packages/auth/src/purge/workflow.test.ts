@@ -4,12 +4,13 @@
 import { createLogger, type LogSink } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { describe, expect, test } from "vitest";
+import { type AuthCapability, AuthConfig } from "../capability";
 import { AUTH_PURGE_BINDING, AUTH_PURGE_KEY } from "./specs";
 import { purgeInstanceId } from "./start";
-import { purgeStarter } from "./workflow";
+import { lifecycleFor, purgeStarter } from "./workflow";
 
 /**
- * How the daily pass starts one account's purge (#622), and what it reports when it cannot. The pass counts what
+ * How the daily pass starts one account's purge, and what it reports when it cannot. The pass counts what
  * this answers, so a purge it never started must answer `false`: an operator reading `{ started: 2 }` is told two
  * purges are running.
  */
@@ -80,5 +81,22 @@ describe("purgeStarter", () => {
       msg: "workflow skipped",
       fields: expect.objectContaining({ workflow: AUTH_PURGE_KEY, reason: "workflow quota exceeded" }),
     });
+  });
+});
+
+describe("lifecycleFor", () => {
+  test("hands the hooks the Workflow's env and no waitUntil, since a Workflow has no ExecutionContext", () => {
+    const { log } = capture();
+    const onUserPurged = (): void => {};
+    const auth = {
+      authConfig: AuthConfig.parse({ baseURL: "https://api.example.com" }),
+      lifecycleHooks: { onUserPurged },
+      auditFor: () => async () => {},
+    } as unknown as AuthCapability;
+    const env = { DB: {}, MARKER: "workflow" };
+    const deps = lifecycleFor(auth, env, log);
+    expect(deps.hooks.onUserPurged).toBe(onUserPurged);
+    expect(deps.runtime.env).toBe(env);
+    expect("waitUntil" in deps.runtime).toBe(false);
   });
 });

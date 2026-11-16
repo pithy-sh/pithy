@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { type AuthDatabase, authDatabase } from "@pithy-sh/auth/src/data/tables";
+import { requestRuntime } from "@pithy-sh/auth/src/hooks/runtime";
 import type { LifecycleDeps } from "@pithy-sh/auth/src/lifecycle/transitions";
 import { AUTH_PURGE_BINDING } from "@pithy-sh/auth/src/purge/specs";
 import { startPurgeInstance } from "@pithy-sh/auth/src/purge/start";
@@ -68,7 +69,12 @@ import {
   suspendSoleMembers,
   type UserLifecycleWiring,
 } from "../lifecycle/cascade";
-import type { MembershipActor, OrganizationLifecycleHooks, OrganizationMembershipHooks } from "../lifecycle/hooks";
+import type {
+  MembershipActor,
+  MembershipListener,
+  OrganizationLifecycleHooks,
+  OrganizationMembershipHooks,
+} from "../lifecycle/hooks";
 import { listOrganizations } from "../lifecycle/listing";
 import { organizationStanding } from "../lifecycle/state";
 import {
@@ -717,11 +723,11 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     event: Parameters<NonNullable<OrganizationMembershipHooks[Name]>>[0],
   ): Promise<void> {
     const hook = options.membershipHooks?.[name] as
-      | ((event: Parameters<NonNullable<OrganizationMembershipHooks[Name]>>[0], d1: D1Database) => unknown)
+      | MembershipListener<Parameters<NonNullable<OrganizationMembershipHooks[Name]>>[0]>
       | undefined;
     if (!hook) return;
     try {
-      await hook(event, d1(c));
+      await hook(event, d1(c), requestRuntime(c));
     } catch (error) {
       c.var.log?.child("organization").warn(`${name} threw; the change stands`, {
         organizationId: event.organizationId,
@@ -987,6 +993,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       db: db(c),
       d1: d1(c),
       hooks: options.lifecycleHooks ?? {},
+      runtime: requestRuntime(c),
       log: c.var.log?.child("organization"),
       now: options.now,
     };
@@ -1025,6 +1032,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       emit: c.var.emit,
       config: wiring.config,
       hooks: wiring.hooks,
+      runtime: requestRuntime(c),
       enqueueEmail: enqueue
         ? (input) =>
             enqueue({

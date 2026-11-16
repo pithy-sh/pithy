@@ -80,7 +80,7 @@ function provider(): MigrationProvider {
 }
 
 const db = () => organizationDatabase(env.DB);
-const deps = () => ({ db: db(), d1: env.DB, hooks: {}, now: () => NOW });
+const deps = () => ({ db: db(), d1: env.DB, hooks: {}, runtime: { env: { DB: env.DB } }, now: () => NOW });
 
 /** A Workflow's journal and retry loop, in miniature. */
 function workflow(attempts = 3) {
@@ -320,7 +320,13 @@ describe("the Workflow bodies", () => {
   }
 
   /** Deleted at `at`, so the window has closed by the real clock the bodies read. */
-  const deletedAt = (at: Date) => ({ db: db(), d1: env.DB, hooks: {}, now: () => at });
+  const deletedAt = (at: Date) => ({
+    db: db(),
+    d1: env.DB,
+    hooks: {},
+    runtime: { env: { DB: env.DB } },
+    now: () => at,
+  });
 
   beforeEach(() => {
     recorded = [];

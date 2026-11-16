@@ -6,6 +6,7 @@ import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
 import type { Context } from "hono";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
+import { requestRuntime } from "../hooks/runtime";
 import { resolveDb } from "../http/resolve";
 import type { LifecycleAuditContext, LifecycleDeps } from "./transitions";
 
@@ -14,7 +15,8 @@ import type { LifecycleAuditContext, LifecycleDeps } from "./transitions";
  *
  * One function so every route resolves them the same way: this request's database, its audit seam and logger,
  * the composed email capability's enqueue bound to this request's env, and the adopter's hooks as `auth()` was
- * handed them. A route that assembled its own would be the second place a hook could be forgotten.
+ * handed them, with this request's env and `waitUntil` to run in. A route that assembled its own would be the second
+ * place a hook could be forgotten.
  *
  * `context` is what the caller adds to each audit event: the request's correlation, and for a management call
  * the connection it came through. The caller passes it because only the caller knows who it is.
@@ -32,6 +34,7 @@ export function lifecycleDeps(
     emit: c.var.emit,
     config: wiring.config,
     hooks: wiring.lifecycleHooks ?? {},
+    runtime: requestRuntime(c),
     enqueueEmail: enqueue ? (input) => enqueue(c.env as unknown as EmailEnqueueEnv, input) : undefined,
     log: c.var.log?.child("auth"),
     ...(context ? { context } : {}),

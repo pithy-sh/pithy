@@ -125,15 +125,36 @@ organization({
   retention: { purgeAfterDays: 30 },
   // All three send by default. Turn one off by setting it to false.
   lifecycleEmails: { organizationSuspended: true, organizationReinstated: true, organizationDeletionScheduled: true },
-  onOrganizationSuspended: async (event, d1) => {},
-  onOrganizationReinstated: async (event, d1) => {},
-  onOrganizationDeleted: async (event, d1) => {},
-  onOrganizationPurged: async (event, d1) => {},
+  onOrganizationSuspended: async (event, d1, runtime) => {},
+  onOrganizationReinstated: async (event, d1, runtime) => {},
+  onOrganizationDeleted: async (event, d1, runtime) => {},
+  onOrganizationPurged: async (event, d1, runtime) => {},
 });
 ```
 
 The owners are told: the members holding the role your `ownership` pair confers, or, with no pair, the members whose role holds `organization:delete`. Three templates in `@pithy-sh/email`, all transactional, in each owner's own language: `organizationSuspended`, with the reason and any end — the suspended screen tells every member the owners were told why; an owner a `sole` cascade reached is sent their own account's suspension notice instead, because this one says their account is unaffected — `organizationReinstated`, and `organizationDeletionScheduled`, with the date the data is erased. A hard deletion sends none. With no email composed nothing is sent and nothing is refused, and the audit event records `mailed: null`.
 
 Each hook fires once per transition that happened, after it is written. A hook that throws is logged and swallowed, and the transition stands.
+
+Each hook is handed the event, the D1 binding, and `runtime`: `{ env, waitUntil? }`. `env` is the Worker's environment, so a hook can read a secret, start a Workflow, send to a queue, or call out. Call `organization.withEnv<Env>()({ … })` with your own `Env` and `runtime.env` is typed as it, with no cast. The catalog's roles are still inferred from `roles`, so an `ownership` pair naming a role it does not declare is still a compile error. `organization<Env>()` would not do this: TypeScript infers all of a call's type arguments or none. The membership hooks are handed the same `runtime`.
+
+`waitUntil` is the request's `ExecutionContext.waitUntil`. It is there when the hook fires inside a request, and absent when it fires from the purge Workflow, which has no `ExecutionContext`. `onOrganizationPurged` always fires from the Workflow. Check for it before you call it.
+
+Outside work belongs in a Workflow. The hook only starts it: it cannot fail the transition, and the Workflow retries the call.
+
+```ts
+interface Env {
+  REVOKE_GRANTS: Workflow<{ organizationId: string }>;
+}
+
+organization.withEnv<Env>()({
+  roles,
+  onOrganizationDeleted: async ({ organizationId }, _d1, { env }) => {
+    await env.REVOKE_GRANTS.create({ params: { organizationId } });
+  },
+});
+```
+
+A hook written as `(event, d1)` still compiles and runs unchanged.
 
 Two membership hooks are passed the same way, `onMemberRoleChanged` and `onMemberRemoved`, and fire on a member's role changing or membership ending rather than on the organization's own transitions. [Membership administration](../README.md#membership-administration) in the README describes them.

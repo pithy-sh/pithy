@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { HookRuntime } from "@pithy-sh/auth/src/hooks/runtime";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -65,18 +66,21 @@ function provider(): MigrationProvider {
 }
 
 const db = () => organizationDatabase(env.DB);
-let fired: { name: string; event: OrganizationLifecycleHookEvent }[] = [];
+let fired: { name: string; event: OrganizationLifecycleHookEvent; runtime: HookRuntime }[] = [];
+/** The runtime every transition here is handed. */
+const RUNTIME: HookRuntime = { env: { DB: env.DB, MARKER: "this run" }, waitUntil: () => {} };
 
 function deps(at: Date = NOW, hooks: OrganizationLifecycleDeps["hooks"] | null = null): OrganizationLifecycleDeps {
   return {
     db: db(),
     d1: env.DB,
     hooks: hooks ?? {
-      onOrganizationSuspended: (event) => void fired.push({ name: "suspended", event }),
-      onOrganizationReinstated: (event) => void fired.push({ name: "reinstated", event }),
-      onOrganizationDeleted: (event) => void fired.push({ name: "deleted", event }),
-      onOrganizationPurged: (event) => void fired.push({ name: "purged", event }),
+      onOrganizationSuspended: (event, _d1, runtime) => void fired.push({ name: "suspended", event, runtime }),
+      onOrganizationReinstated: (event, _d1, runtime) => void fired.push({ name: "reinstated", event, runtime }),
+      onOrganizationDeleted: (event, _d1, runtime) => void fired.push({ name: "deleted", event, runtime }),
+      onOrganizationPurged: (event, _d1, runtime) => void fired.push({ name: "purged", event, runtime }),
     },
+    runtime: RUNTIME,
     now: () => at,
   };
 }
@@ -338,6 +342,33 @@ describe("restoreOrganization", () => {
       changed: false,
       state: "active",
     });
+  });
+});
+
+describe("the hooks' runtime", () => {
+  test("every hook is handed the run's runtime, env and waitUntil, at every transition that fires one", async () => {
+    await suspendOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "r", restoreRoute: RESTORE });
+    await reinstateOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "ok", restoreRoute: RESTORE });
+    await removeOrganization(deps(), { organizationId: ACME, actor: OPERATOR, reason: "gone", purgeAfterDays: 1 });
+    await completeOrganizationPurge(deps(), { organizationId: ACME });
+    expect(fired.map((hook) => hook.name)).toEqual(["suspended", "reinstated", "deleted", "purged"]);
+    for (const hook of fired) expect(hook.runtime).toBe(RUNTIME);
+  });
+
+  test("a two-argument hook still runs, handed the event and the binding", async () => {
+    const seen: { organizationId: string; d1: unknown }[] = [];
+    const hooks = {
+      onOrganizationSuspended: (event: OrganizationLifecycleHookEvent, d1: unknown) => {
+        seen.push({ organizationId: event.organizationId, d1 });
+      },
+    };
+    await suspendOrganization(deps(NOW, hooks), {
+      organizationId: ACME,
+      actor: OPERATOR,
+      reason: "r",
+      restoreRoute: RESTORE,
+    });
+    expect(seen).toEqual([{ organizationId: ACME, d1: env.DB }]);
   });
 });
 
