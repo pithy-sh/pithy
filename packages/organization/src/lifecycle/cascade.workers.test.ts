@@ -90,6 +90,7 @@ function users(overrides: Partial<LifecycleDeps> = {}): LifecycleDeps {
       },
     },
     hooks: {},
+    runtime: { env: { DB: env.DB } },
     now: () => NOW,
     ...overrides,
   };

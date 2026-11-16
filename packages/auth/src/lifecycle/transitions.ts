@@ -16,6 +16,7 @@ import { type AuthAuditAction, AuthAuditActions } from "../audit/actions";
 import type { AuthConfig } from "../capability";
 import type { AuthDatabase } from "../data/tables";
 import type { UserLifecycleAction, UserLifecycleActorType } from "../data/userLifecycle";
+import type { HookRuntime } from "../hooks/runtime";
 import type { UserLifecycleHookEvent, UserLifecycleHooks, UserLifecycleListener } from "./hooks";
 import { MAX_REASON } from "./reason";
 import { accountStanding, LifecycleColumns } from "./state";
@@ -66,6 +67,8 @@ export interface LifecycleDeps {
   readonly config: Pick<AuthConfig, "retention" | "lifecycleEmails">;
   /** The adopter's hooks. */
   readonly hooks: UserLifecycleHooks;
+  /** The Worker the hooks run in: this run's env, and `waitUntil` inside a request. */
+  readonly runtime: HookRuntime;
   /** The email capability's enqueue, bound to this run's env. Absent, nothing is mailed. */
   readonly enqueueEmail?: ((input: EnqueueInput) => Promise<unknown>) | undefined;
   /** Where a swallowed failure is reported. Absent, it is swallowed silently. */
@@ -307,7 +310,7 @@ async function fire(
 ): Promise<void> {
   if (!hook) return;
   try {
-    await hook(event, deps.d1);
+    await hook(event, deps.d1, deps.runtime);
   } catch (error) {
     deps.log?.warn(`${name} threw; the transition stands`, { userId: event.userId, reason: messageOf(error) });
   }

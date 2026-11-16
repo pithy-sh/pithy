@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthConfig } from "../capability";
 import { authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
+import type { HookRuntime } from "../hooks/runtime";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 import { deleteInactiveAccounts, purgeOps } from "../purge/run";
@@ -72,8 +73,10 @@ const OPERATOR = { type: "control-plane", id: "connection-1" } as const;
 interface Harness {
   deps: LifecycleDeps;
   events: AuditEventInput[];
-  fired: { hook: keyof UserLifecycleHooks; event: UserLifecycleHookEvent }[];
+  fired: { hook: keyof UserLifecycleHooks; event: UserLifecycleHookEvent; runtime: HookRuntime }[];
   warnings: string[];
+  /** The runtime this harness hands its transitions. */
+  runtime: HookRuntime;
 }
 
 function harness(
@@ -84,8 +87,8 @@ function harness(
   const warnings: string[] = [];
   const record =
     (hook: keyof UserLifecycleHooks) =>
-    (event: UserLifecycleHookEvent): void => {
-      fired.push({ hook, event });
+    (event: UserLifecycleHookEvent, _d1: unknown, runtime: HookRuntime): void => {
+      fired.push({ hook, event, runtime });
       if (options.throwing) throw new Error(`the adopter's ${hook} broke`);
     };
   const emailCap = email({ fromAddress: "no@reply.test", fromName: "Acme", baseUrl: "http://localhost" });
@@ -101,10 +104,12 @@ function harness(
       return log;
     },
   };
+  const runtime: HookRuntime = { env: { ...env, MARKER: "this run" }, waitUntil: () => {} };
   return {
     events,
     fired,
     warnings,
+    runtime,
     deps: {
       db: authDatabase(env.DB),
       d1: env.DB,
@@ -121,6 +126,7 @@ function harness(
       enqueueEmail: (input) => emailCap.enqueue(env, input),
       log,
       now: () => NOW,
+      runtime,
     },
   };
 }
@@ -394,6 +400,39 @@ describe("suspendUser", () => {
     const again = await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Longer." });
     expect(again.changed).toBe(true);
     expect((await readLifecycleColumns(h.deps.db, "u1"))?.suspendedUntil ?? null).toBeNull();
+  });
+
+  test("every hook is handed the run's runtime, env and waitUntil, at every transition that fires one", async () => {
+    await seedUser();
+    const h = harness();
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
+    await reinstateUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Cleared." });
+    await deleteUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Gone." });
+    await completePurge(h.deps, { userId: "u1" });
+    expect(h.fired.map((call) => call.hook)).toEqual([
+      "onUserSuspended",
+      "onUserReinstated",
+      "onUserDeleted",
+      "onUserPurged",
+    ]);
+    for (const call of h.fired) {
+      expect(call.runtime).toBe(h.runtime);
+      expect(call.runtime.env).toMatchObject({ MARKER: "this run" });
+    }
+  });
+
+  test("a two-argument hook still runs, handed the event and the binding", async () => {
+    await seedUser();
+    const seen: { userId: string; d1: unknown }[] = [];
+    const h = harness({
+      hooks: {
+        onUserSuspended: (event, d1) => {
+          seen.push({ userId: event.userId, d1 });
+        },
+      },
+    });
+    await suspendUser(h.deps, { userId: "u1", actor: OPERATOR, reason: "Review." });
+    expect(seen).toEqual([{ userId: "u1", d1: env.DB }]);
   });
 
   test("a hook that throws does not fail the transition, and is logged rather than lost", async () => {

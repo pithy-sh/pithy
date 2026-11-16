@@ -147,7 +147,11 @@ function refuseSecondMembershipModel(capabilities: readonly Capability[]): void 
 }
 
 /** What `organization()` takes: the config's input side, plus the two things a schema cannot carry. */
-export type OrganizationOptions<Power extends string, Role extends string> = OrganizationConfigInput & {
+export type OrganizationOptions<
+  Power extends string,
+  Role extends string,
+  Env = Record<string, unknown>,
+> = OrganizationConfigInput & {
   /**
    * The project's role catalog, from `defineRoles` in `src/organization/roles.ts`.
    *
@@ -211,8 +215,8 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    * nothing.
    */
   readonly onJoin?: OrganizationJoinStatements;
-} & OrganizationLifecycleHooks &
-  OrganizationMembershipHooks;
+} & OrganizationLifecycleHooks<Env> &
+  OrganizationMembershipHooks<Env>;
 
 /** The tenancy capability, with its resolved config and the catalog it was composed with attached. */
 export interface OrganizationCapability<Power extends string = string, Role extends string = string>
@@ -254,9 +258,11 @@ export function isOrganizationCapability(capability: Capability): capability is 
  * the same moment and for the same reason — an ownership pair naming a role the catalog does not declare
  * is a catalog mistake, and the first transfer is much too late to hear about it.
  */
-export function organization<const Power extends string = never, const Role extends string = string>(
-  options: OrganizationOptions<Power, Role>,
-): OrganizationCapability<Power, Role> {
+export function organization<
+  const Power extends string = never,
+  const Role extends string = string,
+  Env = Record<string, unknown>,
+>(options: OrganizationOptions<Power, Role, Env>): OrganizationCapability<Power, Role> {
   const {
     roles,
     ownership,
@@ -273,16 +279,20 @@ export function organization<const Power extends string = never, const Role exte
   } = options;
   // The hooks, kept only where one was given, so an absent hook is an absent key. Destructured before the parse,
   // because Zod strips an unknown key silently and a hook handed to it would simply never run.
-  const lifecycleHooks: OrganizationLifecycleHooks = {
+  const typedLifecycleHooks: OrganizationLifecycleHooks<Env> = {
     ...(onOrganizationSuspended ? { onOrganizationSuspended } : {}),
     ...(onOrganizationReinstated ? { onOrganizationReinstated } : {}),
     ...(onOrganizationDeleted ? { onOrganizationDeleted } : {}),
     ...(onOrganizationPurged ? { onOrganizationPurged } : {}),
   };
-  const membershipHooks: OrganizationMembershipHooks = {
+  const typedMembershipHooks: OrganizationMembershipHooks<Env> = {
     ...(onMemberRoleChanged ? { onMemberRoleChanged } : {}),
     ...(onMemberRemoved ? { onMemberRemoved } : {}),
   };
+  // Every fire site hands these the Worker's own env, which is what `Env` names, so widening it here is the one
+  // place the adopter's type meets the env the kit holds untyped.
+  const lifecycleHooks = typedLifecycleHooks as unknown as OrganizationLifecycleHooks;
+  const membershipHooks = typedMembershipHooks as unknown as OrganizationMembershipHooks;
   const resolved = OrganizationConfig.parse(configInput);
 
   // The transfer's roles, checked against the catalog they will be spent against. `nominate` and
@@ -429,3 +439,21 @@ export function organization<const Power extends string = never, const Role exte
     auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
   });
 }
+
+/**
+ * `organization()` with the adopter's own `Env`, so every hook's `runtime.env` is typed as it.
+ *
+ * Curried because TypeScript infers all of a call's type arguments or none: `organization<Env>()` would bind `Env`
+ * and leave the catalog's powers and roles uninferred, and with them the check that an `ownership` pair names a
+ * declared role. Naming `Env` on the outer call leaves the inner one to infer the catalog exactly as
+ * `organization()` does.
+ *
+ * ```ts
+ * organization.withEnv<Env>()({ roles, onOrganizationDeleted: async (event, d1, { env }) => {} });
+ * ```
+ */
+organization.withEnv = function withEnv<Env>() {
+  return <const Power extends string = never, const Role extends string = string>(
+    options: OrganizationOptions<Power, Role, Env>,
+  ): OrganizationCapability<Power, Role> => organization<Power, Role, Env>(options);
+};

@@ -15,7 +15,7 @@ import { oauthPopup } from "better-auth/plugins";
 import { admin } from "better-auth/plugins/admin";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { organization } from "better-auth/plugins/organization";
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 import { z } from "zod";
 import { AttestationConfig } from "./attestation/config";
 import type { AttestationVerifier } from "./attestation/verifier";
@@ -662,5 +662,45 @@ describe("the retention floor over auth's lifecycle", () => {
         AuthAuditActions.adminUserRestored,
       ]),
     );
+  });
+});
+
+describe("auth<Env>()", () => {
+  /** An adopter's own Worker env: a Workflow binding and a secret. */
+  interface AdopterEnv {
+    readonly REVOKE_ITEMS: { create(options: { params: { userId: string } }): Promise<unknown> };
+    readonly AGGREGATOR_SECRET: string;
+  }
+
+  test("types runtime.env as the adopter's Env in every hook, with no cast", () => {
+    const cap = auth<AdopterEnv>({
+      baseURL: "https://api.example.com",
+      onUserDeleted: async (event, _d1, runtime) => {
+        expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
+        expectTypeOf(runtime.waitUntil).toEqualTypeOf<((promise: Promise<unknown>) => void) | undefined>();
+        await runtime.env.REVOKE_ITEMS.create({ params: { userId: event.userId } });
+      },
+      onUserSuspended: (_event, _d1, { env }) => {
+        expectTypeOf(env.AGGREGATOR_SECRET).toEqualTypeOf<string>();
+      },
+      onSessionRevoked: async (_session, _d1, runtime) => {
+        expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
+      },
+    });
+    expect(cap.lifecycleHooks.onUserDeleted).toBeTypeOf("function");
+    expect(cap.lifecycleHooks.onUserSuspended).toBeTypeOf("function");
+
+    auth<AdopterEnv>({
+      baseURL: "https://api.example.com",
+      // @ts-expect-error a binding the adopter's Env does not declare
+      onUserPurged: (_event, _d1, { env }) => env.NOT_BOUND,
+    });
+  });
+
+  test("a hook that takes (event, d1), or (session, d1), compiles and is kept unchanged", () => {
+    const onUserPurged = async (_event: { userId: string }, _d1: unknown): Promise<void> => {};
+    const onSessionRevoked = async (_session: { id: string; userId: string }, _d1: unknown): Promise<void> => {};
+    const cap = auth({ baseURL: "https://api.example.com", onUserPurged, onSessionRevoked });
+    expect(cap.lifecycleHooks.onUserPurged).toBe(onUserPurged);
   });
 });

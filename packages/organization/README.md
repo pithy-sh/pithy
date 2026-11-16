@@ -261,11 +261,13 @@ With no email composed nothing is sent and nothing is refused: the change has al
 organization({
   roles,
   // A role changed. `powersLost` is what the old role held and the new one does not, from the catalog's nesting; empty for a promotion.
-  onMemberRoleChanged: async ({ organizationId, userId, previousRole, role, powersLost, actor, at }, d1) => {},
+  onMemberRoleChanged: async ({ organizationId, userId, previousRole, role, powersLost, actor, at }, d1, runtime) => {},
   // A membership ended: removed, left (`left: true`), removed by an operator, or removed by a forced transfer.
-  onMemberRemoved: async ({ organizationId, userId, role, left, actor, at }, d1) => {},
+  onMemberRemoved: async ({ organizationId, userId, role, left, actor, at }, d1, runtime) => {},
 });
 ```
+
+`runtime` is `{ env, waitUntil? }`: the request's Worker env, typed as your own when you call `organization.withEnv<Env>()({ … })`, and its `waitUntil`, so a hook can start a Workflow or call out. [Config, mail and hooks](docs/organization-lifecycle.md#config-mail-and-hooks) has the example.
 
 `actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. A hook cannot undo the write it heard about. A row that must begin with a membership belongs in `onJoin`, below. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
 

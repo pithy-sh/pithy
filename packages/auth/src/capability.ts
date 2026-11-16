@@ -23,6 +23,7 @@ import { type AttestationVerifiers, PLATFORM_VERIFIERS } from "./attestation/ver
 import { AuthAuditActions } from "./audit/actions";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
+import type { HookRuntime } from "./hooks/runtime";
 import { baseURLResolver } from "./http/baseUrl";
 import { publishSameOrigin } from "./http/csrf";
 import { registerDevLoginRoute } from "./http/devLoginRoute";
@@ -308,9 +309,15 @@ export type ScopeResolver = (
  * **Handed this request's D1 binding**, because the auth instance is built per request and the listener
  * almost certainly wants to write to the same database under a different capability's view of it. Taking
  * the binding rather than a typed database keeps this seam out of the business of knowing whose tables
- * the listener is about to touch.
+ * the listener is about to touch. **And handed the request's runtime**: its env, typed as `auth<Env>()` names
+ * it, and its `waitUntil`, so the listener can reach another binding or keep work running past the response.
+ * A listener that takes only `(session, d1)` is still one.
  */
-export type SessionRevokedListener = (session: { id: string; userId: string }, d1: D1Database) => Promise<void>;
+export type SessionRevokedListener<Env = Record<string, unknown>> = (
+  session: { id: string; userId: string },
+  d1: D1Database,
+  runtime: HookRuntime<Env>,
+) => Promise<void>;
 
 /**
  * What `auth()` takes: the config, plus the seams that are **behavior rather than data**.
@@ -320,8 +327,8 @@ export type SessionRevokedListener = (session: { id: string; userId: string }, d
  * `PaymentsOptions`: everything describable stays in {@link AuthConfig}, and a resolver is a sibling key
  * destructured off before the parse.
  */
-export type AuthOptions = AuthConfigInput &
-  UserLifecycleHooks & {
+export type AuthOptions<Env = Record<string, unknown>> = AuthConfigInput &
+  UserLifecycleHooks<Env> & {
     /**
      * Resolve a GitHub identity yourself, replacing the kit's primary-only rule.
      *
@@ -352,7 +359,7 @@ export type AuthOptions = AuthConfigInput &
      *
      * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
      */
-    onSessionRevoked?: SessionRevokedListener;
+    onSessionRevoked?: SessionRevokedListener<Env>;
     /**
      * Decide, per request, what this request's caller is — and so which scope gates it opens.
      *
@@ -468,7 +475,7 @@ export function attestationProjection(
  * `AuthContext` seam. Depends on `secrets` and `email`; auto-gates its send routes with `turnstile`
  * and emits `auth/*` through `audit` when those are composed.
  */
-export function auth(options: AuthOptions): AuthCapability {
+export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): AuthCapability {
   // **Destructured before the parse, and that ordering is the whole reason this is not a config field.**
   // Zod 4 objects strip unknown keys silently, so a `resolveGithubUserInfo` handed to `AuthConfig.parse`
   // would vanish with no error and the adopter's override would simply never run. `payments()` splits
@@ -486,12 +493,16 @@ export function auth(options: AuthOptions): AuthCapability {
   const resolved = AuthConfig.parse(config);
   // The lifecycle hooks, kept only where one was given, so an absent hook is an absent key rather than an
   // `undefined` every reader has to tell apart from a hook.
-  const lifecycleHooks: UserLifecycleHooks = {
+  const typedHooks: UserLifecycleHooks<Env> = {
     ...(onUserSuspended ? { onUserSuspended } : {}),
     ...(onUserReinstated ? { onUserReinstated } : {}),
     ...(onUserDeleted ? { onUserDeleted } : {}),
     ...(onUserPurged ? { onUserPurged } : {}),
   };
+  // Every fire site hands these the Worker's own env, which is what `Env` names, so widening it here is the one
+  // place the adopter's type meets the env the kit holds untyped.
+  const lifecycleHooks = typedHooks as unknown as UserLifecycleHooks;
+  const sessionRevoked = onSessionRevoked as SessionRevokedListener | undefined;
   // What may be composed, before anything is built from the list. The four the kit composes are the
   // sign-in this product promises and what the control-plane seam verifies against, so a list naming one
   // of them is refused here by name rather than silently redefining a route at request time — and so is a
@@ -506,7 +517,7 @@ export function auth(options: AuthOptions): AuthCapability {
     resolveGithubUserInfo,
     enqueueEmail: undefined,
     turnstile: undefined,
-    onSessionRevoked,
+    onSessionRevoked: sessionRevoked,
     resolveScopes,
     lifecycleHooks,
     purgeSteps: [],

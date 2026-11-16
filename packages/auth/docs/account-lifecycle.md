@@ -189,14 +189,35 @@ Four templates in `@pithy-sh/email`, all transactional, so an unsubscribe never 
 ```ts
 auth({
   baseURL: "https://api.example.com",
-  onUserSuspended: async (event, d1) => {},
-  onUserReinstated: async (event, d1) => {},
-  onUserDeleted: async (event, d1) => {},
-  onUserPurged: async (event, d1) => {},
+  onUserSuspended: async (event, d1, runtime) => {},
+  onUserReinstated: async (event, d1, runtime) => {},
+  onUserDeleted: async (event, d1, runtime) => {},
+  onUserPurged: async (event, d1, runtime) => {},
 });
 ```
 
 Each fires once per transition. A call that finds the account already where it asked to put it fires nothing, and neither does restating a suspension. A hook that throws is logged and changes nothing: the transition is already written.
+
+Each hook is handed the event, the D1 binding, and `runtime`: `{ env, waitUntil? }`. `env` is the Worker's environment, so a hook can read a secret, start a Workflow, send to a queue, or call out. Pass your own `Env` to `auth<Env>()` and `runtime.env` is typed as it, with no cast. `onSessionRevoked` is handed the same `runtime` as its third argument.
+
+`waitUntil` is the request's `ExecutionContext.waitUntil`. It is there when the hook fires inside a request, and absent when it fires from the purge Workflow, which has no `ExecutionContext`. `onUserPurged` always fires from the Workflow, and so does `onUserDeleted` for an account the daily inactivity pass deletes. Check for it before you call it.
+
+Outside work belongs in a Workflow. The hook only starts it, which suits the hook's contract: it cannot fail the transition, and the Workflow retries the call.
+
+```ts
+interface Env {
+  REVOKE_LINKED_ITEMS: Workflow<{ userId: string }>;
+}
+
+auth<Env>({
+  baseURL: "https://api.example.com",
+  onUserDeleted: async ({ userId }, _d1, { env }) => {
+    await env.REVOKE_LINKED_ITEMS.create({ params: { userId } });
+  },
+});
+```
+
+A hook written as `(event, d1)` still compiles and runs unchanged.
 
 ## Screens
 

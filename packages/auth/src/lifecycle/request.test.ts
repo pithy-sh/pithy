@@ -8,9 +8,12 @@ import { AuthConfig, type AuthWiring } from "../capability";
 import { lifecycleDeps } from "./request";
 
 /** A context carrying only what `lifecycleDeps` reads. */
-function context(env: Record<string, unknown>): Context<PithyHonoEnv> {
+function context(
+  env: Record<string, unknown>,
+  executionCtx?: { waitUntil(p: Promise<unknown>): void },
+): Context<PithyHonoEnv> {
   const emit = async (): Promise<void> => {};
-  return { env, var: { emit, log: undefined } } as unknown as Context<PithyHonoEnv>;
+  return { env, executionCtx, var: { emit, log: undefined } } as unknown as Context<PithyHonoEnv>;
 }
 
 function wiring(overrides: Partial<AuthWiring> = {}): AuthWiring {
@@ -48,11 +51,27 @@ describe("lifecycleDeps", () => {
     expect(seen).toEqual([{ env, template: "accountSuspended" }]);
   });
 
+  test("hands the hooks this request's env and its waitUntil, bound to the request's ExecutionContext", () => {
+    const kept: Promise<unknown>[] = [];
+    const ctx = {
+      kept,
+      waitUntil(this: { kept: Promise<unknown>[] }, promise: Promise<unknown>): void {
+        this.kept.push(promise);
+      },
+    };
+    const env = { DB: {}, MARKER: true };
+    const deps = lifecycleDeps(context(env, ctx), wiring());
+    expect(deps.runtime.env).toBe(env);
+    const work = Promise.resolve();
+    deps.runtime.waitUntil?.(work);
+    expect(kept).toEqual([work]);
+  });
+
   test("with no hooks given, there are none — not a missing object", () => {
     expect(lifecycleDeps(context({ DB: {} }), wiring()).hooks).toEqual({});
   });
 
-  test("carries the caller's audit context onto the deps, and none when there is none (#621)", () => {
+  test("carries the caller's audit context onto the deps, and none when there is none", () => {
     const audit = { ip: "203.0.113.7", requestId: "ray-1", metadata: { connectionId: "c-1" } };
     expect(lifecycleDeps(context({ DB: {} }), wiring(), audit).context).toEqual(audit);
     expect(lifecycleDeps(context({ DB: {} }), wiring()).context).toBeUndefined();

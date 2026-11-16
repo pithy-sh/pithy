@@ -9,12 +9,13 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { EXAMPLE_ADA, EXAMPLE_ALAN, EXAMPLE_GRACE } from "@pithy-sh/core/src/seed/exampleIdentities";
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 import { OrganizationAuditActions } from "./audit/actions";
 import { isOrganizationCapability, organization } from "./capability";
 import { MEMBERSHIPS_TABLE, organizationTables } from "./data/tables";
 import { ORGANIZATION_CONTROL_PLANE_SCOPES } from "./http/scopes";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
+import type { OwnershipRoles } from "./ownership/ownership";
 import { defineRoles, ORGANIZATION_POWERS } from "./roles/roles";
 
 /** The dashboard's catalog: three roles that nest, two powers of its own, `owner` unassignable. */
@@ -534,5 +535,66 @@ describe("the organization lifecycle", () => {
     const configured = organization({ ...BASE, retention: { purgeAfterDays: 7 } });
     expect(configured.organizationConfig.retention.purgeAfterDays).toBe(7);
     expect(() => organization({ ...BASE, retention: { purgeAfterDays: 0 } })).toThrow();
+  });
+});
+
+describe("organization.withEnv<Env>()", () => {
+  /** An adopter's own Worker env: a Workflow binding and a secret. */
+  interface AdopterEnv {
+    readonly REVOKE_GRANTS: { create(options: { params: { organizationId: string } }): Promise<unknown> };
+    readonly API_SECRET: string;
+  }
+
+  test("types runtime.env as the adopter's Env in every hook, with no cast", () => {
+    const capability = organization.withEnv<AdopterEnv>()({
+      ...BASE,
+      onOrganizationDeleted: async (event, _d1, runtime) => {
+        expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
+        expectTypeOf(runtime.waitUntil).toEqualTypeOf<((promise: Promise<unknown>) => void) | undefined>();
+        await runtime.env.REVOKE_GRANTS.create({ params: { organizationId: event.organizationId } });
+      },
+      onMemberRoleChanged: (_event, _d1, { env }) => {
+        expectTypeOf(env.API_SECRET).toEqualTypeOf<string>();
+      },
+      onMemberRemoved: (_event, _d1, runtime) => {
+        expectTypeOf(runtime.env).toEqualTypeOf<AdopterEnv>();
+      },
+    });
+    expect(capability.organizationLifecycleHooks.onOrganizationDeleted).toBeTypeOf("function");
+
+    organization.withEnv<AdopterEnv>()({
+      ...BASE,
+      // @ts-expect-error a binding the adopter's Env does not declare
+      onOrganizationPurged: (_event, _d1, { env }) => env.NOT_BOUND,
+    });
+  });
+
+  test("without Env, the catalog's powers and roles are still inferred", () => {
+    const capability = organization(BASE);
+    expectTypeOf(capability.organizationRoles.roles).toEqualTypeOf<readonly ("member" | "admin" | "owner")[]>();
+  });
+
+  test("with Env, the catalog's roles are still inferred and an ownership typo is still refused", () => {
+    const capability = organization.withEnv<AdopterEnv>()({ ...BASE, ownership: TRANSFER });
+    expectTypeOf(capability.organizationRoles.roles).toEqualTypeOf<readonly ("member" | "admin" | "owner")[]>();
+    expectTypeOf(capability.organizationOwnership).toEqualTypeOf<
+      OwnershipRoles<"member" | "admin" | "owner"> | undefined
+    >();
+
+    expect(() =>
+      // @ts-expect-error a role the catalog does not declare, refused at compile time with Env named too
+      organization.withEnv<AdopterEnv>()({ ...BASE, ownership: { confers: "ownr", demotesTo: "admin" } }),
+    ).toThrow(/not a role this catalog declares/);
+  });
+
+  test("an explicit organization<Power, Role>() still compiles", () => {
+    const capability = organization<"connections:read" | "connections:manage", "member" | "admin" | "owner">(BASE);
+    expectTypeOf(capability.organizationRoles.roles).toEqualTypeOf<readonly ("member" | "admin" | "owner")[]>();
+  });
+
+  test("a hook that takes (event, d1) compiles and is kept unchanged", () => {
+    const onOrganizationPurged = async (_event: { organizationId: string }, _d1: unknown): Promise<void> => {};
+    const capability = organization({ ...BASE, onOrganizationPurged });
+    expect(capability.organizationLifecycleHooks.onOrganizationPurged).toBe(onOrganizationPurged);
   });
 });

@@ -617,6 +617,40 @@ describe("auth HTTP routes", () => {
     expect(devices?.n).toBe(0);
   });
 
+  test("onSessionRevoked is handed this request's D1, its env, and waitUntil bound to its ExecutionContext", async () => {
+    const { token, userId } = await signIn(DEVICE_HEADERS);
+    const heard: { userId: string; d1: unknown; env: unknown; waitUntil: unknown }[] = [];
+    const kept: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => void kept.push(promise),
+      passThroughOnException: () => {},
+      props: {},
+    };
+    const app = buildApp({
+      ...buildWiring(),
+      onSessionRevoked: async (session, d1, runtime) => {
+        heard.push({ userId: session.userId, d1, env: runtime.env, waitUntil: runtime.waitUntil });
+        runtime.waitUntil?.(Promise.resolve("later"));
+      },
+    });
+    const requestEnv = appEnv();
+    const res = await app.request(
+      "/auth/devices/revoke",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ deviceId: "dev-1" }),
+      },
+      requestEnv,
+      ctx as never,
+    );
+    expect(res.status).toBe(200);
+    expect(heard).toHaveLength(1);
+    expect(heard[0]).toMatchObject({ userId, d1: env.DB, env: requestEnv });
+    expect(heard[0]?.waitUntil).toBeTypeOf("function");
+    expect(kept).toHaveLength(1);
+  });
+
   test("devices/revoke without a deviceId is a 400", async () => {
     const { token } = await signIn();
     const res = await buildApp(buildWiring()).request(

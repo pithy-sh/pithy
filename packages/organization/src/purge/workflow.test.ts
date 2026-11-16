@@ -4,11 +4,12 @@
 import { createLogger, type LogSink } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { describe, expect, test } from "vitest";
+import type { OrganizationCapability } from "../capability";
 import { ORGANIZATION_PURGE_BINDING, ORGANIZATION_PURGE_KEY } from "./specs";
 import { organizationPurgeInstanceId } from "./start";
-import { organizationPurgeStarter } from "./workflow";
+import { lifecycleFor, organizationPurgeStarter } from "./workflow";
 
-/** How the daily pass starts one organization's purge (#623), and what it reports when it cannot. */
+/** How the daily pass starts one organization's purge, and what it reports when it cannot. */
 
 const DUE = { organizationId: "11111111-1111-4111-8111-111111111111", deletedAt: 1_000 };
 const AT = new Date("2026-10-20T12:00:00.000Z");
@@ -65,5 +66,20 @@ describe("organizationPurgeStarter", () => {
     ]);
     expect(String(records[0]?.fields?.reason)).toMatch(/binding absent/);
     expect(records[1]?.fields?.reason).toBe("workflow quota exceeded");
+  });
+});
+
+describe("lifecycleFor", () => {
+  test("hands the hooks the Workflow's env and no waitUntil, since a Workflow has no ExecutionContext", () => {
+    const { log } = capture();
+    const onOrganizationPurged = (): void => {};
+    const organization = {
+      organizationLifecycleHooks: { onOrganizationPurged },
+    } as unknown as OrganizationCapability;
+    const env = { DB: {}, MARKER: "workflow" };
+    const deps = lifecycleFor(organization, env, log);
+    expect(deps.hooks.onOrganizationPurged).toBe(onOrganizationPurged);
+    expect(deps.runtime.env).toBe(env);
+    expect("waitUntil" in deps.runtime).toBe(false);
   });
 });

@@ -31,7 +31,7 @@ import { AUTH_PURGE_BINDING, AUTH_PURGE_KEY, AuthPurgeDueParams, AuthPurgeParams
 import { startPurgeInstance } from "./start";
 
 /**
- * The purge's two Workflow bodies (#622) — run by classes **the adopter's own Worker** exports, beside the
+ * The purge's two Workflow bodies — run by classes **the adopter's own Worker** exports, beside the
  * `createEntrypoint` it already exports, because a purge runs every composed capability's contribution and
  * those exist nowhere else:
  *
@@ -67,8 +67,11 @@ interface PurgeEvent {
   readonly instanceId?: string;
 }
 
-/** The lifecycle transitions' dependencies, for a run with no request: this env, and the composition's seams. */
-function lifecycleFor(auth: AuthCapability, env: Record<string, unknown>, log: Logger): LifecycleDeps {
+/**
+ * The lifecycle transitions' dependencies, for a run with no request: this env, and the composition's seams. The
+ * hooks run in this env with no `waitUntil`, since a Workflow has no `ExecutionContext`.
+ */
+export function lifecycleFor(auth: AuthCapability, env: Record<string, unknown>, log: Logger): LifecycleDeps {
   const d1 = resolveDb(env, auth.authConfig.database);
   return {
     db: authDatabase(d1),
@@ -76,6 +79,7 @@ function lifecycleFor(auth: AuthCapability, env: Record<string, unknown>, log: L
     emit: auth.auditFor(env),
     config: auth.authConfig,
     hooks: auth.lifecycleHooks,
+    runtime: { env },
     enqueueEmail: (input) => enqueueFromEnv(env as unknown as EmailEnqueueEnv, input),
     log,
   };

@@ -282,7 +282,13 @@ let app: Hono<PithyHonoEnv>;
 async function call(
   method: string,
   path: string,
-  options: { as?: string; body?: unknown; app?: Hono<PithyHonoEnv>; env?: Record<string, unknown> } = {},
+  options: {
+    as?: string;
+    body?: unknown;
+    app?: Hono<PithyHonoEnv>;
+    env?: Record<string, unknown>;
+    executionCtx?: { waitUntil(promise: Promise<unknown>): void };
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   if (options.as) headers["x-test-user"] = options.as;
@@ -291,6 +297,7 @@ async function call(
     path,
     { method, headers, ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) },
     { DB: env.DB, ...options.env } as unknown as Record<string, unknown>,
+    options.executionCtx as never,
   );
 }
 
@@ -931,6 +938,52 @@ describe("the member cascade's wiring from the composed auth", () => {
     expect((await account(BOB)).suspended_at).not.toBeNull();
     expect(reachedByHook).toEqual([BOB, CAI]);
     expect(mailed.filter((mail) => mail.template === "accountSuspended")).toEqual([]);
+  });
+
+  test("the organization's hook and each member's user hook are handed this request's env and waitUntil", async () => {
+    const heard: { hook: string; env: unknown; waitUntil: unknown }[] = [];
+    const authShaped = {
+      name: "auth",
+      requiredBindings: [],
+      authConfig: USERS.config,
+      lifecycleHooks: {
+        onUserSuspended: (_event: unknown, _d1: unknown, runtime: { env: unknown; waitUntil?: unknown }) =>
+          void heard.push({ hook: "onUserSuspended", env: runtime.env, waitUntil: runtime.waitUntil }),
+      },
+    } as unknown as Capability;
+    const composed = organization.withEnv<{ DB: unknown; MARKER: string }>()({
+      roles: catalog,
+      baseUrl: "https://app.example.test",
+      ownership: OWNERSHIP,
+      onOrganizationSuspended: (_event, _d1, runtime) =>
+        void heard.push({ hook: "onOrganizationSuspended", env: runtime.env, waitUntil: runtime.waitUntil }),
+    });
+    const emailShaped = {
+      name: "email",
+      requiredBindings: [],
+      emailConfig: {},
+      enqueue: async (_env: unknown, input: Parameters<EnqueueInvitation>[0]) => enqueue(input),
+    } as unknown as Capability;
+    composed.compose?.({ capabilities: [authShaped, emailShaped, composed] });
+    const kept: Promise<unknown>[] = [];
+    const executionCtx = {
+      waitUntil: (promise: Promise<unknown>) => void kept.push(promise),
+      passThroughOnException: () => {},
+      props: {},
+    };
+
+    const response = await call("POST", `${ADMIN}/${ACME}/suspend`, {
+      body: { reason: REASON, members: "sole" },
+      app: buildApp({ routes: composed.routes }),
+      env: { MARKER: "this request" },
+      executionCtx,
+    });
+    expect(response.status).toBe(200);
+    expect(heard.map((each) => each.hook)).toEqual(["onOrganizationSuspended", "onUserSuspended", "onUserSuspended"]);
+    for (const each of heard) {
+      expect(each.env).toMatchObject({ DB: env.DB, MARKER: "this request" });
+      expect(each.waitUntil).toBeTypeOf("function");
+    }
   });
 
   test("with no auth wired, a cascade is refused before the organization moves: no transition, no event, no mail", async () => {

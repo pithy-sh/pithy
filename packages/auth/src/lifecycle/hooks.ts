@@ -3,9 +3,10 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { UserLifecycleActorType } from "../data/userLifecycle";
+import type { HookRuntime } from "../hooks/runtime";
 
 /**
- * The four seams an adopter's own code follows the account lifecycle through, without polling (#620).
+ * The four seams an adopter's own code follows the account lifecycle through, without polling.
  *
  * **On the transition, not on a route.** An account is suspended from the management surface today and may be
  * from somewhere else tomorrow; a listener hung off one route would miss the others, which is the argument
@@ -36,19 +37,25 @@ export interface UserLifecycleHookEvent {
 }
 
 /**
- * One hook. Handed the request's D1 binding, for the reason `SessionRevokedListener` is: the listener almost
- * certainly writes to the same database under a different capability's view of it.
+ * One hook. Handed the run's D1 binding, for the reason `SessionRevokedListener` is: the listener almost certainly
+ * writes to the same database under a different capability's view of it. And handed the Worker it runs in, so it
+ * can reach a secret or another binding — start a Workflow, send to a queue, call out. `runtime.waitUntil` is there
+ * in a request and absent in the purge Workflow. A hook that takes only `(event, d1)` is still one.
  */
-export type UserLifecycleListener = (event: UserLifecycleHookEvent, d1: D1Database) => void | Promise<void>;
+export type UserLifecycleListener<Env = Record<string, unknown>> = (
+  event: UserLifecycleHookEvent,
+  d1: D1Database,
+  runtime: HookRuntime<Env>,
+) => void | Promise<void>;
 
-/** The four hooks, each optional. Passed to `auth()` beside the config. */
-export interface UserLifecycleHooks {
+/** The four hooks, each optional. Passed to `auth()` beside the config; `Env` is the adopter's Worker env. */
+export interface UserLifecycleHooks<Env = Record<string, unknown>> {
   /** An account was suspended. */
-  readonly onUserSuspended?: UserLifecycleListener;
+  readonly onUserSuspended?: UserLifecycleListener<Env>;
   /** A suspended account was reinstated. */
-  readonly onUserReinstated?: UserLifecycleListener;
+  readonly onUserReinstated?: UserLifecycleListener<Env>;
   /** An account was deleted — by an operator or by its owner — and its purge window began. */
-  readonly onUserDeleted?: UserLifecycleListener;
+  readonly onUserDeleted?: UserLifecycleListener<Env>;
   /** A deleted account's data was erased. The last thing that happens to it. */
-  readonly onUserPurged?: UserLifecycleListener;
+  readonly onUserPurged?: UserLifecycleListener<Env>;
 }

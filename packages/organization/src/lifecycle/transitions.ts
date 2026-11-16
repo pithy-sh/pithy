@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
+import type { HookRuntime } from "@pithy-sh/auth/src/hooks/runtime";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -51,6 +52,8 @@ export interface OrganizationLifecycleDeps {
   readonly d1: D1Database;
   /** The adopter's hooks. */
   readonly hooks: OrganizationLifecycleHooks;
+  /** The Worker the hooks run in: this run's env, and `waitUntil` inside a request. */
+  readonly runtime: HookRuntime;
   /** Where a swallowed hook failure is reported. Absent, it is swallowed silently. */
   readonly log?: Logger | undefined;
   /** The clock. Defaults to the system's. */
@@ -157,7 +160,7 @@ async function fire(
   const hook = deps.hooks[name];
   if (!hook) return;
   try {
-    await hook(event, deps.d1);
+    await hook(event, deps.d1, deps.runtime);
   } catch (error) {
     deps.log?.warn(`${name} threw; the transition stands`, {
       organizationId: event.organizationId,
