@@ -1,5 +1,15 @@
 # @pithy-sh/core
 
+## 0.25.0
+
+### Minor Changes
+
+- [#1049](https://github.com/pithy-sh/pithy/pull/1049) [`928aeb1`](https://github.com/pithy-sh/pithy/commit/928aeb17d5eafba2751b902bdc6abad416cfe56e) Thanks [@kingmesal](https://github.com/kingmesal)! - An owner's `DELETE /current` shuts the organization and runs the purge Workflow, so every capability's organization purge runs and the deletion is recorded.
+  
+  Security: An owner's delete erased only the organization's own rows: other capabilities' organization data, such as stored files, was left behind, and no erasure record was written.
+
+- [#1046](https://github.com/pithy-sh/pithy/pull/1046) [`0d3be61`](https://github.com/pithy-sh/pithy/commit/0d3be612809df0f37e3f40428a9aa89e2326fa73) Thanks [@kingmesal](https://github.com/kingmesal)! - A purge's retain basis can name a catalog key, so the export tells each person why their rows were kept in their own language. The kit's own bases ship in English and Spanish.
+
 ## 0.24.0
 
 ### Minor Changes

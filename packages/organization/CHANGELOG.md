@@ -1,5 +1,26 @@
 # @pithy-sh/organization
 
+## 0.15.0
+
+### Minor Changes
+
+- [#1047](https://github.com/pithy-sh/pithy/pull/1047) [`40ecd67`](https://github.com/pithy-sh/pithy/commit/40ecd67e918fd2c9cd75ebf1e852bdea52c50e0a) Thanks [@kingmesal](https://github.com/kingmesal)! - Lifecycle and session hooks receive the Worker's env, typed as your own, and waitUntil in a request, so a hook can start a Workflow or call out.
+
+- [#1049](https://github.com/pithy-sh/pithy/pull/1049) [`928aeb1`](https://github.com/pithy-sh/pithy/commit/928aeb17d5eafba2751b902bdc6abad416cfe56e) Thanks [@kingmesal](https://github.com/kingmesal)! - An owner's `DELETE /current` shuts the organization and runs the purge Workflow, so every capability's organization purge runs and the deletion is recorded.
+  
+  Security: An owner's delete erased only the organization's own rows: other capabilities' organization data, such as stored files, was left behind, and no erasure record was written.
+
+- [#1048](https://github.com/pithy-sh/pithy/pull/1048) [`95fda8d`](https://github.com/pithy-sh/pithy/commit/95fda8db84b5267d7458dd373b21bd3094470fc4) Thanks [@kingmesal](https://github.com/kingmesal)! - A restored account fires `onUserRestored`, and a restored organization fires `onOrganizationRestored`, so an app can undo what it did on deletion.
+
+- [#1046](https://github.com/pithy-sh/pithy/pull/1046) [`0d3be61`](https://github.com/pithy-sh/pithy/commit/0d3be612809df0f37e3f40428a9aa89e2326fa73) Thanks [@kingmesal](https://github.com/kingmesal)! - A purge's retain basis can name a catalog key, so the export tells each person why their rows were kept in their own language. The kit's own bases ship in English and Spanish.
+
+### Patch Changes
+
+- Updated dependencies [[`40ecd67`](https://github.com/pithy-sh/pithy/commit/40ecd67e918fd2c9cd75ebf1e852bdea52c50e0a), [`928aeb1`](https://github.com/pithy-sh/pithy/commit/928aeb17d5eafba2751b902bdc6abad416cfe56e), [`95fda8d`](https://github.com/pithy-sh/pithy/commit/95fda8db84b5267d7458dd373b21bd3094470fc4), [`0d3be61`](https://github.com/pithy-sh/pithy/commit/0d3be612809df0f37e3f40428a9aa89e2326fa73)]:
+  - @pithy-sh/auth@0.17.0
+  - @pithy-sh/core@0.25.0
+  - @pithy-sh/email@0.11.0
+
 ## 0.14.4
 
 ### Patch Changes

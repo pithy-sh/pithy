@@ -1,5 +1,14 @@
 # @pithy-sh/matchmaking
 
+## 0.6.9
+
+### Patch Changes
+
+- Updated dependencies [[`40ecd67`](https://github.com/pithy-sh/pithy/commit/40ecd67e918fd2c9cd75ebf1e852bdea52c50e0a), [`928aeb1`](https://github.com/pithy-sh/pithy/commit/928aeb17d5eafba2751b902bdc6abad416cfe56e), [`95fda8d`](https://github.com/pithy-sh/pithy/commit/95fda8db84b5267d7458dd373b21bd3094470fc4), [`0d3be61`](https://github.com/pithy-sh/pithy/commit/0d3be612809df0f37e3f40428a9aa89e2326fa73)]:
+  - @pithy-sh/auth@0.17.0
+  - @pithy-sh/core@0.25.0
+  - @pithy-sh/rating@0.6.11
+
 ## 0.6.8
 
 ### Patch Changes
