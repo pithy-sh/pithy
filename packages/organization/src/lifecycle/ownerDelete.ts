@@ -287,12 +287,35 @@ async function startMemberPurge(
  * refuses a caller whose role does not hold `organization:delete` itself.
  *
  * ```ts
+ * import type { D1Database } from "@cloudflare/workers-types";
+ * import { requireAuth } from "@pithy-sh/auth/src/http/middleware";
+ * import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+ * import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
+ * import { validate } from "@pithy-sh/core/src/http/validation";
+ * import { organizationDatabase } from "@pithy-sh/organization/src/data/tables";
+ * import { type OrganizationHonoEnv, requireOrganization } from "@pithy-sh/organization/src/http/guard";
+ * import { deleteOrganizationAsOwner } from "@pithy-sh/organization/src/lifecycle/ownerDelete";
+ * import { Hono } from "hono";
+ * import { z } from "zod";
+ * import { roles } from "./organization/roles";
+ *
+ * const deps = {
+ *   catalog: roles,
+ *   database: (env: Record<string, unknown>) => organizationDatabase(env.DB as D1Database),
+ * };
+ *
+ * const CloseBody = z
+ *   .object({ name: z.string().describe("The organization's name, typed to confirm the deletion.") })
+ *   .describe("Close the organization the session acts in.");
+ *
+ * const app = new Hono<OrganizationHonoEnv>();
+ *
  * app.post(
  *   "/settings/close",
  *   requireSameOrigin(),
  *   requireAuth(),
  *   requireOrganization(deps),
- *   validate("json", Close),
+ *   validate("json", CloseBody),
  *   async (c) => {
  *     if (c.req.valid("json").name !== c.var.acting.name) throw new ValidationError({ message: "Type the name." });
  *     const deleted = await deleteOrganizationAsOwner(c, { reason: "Closed from settings." });

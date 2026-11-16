@@ -68,11 +68,31 @@ The body is optional. `reason` follows an operator's rules: at most 500 characte
 
 `ownerDelete.members` decides whose accounts go with it. `none`, the default, deletes nobody's. `sole` runs the operator's cascade, hard: the members whose only organization this is are deleted through `@pithy-sh/auth`'s own lifecycle, recorded with the owner as the acting user. The owner's own account is never touched; it is skipped as `actor`. With `sole`, the response's `members` says what the cascade did; with `none` it is absent.
 
-**Your own route can run the same deletion.** `deleteOrganizationAsOwner(c, { reason })`, from `@pithy-sh/organization`, is the code `DELETE {base}/current` runs, for a route that checks something first, such as a typed name. Mount `requireSameOrigin()` first, then `requireAuth()` and `requireOrganization()`, as the kit's own route does: a cookie session carries the deletion, so the route needs the same CSRF gate as every other mutating route ([`docs/UI.md`](../../../docs/UI.md)). It refuses a role without `organization:delete` itself, and checks no origin.
+**Your own route can run the same deletion.** `deleteOrganizationAsOwner(c, { reason })`, from `@pithy-sh/organization/src/lifecycle/ownerDelete`, is the code `DELETE {base}/current` runs, for a route that checks something first, such as a typed name. Mount `requireSameOrigin()` first, then `requireAuth()` and `requireOrganization()`, as the kit's own route does: a cookie session carries the deletion, so the route needs the same CSRF gate as every other mutating route ([`docs/UI.md`](../../../docs/UI.md)). It refuses a role without `organization:delete` itself, and checks no origin.
 
 ```ts
+import type { D1Database } from "@cloudflare/workers-types";
+import { requireAuth } from "@pithy-sh/auth/src/http/middleware";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
-import { deleteOrganizationAsOwner, requireOrganization } from "@pithy-sh/organization";
+import { validate } from "@pithy-sh/core/src/http/validation";
+import { organizationDatabase } from "@pithy-sh/organization/src/data/tables";
+import { type OrganizationHonoEnv, requireOrganization } from "@pithy-sh/organization/src/http/guard";
+import { deleteOrganizationAsOwner } from "@pithy-sh/organization/src/lifecycle/ownerDelete";
+import { Hono } from "hono";
+import { z } from "zod";
+import { roles } from "./organization/roles";
+
+const deps = {
+  catalog: roles,
+  database: (env: Record<string, unknown>) => organizationDatabase(env.DB as D1Database),
+};
+
+const CloseBody = z
+  .object({ name: z.string().describe("The organization's name, typed to confirm the deletion.") })
+  .describe("Close the organization the session acts in.");
+
+const app = new Hono<OrganizationHonoEnv>();
 
 app.post(
   "/settings/close",
