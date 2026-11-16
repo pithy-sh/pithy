@@ -1316,6 +1316,8 @@ describe("the gate on the gate", () => {
   const REMOVES_ON_PURPOSE: Record<string, string> = {
     "cli/src/ci/distTypes.ts":
       "Clears the scratch program it is about to write, under `os.tmpdir()` on a path derived from a hash of the checkout root — never a path an adopter named and never one inside a project. `writeProgram` recreates the directory on the next line, so the delete is the first half of one write.",
+    "cli/src/project/deploy.ts":
+      "Removes the directory `wrangler deploy --dry-run --outdir` wrote one Worker's bundle into, on the path `mkdtemp` under `os.tmpdir()` handed back — never a path an adopter named and never one inside a project. The bundle is read for its stamp and nothing else, so the directory is this module's own and must leave nothing behind.",
     "cli/src/feature/worktree.ts":
       "Removes the worktree directory that `teardownWorktree` has just had git forget, at `<root>/.worktrees/<issue>-<slug>` composed by `featureNames` from the main checkout root — never a path an adopter named. It cannot go through `removeScaffoldPath`: that primitive is for a path inside a project being scaffolded, and this is the project directory itself, already unregistered and guarded on `hasLiveDevSession` so a running `pithy dev` keeps its files.",
     "cli/src/capabilities/eject.ts":

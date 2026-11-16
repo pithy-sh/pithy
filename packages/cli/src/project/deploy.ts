@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -11,10 +13,19 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { inShadow } from "../plan/shadow";
 import { execCommand } from "../platform/command";
 import { privacyVarArgs } from "../privacy/deployGate";
+import {
+  bundleStampVerdict,
+  type ReadWorkerVars,
+  readDeployedStamp,
+  recordDeployStamp,
+  UNFINISHED_STAMP,
+  type WriteWorkerVar,
+} from "../provision/deployStamp";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { settleStep, startStep } from "../terminal/progress";
 import { red } from "../terminal/style";
+import { type AppBundle, appBundleStamp, bundleArgs, shadowBundlePaths, stampArgs } from "./appBundleStamp";
 import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import {
   assertCreatesNoResources,
@@ -24,6 +35,7 @@ import {
 } from "./effectiveConfig";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
 import { dependencyOrder } from "./serviceGraph";
+import { type RetryWait, withUnseenWorkerRetry } from "./unseenWorkerRetry";
 import type { DeployVerification, VerifyDeployResult } from "./verifyDeploy";
 import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
 import { readAddressStanza, resolveWorkerAddress } from "./workerAddress";
@@ -49,28 +61,20 @@ export type RunBuild = (
 ) => Promise<void>;
 
 /**
- * **What a front end's build has to be told, and why one variable was never enough (#579).**
+ * **What a front end's build has to be told: two variables, two jobs.**
  *
- * `ENVIRONMENT` is the name the deployed Worker answers to, and it is what `@pithy-sh/vite` resolves each
- * capability's client-safe projection against — a Turnstile sitekey differs per environment, and a build
- * that does not carry the deploy's `--env` inlines Cloudflare's always-passes test sitekey into a
- * production bundle. That much was already true.
+ * `ENVIRONMENT` is the name the deployed Worker answers to, and what `@pithy-sh/vite` resolves each
+ * capability's client-safe projection against: a build without it inlines Cloudflare's always-passes test
+ * Turnstile sitekey into a production bundle.
  *
- * **`CLOUDFLARE_ENV` is the one that selects the wrangler stanza**, and nothing set it. It is what
- * `@cloudflare/vite-plugin` reads — `getEnvironmentVariableFactory({ variableName: "CLOUDFLARE_ENV" })`,
- * verified in 1.54.7 — so a build handed only `ENVIRONMENT` emitted the **top-level** stanza however
- * loudly `--env staging` was typed. The build output is then what `wrangler deploy` follows, through the
- * `.wrangler/deploy/config.json` redirect it writes, so the dev stanza is what shipped. Two variables,
- * two jobs; assuming one did both is the defect.
+ * `CLOUDFLARE_ENV` selects the wrangler stanza. `@cloudflare/vite-plugin` reads it and nothing else, and the
+ * `.wrangler/deploy/config.json` redirect it writes is what `wrangler deploy` follows, so a build without it
+ * ships the top-level stanza whatever `--env` said.
  *
- * **`CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` is how a feature environment reaches the build at all.** Its
- * ids are generated under `.wrangler/` rather than written into the tracked `wrangler.jsonc` (#242), so
- * the plugin has to be pointed at that file — and pointing it there is what lets the feature path stop
- * passing `--config` to wrangler. It had to: an explicit `--config` beats the redirect, and the source
- * config carries no `assets.directory`, so a feature deploy of a Worker with a front end failed outright.
+ * `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` points the plugin at a feature environment's generated config under
+ * `.wrangler/`, which is how the feature's ids and the asset wiring reach one file without a `--config`.
  *
- * `dev` sets no `CLOUDFLARE_ENV`, because `dev` is the top-level stanza rather than an `env.dev` — see
- * `wranglerEnvironment`.
+ * `dev` sets no `CLOUDFLARE_ENV`: it is the top-level stanza rather than an `env.dev` (see `wranglerEnvironment`).
  */
 export function uiBuildEnvironment(env: string | undefined, workerDir: string): Record<string, string> {
   if (env === undefined) return {};
@@ -90,7 +94,7 @@ export interface DeployProjectOptions {
    *
    * **Required, and stated by the caller rather than defaulted.** An omitted account would resolve
    * whatever the last-loaded project happened to select, and the failure that produces is a successful
-   * deploy to the wrong tenant. There is no safe default, so there is no default (#206).
+   * deploy to the wrong tenant. There is no safe default, so there is no default.
    */
   account: CloudflareAccountSelection | null;
   /** Target environment; omitted deploys each worker's top-level config (no `--env`). */
@@ -120,24 +124,34 @@ export interface DeployProjectOptions {
    */
   verifyDeploy?: VerifyDeploy;
   /**
-   * **`pithy deploy --dry-run` (#697).** Every Worker is built as the deploy builds it and handed to `wrangler
-   * deploy --dry-run` on the deploy's own argv, so a bundle that does not build fails its row here. wrangler
-   * bundles and stops: nothing is uploaded, so nothing is probed and nothing is audited, and a row carries no
-   * version or address because there is none. Both happen in a private copy of the project, so neither the
-   * build's output nor the bundle is written here.
+   * **`pithy deploy --dry-run`.** Every Worker is built as the deploy builds it and bundled by `wrangler deploy
+   * --dry-run` on the deploy's own argv, so a bundle that does not build fails its row here, and its stamp is
+   * read and compared exactly as the deploy compares it. Nothing is uploaded, probed or audited. Both happen in
+   * a private copy of the project, so neither the build's output nor the bundle is written here.
    */
   dryRun?: boolean;
   /**
-   * **What this deploy attests about privacy (#132)**, from `deployPrivacy` — the declared classes and the
+   * **What this deploy attests about privacy**, from `deployPrivacy` — the declared classes and the
    * console gate's verdict. Carried into every Worker as the `PITHY_PRIVACY` var on wrangler's argv, which a
    * raw `wrangler deploy` does not repeat, so a Worker shipped around this command reads as unattested rather
    * than as whatever was last true. Omitted, no var is passed.
    */
   privacy?: PrivacyAttestation;
+  /**
+   * Read a deployed Worker's vars, for its stamp. Omitted, nothing is known and every Worker deploys: the caller
+   * builds it from the project's account, so a suite never reaches one.
+   */
+  readVars?: ReadWorkerVars;
+  /**
+   * Record a Worker's stamp once its deploy and verification have passed. Omitted, none is recorded and the next
+   * run deploys again: the caller builds it from the project's account, as it does the reader.
+   */
+  writeVar?: WriteWorkerVar;
+  /** `--force`: upload a Worker whose stamp matches, and read nothing. */
+  force?: boolean;
+  /** How the one retry of an unseen Worker waits. Defaults to a real timer; a test states it. */
+  retryWait?: RetryWait;
 }
-
-/** The switch that makes `wrangler deploy` bundle and validate, and upload nothing. */
-export const WRANGLER_DRY_RUN_ARG = "--dry-run";
 
 /** Probe one address for one expected version. The seam `verifyDeployedVersion` fills by default. */
 export type VerifyDeploy = (options: { url: string; expectedVersion: string }) => Promise<VerifyDeployResult>;
@@ -155,8 +169,15 @@ export function deploySeverity(env: string | undefined): "info" | "warning" {
 export interface WorkerDeploy {
   /** The worker's name. */
   name: string;
-  /** Whether `wrangler deploy` succeeded for this worker. */
+  /** Whether `wrangler deploy` succeeded for this worker. An unchanged Worker is `ok`. */
   ok: boolean;
+  /**
+   * `deployed` when wrangler uploaded it, `unchanged` when its live stamp matched and nothing ran. Under
+   * `--dry-run`, what the deploy would do. Absent on a failure.
+   */
+  outcome?: "deployed" | "unchanged";
+  /** Why the outcome is what it is, in one sentence. Absent on a failure. */
+  reason?: string;
   /** The deployed version id, when wrangler's output carried one. */
   versionId?: string;
   /** The worker's public URL, when wrangler's output carried one. */
@@ -269,11 +290,8 @@ function workerAddress(target: string): string | undefined {
 /**
  * The Worker's address out of `wrangler deploy`'s own triggers block, or nothing.
  *
- * **Anchored on wrangler's label, the way the version id already is (#683).** This used to take the
- * last URL anywhere in stdout, under a comment asserting that the last one is the deployed one. It is
- * not: `wrangler deploy` prints a telemetry notice after the deploy summary — once per wrangler
- * version per machine, and only where telemetry is enabled, which is why the report read as "on
- * occasion" — and that notice's documentation link was reported as a Worker's public address.
+ * Anchored on wrangler's label, never the last URL in stdout: `wrangler deploy` prints a telemetry notice
+ * after the summary, once per wrangler version per machine, and its documentation link is not an address.
  *
  * Wrangler prints `Deployed <name> triggers (<time>)` and then every target indented beneath it, so
  * the block is that heading and the indented lines under it. The first target that is an address
@@ -298,7 +316,7 @@ function deployedAddress(stdout: string): string | undefined {
  * **Neither is a contract.** Wrangler is free to reword this output in any release, and these two
  * patterns are the whole of what reads it. Finding nothing is an ordinary outcome: the summary line
  * prints without the detail and the deploy is unaffected, which is why nothing here throws. A
- * confidently wrong answer is not an ordinary outcome, and that is the half #683 had to fix.
+ * confidently wrong answer is not an ordinary outcome, so each pattern is anchored on wrangler's label.
  */
 function parseDeployOutput(stdout: string): { versionId?: string; url?: string } {
   const summary: { versionId?: string; url?: string } = {};
@@ -334,25 +352,17 @@ function reasonOf(error: unknown): string {
  * `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`, so CI needs no interactive login; we also pass them
  * from the project's own credentials file so a local deploy authenticates the same way.
  *
- * **The account is an argument, and that is load-bearing here more than anywhere.** This is the exact
- * pair handed to `wrangler deploy`: resolving it against the wrong account does not fail, it ships to
- * another company's tenant and exits 0. A pinned `accountId` that disagrees refuses before wrangler is
- * ever spawned (#206).
+ * **The account is an argument.** This is the exact pair handed to `wrangler deploy`: resolving it against the
+ * wrong account does not fail, it ships to another company's tenant and exits 0. `runWrangler` builds the
+ * child's environment through `cloudflareChildEnv`.
  *
- * **The four lines that used to build that pair here now live in `cloudflareChildEnv`, once (#555).**
- * They were right here and right in `hostDeploy` and absent in `pithy dev`, which is what a rule kept
- * at call sites costs. The account is still the argument; only the assembly moved.
- *
- * **The resolution still happens here, before the batch, and that is not redundant with the one inside
- * `runWrangler`.** `deployProject` deliberately does not abort on a single worker's failure, so a
- * mismatch discovered per spawn would be reported as every worker failing rather than as the one
- * configuration fault it is — the shape #236 records for whole-project facts consulted per item.
- * Resolving once at construction keeps #206's refusal a refusal.
+ * **It is resolved here, once, before the batch.** `deployProject` does not abort on a single Worker's failure,
+ * so a pin the credentials contradict, discovered per spawn, would read as every Worker failing rather than as
+ * the one configuration fault it is.
  */
 function defaultRunDeploy(account: CloudflareAccountSelection | null): RunDeploy {
   cloudflareEnv({ account });
   return async (target, args) => {
-    // `runWrangler` refuses an argv that leaves provisioning on, whatever name it is called by (#589).
     const { stdout } = await runWrangler(args, { account, cwd: target.dir });
     return stdout;
   };
@@ -377,7 +387,7 @@ const defaultRunBuild: RunBuild = async (target, command, args, buildEnv) => {
     throw new InternalError({
       message: `${command} ${args.join(" ")} failed.`,
       action: `Build ${target.name} by hand: ${command} ${args.join(" ")}.`,
-      // The child's captured output, without its color: it becomes the row's `error` (#697).
+      // The child's captured output, without its color: it becomes the row's `error`.
       detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
     });
   }
@@ -400,17 +410,6 @@ async function uiBuild(
 }
 
 /**
- * Deploy the project's Workers — the logic behind `pithy deploy`. It enumerates the worker registry
- * (`apps/*` — there is no root Worker) and runs `wrangler deploy` in each worker's own directory, against
- * that worker's own `wrangler.jsonc`, letting wrangler own bundling, upload, bindings, and routes. One
- * worker's failure does not abort the batch: every worker is attempted and reported, so the caller can
- * exit non-zero if any `ok` is false.
- *
- * A worker that serves a front end (a `ui` block in its `pithy.worker.jsonc`) is **built first**, in its own
- * directory, through the adopter's package manager. A failed build fails that worker and skips its deploy —
- * shipping a Worker whose assets are stale, or missing, is worse than not shipping it.
- */
-/**
  * Probe one Worker's declared domain for the version just shipped, or return null when there is nothing
  * to check.
  *
@@ -418,8 +417,8 @@ async function uiBuild(
  * a bare `pithy deploy` ships each Worker's top-level stanza, which is the `dev` environment, and `dev`
  * has no public address by design. **No version id**: wrangler printed none, so there is nothing to
  * correlate against. **No declared address**: the Worker has no domain, no route, and no `BASE_URL`, so
- * there is nowhere to probe — and inventing `workers.dev` here would be exactly the assumption #89 rules
- * out, since the subdomain can be disabled per account and commonly is in production.
+ * there is nowhere to probe — and `workers.dev` is never assumed, since the subdomain can be disabled per
+ * account and commonly is in production.
  */
 async function verifyWorkerDeploy(
   worker: WorkerTarget,
@@ -429,7 +428,7 @@ async function verifyWorkerDeploy(
 ): Promise<VerifyDeployResult | null> {
   if (!env || env === "dev" || !versionId) return null;
 
-  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  // The load may fail for a reason this reader forgives; a refused declaration is not one.
   let config: WorkerConfig | undefined;
   try {
     config = await loadWorkerConfig(worker.dir);
@@ -438,7 +437,7 @@ async function verifyWorkerDeploy(
   }
   const domains = config === undefined ? undefined : loadWorkerDomains(config);
 
-  // Through the one stanza reader, never the tracked file directly (#643): a feature's stanza is in the
+  // Through the one stanza reader, never the tracked file directly: a feature's stanza is in the
   // generated config that was just deployed, and a top-level `workers_dev` wrangler inherits is read with it.
   // Offline — a feature's address is the one provisioning stamped, so verifying asks the account nothing.
   const stanza = await readAddressStanza(worker.dir, env);
@@ -463,11 +462,25 @@ async function inBindingOrder(projectDir: string, workers: readonly WorkerTarget
   });
 }
 
+/**
+ * Deploy the project's Workers — the logic behind `pithy deploy`. It enumerates the worker registry
+ * (`apps/*` — there is no root Worker) and runs `wrangler deploy` in each worker's own directory, against
+ * that worker's own `wrangler.jsonc`, letting wrangler own bundling, upload, bindings, and routes. One
+ * worker's failure does not abort the batch: every worker is attempted and reported, so the caller can
+ * exit non-zero if any `ok` is false.
+ *
+ * A worker that serves a front end (a `ui` block in its `pithy.worker.jsonc`) is **built first**, in its own
+ * directory, through the adopter's package manager. A failed build fails that worker and skips its deploy —
+ * shipping a Worker whose assets are stale, or missing, is worse than not shipping it.
+ *
+ * A Worker whose bundle and resolved configuration are already live is `unchanged`, and wrangler uploads
+ * nothing for it; `force` uploads it anyway.
+ */
 export async function deployProject(options: DeployProjectOptions): Promise<WorkerDeploy[]> {
   // Only real Workers deploy. A non-Worker process in the dev set (a Vite frontend with a
   // `pithy.worker.jsonc` but no `wrangler.jsonc`) has nothing for `wrangler deploy` to ship.
   const discovered = (await discoverWorkers(options.projectDir)).filter((worker) => worker.hasWrangler !== false);
-  // **Every service binding's target first (#617)**: an upload binding a script that does not exist is refused.
+  // Every service binding's target first: an upload binding a script that does not exist is refused.
   const workers = await inBindingOrder(options.projectDir, discovered);
   if (workers.length === 0) {
     throw new NotFoundError({
@@ -476,61 +489,91 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
     });
   }
 
-  if (!options.dryRun) return deployWorkers(options, workers, (text) => text);
-  // **`--dry-run` builds and bundles in a private copy of the project (#697).** The build writes its output and
-  // whatever its hooks write, and wrangler bundles under `.wrangler/tmp`, so in the project a plan that promised
-  // to write nothing would have written all of it. In the copy each Worker builds from the same source — a
-  // directory linked from outside the project is a snapshot of it there — and the same installed packages, through
-  // a linked `node_modules`, and the copy is gone afterwards. Not exactly as here: no `.env` or `.dev.vars` is
-  // copied, and a build that keeps a cache in `node_modules` writes it (`docs/commands/deploy.md` says both).
-  // A failure names the project's paths, never the copy's.
+  if (!options.dryRun) return deployWorkers(options, workers, { toProject: (text) => text });
+  // **`--dry-run` builds and bundles in a private copy of the project.** The build writes its output and whatever
+  // its hooks write, and wrangler bundles under `.wrangler/tmp`, so in the project a plan that promised to write
+  // nothing would have written all of it. In the copy each Worker builds from the same source and the same
+  // installed packages, through a linked `node_modules`, and the copy is gone afterwards. Not exactly as here: no
+  // `.env` or `.dev.vars` is copied, and a build that keeps a cache in `node_modules` writes it
+  // (`docs/commands/deploy.md` says both). A failure names the project's paths, and the stamp is taken over the
+  // project's paths, so the verdict is the one the deploy reaches.
   const { result } = await inShadow(
     options.projectDir,
     (shadow) =>
       deployWorkers(
         { ...options, projectDir: shadow.root },
         workers.map((worker) => ({ ...worker, dir: shadow.at(worker.dir) })),
-        shadow.toProject,
+        {
+          toProject: shadow.toProject,
+          bundlePaths: (workerDir) => shadowBundlePaths(shadow, options.projectDir, workerDir),
+        },
       ),
     { plan: false },
   );
   return result;
 }
 
+/** How a row and a stamp are put back in the project's terms when the Workers were built in a copy. */
+interface ProjectPaths {
+  /** The copy's paths back to the project's, in what a row reports. */
+  toProject: (text: string) => string;
+  /** The normalizer a Worker's bundle is hashed through. Absent, the bundle is the project's own. */
+  bundlePaths?: (workerDir: string) => Promise<(text: string) => string>;
+}
+
 /**
- * Build and deploy each Worker in turn — under `--dry-run`, each one in the copy {@link deployProject} made, with
- * `toProject` putting the copy's paths back to the project's in what a row reports.
+ * Bundle one Worker as the deploy's argv would, into a directory of its own, and stamp what wrangler wrote.
+ * Under `--dry-run` this is the dry run: wrangler bundles, validates, and uploads nothing.
+ */
+async function bundleWorker(
+  run: RunDeploy,
+  worker: WorkerTarget,
+  argv: readonly string[],
+  processEnv: NodeJS.ProcessEnv,
+  paths: ProjectPaths,
+): Promise<AppBundle> {
+  const outdir = await mkdtemp(join(tmpdir(), "pithy-bundle-"));
+  try {
+    await run(worker, [...argv, ...bundleArgs(outdir)]);
+    const normalize = paths.bundlePaths ? await paths.bundlePaths(worker.dir) : undefined;
+    return await appBundleStamp({ workerDir: worker.dir, args: argv, processEnv, outdir, normalize });
+  } finally {
+    await rm(outdir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Build, bundle and deploy each Worker in turn: under `--dry-run`, each one in the copy {@link deployProject}
+ * made, stopping at the verdict.
+ *
+ * A Worker is uploaded only when its bundle and resolved configuration hash to something other than the stamp
+ * it carries. The upload carries `unfinished` in the stamp's place, and the stamp is recorded only after wrangler
+ * has returned and the declared address has not failed its check: wrangler sets triggers after the upload, so a
+ * deploy can fail with its code live, and the marker is what sends the next run to deploy and verify again. A
+ * first deploy Cloudflare has not propagated yet is run once more.
  */
 async function deployWorkers(
   options: DeployProjectOptions,
   workers: readonly WorkerTarget[],
-  toProject: (text: string) => string,
+  paths: ProjectPaths,
 ): Promise<WorkerDeploy[]> {
   const run = options.runDeploy ?? defaultRunDeploy(options.account);
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
-  // **`--config` for a feature environment, and only where nothing has already built one.** Provisioning
-  // writes a feature's ids into a generated config under `.wrangler/` rather than into the tracked
-  // `wrangler.jsonc` (#242), so wrangler has to be told where they are. A declared environment's ids are
-  // in the file wrangler already reads.
-  //
-  // **Not for a Worker with a front end, and that reverses what this line used to do (#579).** An
-  // explicit `--config` beats the `.wrangler/deploy/config.json` redirect — measured — and the source
-  // config carries no `assets.directory`, because only the build writes one. So a feature deploy of a UI
-  // Worker failed on exactly that, every time. The build is pointed at the generated config instead
-  // (`uiBuildEnvironment`), which puts the feature's ids *and* the asset wiring in one file, and the
-  // redirect hands wrangler that file.
+  const processEnv = options.processEnv ?? process.env;
+  // `--config` for a feature environment, whose ids live in a generated config under `.wrangler/` — but not for
+  // a Worker with a front end. An explicit `--config` beats the build's `.wrangler/deploy/config.json` redirect,
+  // and the source config carries no `assets.directory`; the build is pointed at the generated config instead
+  // (`uiBuildEnvironment`), and the redirect hands wrangler that file.
   const configFor = (worker: WorkerTarget, hasUi: boolean): string[] =>
     options.env && !isSourceEnvironment(options.env) && !hasUi
       ? ["--config", wranglerConfigPath(worker.dir, options.env)]
       : [];
-  // Through `wranglerEnvironment`, so the argv, the build and the gate cannot disagree about which stanza
-  // is being asked for — and so `dev`, which is the top-level stanza rather than an `env.dev`, does not
-  // ask wrangler for an environment that no project is allowed to declare.
+  // Through `wranglerEnvironment`, so the argv, the build and the gate agree about which stanza is asked for,
+  // and `dev`, the top-level stanza, asks for no environment.
   const stanza = wranglerEnvironment(options.env);
-  // **And it creates nothing (#589).** wrangler's default for a deploy is to create any resource a binding
-  // names and it cannot find, so a stanza with a `database_name` and no id made a database. Provisioning
-  // is `pithy provision`'s reviewed step; see `NO_PROVISION_ARG` for why the argv is the only place to say so.
+  // And it creates nothing: wrangler's default creates any resource a binding names and cannot find.
+  // Provisioning is `pithy provision`'s step.
   const args = [
     ...(stanza ? ["deploy", "--env", stanza, NO_PROVISION_ARG] : ["deploy", NO_PROVISION_ARG]),
     ...(options.privacy ? privacyVarArgs(options.privacy) : []),
@@ -541,17 +584,12 @@ async function deployWorkers(
 
   const deploys: WorkerDeploy[] = [];
   for (const worker of workers) {
-    // **What this run is on, said before it starts rather than after it ends (#578).** Everything below
-    // is captured on purpose — the build's chunk table and wrangler's upload chatter are summarized, not
-    // streamed — and capturing them removed the only evidence the command was alive. One Worker can hold
-    // this line for minutes, which is the point: a slow upload and a hung one are otherwise the same
-    // blank terminal, and the remedy an operator reaches for is Ctrl-C mid-deploy.
+    // Said before the work starts: everything below is captured rather than streamed, and one Worker can hold
+    // this line for minutes.
     startStep(worker.name);
-    // Stays undefined for an API-only worker, turns false while a UI worker's build is in flight: a
-    // `built: false` row is how a `--json` consumer reads "the build failed, the deploy never ran".
+    // Undefined for an API-only worker, false while a UI worker's build is in flight: a `built: false` row is how
+    // a `--json` consumer reads "the build failed, the deploy never ran".
     let built: boolean | undefined;
-    // Which step a failure belongs to, stated rather than inferred from `built` — the refusal below is a
-    // third step, and it happens after a successful build and before any upload.
     let stage: "build" | "config" | "deploy" = "deploy";
     try {
       const ui = await uiBuild(worker, packageManager);
@@ -562,51 +600,56 @@ async function deployWorkers(
         built = true;
       }
       const argv = [...args, ...configFor(worker, ui !== undefined)];
-      // **The last moment this is still recoverable.** The configuration wrangler is about to read is a
-      // file on disk now, and what it deploys as is written in it — so it is asked, and a deploy that
-      // would publish something other than the requested environment refuses instead (#579). After the
-      // upload the only remedy is deleting a live Worker.
+      // The last moment this is still recoverable: the configuration wrangler is about to read is on disk, and a
+      // deploy that would publish something other than the requested environment refuses here. Asked of the
+      // exact argv about to be spawned.
       stage = "config";
-      // Asked of the exact argv about to be spawned, before the config gate reads a file, so a lost switch is
-      // this sentence on the Worker's row. The seam asks it again and is what cannot be walked around (#589).
       assertCreatesNoResources(argv);
-      await assertDeploysRequestedEnvironment({
-        workerDir: worker.dir,
-        env: options.env,
-        args: argv,
-        processEnv: options.processEnv ?? process.env,
-      });
+      await assertDeploysRequestedEnvironment({ workerDir: worker.dir, env: options.env, args: argv, processEnv });
       stage = "deploy";
-      if (options.dryRun) {
-        // Last on the argv, after the gates above have read it exactly as the real run's.
-        await run(worker, [...argv, WRANGLER_DRY_RUN_ARG]);
-        const planned: WorkerDeploy = { name: worker.name, ok: true, ...(built === undefined ? {} : { built }) };
-        deploys.push(planned);
-        settleStep(summarizePlannedDeploy(planned), { worker: planned });
-        continue;
-      }
-      const stdout = await run(worker, argv);
-      const deploy: WorkerDeploy = {
+      const bundle = await bundleWorker(run, worker, argv, processEnv, paths);
+      const scriptName = bundle.scriptName ?? worker.name;
+      const verdict = bundleStampVerdict({
+        current: bundle.stamp,
+        force: options.force,
+        // Under `--force` nothing a read could say would change the answer.
+        deployed: options.force ? { state: "absent" } : await readDeployedStamp(options.readVars, scriptName),
+      });
+      const decided = {
         name: worker.name,
         ok: true,
-        ...parseDeployOutput(stdout),
         ...(built === undefined ? {} : { built }),
+        outcome: verdict.deploy ? ("deployed" as const) : ("unchanged" as const),
+        reason: verdict.reason,
       };
-      // Prove the Worker just shipped is the one answering at the address this project claims. Not a
-      // liveness probe — the old version answering happily is exactly the failure worth catching — and
-      // not a comparison against the URL wrangler printed, which under versions may be a version-scoped
-      // preview rather than the stable route.
+      if (options.dryRun) {
+        deploys.push(decided);
+        settleStep(summarizePlannedDeploy(decided), { worker: decided });
+        continue;
+      }
+      if (!verdict.deploy) {
+        deploys.push(decided);
+        settleStep(summarizeDeploy(decided), { worker: decided });
+        continue;
+      }
+      const stdout = await withUnseenWorkerRetry(
+        scriptName,
+        () => run(worker, [...argv, ...stampArgs(UNFINISHED_STAMP)]),
+        options.retryWait,
+      );
+      const deploy: WorkerDeploy = { ...decided, ...parseDeployOutput(stdout) };
+      // Prove the Worker just shipped is the one answering at the address this project claims. Not a liveness
+      // probe: the old version answering happily is exactly the failure worth catching.
       const verified = await verifyWorkerDeploy(worker, options.env, deploy.versionId, probe);
       if (verified) {
         deploy.verification = verified.status;
         deploy.verificationDetail = verified.detail;
       }
+      if (!verified || !isDeployFailure(verified.status)) {
+        const note = await recordDeployStamp(options.writeVar, scriptName, bundle.stamp);
+        if (note) deploy.reason = `${deploy.reason} ${note}`;
+      }
       deploys.push(deploy);
-      // The summary line, streamed as it settles rather than held to the end (#578). It **moves**: the
-      // command no longer prints it a second time, because two copies of one sentence drift the first
-      // time either is reworded, and an operator comparing them has no way to tell a rewording from a
-      // different Worker.
-      // The row rides along for an `--events` reader (#697): the line is for a person, the row for a program.
       settleStep(summarizeDeploy(deploy), { worker: deploy });
       await audit({
         action: "deploy/worker_deployed",
@@ -614,21 +657,16 @@ async function deployWorkers(
         severity,
         resourceType: "cf_worker",
         resourceId: worker.name,
-        // Neither `worker` nor `env` belongs here any more. The environment is the `environment`
-        // column the recorder stamps, and the Worker deployed is already `resourceId` — which is
-        // also the truer home for it, since that Worker is what this action *targeted*, not where
-        // the action came from (a CLI deploy comes from no Worker at all).
+        // The environment is the `environment` column the recorder stamps, and the Worker is `resourceId`.
         metadata: { versionId: deploy.versionId ?? null, verification: deploy.verification ?? null },
       });
     } catch (error) {
-      // **Credentials Cloudflare refused, or a wrangler that will not start, are the run's, not this Worker's
-      // (#697)**, on the first Worker: every Worker after it asks with the same pair and the same program.
-      // Thrown, it exits 3 as the one precondition it is, where a row per Worker exited 1 as N failures. Once
-      // any Worker has a row — shipped or failed on its own — thrown would lose that row from the report, so
-      // the refusal is this Worker's row instead, carrying its exit, and the report exits with it.
+      // Credentials Cloudflare refused, or a wrangler that will not start, are the run's on the first Worker:
+      // every Worker after it asks with the same pair and the same program, so it is thrown and exits 3. Once
+      // any Worker has a row, a throw would lose that row, so the refusal is this Worker's row, carrying its exit.
       const refusal = refusesTheRun(error);
       if (refusal && deploys.length === 0) throw error;
-      const reason = toProject(reasonOf(error));
+      const reason = paths.toProject(reasonOf(error));
       const failure: WorkerDeploy = {
         name: worker.name,
         ok: false,
@@ -637,20 +675,15 @@ async function deployWorkers(
         ...(refusal ? { exit: exitCodeOf(error.payload) } : {}),
       };
       deploys.push(failure);
-      // A failure settles too. The one thing worse than a silent deploy is a silent deploy whose one
-      // broken Worker is reported after every other upload has finished.
       settleStep(summarizeDeploy(failure), { worker: failure });
       // A dry run deployed nothing, so there is no deploy to record, failed or not.
       if (options.dryRun) continue;
-      // A failed deploy is exactly what an audit trail is for — record it too, not just successes.
       await audit({
         action: "deploy/worker_deployed",
         outcome: "failure",
         severity,
         resourceType: "cf_worker",
         resourceId: worker.name,
-        // Same as the success path: `worker` is `resourceId` and `env` is the `environment` column.
-        // What stays is what is genuinely per-event — which stage failed, and why.
         metadata: { stage, error: reason },
       });
     }
@@ -665,6 +698,7 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
     const problem = deploy.built === false ? "build failed." : "failed.";
     return red(`${deploy.name}: ${problem}`) + (deploy.error ? ` ${deploy.error}` : "");
   }
+  if (deploy.outcome === "unchanged") return `${deploy.name}: unchanged. ${deploy.reason ?? ""}`.trimEnd();
   const detail = [deploy.url, deploy.versionId].filter(Boolean).join(" ");
   // Wrangler's own URL keeps appearing here, as it always did — it tells a human where their deploy
   // went. The verification line below is the separate question of whether the *declared* address is now
@@ -673,11 +707,9 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
     return detail ? `${deploy.name}: deployed. ${detail}` : `${deploy.name}: deployed.`;
   }
   const note = deploy.verificationDetail ?? "";
-  // **A verification that fails the command reads as a failure, not as a note under a success (#579).**
-  // `deployed.` followed by an indented hint is how "nothing answers at the address this project claims"
-  // was reported while a dev-composed Worker sat on a public URL — the operator was told to check a
-  // route. The upload did happen, and the line still says so, but the headline is the fact that failed.
-  // One rule, `isDeployFailure`, decides that and the exit code, so they can never disagree.
+  // A verification that fails the command reads as a failure, not as a note under a success: the upload did
+  // happen, and the line says so, but the headline is the fact that failed. `isDeployFailure` decides this
+  // and the exit code, so they cannot disagree.
   if (!isDeployFailure(deploy.verification)) {
     const line = detail ? `${deploy.name}: deployed. ${detail}` : `${deploy.name}: deployed.`;
     return `${line}\n  ${note}`;
@@ -687,12 +719,13 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
 }
 
 /**
- * One Worker's line under `--dry-run`: what the deploy would do. A failure reads exactly as the real run's,
- * because it is the same failure — the build, or wrangler refusing the bundle — met one step earlier.
+ * One Worker's line under `--dry-run`: what the deploy would do. A failure and an unchanged Worker read exactly
+ * as the real run's, because each is the same outcome met before the upload.
  */
 export function summarizePlannedDeploy(deploy: WorkerDeploy): string {
-  if (!deploy.ok) return summarizeDeploy(deploy);
-  return deploy.built ? `${deploy.name}: built, and would deploy.` : `${deploy.name}: would deploy.`;
+  if (!deploy.ok || deploy.outcome === "unchanged") return summarizeDeploy(deploy);
+  const line = deploy.built ? `${deploy.name}: built, and would deploy.` : `${deploy.name}: would deploy.`;
+  return deploy.reason ? `${line} ${deploy.reason}` : line;
 }
 
 /** Whether any Worker's declared address is consistently serving something other than what just shipped. */

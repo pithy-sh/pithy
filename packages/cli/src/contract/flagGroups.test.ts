@@ -13,7 +13,7 @@ import { contractOf, type FlagGroup } from "./commandContract";
 import { walkTree } from "./describe";
 
 /**
- * **Every flag group `pithy schema` publishes is a rule the command enforces (#697).**
+ * **Every flag group `pithy schema` publishes is a rule the command enforces.**
  *
  * A group is declared as data beside the command, and enforced by the command's own validator — the two
  * are written in different places, so they can drift. This holds them together from both ends: every
@@ -129,7 +129,6 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
     ]),
   "dashboard connect: requires --update --worker-url --scope --public-key --purpose": () =>
     refusal("dashboard connect", ["--update"]),
-  "deploy: requires --force --env": () => refusal("deploy", ["--force"]),
   "deploy: requires --events --json": async () => eventsRefusal(["deploy", "--env", "staging", "--events"]),
   "docs connect: atMostOne --client --all": () => refusal("docs connect", ["--client", "cursor", "--all"]),
   "docs disconnect: atMostOne --client --all": () => refusal("docs disconnect", ["--client", "cursor", "--all"]),

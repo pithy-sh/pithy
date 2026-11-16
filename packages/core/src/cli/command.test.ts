@@ -115,7 +115,9 @@ describe("pithyCommand", () => {
   test("refuses a missing argument, and a rule over several flags", () => {
     expect(() => pithyCommandOf("worker add")).toThrow(/needs its name argument/);
     expect(() => pithyCommandOf("provision", { flags: { "--yes": true } })).toThrow(/exactly one of --env, --feature/);
-    expect(() => pithyCommandOf("deploy", { flags: { "--force": true } })).toThrow(/--force` needs --env/);
+    expect(() => pithyCommandOf("mcp connect", { flags: { "--oidc-claim": "a=b" } })).toThrow(
+      /--oidc-claim` needs --oidc-issuer/,
+    );
   });
 
   test("refuses a provision for an environment without the --yes it is refused for", () => {

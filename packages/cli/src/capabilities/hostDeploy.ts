@@ -3,7 +3,6 @@
 
 import { unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import {
   assertCreatesNoResources,
@@ -12,35 +11,39 @@ import {
   TOP_LEVEL_STANZA_ARG,
 } from "../project/effectiveConfig";
 import { kitImport } from "../project/kitResolve";
+import { type RetryWait, withUnseenWorkerRetry } from "../project/unseenWorkerRetry";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
-import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
+import {
+  deployStamp,
+  type ReadWorkerVars,
+  readDeployedStamp,
+  recordDeployStamp,
+  stampConfig,
+  stampVerdict,
+  UNFINISHED_STAMP,
+  type WriteWorkerVar,
+} from "../provision/deployStamp";
 import { startStep } from "../terminal/progress";
 import { hostConfigFile, hostEntryFile } from "./hostFiles";
 
 /**
- * **The one path a kit Worker is deployed through, and therefore the one place the gate lives.**
+ * **The one path a kit Worker is deployed through, and therefore the one place its gate lives.**
  *
- * Eight provisioners — email, media, payments, secrets, storage, support, testers and vector — had
- * each grown the same ten lines: write `.wrangler.<env>.json` beside the worker entry so wrangler's
- * relative `main` resolves, shell `wrangler deploy --config`, unlink in a `finally`. None of them
- * compared anything against what was live, so idempotent here meant *safe to re-run*, never *skips
- * when unchanged* (#537).
+ * Every capability provisioner and `pithy deploy --kit` call {@link deployHostWorker}, so each inherits the
+ * comparison against what is live with no flag: on a first provision there is no stamp, so it deploys. There
+ * is no `--if-changed`, because a flag that can only ever be true is one somebody leaves off believing it
+ * does something.
  *
- * Putting the comparison here rather than in `pithy deploy` is what makes it apply everywhere with no
- * flag: `pithy email provision`, `pithy media provision` and the rest inherit it by calling this, and
- * on a first provision there is no stamp so it deploys. There is no `--if-changed` and there will not
- * be one — a flag that can only ever be true is one somebody eventually leaves off believing it does
- * something, which is the exact bug this closes.
+ * **A provisioner takes no `force`.** `pithy <capability> provision` creates account resources, and a run
+ * whose only purpose is to re-upload an unchanged Worker should not also touch buckets, namespaces and Email
+ * Routing rules. The re-upload is `pithy deploy --env <env> --kit --force`, which creates nothing and ships
+ * the same config the provisioner would.
  *
- * **A provisioner takes no `force`, and that is deliberate.** `pithy <capability> provision` creates
- * account resources; a run whose only purpose is to re-upload an unchanged Worker should not also be
- * a run that touches buckets, namespaces and Email Routing rules. The re-upload is
- * `pithy deploy --env <env> --kit --force`, which creates nothing and is what `docs/commands/*.md`
- * name — and since #537 it resolves from the adopter's own composed capability, so it ships the same
- * config the provisioner would.
- *
- * **The adopter's own Workers never come through here.** `project/deploy.ts` ships `apps/*` and is
- * ungated on purpose: their code is the thing that changed, and the CLI cannot see a bundle.
+ * **The adopter's own Workers are gated too, by `project/deploy.ts`.** A kit Worker's stamp is its package
+ * version and config hash, because its entry is inside `node_modules`; an app Worker's is a hash of the
+ * bundle wrangler would upload and its resolved configuration. Both upload `unfinished` in its place, record
+ * the stamp through `recordDeployStamp` once the deploy has finished, read it back through
+ * `readDeployedStamp`, and retry a first deploy Cloudflare has not propagated yet.
  */
 
 /** What one gated deploy did, and why. The `--json` row and the terminal line both read from this. */
@@ -58,17 +61,12 @@ export interface HostDeployOutcome {
 /**
  * Ship one resolved config. The seam tests replace so nothing here spawns wrangler.
  *
- * **It takes the argv, not the config path (#584).** The stanza a deploy publishes under is decided by
- * the argv — `--env ?? CLOUDFLARE_ENV`, so an argv that names none hands the decision to the operator's
- * shell — and a runner handed only a path could not carry that decision, which is how the one call site
- * that built its own argv built it without a stanza and without anything able to observe the omission.
- * {@link hostDeployArgs} is where it is built and {@link assertPublishesDeclaredWorker} is what holds it;
- * an injected runner receives exactly what the real one spawns.
+ * It takes the argv, not the config path: the stanza a deploy publishes under is decided by the argv
+ * (`--env ?? CLOUDFLARE_ENV`), and a runner handed only a path could not carry that decision.
+ * {@link hostDeployArgs} builds it and {@link assertPublishesDeclaredWorker} holds it, so an injected runner
+ * receives exactly what the real one spawns.
  */
 export type RunHostDeploy = (args: readonly string[], dir: string) => Promise<void>;
-
-/** Read a deployed Worker's plain-text vars. `null` means the account holds no Worker of that name. */
-export type ReadWorkerVars = (scriptName: string) => Promise<Record<string, string> | null>;
 
 /** Everything one gated deploy needs. */
 export interface HostDeployOptions {
@@ -84,13 +82,13 @@ export interface HostDeployOptions {
    * upgrade — silently, which is the half of the problem that has no symptom.
    */
   version: string | null;
-  /** The resolved config, before its stamp. Exactly what would have been written before #537. */
+  /** The resolved config, before its stamp. */
   config: WorkflowHostTemplate;
   /** The installed package's worker directory — where the temp config is written, so `main` resolves. */
   dir: string;
   /**
    * The generated entry this host is deployed from, when the project composes a peer it can be handed —
-   * `hostEntrySource`'s answer (#645). Written beside the temp config as {@link hostEntryFile}, named as the
+   * `hostEntrySource`'s answer. Written beside the temp config as {@link hostEntryFile}, named as the
    * config's `main`, and removed with it. Absent, the host deploys from its own `worker.ts`.
    */
   entry?: string;
@@ -98,24 +96,22 @@ export interface HostDeployOptions {
   env: string;
   /** Read the deployed Worker's vars. Omitted, nothing is known and the Worker deploys. */
   readVars?: ReadWorkerVars;
+  /** Record the stamp once the deploy has finished. Omitted, none is recorded and the next run deploys again. */
+  writeVar?: WriteWorkerVar;
   /** Ship it. Defaults to {@link hostDeployArgs}, spawned for the account below. */
   runDeploy?: RunHostDeploy;
+  /** How the one retry of an unseen Worker waits. Defaults to a real timer; a test states it. */
+  retryWait?: RetryWait;
   /**
    * Who wrangler authenticates as. Required by the default runner, unused when one is injected.
    *
-   * **A {@link WranglerAccount}, and the union is the whole point.** `deployKit` holds the project's
-   * *selection* and passes that, so the `cloudflare.accountId` pin travels with it and #206's mismatch
-   * refusal still runs; the eight capability provisioners hold a pair their command already resolved and
-   * pass that. The four lines that used to spread a pair onto `runWrangler`'s `env` are gone — that was
-   * the second of three copies, and the reason the third (`pithy dev`) could be missing with nothing
-   * noticing (#555). `runWrangler` builds the child through `cloudflare/childEnv` now.
+   * **A {@link WranglerAccount}, and the union is the point.** `deployKit` passes the project's *selection*,
+   * so the `cloudflare.accountId` pin travels with it and a mismatch is refused; a capability provisioner
+   * passes the pair its command already resolved. `runWrangler` builds the child through `cloudflare/childEnv`.
    *
-   * **Narrowing this to a bare pair was a bug, briefly.** With `credentials ?? null`, a project whose
-   * named credentials file held only half the pair fell through to `null` — which does not mean "no
-   * credentials", it means "this project names no account", and so resolved the *default*
-   * `<config>/cloudflare.json`. On a two-account machine that is another tenant's live token, with the
-   * pin that would have refused it dropped one frame earlier. Passing the selection is what keeps
-   * "incomplete" and "unclaimed" from becoming the same value.
+   * Never narrow it to a bare pair with `credentials ?? null`: `null` means "this project names no account"
+   * and resolves the default `<config>/cloudflare.json`, so a half-filled named credentials file would reach
+   * another tenant's token with the pin dropped. The selection keeps "incomplete" and "unclaimed" apart.
    */
   account?: WranglerAccount;
   /** `--force`: ship regardless of the stamp, and read nothing. For a recovery run. */
@@ -133,19 +129,15 @@ export interface HostDeployOptions {
 /**
  * **The argv one kit Worker is deployed with, and the one place its stanza is stated.**
  *
- * A generated host config is one complete file per environment: its `name` already carries the
- * environment (`acme-prod-email`) and it has no `env` section at all. So the stanza it publishes is
- * always the top level — and {@link TOP_LEVEL_STANZA_ARG} is how an argv says that out loud.
+ * A generated host config is one complete file per environment: its `name` already carries the environment
+ * (`acme-prod-email`) and it has no `env` section. So the stanza it publishes is always the top level, and
+ * {@link TOP_LEVEL_STANZA_ARG} says so. Left unsaid, wrangler resolves `args.env ?? CLOUDFLARE_ENV` and
+ * `appendEnvName` runs regardless, so an operator with `CLOUDFLARE_ENV=prod` exported would publish
+ * `acme-prod-email-prod`.
  *
- * Saying it is not decoration (#584). wrangler resolves `args.env ?? CLOUDFLARE_ENV`, its missing-stanza
- * branch only *warns* when the config has no `env` section, and `appendEnvName` runs regardless — so the
- * argv that omitted this published `acme-prod-email-prod` for every operator with `CLOUDFLARE_ENV=prod`
- * exported, and `acme-prod-email` for everyone else. A Worker under a name nothing references.
- *
- * **And {@link NO_PROVISION_ARG}, because a deploy is not a provision (#589).** Media and storage derive
- * their bucket from the project and nothing checks it exists, so without the switch wrangler created the
- * bucket on a `pithy deploy --kit` into an environment nobody had provisioned. With it, a missing bucket
- * fails that Worker's row instead.
+ * {@link NO_PROVISION_ARG}, because a deploy is not a provision: media and storage derive their bucket from the
+ * project and nothing checks it exists, so with provisioning on wrangler would create it. With it off, a
+ * missing bucket fails that Worker's row.
  */
 export function hostDeployArgs(configPath: string): string[] {
   return ["deploy", "--config", configPath, TOP_LEVEL_STANZA_ARG, NO_PROVISION_ARG];
@@ -154,7 +146,7 @@ export function hostDeployArgs(configPath: string): string[] {
 /**
  * A capability package's stamped version, or `null` when it cannot be read.
  *
- * Resolved from the **project**, never from the CLI's own copy (#533): a globally installed `pithy`
+ * Resolved from the **project**, never from the CLI's own copy: a globally installed `pithy`
  * asking its own `node_modules` would report its version of `@pithy-sh/email` for a Worker built from
  * the project's, and the stamp would then be a confident lie rather than an absence.
  *
@@ -171,38 +163,14 @@ export async function kitPackageVersion(projectDir: string, pkg: string): Promis
 }
 
 /**
- * What the deployed Worker says about itself, in the four states {@link stampVerdict} branches on.
- *
- * Every failure becomes a state rather than a throw. The account may be unreachable, the token may
- * lack Workers Read, the API may 500 — none of those is a reason to stop a deploy, and all of them
- * are reasons to run one.
- */
-async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: string): Promise<DeployedStamp> {
-  if (!read) return { state: "unreadable", detail: "No Cloudflare client was available to read it." };
-  try {
-    const vars = await read(scriptName);
-    if (vars === null) return { state: "absent" };
-    const stamp = vars[DEPLOY_STAMP_VAR];
-    return stamp ? { state: "read", stamp } : { state: "unstamped" };
-  } catch (error) {
-    return { state: "unreadable", detail: error instanceof PithyError ? error.payload.message : messageOf(error) };
-  }
-}
-
-/**
  * The default runner: {@link hostDeployArgs}'s argv, in the installed package's worker dir.
  *
- * It spawns the argv it is handed and builds none of its own, so the stanza a reviewer can see in
- * `hostDeployArgs` is the stanza wrangler is told, and the argv the gate held is the argv that runs.
- *
- * The environment comes from `cloudflareChildEnv`, inside `runWrangler` — so a host Worker ships to the
- * account the project claims, and a pin the credentials contradict refuses rather than deploying to
- * whichever tenant the shell last exported a token for (#555). See {@link HostDeployOptions.account} for
- * why what arrives here is the selection or the pair, and never the pair flattened to `null`.
+ * It spawns the argv it is handed and builds none of its own, so the argv the gate held is the argv that
+ * runs. `runWrangler` builds the child's environment from {@link HostDeployOptions.account}, so a pin the
+ * credentials contradict refuses rather than deploying to whichever tenant the shell exported.
  */
 function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
   return async (args, dir) => {
-    // `runWrangler` refuses an argv that leaves provisioning on, whatever name it is called by (#589).
     await runWrangler([...args], { account, cwd: dir });
   };
 }
@@ -221,8 +189,10 @@ export interface HostDeployPlan {
 
 /** The gate's answer, and everything the upload after it needs. */
 interface HostDeployDecision extends HostDeployPlan {
-  /** The config wrangler would read, stamped when the version is known. */
+  /** The config wrangler would read: marked {@link UNFINISHED_STAMP} when the version is known. */
   stamped: WorkflowHostTemplate;
+  /** The stamp recorded once the deploy has finished, or `undefined` when the version could not be read. */
+  stamp: string | undefined;
   /** Where the generated entry is written, when the host is handed one. */
   entryPath: string | undefined;
   /** Where the temporary config is written. */
@@ -242,8 +212,8 @@ async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployD
   const entryPath = options.entry === undefined ? undefined : join(options.dir, hostEntryFile(options.env));
   const config =
     entryPath === undefined ? options.config : { ...options.config, main: `./${hostEntryFile(options.env)}` };
-  const stamped = options.version === null ? config : stampConfig(config, options.version);
-  const current = stamped.vars?.[DEPLOY_STAMP_VAR];
+  const current = options.version === null ? undefined : deployStamp(config, options.version);
+  const stamped = current === undefined ? config : stampConfig(config, UNFINISHED_STAMP);
 
   const verdict =
     current === undefined
@@ -261,10 +231,8 @@ async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployD
   const configPath = join(options.dir, hostConfigFile(options.env));
   const args = hostDeployArgs(configPath);
   if (verdict.deploy) {
-    // **The last moment this is still recoverable, and it is ahead of the narration and the write.** After
-    // the upload the only remedy is deleting a live Worker; before it, a refusal is a sentence. Asked of
-    // the argv about to be spawned rather than of the code that built it, so a call site that starts
-    // building its own is covered on the day it does (#584).
+    // The last moment this is still recoverable: after the upload the only remedy is deleting a live Worker.
+    // Asked of the argv about to be spawned rather than of the code that built it.
     assertPublishesDeclaredWorker({
       configPath,
       config: stamped,
@@ -281,6 +249,7 @@ async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployD
     deploy: verdict.deploy,
     reason: verdict.reason,
     stamped,
+    stamp: current,
     entryPath,
     configPath,
     args,
@@ -288,7 +257,7 @@ async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployD
 }
 
 /**
- * **What {@link deployHostWorker} would do, without doing it (#697)** — `pithy deploy --dry-run`'s kit half.
+ * **What {@link deployHostWorker} would do, without doing it** — `pithy deploy --dry-run`'s kit half.
  * The stamp is read and every refusal is made exactly as the deploy makes them; then it stops, before the
  * temporary config is written, before wrangler, and before the upload is announced.
  */
@@ -300,32 +269,32 @@ export async function planHostDeploy(options: HostDeployOptions): Promise<HostDe
 /**
  * Deploy one kit Worker, unless its deployed stamp says nothing has changed.
  *
- * The temp config carries the stamp, so the bundle and the claim about it are written by one atomic
- * operation — there is no second API write, and no way for a stamp to describe a deploy that failed.
- * It is removed whether the deploy worked or not: it holds provisioned resource ids and it lives
- * inside an installed package.
+ * The temp config carries {@link UNFINISHED_STAMP}, and the stamp is recorded only after wrangler has returned:
+ * wrangler sets the Worker's triggers after its upload, so a deploy that fails there has its code live, and the
+ * marker is what keeps the next run from reading it as current. The temp config is removed whether the deploy
+ * worked or not: it holds provisioned resource ids and it lives inside an installed package. A first deploy
+ * Cloudflare has not propagated yet is run once more, against the same temp config, before it is removed.
  */
 export async function deployHostWorker(options: HostDeployOptions): Promise<HostDeployOutcome> {
   const decision = await decideHostDeploy(options);
-  const { worker, stamped, entryPath, configPath, args } = decision;
+  const { worker, stamped, stamp, entryPath, configPath, args } = decision;
   if (!decision.deploy) {
     return { capability: options.capability, worker, outcome: "unchanged", reason: decision.reason };
   }
 
   const run = options.runDeploy ?? defaultRunDeploy(options.account ?? null);
-  // **The one place a kit Worker's upload is announced, so every command that ships one inherits it
-  // (#578).** `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` —
-  // through two packages that carry no progress parameter and should not grow one. Raised after the
-  // stamp verdict, because a Worker that is already current is not work in flight, and a `▸` line for
-  // an upload that never happens is the kind of narration nobody trusts twice.
+  // The one place a kit Worker's upload is announced, so every command that ships one inherits it. After
+  // the verdict, because a Worker that is already current is not work in flight.
   startStep(worker);
   await writeFile(configPath, `${JSON.stringify(stamped, null, 2)}\n`);
   try {
     if (entryPath !== undefined) await writeFile(entryPath, options.entry as string);
-    await run(args, options.dir);
+    await withUnseenWorkerRetry(worker, () => run(args, options.dir), options.retryWait);
   } finally {
     await unlink(configPath).catch(() => {});
     if (entryPath !== undefined) await unlink(entryPath).catch(() => {});
   }
-  return { capability: options.capability, worker, outcome: "deployed", reason: decision.reason };
+  const note = stamp === undefined ? undefined : await recordDeployStamp(options.writeVar, worker, stamp);
+  const reason = note === undefined ? decision.reason : `${decision.reason} ${note}`;
+  return { capability: options.capability, worker, outcome: "deployed", reason };
 }

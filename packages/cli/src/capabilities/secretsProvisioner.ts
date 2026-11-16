@@ -497,6 +497,7 @@ export function buildManagerDeploy(options: {
       dir,
       env,
       readVars: (script) => cf.workers().getWorkerVars(script),
+      writeVar: (script, name, value) => cf.workers().setWorkerVar(script, name, value),
       account: { accountId, apiToken },
     });
   };

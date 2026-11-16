@@ -8,9 +8,9 @@ import { EXIT } from "../terminal/exitClass";
 import { type DeployPlanInput, deployPlan, deployPlanExit, readPendingForPlan } from "./deployPlan";
 
 /**
- * **`pithy deploy --dry-run`'s plan, assembled (#697).** Deploy uploads Workers and does nothing else, so the
- * plan's `resources` are the uploads — each app Worker whose bundle `wrangler deploy --dry-run` accepted, and
- * each kit Worker whose stamp says it would ship. What a deploy does not do itself is said in `notes`: the
+ * **`pithy deploy --dry-run`'s plan, assembled.** Deploy uploads Workers and does nothing else, so the
+ * plan's `resources` are the uploads — each app Worker whose bundle `wrangler deploy --dry-run` accepted and
+ * whose stamp says it would ship, and each kit Worker whose stamp says the same. What a deploy does not do itself is said in `notes`: the
  * migrations it leaves to `pithy migrate`. Those are never `plan.migrations`, which is what a command would
  * apply, and deploy applies none. A binding with no id is not here: the dry run refuses on it as the deploy
  * does (`commands/deployDryRun.test.ts`).
@@ -50,6 +50,31 @@ describe("deployPlan", () => {
     expect(plan.resources).toEqual([{ kind: "worker", name: "acme-staging-api", env: "staging", action: "upload" }]);
     expect(plan.files).toEqual([]);
     expect(plan.migrations).toEqual([]);
+  });
+
+  test("an app Worker whose stamp matched is no upload, and one that would ship carries its reason", () => {
+    const plan = deployPlan(
+      input({
+        deploys: [
+          {
+            name: "acme-api",
+            ok: true,
+            outcome: "unchanged",
+            reason: "This bundle and configuration are already deployed.",
+          },
+          { name: "acme-web", ok: true, outcome: "deployed", reason: "Its bundle or resolved configuration changed." },
+        ],
+      }),
+    );
+    expect(plan.resources).toEqual([
+      {
+        kind: "worker",
+        name: "acme-web",
+        env: "staging",
+        action: "upload",
+        reason: "Its bundle or resolved configuration changed.",
+      },
+    ]);
   });
 
   test("a bare deploy's uploads name no environment", () => {

@@ -18,7 +18,6 @@ import {
   type HostDeployOptions,
   kitPackageVersion,
   planHostDeploy,
-  type ReadWorkerVars,
   type RunHostDeploy,
 } from "../capabilities/hostDeploy";
 import { hostEntrySource } from "../capabilities/hostEntry";
@@ -35,11 +34,13 @@ import {
   featureHostNameLeaks,
   featureOwnedIds,
 } from "../feature/hosts";
+import type { ReadWorkerVars, WriteWorkerVar } from "../provision/deployStamp";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { provisionRemedy } from "../provision/provisionFix";
 import { cloudflareProvisioners } from "../provision/resources";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
+import { workersVarsReader, workersVarWriter } from "./accountVars";
 import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
 import { type AddressStanza, inheritAddressKeys, resolveWorkerAddress } from "./workerAddress";
@@ -174,6 +175,8 @@ export interface DeployKitOptions {
   readTemplate?: (projectDir: string, entry: string) => Promise<WorkflowHostTemplate>;
   /** Test seam: read a deployed Worker's vars. Defaults to the account's Workers REST client. */
   readVars?: ReadWorkerVars;
+  /** Test seam: record a deployed Worker's stamp. Defaults to the account's Workers REST client. */
+  writeVar?: WriteWorkerVar;
   /** Test seam: run one deploy. Defaults to `wrangler deploy --config`. */
   runDeploy?: RunHostDeploy;
   /**
@@ -453,6 +456,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
   // No credentials means no stamp can be read, which the gate treats as doubt and therefore deploys —
   // wrangler still authenticates on its own OAuth login, exactly as `pithy deploy` always could.
   const readVars = options.readVars ?? (credentials ? await workersVarsReader(credentials) : undefined);
+  const writeVar = options.writeVar ?? (credentials ? await workersVarWriter(credentials) : undefined);
   const secretEntryExists = options.secretEntryExists ?? (credentials ? storeEntryReader(credentials) : undefined);
 
   // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else.
@@ -533,6 +537,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
       options,
       readTemplate,
       readVars,
+      writeVar,
       databaseIds: host.owner
         ? ownedDatabaseIds(databaseIds, stanzas.get(host.sourceDir), host.owner.bindings)
         : host === sharedManager && sharedManagerIds
@@ -612,12 +617,6 @@ const REQUIRED_VARS: Record<string, (capability: string, recordWith: AddPlan) =>
     `CLOUDFLARE_ACCOUNT_ID is not set, so ${capability}'s Worker would deploy naming no account to manage. ${addAction(recordWith, (add) => `Export CLOUDFLARE_ACCOUNT_ID for this run, or record it with ${add}.`)}`,
 };
 
-/** The default stamp reader: the account's Workers REST client, loaded only once a run needs it. */
-async function workersVarsReader(credentials: { accountId: string; apiToken: string }): Promise<ReadWorkerVars> {
-  const cf = await cloudflareClients(credentials);
-  return (script) => cf.workers().getWorkerVars(script);
-}
-
 /**
  * The sentence a skip carries, from everything one resolution could not answer — or `undefined` when
  * it answered everything.
@@ -654,6 +653,7 @@ async function deployOneKitWorker(input: {
   options: DeployKitOptions;
   readTemplate: (projectDir: string, entry: string) => Promise<WorkflowHostTemplate>;
   readVars: ReadWorkerVars | undefined;
+  writeVar: WriteWorkerVar | undefined;
   databaseIds: Record<string, string>;
   /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to. */
   owned?: FeatureOwnedIds;
@@ -795,6 +795,7 @@ async function deployOneKitWorker(input: {
       ...(entry === undefined ? {} : { entry }),
       env: options.env,
       readVars: input.readVars,
+      writeVar: input.writeVar,
       runDeploy: options.runDeploy,
       // The **selection**, not `input.credentials`. It re-resolves to the same pair and carries the
       // `cloudflare.accountId` pin with it, so a pinned account the credentials contradict is still refused —

@@ -13,23 +13,21 @@ import { expectConforms, expectEventsConform } from "../test-utils/payloadContra
 import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } from "./deploy";
 
 /**
- * **`pithy deploy`'s pending-migration count resolved credentials for nobody in particular (#226).**
+ * **`pithy deploy`'s pending-migration count resolves the same account as the deploy.**
  *
- * The deploy itself has named its account since #206 — it is the pair handed to `wrangler deploy`, and
- * getting it wrong ships to another company's tenant and exits 0. But the warning line beside it goes
- * through the ledger read, which took the account as an *optional* parameter, and this command
- * omitted it. So one command resolved two different accounts in one run: the right one for the deploy,
- * the default file for the count. Best-effort is not the same as unattributed — a count read off
- * another account's D1 is a number about somebody else's schema, printed as though it were yours.
+ * The deploy names its account — it is the pair handed to `wrangler deploy`, and getting it wrong ships to
+ * another company's tenant and exits 0. The warning line beside it goes through the ledger read, which takes
+ * the account as an optional parameter, so the command passes it: best-effort is not the same as
+ * unattributed, and a count read off another account's D1 is a number about somebody else's schema.
  */
 
 /** The options every ledger read was handed. */
 const counted = vi.hoisted(() => ({ calls: [] as unknown[], ledger: { pending: 0, undeclared: [] } as unknown }));
 
 /** What each half of the deploy was asked to do this run — the two named steps, observed. */
-const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[], order: [] as string[] }));
+const ran = vi.hoisted(() => ({ apps: 0, appsWith: [] as unknown[], kit: [] as unknown[], order: [] as string[] }));
 
-/** Whether an app binds a kit Worker, as the stubbed read answers it (#617). */
+/** Whether an app binds a kit Worker, as the stubbed read answers it. */
 const binding = vi.hoisted(() => ({ kit: false }));
 
 vi.mock("../project/workerBind", async (importOriginal) => ({
@@ -41,7 +39,7 @@ vi.mock("../project/workerBind", async (importOriginal) => ({
 const shipped = vi.hoisted(() => ({ rows: [] as unknown[] }));
 
 /**
- * Whether the stubbed app half narrates the way the real one does (#578).
+ * Whether the stubbed app half narrates the way the real one does.
  *
  * Off for every case that asserts an exact transcript, on for the cases about narration — so what the
  * real `project/deploy.ts` raises is exercised through this command without every other expectation in
@@ -50,7 +48,7 @@ const shipped = vi.hoisted(() => ({ rows: [] as unknown[] }));
 const narrating = vi.hoisted(() => ({ on: false }));
 
 /**
- * What the stubbed dashboard offer returns, and what it was asked (#757). Its condition is
+ * What the stubbed dashboard offer returns, and what it was asked. Its condition is
  * `dashboard/deployOffer.test.ts`'s; this file asks only that the deploy hands it the run's facts and prints it.
  */
 const offered = vi.hoisted(() => ({ steps: undefined as unknown, asked: [] as unknown[] }));
@@ -87,13 +85,14 @@ vi.mock("../migrations/run", async (importOriginal) => ({
 // need wrangler, credentials, and an account this test must never reach.
 vi.mock("../project/deploy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/deploy")>()),
-  deployProject: async () => {
+  deployProject: async (options: unknown) => {
     ran.apps += 1;
+    ran.appsWith.push(options);
     ran.order.push("apps");
     if (narrating.on) {
       const { settleStep, startStep } = await import("../terminal/progress");
       startStep("acme-api");
-      // With the row behind the line, as `project/deploy.ts` settles it (#697).
+      // With the row behind the line, as `project/deploy.ts` settles it.
       settleStep("acme-api: deployed. https://api.acme.example v1", {
         worker: { name: "acme-api", ok: true, url: "https://api.acme.example", versionId: "v1" },
       });
@@ -146,7 +145,7 @@ describe("deploy command", () => {
   });
 
   /**
-   * **The count is best-effort; the account is not (#236).**
+   * **The count is best-effort; the account is not.**
    *
    * `pendingFor` swallows every failure on purpose — a database it cannot reach costs a warning line, not
    * the deploy. An account mismatch is not a reachability failure: it is settled before the run begins,
@@ -164,8 +163,7 @@ describe("deploy command", () => {
     const configDir = await mkdtemp(join(tmpdir(), "pithy-deploy-config-"));
     process.env.PITHY_CONFIG_DIR = configDir;
     delete process.env.PITHY_OFFLINE;
-    // The project pins `acct-leed`; the shell exported another tenant's pair hours ago. This is the
-    // machine state that produced #236, verbatim.
+    // The project pins `acct-leed`; the shell exported another tenant's pair hours ago.
     process.env.CLOUDFLARE_ACCOUNT_ID = "acct-somebody-else";
     process.env.CLOUDFLARE_API_TOKEN = "token-for-somebody-else";
 
@@ -201,11 +199,11 @@ describe("deploy command", () => {
 });
 
 /**
- * **A deploy is a deploy (#537).** `pithy deploy` ships the adopter's Workers *and* the kit's, and the
+ * **A deploy is a deploy.** `pithy deploy` ships the adopter's Workers *and* the kit's, and the
  * two are separate named steps so CI reads separate exit codes and a failure names which half broke.
  */
 /**
- * **A namespace in the feature range is refused by every deploy (#643)** — before either half runs, and in a
+ * **A namespace in the feature range is refused by every deploy** — before either half runs, and in a
  * project that never provisions a feature, because another project's feature can be allocated it.
  */
 describe("the feature rate-limit range", () => {
@@ -265,8 +263,8 @@ describe("deploySelection", () => {
 });
 
 /**
- * **An environment the project never declared is a usage error, exit 2, before anything is built (#697).**
- * It reached `wrangler deploy --env qa`, which failed every Worker on a missing stanza, and the run exited 1
+ * **An environment the project never declared is a usage error, exit 2, before anything is built.**
+ * Passed on, `wrangler deploy --env qa` would fail every Worker on a missing stanza, and the run would exit 1
  * as N per-Worker failures. `dev` and `feature` are not declared and are still targets: the first is the
  * top-level stanza, the second a branch's generated one.
  */
@@ -319,10 +317,8 @@ describe("requireDeployEnvironment", () => {
 });
 
 describe("assertDeployFlags", () => {
-  test("--apps --force is refused: the adopter's Workers were never gated", () => {
-    expect(() => assertDeployFlags({ apps: true, kit: false, force: true, env: "prod" })).toThrowError(
-      "--force has nothing to do with --apps.",
-    );
+  test("--apps --force is accepted: the adopter's Workers are gated on their bundle", () => {
+    expect(() => assertDeployFlags({ apps: true, kit: false, force: true, env: "prod" })).not.toThrow();
   });
 
   test("--kit with no --env is refused, because a kit Worker is per environment", () => {
@@ -369,10 +365,8 @@ describe("assertDeployFlags", () => {
     );
   });
 
-  test("--force --env dev is refused too: there is no deploy to force", () => {
-    expect(() => assertDeployFlags({ apps: false, kit: false, force: true, env: "dev" })).toThrowError(
-      "--force has nothing to deploy in dev.",
-    );
+  test("--force --env dev is accepted: dev's app Workers are gated too", () => {
+    expect(() => assertDeployFlags({ apps: false, kit: false, force: true, env: "dev" })).not.toThrow();
   });
 
   test("the no-env action line offers only the environments that have a kit Worker", () => {
@@ -387,9 +381,13 @@ describe("assertDeployFlags", () => {
     expect(thrown?.payload.action).toBe("Add --env staging or --env prod.");
   });
 
-  test("--force with no --env is refused for the same reason", () => {
-    expect(() => assertDeployFlags({ apps: false, kit: false, force: true })).toThrowError(
-      "--force needs an environment.",
+  test("--force with no --env forces a bare deploy's app Workers", () => {
+    expect(() => assertDeployFlags({ apps: false, kit: false, force: true })).not.toThrow();
+  });
+
+  test("--kit --force with no --env is still refused, by the --kit rule", () => {
+    expect(() => assertDeployFlags({ apps: false, kit: true, force: true })).toThrowError(
+      "--kit needs an environment.",
     );
   });
 
@@ -397,7 +395,7 @@ describe("assertDeployFlags", () => {
     expect(() => assertDeployFlags({ apps: false, kit: false, force: false })).not.toThrow();
   });
 
-  test("--kit --env is fine, and so is --apps --force's harmless sibling", () => {
+  test("--kit --env is fine, and so is --apps --env", () => {
     expect(() => assertDeployFlags({ apps: false, kit: true, force: true, env: "prod" })).not.toThrow();
     expect(() => assertDeployFlags({ apps: true, kit: false, force: false, env: "prod" })).not.toThrow();
   });
@@ -462,19 +460,22 @@ describe("the two halves", () => {
     expect(line.workers).toEqual([]);
   });
 
-  test("--force reaches the kit half, which is the only half a stamp gates", async () => {
+  test("--force reaches the kit half", async () => {
     await invoke({ env: "staging", kit: true, force: true });
     expect((ran.kit[0] as { force?: boolean }).force).toBe(true);
   });
 
+  test("--force reaches the apps half, which is gated on a hash of each bundle", async () => {
+    await invoke({ env: "staging", apps: true, force: true });
+    expect((ran.appsWith.at(-1) as { force?: boolean }).force).toBe(true);
+  });
+
   /**
-   * **`pithy deploy --env dev` exited 1 every time (#537).**
+   * **`pithy deploy --env dev` succeeds, and says the kit's Workers are local.**
    *
-   * `resolveWorkerAddress` answers `null` for `dev` unconditionally — a local run has no public
-   * address — so every kit Worker became a `skipped` row saying it had no `dev` address, and an
-   * all-skipped run fails the command. Meanwhile `docs/commands/deploy.md` listed `dev` as a valid
-   * `--env` and this command's own action line offered it. The kit half simply has nothing to do in
-   * `dev`: its Workers run locally under `pithy dev`. So it says that, and the run succeeds.
+   * `resolveWorkerAddress` answers `null` for `dev` unconditionally — a local run has no public address — so
+   * a kit half that tried would turn every kit Worker into a `skipped` row, and an all-skipped run fails the
+   * command. The kit half has nothing to do in `dev`: its Workers run locally under `pithy dev`.
    */
   test("--env dev ships apps/ and says the kit's Workers are local — it does not fail", async () => {
     const { out, exitCode } = await invokeRun({ env: "dev", json: false });
@@ -513,7 +514,7 @@ describe("the two halves", () => {
   });
 
   /**
-   * **`next` names `pithy migrate` when the schema is behind the code that shipped, and is absent otherwise (#697).**
+   * **`next` names `pithy migrate` when the schema is behind the code that shipped, and is absent otherwise.**
    * The count is the condition, read from the ledger the deploy already reads; the rest of the matrix is
    * `terminal/nextSteps.test.ts`'s.
    */
@@ -537,7 +538,7 @@ describe("the two halves", () => {
   });
 
   /**
-   * **A named environment with no dashboard is offered one, as `offers`, never as `next` (#757).**
+   * **A named environment with no dashboard is offered one, as `offers`, never as `next`.**
    * Connecting is the person's choice, so the run states it and leaves it to them: the `--json` line carries it
    * under its own key, and the human output says it in one line before `Done.`.
    */
@@ -577,7 +578,7 @@ describe("the two halves", () => {
     }
   });
 
-  /** Held to the schema `pithy schema deploy` publishes (#697): both halves, each half alone, and none. */
+  /** Held to the schema `pithy schema deploy` publishes: both halves, each half alone, and none. */
   test("the --json line conforms to its published payload", async () => {
     shipped.rows = [
       { name: "acme-api", ok: true, versionId: "v1", url: "https://api.acme.example", verification: "verified" },
@@ -594,7 +595,7 @@ describe("the two halves", () => {
   });
 
   /**
-   * **A refusal recorded as a row exits by its class, and the rows before it stay in the report (#697 review).** An
+   * **A refusal recorded as a row exits by its class, and the rows before it stay in the report.** An
    * earlier Worker's build failure and a later Worker's refused credentials are both on the line; the run exits 3,
    * because the credentials are the caller's next step, and an ordinary failure alone still exits 1.
    */
@@ -621,7 +622,7 @@ describe("the two halves", () => {
   });
 
   /**
-   * wrangler colors its `✘ [ERROR]`, and the captured stderr is the reason a row carries (#697). The color is
+   * wrangler colors its `✘ [ERROR]`, and the captured stderr is the reason a row carries. The color is
    * taken out where wrangler's output is captured (`project/deploy.test.ts` drives the real `runWrangler`), and
    * the `--json` encoder writes the row's text as it is — so what the row holds is what a reader gets.
    */
@@ -671,13 +672,12 @@ function restoreEnv(before: { config?: string; offline?: string; account?: strin
 }
 
 /**
- * **`pithy deploy` printed nothing at all until it had finished. For minutes (#578).**
+ * **`pithy deploy` says what it is doing while it works.**
  *
- * The narration itself belongs to the two producers — `project/deploy.ts` and `project/deployKit.ts`
- * raise it, and `terminal/output.ts` opens the span every command body already runs inside. What this
- * command owes is the other end of the same decision: the per-Worker lines **moved** out of the block it
- * used to print after the last upload, so they are not printed twice, and `--json` still writes exactly
- * one line.
+ * The narration belongs to the two producers — `project/deploy.ts` and `project/deployKit.ts` raise it, and
+ * `terminal/output.ts` opens the span every command body already runs inside. What this command owes is the
+ * other end: it prints no per-Worker line of its own after the last upload, so none is printed twice, and
+ * `--json` still writes exactly one line.
  */
 describe("what the command says while it works", () => {
   /** One run, with the app half narrating as the real one does. */
@@ -727,7 +727,7 @@ describe("what the command says while it works", () => {
   });
 
   /**
-   * **`--json --events` is the one exception to one line (#697)**: a record per step as the run reaches it,
+   * **`--json --events` is the one exception to one line**: a record per step as the run reaches it,
    * then the document `--json` alone would have written, as the last line. Every line parses on its own, and
    * none of them is prose.
    */
@@ -753,12 +753,11 @@ describe("what the command says while it works", () => {
 });
 
 /**
- * **A bare `pithy deploy` was the one deploy of `apps/` nothing checked for id-less bindings (#589).**
+ * **Every deploy of `apps/` refuses a stanza whose bindings have no id, a bare one and `--env dev` included.**
  *
- * The gate ran `if (gateApps && env)`, and `--env dev` asked it about an `env.dev` no project may declare.
  * Both ship the top-level stanza — `database_name`s Miniflare resolves and no ids — which is the shape
- * wrangler's default provisioning created databases from. Asked of the command, not of the reader, because
- * the reader was never the part that skipped it.
+ * wrangler's default provisioning creates databases from. Asked of the command, not of the reader, because
+ * the command is what decides whether the reader is asked.
  */
 describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
   async function refusal(args: Record<string, unknown>): Promise<{ err: string; exitCode: unknown }> {
@@ -834,7 +833,7 @@ describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
 });
 
 /**
- * **A kit Worker an app binds ships first (#617).** The binding names the host's script, and an upload binding a
+ * **A kit Worker an app binds ships first.** The binding names the host's script, and an upload binding a
  * script that does not exist yet is refused, so the order follows the bindings and nothing else.
  */
 describe("deploy order", () => {
