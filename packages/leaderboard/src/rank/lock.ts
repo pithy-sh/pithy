@@ -87,7 +87,8 @@ export function requireLockStaleMs(staleMs: number): number {
  * Try to take the refresh lock for `holder`, returning whether it was acquired.
  *
  * Atomic on D1's single thread: the upsert either inserts the row (no holder yet) or, on conflict, takes
- * it over only if the current holder's lock is older than `staleMs` — a fresh lock is left untouched.
+ * it over only if the current holder's lock is older than `staleMs` — another holder's fresh lock is left
+ * untouched. The holder itself re-acquiring renews its lock to `now`.
  * A concurrent second caller therefore either finds no row and loses the insert race, or finds a fresh
  * lock and is refused by the `WHERE`. Either way it reads back a `holder` that is not its own and knows
  * to stand down.
@@ -114,8 +115,15 @@ export async function acquireRefreshLock(
       oc
         .column("name")
         .doUpdateSet({ holder, acquiredAt: LeaderboardLock.shape.acquiredAt.encode(now) })
-        // Take over only an abandoned lock; a live holder's row is left as-is.
-        .where("pithyLeaderboardLocks.acquiredAt", "<", staleBefore),
+        // Take over only an abandoned lock, or renew the caller's own; another live holder's row is left
+        // as-is. Renewal is what lets a pass handed across Workflow runs keep its lock for as long as it
+        // walks, since each run re-acquires as the same holder.
+        .where((eb) =>
+          eb.or([
+            eb("pithyLeaderboardLocks.acquiredAt", "<", staleBefore),
+            eb("pithyLeaderboardLocks.holder", "=", holder),
+          ]),
+        ),
     )
     .execute();
 
