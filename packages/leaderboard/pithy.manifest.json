@@ -22,7 +22,7 @@
     {
       "key": "boards",
       "default": [{ "key": "high-scores", "direction": "desc" }],
-      "describe": "Every board this app ranks. Replace this example — an all-time board where the highest score wins, which is the smallest board that works and the one shape that needs no rank worker at all. `key` is a URL path segment; `direction` is `desc` (highest wins) or `asc` (lowest wins) and is immutable once entries land, because flipping it would reinterpret every stored score. Add a `window` CRON (`0 0 * * *` daily, `0 0 1 * *` calendar month) to make the board periodic. At least one board is required."
+      "describe": "Every board this app ranks. Replace this example — an all-time board where the highest score wins, which is the smallest board that works and the one shape that needs no rank worker at all. `key` is a URL path segment; `direction` is `desc` (highest wins) or `asc` (lowest wins) and is immutable once entries land, because flipping it would reinterpret every stored score. Add a `window` CRON (`0 0 * * *` daily, `0 0 1 * *` calendar month) to make the board periodic. A board per level or per player-made level is a `families` entry instead: one shape and a pattern such as `level/:levelId`. At least one board or family is required."
     },
     {
       "key": "rank",

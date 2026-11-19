@@ -2,14 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 import type { AdminEntry } from "../admin/read";
-import type { LeaderboardBoard, LeaderboardConfig } from "../config/config";
+import { familyPrefix, type LeaderboardBoard, type LeaderboardConfig, type LeaderboardFamily } from "../config/config";
+import type { LeaderboardBoardRecord } from "../data/boardRecord";
 import type { LeaderboardLock } from "../data/lock";
 import type { EntryModerationState } from "../data/moderation";
 import { windowKeyAt } from "../window/schedule";
-import type { AdminBoardView, AdminEntryState, AdminEntryView, AdminLockView } from "./responses";
+import type {
+  AdminBoardView,
+  AdminEntryState,
+  AdminEntryView,
+  AdminFamilyView,
+  AdminInstanceView,
+  AdminLockView,
+} from "./responses";
 
 /**
- * The management projections (#817): stored rows into the response schemas, field by field.
+ * The management projections: stored rows into the response schemas, field by field.
  *
  * Deliberate rather than spread, so a column added to a table never reaches a management client by
  * accident. The entry's internal `id` and its stored `rank` stay behind: an entry is addressed by its
@@ -17,8 +25,24 @@ import type { AdminBoardView, AdminEntryState, AdminEntryView, AdminLockView } f
  */
 
 export function adminBoardView(config: LeaderboardConfig, board: LeaderboardBoard, now: Date): AdminBoardView {
+  return { key: board.key, ...adminShapeView(config, board, now) };
+}
+
+export function adminFamilyView(config: LeaderboardConfig, family: LeaderboardFamily, now: Date): AdminFamilyView {
+  return { key: familyPrefix(family), pattern: family.pattern, ...adminShapeView(config, family, now) };
+}
+
+export function adminInstanceView(record: LeaderboardBoardRecord): AdminInstanceView {
+  return { key: record.boardKey, createdAt: record.createdAt.toISOString() };
+}
+
+/** What a board and a family both show: the shape every board in them is read through. */
+function adminShapeView(
+  config: LeaderboardConfig,
+  board: Omit<LeaderboardBoard, "key">,
+  now: Date,
+): Omit<AdminBoardView, "key"> {
   return {
-    key: board.key,
     store: board.store,
     direction: board.direction,
     aggregation: board.aggregation,

@@ -590,6 +590,37 @@ jobs:
       - name: Auth suites
         run: bunx turbo run test:node test:workers --filter=@pithy-sh/auth --concurrency=2 --continue=always
 
+  # The React Native templates are copied into an Expo app that may run either the SDK the scaffold pins or the one
+  # after it, since `expo install expo` picks the newest. `verify` typechecks them against the workspace's pinned SDK;
+  # this job typechecks the same program against the next one. The script installs that SDK's packages, at the
+  # versions `expo install` picks for it, into a temporary directory outside the workspace, so no workspace pin moves.
+  # It reads the kit's own packages from their builds, so those are built first.
+  rn-second-sdk:
+    name: React Native templates on the next Expo SDK
+    needs: plan
+    if: needs.plan.outputs.any == 'true' && contains(needs.plan.outputs.dirs, 'packages/ui-react-native')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Install
+        run: bun install
+
+      - name: Build what the templates import
+        run: bunx turbo run build --filter="@pithy-sh/ui-react-native^..."
+
+      - name: Typecheck the templates on the next Expo SDK
+        run: bun packages/ui-react-native/scripts/typecheckSecondSdk.ts
+
   # The Claude Code plugins (#719): the marketplace at `.claude-plugin/marketplace.json` and every plugin
   # under `agent-plugins/claude/`, through Claude Code's own validator. `--strict` turns a warning into a
   # failure — an unrecognized field, missing metadata — the things the runtime tolerates and a user then
@@ -754,7 +785,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room, auth-newest, windows, plugins, unity-client, workflows]
+    needs: [plan, verify, test, test-node, clean-room, auth-newest, rn-second-sdk, windows, plugins, unity-client, workflows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

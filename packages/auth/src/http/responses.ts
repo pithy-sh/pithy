@@ -464,6 +464,12 @@ export type AuthUserExport = z.output<typeof AuthUserExport>;
 /** Fields every capability's export entry carries. */
 const exportEntry = {
   capability: z.string().describe("The capability whose rows these are — the purge step that erases or keeps them."),
+  step: z
+    .string()
+    .optional()
+    .describe(
+      "The step's own name, when the capability splits this purge into named steps — `scores`, `runs` — each with its own entry under the capability; the purge runs it as `<capability>/<step>`. Absent for a capability's one unnamed step, and from a Worker that predates named steps.",
+    ),
   summary: z.string().describe("What that capability's purge erases, anonymizes or keeps, in its own sentence."),
   disposition: z
     .enum(["erase", "retain"])
@@ -536,7 +542,9 @@ export const AdminUserExportResponse = z
     exportedAt: z.iso.datetime().describe("When the export was read, ISO-8601."),
     capabilities: z
       .array(AdminUserExportEntry)
-      .describe("Every composed capability's part, in the order the purge erases them."),
+      .describe(
+        "Every composed capability's part, in the order the purge erases them. A capability with named steps answers one part per step, each naming its `step`.",
+      ),
   })
   .describe("Everything the kit holds about one account, from every composed capability, as one document.");
 export type AdminUserExportResponse = z.output<typeof AdminUserExportResponse>;

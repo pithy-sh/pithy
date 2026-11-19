@@ -70,8 +70,9 @@ describe("LeaderboardConfig", () => {
     expect(() => LeaderboardConfig.parse({ boards: [{ key: "distance" }] })).toThrow();
   });
 
-  it("requires at least one board", () => {
+  it("requires at least one board or family", () => {
     expect(() => LeaderboardConfig.parse({ boards: [] })).toThrow();
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [] })).toThrow();
   });
 
   it("rejects duplicate board keys, which would silently merge two boards' entries", () => {
@@ -150,6 +151,97 @@ describe("resolveBoard", () => {
     const config = LeaderboardConfig.parse({ boards: [board()] });
     expect(resolveBoard(config, "nope")).toBeUndefined();
   });
+});
+
+const family = (overrides: Record<string, unknown> = {}) => ({
+  pattern: "level/:levelId",
+  direction: "asc" as const,
+  ...overrides,
+});
+
+describe("board families", () => {
+  it("accepts a family with no static boards beside it", () => {
+    const config = LeaderboardConfig.parse({ boards: [], families: [family()] });
+    expect(config.families[0]?.pattern).toBe("level/:levelId");
+    expect(config.families[0]?.aggregation).toBe("best");
+  });
+
+  it("defaults to no families, so a board-only config parses as it always has", () => {
+    expect(LeaderboardConfig.parse({ boards: [board()] }).families).toEqual([]);
+  });
+
+  it.each([
+    "level",
+    "level/abc",
+    "level/:levelId/:variant",
+    ":levelId",
+    "Level/:levelId",
+    "level/:",
+    "level/:level-id",
+  ])("rejects the pattern %s, which is not one static segment and one named id", (pattern) => {
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [family({ pattern })] })).toThrow();
+  });
+
+  it("holds a family to the same shape rules as a board", () => {
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [family({ min: 10, max: 1 })] })).toThrowError(
+      /level\/:levelId/,
+    );
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [family({ window: "nope" })] })).toThrow();
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [family({ retain: 3 })] })).toThrow();
+  });
+
+  it("rejects two families sharing a prefix", () => {
+    expect(() =>
+      LeaderboardConfig.parse({ boards: [], families: [family(), family({ pattern: "level/:other" })] }),
+    ).toThrowError(/level/);
+  });
+
+  it("rejects a family prefix that is also a board key", () => {
+    expect(() => LeaderboardConfig.parse({ boards: [board({ key: "level" })], families: [family()] })).toThrowError(
+      /level/,
+    );
+  });
+
+  it("accepts an allow hook and rejects anything else in its place", () => {
+    const allow = () => true;
+    expect(LeaderboardConfig.parse({ boards: [], families: [family({ allow })] }).families[0]?.allow).toBe(allow);
+    expect(() => LeaderboardConfig.parse({ boards: [], families: [family({ allow: "yes" })] })).toThrow();
+  });
+});
+
+describe("resolveBoard over families", () => {
+  const config = LeaderboardConfig.parse({
+    boards: [board()],
+    families: [family({ window: "0 0 * * *", min: 0, tiers: [{ key: "fast", from: 60 }] })],
+  });
+
+  it("resolves a key matching a family to an instance carrying the family's shape", () => {
+    const instance = resolveBoard(config, "level/abc");
+    expect(instance).toMatchObject({
+      key: "level/abc",
+      direction: "asc",
+      aggregation: "best",
+      window: "0 0 * * *",
+      min: 0,
+      tiers: [{ key: "fast", from: 60 }],
+    });
+    expect(instance?.family?.pattern).toBe("level/:levelId");
+  });
+
+  it("accepts the ids real content uses: mixed case, digits, dashes and underscores", () => {
+    expect(resolveBoard(config, "level/V1StGXR8_Z5jdHi6B-myT")?.key).toBe("level/V1StGXR8_Z5jdHi6B-myT");
+  });
+
+  it("leaves a static board without a family", () => {
+    expect(resolveBoard(config, "weekly-distance")?.family).toBeUndefined();
+  });
+
+  it.each(["level", "level/", "levels/abc", "level/abc/def", "level/a b", "level/segment", `level/${"a".repeat(65)}`])(
+    "does not resolve %s",
+    (key) => {
+      expect(resolveBoard(config, key)).toBeUndefined();
+    },
+  );
 });
 
 describe("materializeSchedule", () => {

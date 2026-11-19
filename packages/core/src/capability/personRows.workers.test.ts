@@ -57,6 +57,12 @@ beforeEach(async () => {
 });
 
 describe("personRowsPurge", () => {
+  test("carries a step name when one is given, so one feature's rows can be its own purge step", () => {
+    const named = personRowsPurge({ capability: "app", step: "scores", summary: "Deletes the scores.", tables: [] });
+    expect(named.step).toBe("scores");
+    expect(purge).not.toHaveProperty("step");
+  });
+
   test("exports every row naming the person in any of its columns, decoded, without the omitted columns", async () => {
     expect(await purge.export?.(context("ada"))).toEqual({
       friends: [
