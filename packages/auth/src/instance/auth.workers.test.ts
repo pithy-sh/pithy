@@ -473,3 +473,72 @@ describe("the activity clock", () => {
     expect(await lastActive("rolling@example.test")).toBeGreaterThanOrEqual(before - 1000);
   });
 });
+
+describe("unlinking the last provider", () => {
+  /** An instance composing `methods`, and a user signed in with a session token whose only account is Google. */
+  async function googleOnlyUser(methods: AuthInstanceDeps["methods"]) {
+    const auth = makeAuth({
+      db: authDatabase(env.DB),
+      secret: "test-secret-please-rotate-0000000000",
+      baseURL: "http://localhost:8787",
+      basePath: "/api/auth",
+      trustedOrigins: ["http://localhost:8787"],
+      ...NO_SOCIAL_PROVIDERS,
+      google: { state: "ready", credentials: { clientId: "g", clientSecret: "gs" } },
+      sendEmail: async () => ({ delivery: "queued" }),
+      sessionExpiresIn: 60 * 60 * 24 * 7,
+      sessionUpdateAge: 60 * 60 * 24,
+      verificationExpiresIn: 300,
+      otpLength: 6,
+      disableSignUp: false,
+      providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
+      emit: async () => {},
+      plugins: [],
+      ...(methods === undefined ? {} : { methods }),
+    });
+    const ctx = await auth.$context;
+    const user = await ctx.internalAdapter.createUser(
+      { email: "only-google@example.test", name: "", emailVerified: true },
+      { method: "oauth", oauth: { providerId: "google", profile: {} } },
+    );
+    const account = await ctx.internalAdapter.createAccount({
+      userId: user.id,
+      providerId: "google",
+      accountId: "google-sub-1",
+    });
+    const session = await ctx.internalAdapter.createSession(user.id);
+    const unlink = () =>
+      auth.api.unlinkAccount({
+        body: { accountId: String(account.id) },
+        headers: new Headers({ authorization: `Bearer ${session.token}` }),
+      });
+    const accounts = async () =>
+      (await env.DB.prepare("select count(*) as n from pithy_auth_accounts").first<{ n: number }>())?.n;
+    return { unlink, accounts };
+  }
+
+  test("with no email method composed, the last provider is refused: it is the only way back in", async () => {
+    const { unlink, accounts } = await googleOnlyUser({ magicLink: false, emailOtp: false });
+    await expect(unlink()).rejects.toMatchObject({ body: { code: "FAILED_TO_UNLINK_LAST_ACCOUNT" } });
+    expect(await accounts()).toBe(1);
+  });
+
+  test("with one email method composed, the address still reaches the user, so the last provider may go", async () => {
+    for (const methods of [
+      { magicLink: true, emailOtp: false },
+      { magicLink: false, emailOtp: true },
+    ]) {
+      const { unlink, accounts } = await googleOnlyUser(methods);
+      await expect(unlink()).resolves.toMatchObject({ status: true });
+      expect(await accounts()).toBe(0);
+      await env.DB.prepare("delete from pithy_auth_sessions").run();
+      await env.DB.prepare("delete from pithy_auth_users").run();
+    }
+  });
+
+  test("an instance built without methods composes both, so the last provider may go", async () => {
+    const { unlink, accounts } = await googleOnlyUser(undefined);
+    await expect(unlink()).resolves.toMatchObject({ status: true });
+    expect(await accounts()).toBe(0);
+  });
+});

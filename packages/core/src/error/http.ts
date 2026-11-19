@@ -7,7 +7,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { clientError } from "./client";
 import { ErrorPayload, PublicErrorPayload } from "./payload";
-import { InternalError, messageOf, PithyError, ValidationError } from "./pithyError";
+import { InternalError, messageOf, PayloadTooLargeError, PithyError, ValidationError } from "./pithyError";
 
 /**
  * The HTTP surface of an error, as a real codec. `encode` (server emits) maps an in-memory
@@ -60,14 +60,15 @@ export const HttpError = z.codec(PublicErrorPayload, ErrorPayload, {
 });
 
 /**
- * Hono's own 400s are the caller's fault, not ours. `hono/validator` throws `HTTPException(400)`
+ * Hono's own 400s and 413s are the caller's fault, not ours. `hono/validator` throws `HTTPException(400)`
  * for a body it cannot even parse — a malformed JSON document, a malformed multipart form — before
- * any schema runs, so no validator hook ever sees it. Left alone it would fall through to the
- * generic wrap below and answer a bad request with a 500. Only 400 is translated: every other
- * `HTTPException` is a framework condition we have no public wording for, and guessing one would
- * put Hono's internal text on the wire.
+ * any schema runs, so no validator hook ever sees it, and `hono/body-limit` throws `HTTPException(413)` for
+ * a body past its limit. Left alone either would fall through to the generic wrap below and answer a bad
+ * request with a 500. Only those two are translated: every other `HTTPException` is a framework condition
+ * we have no public wording for, and guessing one would put Hono's internal text on the wire.
  */
 function fromHttpException(error: HTTPException): PithyError | null {
+  if (error.status === 413) return new PayloadTooLargeError({ detail: error.message });
   if (error.status !== 400) return null;
   return new ValidationError({ message: "The request body could not be parsed.", detail: error.message });
 }
@@ -75,7 +76,8 @@ function fromHttpException(error: HTTPException): PithyError | null {
 /**
  * Whatever was thrown, as the `PithyError` the response will be rendered from.
  *
- * A `PithyError` is itself; a Hono `HTTPException` 400 becomes `validation/invalid_input`; anything
+ * A `PithyError` is itself; a Hono `HTTPException` 400 becomes `validation/invalid_input` and a 413
+ * `core/payload_too_large`; anything
  * else is wrapped as a `core/internal` 500 carrying the original as `cause` (kept internal) and a
  * generic public message — mirroring the CLI's "unexpected crash" path.
  *
@@ -103,7 +105,7 @@ export function renderPithyError(pithy: PithyError, c: Context): Response {
  * Hono `onError` handler — the **encoder**, with no log of its own.
  *
  * Any `PithyError` becomes `{ error: <public payload> }` at its declared status; a Hono
- * `HTTPException` 400 becomes `validation/invalid_input`; any other throw is wrapped as a
+ * `HTTPException` 400 becomes `validation/invalid_input`, a 413 `core/payload_too_large`, and any other throw is wrapped as a
  * `core/internal` 500.
  *
  * **Prefer `loggingErrorHandler` from `logger/errorHandler.ts`** — `createBackend` registers that one,

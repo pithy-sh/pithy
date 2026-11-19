@@ -21,6 +21,7 @@ import {
   packageLoadFailure,
   unresolvedImport,
 } from "@pithy-sh/core/src/error/unresolved";
+import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import { runnerImport } from "vite";
 
 /** The default export of a Worker's `pithy.config.ts`, before it is trusted. */
@@ -201,6 +202,19 @@ function importedPosition(
   return { ...at, shown: path.startsWith("../") ? path : `./${path}` };
 }
 
+/** Import `configFile` with `ENVIRONMENT` stamped as `environment`, restored afterwards; untouched when none is named. */
+async function importFor<T>(configFile: string, environment: string | undefined) {
+  if (environment === undefined) return runnerImport<T>(configFile);
+  const previous = process.env[ENVIRONMENT_VAR];
+  process.env[ENVIRONMENT_VAR] = environment;
+  try {
+    return await runnerImport<T>(configFile);
+  } finally {
+    if (previous === undefined) delete process.env[ENVIRONMENT_VAR];
+    else process.env[ENVIRONMENT_VAR] = previous;
+  }
+}
+
 function isCapability(value: unknown): value is Capability {
   return typeof value === "object" && value !== null && typeof (value as Capability).name === "string";
 }
@@ -213,8 +227,16 @@ function isCapability(value: unknown): value is Capability {
  * `@pithy-sh/*` source imports all resolve — none of which a bare dynamic `import()` handles — and it
  * behaves identically under `vite dev` and `vite build`. It also reports the transitive files it
  * touched, which is what makes HMR on a config edit possible.
+ *
+ * **Evaluated for `environment` when one is named.** A config is code and may branch on
+ * `compositionEnvironment()`, which reads `ENVIRONMENT`; Workers get it from their own vars, and nothing
+ * else puts it in this process. So it is stamped for the import and put back exactly as it was found
+ * afterwards, and a bundle for `dev` is projected from the composition the dev Worker runs.
  */
-export async function loadWorkerConfig(configFile: string): Promise<LoadedWorkerConfig> {
+export async function loadWorkerConfig(
+  configFile: string,
+  options: { environment?: string } = {},
+): Promise<LoadedWorkerConfig> {
   try {
     await access(configFile);
   } catch {
@@ -229,7 +251,7 @@ export async function loadWorkerConfig(configFile: string): Promise<LoadedWorker
   let module: WorkerConfigModule;
   let dependencies: readonly string[];
   try {
-    const imported = await runnerImport<WorkerConfigModule>(configFile);
+    const imported = await importFor<WorkerConfigModule>(configFile, options.environment);
     module = imported.module;
     dependencies = imported.dependencies.filter((file) => typeof file === "string" && file.length > 0);
   } catch (cause) {

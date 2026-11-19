@@ -90,6 +90,18 @@ declare module "virtual:pithy/auth" {
         /** Whether signing in may provision a new user. Drives the sign-up copy. */
         signUpEnabled: boolean;
         /**
+         * Which email sign-in methods the Worker composed. A method that is `false` answers 404, so a screen does not
+         * offer it.
+         *
+         * Optional, so a screen copied before it existed keeps compiling; absent reads as both `true`.
+         */
+        methods?: {
+          /** Whether a link mailed to the address signs it in. */
+          magicLink: boolean;
+          /** Whether a one-time code mailed to the address signs it in. */
+          emailOtp: boolean;
+        };
+        /**
          * Native app attestation in this environment, when it has an attestation block. Absent, the send routes
          * take no attestation, and a native app passes the humanity check as a web page does.
          *

@@ -93,6 +93,37 @@ test("a signed-in caller lists their notes", async () => {
 
 `headers` carries the session token as `Authorization: Bearer`, the way a phone sends it. `cookie` is the same session as a browser holds it. One session, two shapes, no second token. The cookie's name follows the origin, so if your test composes `auth()` on an `https` `baseURL`, pass the same `baseURL` and the cookie comes back as `__Secure-better-auth.session_token`, the only name that Worker reads.
 
+## Email sign-in methods
+
+Magic link and email OTP are both on by default. `methods` turns either off, and an email method that is off is not composed at all: its routes answer 404, its paths leave the OpenAPI document, and no mail is sent for it. Hiding a form only hides a form.
+
+```ts
+import { auth } from "@pithy-sh/auth/src/capability";
+import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
+
+// Apple and Google only, with email in dev so an emulator can sign in before the OAuth clients exist.
+const dev = compositionEnvironment() === "dev";
+
+auth({
+  baseURL: "https://api.example.com",
+  apple: { enabled: true },
+  google: { enabled: true },
+  methods: { magicLink: dev, emailOtp: dev },
+});
+```
+
+`compositionEnvironment()` reads the `ENVIRONMENT` var `pithy init` stamps into each environment of the Worker's `wrangler.jsonc`, and answers `undefined` where none was stamped, so the branch above leaves email off anywhere it was not told `dev`.
+
+The client projection carries `methods`, and the scaffolded screens read it: a link where one is composed, a code where only that is, and no email form with neither. A phone with no universal link takes the code, since the Worker never hands a magic link to a custom scheme. Each environment's projection is taken from the config as evaluated for that environment: `@pithy-sh/vite` evaluates it with `ENVIRONMENT` set to the bundle's environment, and `pithy ui add` and `pithy ui sync` evaluate it once per environment before writing an Expo app's generated config, so a dev-only branch shows the email form in dev alone.
+
+Three consequences of switching email off:
+
+- With neither method, a provider is the only way in, so Better Auth's refusal to unlink a person's last provider stands. With either, every account can reach its own address, and unlinking every provider is allowed.
+- A Microsoft work or school address Entra ID did not verify is verified by magic link before it links. With `magicLink: false` it cannot link.
+- The remedy for a refused provider sign-in is to sign in by email and connect the provider from the account. Without email, that remedy is gone; set `allowSignUp` on the providers you offer.
+
+`magic-link` and `email-otp` stay reserved either way: `plugins: [magicLink()]` is refused even with `methods.magicLink` false.
+
 ## A recent sign-in for an app route
 
 `requireRecentSignIn({ maxAgeSeconds, purpose })` gates one app route on a sign-in within the window it names: revealing a stored secret, changing who can see something. It stacks after the route's own gates. A session signed in longer ago is refused with 403 `auth/recent_sign_in_required`, the same code on every gated route, and the refusal is recorded as `auth/recent_sign_in_refused` with your `purpose`. A bearer session and a cookie session are judged alike, and the remedy is the same for both: sign in again, then retry. Rotating a token never passes, because a rotation keeps the original sign-in time. [`docs/recent-sign-in.md`](docs/recent-sign-in.md) says when to use the gate and how a web and a phone client handle the refusal.

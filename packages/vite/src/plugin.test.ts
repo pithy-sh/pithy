@@ -182,6 +182,35 @@ describe("pithy() virtual modules", () => {
     expect(production.baseUrl).toBe("https://acme.com");
   });
 
+  test("the config is evaluated for the bundle's environment, so a value it computes from ENVIRONMENT matches", async () => {
+    // What auth's `methods: { magicLink: dev }` reads: the environment at evaluation, not at projection.
+    const dir = await workerDir({
+      "pithy.config.ts": `
+        const dev = process.env.ENVIRONMENT === "dev";
+        export default {
+          capabilities: [
+            { name: "auth", requiredBindings: [], client: () => ({ enabled: true, methods: { magicLink: dev, emailOtp: dev } }) },
+          ],
+        };
+      `,
+    });
+    const previous = process.env.ENVIRONMENT;
+    try {
+      delete process.env.ENVIRONMENT;
+      const dev = defaultExport(await driver(pithy({ environment: "dev" }), dir).loadCapability("auth"));
+      expect(dev.methods).toEqual({ magicLink: true, emailOtp: true });
+      // Put back as it was found: a variable the process never had does not exist afterwards.
+      expect("ENVIRONMENT" in process.env).toBe(false);
+      process.env.ENVIRONMENT = "dev";
+      const prod = defaultExport(await driver(pithy({ environment: "prod" }), dir).loadCapability("auth"));
+      expect(prod.methods).toEqual({ magicLink: false, emailOtp: false });
+      expect(process.env.ENVIRONMENT).toBe("dev");
+    } finally {
+      if (previous === undefined) delete process.env.ENVIRONMENT;
+      else process.env.ENVIRONMENT = previous;
+    }
+  });
+
   /**
    * #579. `CLOUDFLARE_ENV` is the name Cloudflare's own tooling selects a wrangler environment with, so a
    * `CLOUDFLARE_ENV=staging vite build` run by hand or by CI has said which environment it is. Reading

@@ -100,6 +100,12 @@ export interface UiAddOptions extends RailChoices {
   deployedName?: string;
   /** The project's environments, for an app's origins. Read from the root `pithy.config.ts` when absent. */
   environments?: readonly string[];
+  /**
+   * The Worker's config as evaluated for one environment, which an app's projection for that environment is taken
+   * from. Absent, every environment is projected from `config`: right for a config stated rather than loaded, as
+   * `pithy init` states one before anything is installed.
+   */
+  composedFor?: (environment: string) => Promise<WorkerConfig>;
   /** Where an app's kit ranges are looked for past the manifests. Tests set it; the defaults reach the registry. */
   kitRanges?: Pick<KitRangeSources, "installedFrom" | "latest">;
 }
