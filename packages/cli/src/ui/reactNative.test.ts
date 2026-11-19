@@ -9,8 +9,9 @@ import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { APP_TOKEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react-native/src/templates";
 import { describe, expect, test } from "vitest";
+import { RENDERER_FILE, rendererVersion } from "../doctor/expoReact";
 import { kitRange } from "../project/scaffold";
-import { reactNativeStub } from "./reactNative";
+import { REACT_NATIVE_REACT, reactNativeStub } from "./reactNative";
 import type { UiStubContext } from "./stubs";
 import { loadStubFiles } from "./templates";
 
@@ -142,14 +143,54 @@ describe("the react-native stub's packages", () => {
     expect(reactNativeStub.devDependencies["react-native-web"]).toBeUndefined();
   });
 
-  test("React Native 0.86 on Expo SDK 57, with React held at the repository's 19.2.8", () => {
+  test("React Native 0.86 on Expo SDK 57, with React pinned to its renderer's 19.2.3", () => {
     expect(reactNativeStub.dependencies).toMatchObject({
       "react-native": "0.86.3",
       expo: "~57.0.31",
-      react: "^19.2.8",
-      "react-dom": "^19.2.8",
+      react: "19.2.3",
+      "react-dom": "19.2.3",
       "react-native-web": "~0.21.0",
     });
+    expect(reactNativeStub.devDependencies["@types/react"]).toBe("~19.2.4");
+    expect(REACT_NATIVE_REACT).toEqual({ react: "19.2.3", "react-dom": "19.2.3", "@types/react": "~19.2.4" });
+  });
+
+  test("React and React DOM equal the renderer the installed React Native ships, exactly", async () => {
+    const fromApp = createRequire(join(REPO_ROOT, "packages", "ui-react-native", "package.json"));
+    const reactNative = dirname(fromApp.resolve("react-native/package.json"));
+    const renderer = rendererVersion(await readFile(join(reactNative, RENDERER_FILE), "utf8"));
+    expect(renderer, `${RENDERER_FILE} names no version`).not.toBeNull();
+    expect(reactNativeStub.dependencies.react).toBe(renderer);
+    expect(reactNativeStub.dependencies["react-dom"]).toBe(renderer);
+  });
+
+  test("the workspace installs the React the stub writes, so every kit test runs on it", async () => {
+    const root = JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8")) as {
+      overrides: Record<string, string>;
+    };
+    expect(root.overrides.react).toBe(REACT_NATIVE_REACT.react);
+    expect(root.overrides["react-dom"]).toBe(REACT_NATIVE_REACT["react-dom"]);
+  });
+
+  test("@pithy-sh/ui-react-native checks its templates on the React the stub writes", async () => {
+    const checked = (await manifestOf("@pithy-sh/ui-react-native")).devDependencies;
+    for (const [name, pin] of Object.entries(REACT_NATIVE_REACT)) expect(checked[name], name).toBe(pin);
+    expect(reactNativeStub.devDependencies["@types/react"]).toBe(REACT_NATIVE_REACT["@types/react"]);
+  });
+
+  test("@pithy-sh/ui-react-native peers React Native and Expo, optionally, at ranges that admit the stub's pins", async () => {
+    const path = join(REPO_ROOT, "packages", "ui-react-native", "package.json");
+    const pkg = JSON.parse(await readFile(path, "utf8")) as {
+      peerDependencies: Record<string, string>;
+      peerDependenciesMeta: Record<string, { optional?: boolean }>;
+    };
+    expect(pkg.peerDependencies).toMatchObject({ "react-native": "0.86.x", expo: "~57" });
+    for (const name of ["react", "react-native", "expo"]) {
+      expect(pkg.peerDependenciesMeta[name]?.optional, name).toBe(true);
+    }
+    expect(admits(pkg.peerDependencies.react ?? "", REACT_NATIVE_REACT.react)).toBe(true);
+    expect(reactNativeStub.dependencies["react-native"]).toMatch(/^0\.86\.\d+$/);
+    expect(reactNativeStub.dependencies.expo).toMatch(/^~57\./);
   });
 
   test("core and i18n take core's own range, the release train they ship on", () => {

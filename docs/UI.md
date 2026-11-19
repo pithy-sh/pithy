@@ -668,6 +668,10 @@ The screens are the DOM set's, in React Native primitives, under the same file n
 
 **An older app imports the generated config with no extension, and does not load under Expo 57.** `app.config.ts` is yours, so no command rewrites it. In `apps/<app>/app.config.ts`, change `import generated from "./src/pithy-config.generated";` to `import generated from "./src/pithy-config.generated.ts";`. Then add `"allowImportingTsExtensions": true` under `compilerOptions` in `apps/<app>/tsconfig.json`. Until then `expo config` fails with `Cannot find module './src/pithy-config.generated'`, and `pithy dev` stops every Worker with it.
 
+**React is React Native's renderer version, exactly.** React Native ships a prebuilt renderer and starts on the React it was built from alone, so the app's `package.json` pins `react` and `react-dom` to `19.2.3`, React Native 0.86's renderer, and `@types/react` to `~19.2.4`, the range `expo-doctor` checks. A caret range resolves past the renderer, and the app does not launch. The scaffold also sets `[install] linker = "hoisted"` in the project root's `bunfig.toml`, because Bun's default linker for a workspace installs `expo` twice and `expo-doctor` fails on the duplicate; [`docs/commands/ui.md`](commands/ui.md) § *React Native: an app of its own* has the details.
+
+**An app scaffolded on 0.29.0 or earlier asks for React `^19.2.8`, and does not launch.** Its `package.json` is yours, so no command rewrites it. `pithy doctor` names the app in its `Expo apps:` block with the command that fixes it; in `apps/<app>`, run `bunx expo install react@19.2.3 react-dom@19.2.3 @types/react@~19.2.4`.
+
 **Upgrades.** `pithy upgrade --packages` compares the React templates you copied against the version it moves to. It does not compare the React Native ones: it names each such app and leaves the diff against `@pithy-sh/ui-react-native`'s templates to you.
 
 ## See also
