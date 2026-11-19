@@ -55,8 +55,14 @@ interface RankWorkerEnv {
   LEADERBOARD_CONFIG: string;
   /** Optional override for how long a held refresh lock stays valid before it is reclaimed (see lock.ts). */
   LEADERBOARD_LOCK_STALE_MS?: string;
-  /** The Workflow binding — this worker's own class, used by `scheduled()` to start an instance. */
-  RANK_REFRESH: { create(options?: { id?: string; params?: RankPassContinuation }): Promise<unknown> };
+  /**
+   * The Workflow binding — this worker's own class, used by `scheduled()` to start an instance and by a run to
+   * start the next. `get` resolves when an instance of that id exists.
+   */
+  RANK_REFRESH: {
+    create(options?: { id?: string; params?: RankPassContinuation }): Promise<unknown>;
+    get?(id: string): Promise<unknown>;
+  };
 }
 
 export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unknown> {
@@ -161,13 +167,17 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       const after = page.next;
       if (after !== null) {
         // More instances follow: the next run walks them. Its id is fixed by the pass and its position, so
-        // the pass names each run once.
+        // the pass names each run once. A replay of this step after its create was accepted is refused that
+        // id; the run it names exists, so that refusal is the handoff done. Any other refusal is thrown.
         const run = (continuation?.run ?? 0) + 1;
+        const id = `${ctx.holder}-${run}`;
         await steps.do("continue", async () => {
-          await this.env.RANK_REFRESH.create({
-            id: `${ctx.holder}-${run}`,
-            params: { holder: ctx.holder, nowMs: ctx.nowMs, after, run },
-          });
+          try {
+            await this.env.RANK_REFRESH.create({ id, params: { holder: ctx.holder, nowMs: ctx.nowMs, after, run } });
+          } catch (error) {
+            if (await this.runExists(id)) return;
+            throw error;
+          }
         });
         handedOff = true;
       }
@@ -177,6 +187,16 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       // that handed the pass on leaves the lock to the run that now holds it.
       if (!handedOff) await releaseRefreshLock(db, ctx.holder);
     }
+  }
+
+  /** Whether an instance of `id` exists. False when the binding cannot look one up, so a refusal stays one. */
+  private async runExists(id: string): Promise<boolean> {
+    const binding = this.env.RANK_REFRESH;
+    if (typeof binding.get !== "function") return false;
+    return binding.get(id).then(
+      () => true,
+      () => false,
+    );
   }
 }
 
