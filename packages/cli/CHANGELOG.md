@@ -1,5 +1,31 @@
 # @pithy-sh/cli
 
+## 0.30.0
+
+### Minor Changes
+
+- [#1075](https://github.com/pithy-sh/pithy/pull/1075) [`391b42a`](https://github.com/pithy-sh/pithy/commit/391b42a3cc2793dd9366b58ad50c105af96a0a72) Thanks [@kingmesal](https://github.com/kingmesal)! - `auth({ methods: { magicLink, emailOtp } })` turns email sign-in off, routes and all, or on in one environment only.
+
+- [#1064](https://github.com/pithy-sh/pithy/pull/1064) [`eb4e770`](https://github.com/pithy-sh/pithy/commit/eb4e770abd44b560388981e025e773b840597e7b) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy init` composes payments when `--ios-rail`, `--android-rail` or `--web-rail` names a rail, and takes `--billing-subject user` or `organization`. A mobile project now sells through Apple and Google from its first commit.
+
+- [#1073](https://github.com/pithy-sh/pithy/pull/1073) [`29cccdf`](https://github.com/pithy-sh/pithy/commit/29cccdfa2f85a55d6216616c548069e1fb5bf708) Thanks [@kingmesal](https://github.com/kingmesal)! - `describeRoute({ rateLimit })` limits a route per user or per address, with the binding written for you, and an oversized body answers `413` through `PayloadTooLargeError`.
+
+- [#1063](https://github.com/pithy-sh/pithy/pull/1063) [`63d293c`](https://github.com/pithy-sh/pithy/commit/63d293ce80d1a16329c6a2bfbd8d8008f445740e) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy-games` designs and playtests single-player games: `new-game` adds `multiplayer` only when players share a room, `game-design` plans server-verified runs instead of rooms, and `playtest` plays a run and checks the server's verdict.
+
+### Patch Changes
+
+- [#1065](https://github.com/pithy-sh/pithy/pull/1065) [`1f8a951`](https://github.com/pithy-sh/pithy/commit/1f8a9517f64052d304288aac0bc9fec7dd42651d) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy init --react-native` and `pithy ui add react-native` pin React to the version React Native's renderer requires, so a new Expo app launches and passes `expo-doctor`. An app scaffolded on 0.29.0 or earlier is fixed by `bunx expo install react@19.2.3 react-dom@19.2.3 @types/react@~19.2.4`, and `pithy doctor` now says so.
+
+- [#1076](https://github.com/pithy-sh/pithy/pull/1076) [`18e5615`](https://github.com/pithy-sh/pithy/commit/18e5615165b188a0171f381279e31f58a6414510) Thanks [@kingmesal](https://github.com/kingmesal)! - `requireAuth()` narrows `c.var.auth` for your own routes, and `@pithy-sh/auth` ships a helper that signs a seeded user in inside the Workers test pool.
+- Updated dependencies [[`391b42a`](https://github.com/pithy-sh/pithy/commit/391b42a3cc2793dd9366b58ad50c105af96a0a72), [`eb4e770`](https://github.com/pithy-sh/pithy/commit/eb4e770abd44b560388981e025e773b840597e7b), [`74567f8`](https://github.com/pithy-sh/pithy/commit/74567f80ddd562412af53ec1910deb9200f06235), [`1f8a951`](https://github.com/pithy-sh/pithy/commit/1f8a9517f64052d304288aac0bc9fec7dd42651d), [`01a4d7c`](https://github.com/pithy-sh/pithy/commit/01a4d7c802aa5084ba6788b5446922836504f59d), [`29cccdf`](https://github.com/pithy-sh/pithy/commit/29cccdfa2f85a55d6216616c548069e1fb5bf708), [`d6293f6`](https://github.com/pithy-sh/pithy/commit/d6293f63802dc0414abcde48bff62bc36f41bc7c)]:
+  - @pithy-sh/ui-react@0.9.0
+  - @pithy-sh/ui-react-native@0.4.0
+  - @pithy-sh/core@0.27.0
+  - @pithy-sh/cloudflare@0.11.1
+  - @pithy-sh/email@0.11.2
+  - @pithy-sh/secrets@0.6.15
+  - @pithy-sh/turnstile@0.9.3
+
 ## 0.29.0
 
 ### Minor Changes

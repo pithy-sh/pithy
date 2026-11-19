@@ -1,5 +1,11 @@
 # @pithy-sh/ui-react
 
+## 0.9.0
+
+### Minor Changes
+
+- [#1075](https://github.com/pithy-sh/pithy/pull/1075) [`391b42a`](https://github.com/pithy-sh/pithy/commit/391b42a3cc2793dd9366b58ad50c105af96a0a72) Thanks [@kingmesal](https://github.com/kingmesal)! - `auth({ methods: { magicLink, emailOtp } })` turns email sign-in off, routes and all, or on in one environment only.
+
 ## 0.8.0
 
 ### Minor Changes

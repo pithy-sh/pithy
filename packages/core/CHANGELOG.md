@@ -1,5 +1,17 @@
 # @pithy-sh/core
 
+## 0.27.0
+
+### Minor Changes
+
+- [#1064](https://github.com/pithy-sh/pithy/pull/1064) [`eb4e770`](https://github.com/pithy-sh/pithy/commit/eb4e770abd44b560388981e025e773b840597e7b) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy init` composes payments when `--ios-rail`, `--android-rail` or `--web-rail` names a rail, and takes `--billing-subject user` or `organization`. A mobile project now sells through Apple and Google from its first commit.
+
+- [#1072](https://github.com/pithy-sh/pithy/pull/1072) [`74567f8`](https://github.com/pithy-sh/pithy/commit/74567f80ddd562412af53ec1910deb9200f06235) Thanks [@kingmesal](https://github.com/kingmesal)! - A capability may split one subject's purge into named steps, so the purge retries each feature's erase on its own.
+
+- [#1073](https://github.com/pithy-sh/pithy/pull/1073) [`29cccdf`](https://github.com/pithy-sh/pithy/commit/29cccdfa2f85a55d6216616c548069e1fb5bf708) Thanks [@kingmesal](https://github.com/kingmesal)! - `describeRoute({ rateLimit })` limits a route per user or per address, with the binding written for you, and an oversized body answers `413` through `PayloadTooLargeError`.
+
+- [#1078](https://github.com/pithy-sh/pithy/pull/1078) [`d6293f6`](https://github.com/pithy-sh/pithy/commit/d6293f63802dc0414abcde48bff62bc36f41bc7c) Thanks [@kingmesal](https://github.com/kingmesal)! - Core checks public user text through `c.var.moderator`: a case- and confusable-folded blocklist you extend in config, or a classifier you plug in, answering allow, reject or review.
+
 ## 0.26.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @pithy-sh/email
 
+## 0.11.2
+
+### Patch Changes
+
+- Updated dependencies [[`eb4e770`](https://github.com/pithy-sh/pithy/commit/eb4e770abd44b560388981e025e773b840597e7b), [`74567f8`](https://github.com/pithy-sh/pithy/commit/74567f80ddd562412af53ec1910deb9200f06235), [`29cccdf`](https://github.com/pithy-sh/pithy/commit/29cccdfa2f85a55d6216616c548069e1fb5bf708), [`d6293f6`](https://github.com/pithy-sh/pithy/commit/d6293f63802dc0414abcde48bff62bc36f41bc7c)]:
+  - @pithy-sh/core@0.27.0
+  - @pithy-sh/secrets@0.6.15
+
 ## 0.11.1
 
 ### Patch Changes
