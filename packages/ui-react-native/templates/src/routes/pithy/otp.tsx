@@ -3,7 +3,7 @@ import { ATTESTATION_UNAVAILABLE } from "@pithy-sh/auth/src/client/attestation";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { screenPath } from "@pithy-sh/ui-core/src/routes";
-import { type ReactNode, useCallback, useRef, useState } from "react";
+import { type ComponentRef, type ReactNode, useCallback, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useAttestation } from "../../attestation";
 import { authConfig } from "../../pithy-config";
@@ -103,7 +103,7 @@ export default function Otp(): ReactNode {
   const [gateRefusal, setGateRefusal] = useState<AuthFailure | null>(null);
   const attestation = useAttestation();
   const [busy, setBusy] = useState(false);
-  const inputs = useRef<(TextInput | null)[]>([]);
+  const inputs = useRef<(ComponentRef<typeof TextInput> | null)[]>([]);
   const onToken = useCallback((value: string | null) => setCaptcha(value), []);
 
   const code = digits.join("");
