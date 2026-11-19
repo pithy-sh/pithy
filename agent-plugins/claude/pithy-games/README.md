@@ -1,6 +1,6 @@
 # pithy-games
 
-A game add-on to the [`pithy`](../pithy/README.md) agent team, for Claude Code. Game design, a Unity client, and playtests with simulated players. It builds on Pithy's game capabilities — `auth`, `multiplayer`, `matchmaking`, `leaderboard`, `rating`, `ledger` — and on the socket contract every engine plays against.
+A game add-on to the [`pithy`](../pithy/README.md) agent team, for Claude Code. Game design, a Unity client, and playtests with simulated players, for multiplayer and single-player games. It builds on Pithy's game capabilities — `auth`, `multiplayer`, `matchmaking`, `leaderboard`, `rating`, `ledger` — and on the socket contract every engine plays against. A single-player game composes only what it uses, and no `multiplayer`.
 
 ## Install
 
@@ -21,7 +21,7 @@ It reuses `pithy`'s team — `pithy:server`, `pithy:client-web`, `pithy:client-m
 
 | Agent | Default | Job |
 |---|---|---|
-| `client-unity` | Sonnet, medium | The Unity client in C#. Generates the HTTP layer from `openapi.json`, writes the socket layer against `asyncapi.json`, and knows IL2CPP stripping and WebGL. Compiling is the adopter's, in their own Unity project. |
+| `client-unity` | Sonnet, medium | The Unity client in C#. Generates the HTTP layer from `openapi.json`, then writes the socket layer against `asyncapi.json` for a multiplayer game, or the deterministic C# engine that twins the Worker's for a single-player one, and knows IL2CPP stripping and WebGL. Compiling is the adopter's, in their own Unity project. |
 
 ### Settings
 
@@ -35,9 +35,9 @@ echo '{"client_unity_model": "opus", "client_unity_effort": "high"}' | claude pl
 
 ## The skills
 
-- `/new-game`: `/new-app` from `pithy`, plus the game capabilities the design calls for and a Unity target.
-- `/game-design`: settles what the server is the authority for, what the room holds, the game's `action` and `view` schemas, and anti-cheat, before any code. It runs in the main session.
-- `/playtest`: has `pithy:runner` sign in simulated players against `pithy dev`, join them to one room, play the moves the design implies, and return a summary: per move, which players got a state or the refusal's code, then the final phase and outcome. The script runs on Node 22.18 or later.
+- `/new-game`: `/new-app` from `pithy`, plus the game capabilities the design calls for and a Unity target. It adds `multiplayer` and `matchmaking` only when players share a live room.
+- `/game-design`: settles what the server is the authority for, what the room holds, the game's `action` and `view` schemas, and anti-cheat, before any code. For a single-player game it settles a run the server re-simulates instead: the submission route and its schema, the engine version, and the bounds checks. It runs in the main session.
+- `/playtest`: has `pithy:runner` sign in simulated players against `pithy dev`, join them to one room, play the moves the design implies, and return a summary: per move, which players got a state or the refusal's code, then the final phase and outcome. The script runs on Node 22.18 or later. For a single-player game, a bot plays one run through the game's engine, submits it and tampered copies, and reports the server's verdict on each.
 
 A gap in the kit is filed with `pithy`'s `/report-kit-gap`.
 
