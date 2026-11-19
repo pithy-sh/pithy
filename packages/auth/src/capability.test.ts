@@ -295,11 +295,12 @@ describe("the turnstile login gate", () => {
 describe("auth client projection", () => {
   const context = { environment: "production" };
 
-  test("projects exactly the six keys a sign-in screen needs", () => {
+  test("projects exactly the seven keys a sign-in screen needs", () => {
     const projection = resolveClientProjection(build(), context);
     expect(Object.keys(projection).sort()).toEqual([
       "basePath",
       "enabled",
+      "methods",
       "otpLength",
       "providerSignUp",
       "providers",
@@ -314,7 +315,18 @@ describe("auth client projection", () => {
       providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
       otpLength: 6,
       signUpEnabled: true,
+      methods: { magicLink: true, emailOtp: true },
     });
+  });
+
+  test("the email methods reach the browser as composed, so a screen offers only what answers", () => {
+    expect(resolveClientProjection(build({ methods: { magicLink: false } }), context).methods).toEqual({
+      magicLink: false,
+      emailOtp: true,
+    });
+    expect(resolveClientProjection(build({ methods: { magicLink: false, emailOtp: false } }), context).methods).toEqual(
+      { magicLink: false, emailOtp: false },
+    );
   });
 
   test("a provider's sign-up policy reaches the browser, so the promise can be scoped", () => {

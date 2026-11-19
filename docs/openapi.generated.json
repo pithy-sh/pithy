@@ -8347,6 +8347,117 @@
         ]
       }
     },
+    "/auth/sign-in/magic-link": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthSignInMagicLink",
+        "summary": "Mail a link that signs this address in.",
+        "description": "Better Auth's endpoint. It answers the same whether or not the address has an account, so the answer never says which. Gated by Turnstile when it is composed, and by native app attestation in an environment with an attestation block.",
+        "responses": {
+          "200": {
+            "description": "Better Auth's own answer. See its endpoint reference.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/auth/magic-link/verify": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "getAuthMagicLinkVerify",
+        "summary": "Open a mailed link and sign its address in.",
+        "description": "Better Auth's endpoint, reached from the mail. It redirects to the link's `callbackURL` with the session, or to its `errorCallbackURL` with the refusal.",
+        "responses": {
+          "302": {
+            "description": "A redirect to the screen the link named."
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/auth/email-otp/send-verification-otp": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthEmailOtpSendVerificationOtp",
+        "summary": "Mail a one-time code that signs this address in.",
+        "description": "Better Auth's endpoint. Only `type: \"sign-in\"` sends a mail. It answers the same whether or not the address has an account, so the answer never says which. Gated by Turnstile when it is composed, and by native app attestation in an environment with an attestation block.",
+        "responses": {
+          "200": {
+            "description": "Better Auth's own answer. See its endpoint reference.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
+    "/auth/sign-in/email-otp": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postAuthSignInEmailOtp",
+        "summary": "Trade a mailed one-time code for a session.",
+        "description": "Better Auth's endpoint. A wrong or expired code is refused with its own `INVALID_OTP` or `OTP_EXPIRED`.",
+        "responses": {
+          "200": {
+            "description": "Better Auth's own answer. See its endpoint reference.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "x-pithy-verification": [
+          "public"
+        ]
+      }
+    },
     "/auth/admin/users": {
       "get": {
         "tags": [

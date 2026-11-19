@@ -39,6 +39,7 @@ import {
   inapplicablePlayIntegritySecret,
   inapplicableProviderSecrets,
 } from "./instance/secrets";
+import { SignInMethods } from "./instance/signInMethods";
 import { authErasureRecords } from "./lifecycle/erasure";
 import type { UserLifecycleHooks } from "./lifecycle/hooks";
 import type { McpHost, McpWiring } from "./mcp/host";
@@ -142,6 +143,9 @@ export const AuthConfig = z
       .describe(
         "How often, in days, the secrets manager rotates `auth-session-secret` by itself. Unset by default, so nothing rotates it unattended. The previous version keeps verifying for the session lifetime, so nobody is signed out, and is retired once the JWKS keys sealed under it are re-encrypted. Must be longer than `sessionExpiresIn`.",
       ),
+    methods: SignInMethods.prefault({}).describe(
+      "Which email sign-in methods to offer: `magicLink` and `emailOtp`, both on by default. One set to false is never composed, so its routes answer 404 and no mail is sent for it. Branch on `compositionEnvironment()` from `@pithy-sh/core/src/env/ambient` to offer email in `dev` only.",
+    ),
     verificationExpiresIn: z
       .number()
       .int()
@@ -202,7 +206,7 @@ export const AuthConfig = z
       .array(AuthPlugin)
       .default([])
       .describe(
-        "Additional Better Auth plugins to compose — `organization()`, `passkey()`, `twoFactor()`, `apiKey()`, a generic OAuth provider. Additive: they join the set the kit composes (i18n, bearer, jwt, magic-link, email-otp) and cannot replace one. Tables a plugin declares are created by `pithy migrate`; add the matching client plugin to `createAuthClient` for its typed client surface.",
+        "Additional Better Auth plugins to compose — `organization()`, `passkey()`, `twoFactor()`, `apiKey()`, a generic OAuth provider. Additive: they join the set the kit composes (i18n, bearer, jwt, and the email methods `methods` leaves on) and cannot replace one, even one `methods` switched off. Tables a plugin declares are created by `pithy migrate`; add the matching client plugin to `createAuthClient` for its typed client surface.",
       ),
   })
   .describe("Configuration for the auth capability.");
@@ -638,7 +642,7 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
     /**
      * The client-safe projection — what a sign-in screen needs and nothing more: where to call
      * (`basePath`), which buttons to render (the four provider toggles), how many OTP boxes to draw
-     * (`otpLength`), and whether to offer sign-up (`signUpEnabled`).
+     * (`otpLength`), whether to offer sign-up (`signUpEnabled`), and which email methods answer (`methods`).
      *
      * Deliberately absent: `baseURL`, `trustedOrigins`, `database`, `rateLimiterBinding`, and every
      * session/verification lifetime — a browser has no use for them and they describe the deployment.
@@ -674,6 +678,8 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
       },
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,
+      // What the Worker composed, so a screen offers only an email method that will answer.
+      methods: { magicLink: resolved.methods.magicLink, emailOtp: resolved.methods.emailOtp },
       ...attestationProjection(
         resolved.attestation,
         context.environment,

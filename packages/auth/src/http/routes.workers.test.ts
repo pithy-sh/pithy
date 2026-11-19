@@ -82,10 +82,15 @@ function appEnv(rateLimit: RateLimit = rateLimiter()): Record<string, unknown> {
   return { ...(env as unknown as Record<string, unknown>), AUTH_RATE_LIMITER: rateLimit };
 }
 
-function buildWiring(turnstile?: TurnstileLoginGate): AuthWiring {
+function buildWiring(turnstile?: TurnstileLoginGate, methods?: z.input<typeof AuthConfig>["methods"]): AuthWiring {
   const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
   return {
-    config: AuthConfig.parse({ baseURL: "http://localhost", basePath: "/auth", trustedOrigins: ["http://localhost"] }),
+    config: AuthConfig.parse({
+      baseURL: "http://localhost",
+      basePath: "/auth",
+      trustedOrigins: ["http://localhost"],
+      ...(methods ? { methods } : {}),
+    }),
     resolveGithubUserInfo: undefined,
     enqueueEmail: emailCap.enqueue,
     turnstile,
@@ -828,6 +833,60 @@ describe("auth HTTP routes", () => {
  * proving the function and never the wiring. These drive real refusals through the mounted
  * stack and read the emit seam.
  */
+describe("email sign-in methods", () => {
+  const SENDS = {
+    magicLink: ["/auth/sign-in/magic-link", { email: "m@test.com" }],
+    emailOtp: ["/auth/email-otp/send-verification-otp", { email: "m@test.com", type: "sign-in" }],
+  } as const;
+
+  async function post(app: Hono<PithyHonoEnv>, path: string, body: Record<string, string>): Promise<Response> {
+    return app.request(
+      path,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+      appEnv(),
+    );
+  }
+
+  async function mailed(): Promise<string[]> {
+    const rows = await env.DB.prepare("select template from pithy_email_jobs").all<{ template: string }>();
+    return rows.results.map((row) => row.template);
+  }
+
+  test("magicLink: false makes both magic-link routes 404, and OTP still sends", async () => {
+    const app = buildApp(buildWiring(undefined, { magicLink: false }));
+    expect((await post(app, ...SENDS.magicLink)).status).toBe(404);
+    expect((await app.request("/auth/magic-link/verify?token=anything", {}, appEnv())).status).toBe(404);
+    expect((await post(app, ...SENDS.emailOtp)).status).toBe(200);
+    expect(await mailed()).toEqual(["otp"]);
+  });
+
+  test("emailOtp: false makes both OTP routes 404, and a magic link still sends", async () => {
+    const app = buildApp(buildWiring(undefined, { emailOtp: false }));
+    expect((await post(app, ...SENDS.emailOtp)).status).toBe(404);
+    expect((await post(app, "/auth/sign-in/email-otp", { email: "m@test.com", otp: "000000" })).status).toBe(404);
+    expect((await post(app, ...SENDS.magicLink)).status).toBe(200);
+    expect(await mailed()).toEqual(["magicLink"]);
+  });
+
+  test("a method switched off answers 404 even where turnstile gates the send routes", async () => {
+    const app = buildApp(
+      buildWiring(
+        { mode: "visible", token: { field: "cf-turnstile-response" } },
+        { magicLink: false, emailOtp: false },
+      ),
+    );
+    expect((await post(app, ...SENDS.magicLink)).status).toBe(404);
+    expect((await post(app, ...SENDS.emailOtp)).status).toBe(404);
+  });
+
+  test("with both off, no sign-in mail is sent", async () => {
+    const app = buildApp(buildWiring(undefined, { magicLink: false, emailOtp: false }));
+    await post(app, ...SENDS.magicLink);
+    await post(app, ...SENDS.emailOtp);
+    expect(await mailed()).toEqual([]);
+  });
+});
+
 describe("a refused sign-in", () => {
   /** A wrong one-time code — the commonest real denial there is, and a 400 from Better Auth. */
   async function badOtp(app: Hono<PithyHonoEnv>): Promise<Response> {

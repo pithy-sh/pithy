@@ -145,7 +145,7 @@ export function pithy(options: PithyPluginOptions = {}): PithyPlugin {
   }
 
   function loadOnce(): Promise<LoadedWorkerConfig> {
-    loading ??= loadWorkerConfig(configFile)
+    loading ??= loadWorkerConfig(configFile, { environment })
       .then((loaded) => {
         // The config's transitive imports are watched too, so editing a file the config imports
         // reloads the front end just like editing the config itself.

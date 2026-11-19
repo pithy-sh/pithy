@@ -8,6 +8,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
+import { composeFor } from "../project/composeFor";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { WorkerIdentity, workerDirName, workerIdentity } from "../project/workerIdentity";
 import { canceled, EXIT } from "../terminal/exitClass";
@@ -359,6 +360,7 @@ const add = withContract(
           ...(rails === undefined ? {} : { rails }),
           ...(interactive ? { prompt: promptScreens, railPrompt: promptRail } : {}),
           deployedName: target.name,
+          composedFor: (environment) => composeFor(environment, (load) => load(target.dir)),
           dryRun,
         });
 
@@ -509,6 +511,7 @@ const sync = withContract(
                 workerDir: target.dir,
                 config: target.config,
                 deployedName: target.name,
+                composedFor: (environment) => composeFor(environment, (load) => load(target.dir)),
                 check: args.check,
                 ...(rails === undefined ? {} : { rails }),
               });

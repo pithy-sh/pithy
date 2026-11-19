@@ -19,6 +19,7 @@ const config = vi.hoisted(() => ({
   providers: {} as Record<string, boolean>,
   providerSignUp: undefined as Record<string, boolean> | undefined,
   signUpEnabled: true,
+  methods: undefined as { magicLink: boolean; emailOtp: boolean } | undefined,
   webClientId: null as string | null,
   universal: null as string | null,
 }));
@@ -35,6 +36,7 @@ vi.mock("../templates/src/pithy-config", async (importOriginal) => {
         providers: config.providers,
         providerSignUp: config.providerSignUp,
         signUpEnabled: config.signUpEnabled,
+        methods: config.methods,
       };
     },
     get googleClientIds() {
@@ -79,6 +81,7 @@ beforeEach(() => {
   config.providers = {};
   config.providerSignUp = undefined;
   config.signUpEnabled = true;
+  config.methods = undefined;
   config.webClientId = null;
   config.universal = null;
   answers = {
@@ -356,6 +359,78 @@ describe("on a phone with no universal link, email", () => {
     await open("ios");
     await press(screen.getByRole("button", { name: "Continue with GitHub" }));
     expect(await screen.findByText("GitHub didn't answer. Use a code instead.")).toBeTruthy();
+  });
+});
+
+describe("the email way follows the methods the Worker composed", () => {
+  test("on the web with no magic link, it mails a code and goes on to the code screen", async () => {
+    config.methods = { magicLink: false, emailOtp: true };
+    const { adapter } = await open("web");
+    expect(screen.queryByRole("button", { name: "Email me a link" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    await press(screen.getByRole("button", { name: "Email me a code" }));
+    await waitFor(() => expect(adapter.path()).toBe("/otp"));
+    expect(posted("/email-otp/send-verification-otp")?.body).toMatchObject({
+      email: "ada@example.com",
+      type: "sign-in",
+    });
+    expect(posted("/sign-in/magic-link")).toBeUndefined();
+  });
+
+  test("on a phone with a universal link and no code, the link is still offered", async () => {
+    config.methods = { magicLink: true, emailOtp: false };
+    config.universal = "https://app.example.com";
+    await open("ios");
+    expect(screen.getByRole("button", { name: "Email me a link" })).toBeTruthy();
+  });
+
+  test("on a phone with no universal link and no code, no email is offered", async () => {
+    config.methods = { magicLink: true, emailOtp: false };
+    config.providers = { github: true };
+    await open("android");
+    expect(screen.queryByLabelText("Email")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Email me/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue with GitHub" })).toBeTruthy();
+  });
+
+  test.each([
+    { answer: "unconfigured", text: "GitHub is not configured here." },
+    { answer: "silent", text: "GitHub didn't answer. Try again." },
+  ] as const)("neither composed, a $answer provider points at no email way", async ({ answer, text }) => {
+    config.methods = { magicLink: false, emailOtp: false };
+    config.providers = { github: true };
+    answers["/sign-in/social"] =
+      answer === "unconfigured"
+        ? { status: 200, body: { url: "https://github.com/login/oauth/authorize?state=s" } }
+        : { status: 500, body: "nope" };
+    await open("web");
+    await press(screen.getByRole("button", { name: "Continue with GitHub" }));
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  test.each([
+    { answer: "unconfigured", text: "GitHub is not configured here. Use a code instead." },
+    { answer: "silent", text: "GitHub didn't answer. Use a code instead." },
+  ] as const)("on the web with only a code, a $answer provider points at the code", async ({ answer, text }) => {
+    config.methods = { magicLink: false, emailOtp: true };
+    config.providers = { github: true };
+    answers["/sign-in/social"] =
+      answer === "unconfigured"
+        ? { status: 200, body: { url: "https://github.com/login/oauth/authorize?state=s" } }
+        : { status: 500, body: "nope" };
+    await open("web");
+    await press(screen.getByRole("button", { name: "Continue with GitHub" }));
+    expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  test("neither composed, only the providers are offered", async () => {
+    config.methods = { magicLink: false, emailOtp: false };
+    config.providers = { github: true };
+    await open("web");
+    expect(screen.queryByLabelText("Email")).toBeNull();
+    expect(screen.queryByText("or")).toBeNull();
+    expect(screen.queryByText(/No account yet/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue with GitHub" })).toBeTruthy();
   });
 });
 

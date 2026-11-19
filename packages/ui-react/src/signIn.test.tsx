@@ -19,6 +19,7 @@ import { afterEach, describe, expect, test } from "vitest";
 // neither of them the one the router matches. Renaming the screen's path broke the round trip and
 // nothing here noticed (#393).
 import { path as callbackPath } from "../templates/src/routes/pithy/callback";
+import { path as otpPath } from "../templates/src/routes/pithy/otp";
 import { type AuthProjection, type HumanityCheck, SignInScreen } from "../templates/src/routes/pithy/sign-in";
 
 /**
@@ -179,6 +180,58 @@ describe("one way in", () => {
     await submit(one<HTMLFormElement>(container, "form"));
     expect(container.textContent).toContain("Check your inbox.");
     expect(container.textContent).toContain("If that address can sign in");
+  });
+});
+
+describe("the email way follows the methods the Worker composed", () => {
+  test("no magic link, the form mails a code and goes on to the code screen", async () => {
+    const { fetch: send, calls } = recorder();
+    const went: string[] = [];
+    const container = mount(
+      <SignInScreen
+        auth={{ ...AUTH, methods: { magicLink: false, emailOtp: true } }}
+        fetch={send}
+        origin="https://app.example"
+        go={(to) => went.push(to)}
+      />,
+    );
+    expect(one(container, "button[type=submit]").textContent).toBe("Email me a code");
+
+    await fill(one<HTMLInputElement>(container, "input[type=email]"), "someone@example.com");
+    await submit(one<HTMLFormElement>(container, "form"));
+
+    expect(calls.map((call) => call.url)).toEqual(["/auth/email-otp/send-verification-otp"]);
+    expect(calls[0]?.body).toEqual({ email: "someone@example.com", type: "sign-in" });
+    expect(went).toEqual([otpPath]);
+  });
+
+  test("no code, the form still mails the link", async () => {
+    const { fetch: send, calls } = recorder();
+    const container = mount(
+      <SignInScreen
+        auth={{ ...AUTH, methods: { magicLink: true, emailOtp: false } }}
+        fetch={send}
+        origin="https://app.example"
+      />,
+    );
+    await fill(one<HTMLInputElement>(container, "input[type=email]"), "someone@example.com");
+    await submit(one<HTMLFormElement>(container, "form"));
+    expect(calls.map((call) => call.url)).toEqual(["/auth/sign-in/magic-link"]);
+  });
+
+  test("neither composed, the screen offers the providers and no email at all", () => {
+    const container = mount(
+      <SignInScreen
+        auth={{ ...AUTH, methods: { magicLink: false, emailOtp: false } }}
+        fetch={recorder().fetch}
+        origin="https://app.example"
+      />,
+    );
+    expect(all(container, "form")).toEqual([]);
+    expect(all(container, "input[type=email]")).toEqual([]);
+    expect(all(container, ".divider")).toEqual([]);
+    expect(all(container, ".auth__signup")).toEqual([]);
+    expect(all(container, ".auth__provider")).toHaveLength(2);
   });
 });
 
@@ -372,6 +425,46 @@ describe("a provider button is never a control that cannot complete", () => {
     expect(followed).toEqual([]);
     expect(one(container, ".auth__failed").textContent).toContain("didn't answer");
   });
+
+  test.each([
+    {
+      methods: { magicLink: true, emailOtp: true },
+      answer: "unconfigured",
+      text: "Google is not configured here. Use the link instead.",
+    },
+    {
+      methods: { magicLink: true, emailOtp: true },
+      answer: "silent",
+      text: "Google didn't answer. Use the link instead.",
+    },
+    {
+      methods: { magicLink: false, emailOtp: true },
+      answer: "unconfigured",
+      text: "Google is not configured here. Use a code instead.",
+    },
+    {
+      methods: { magicLink: false, emailOtp: true },
+      answer: "silent",
+      text: "Google didn't answer. Use a code instead.",
+    },
+    { methods: { magicLink: false, emailOtp: false }, answer: "unconfigured", text: "Google is not configured here." },
+    { methods: { magicLink: false, emailOtp: false }, answer: "silent", text: "Google didn't answer. Try again." },
+  ] as const)(
+    "the refusal points only at an email way the screen offers: $methods, $answer",
+    async ({ methods, answer, text }) => {
+      const { fetch: send } = recorder({
+        "/auth/sign-in/social": () =>
+          answer === "unconfigured"
+            ? Response.json({ url: "https://accounts.google.com/o/oauth2/auth?client_id=" })
+            : new Response("nope", { status: 500 }),
+      });
+      const container = mount(
+        <SignInScreen auth={{ ...AUTH, methods }} fetch={send} origin="https://app.example" redirect={() => {}} />,
+      );
+      await click(all(container, ".auth__provider")[0] as Element);
+      expect(one(container, ".auth__failed").textContent).toBe(text);
+    },
+  );
 
   test("a javascript: URL is never handed to the navigator", async () => {
     const followed: string[] = [];

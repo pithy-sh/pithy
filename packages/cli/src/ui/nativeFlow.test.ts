@@ -573,6 +573,37 @@ describe("pithy ui sync --app", () => {
     expect(config.universalLinkOrigin).toBe("https://links.acme.dev");
   });
 
+  test("each environment's projection comes from the config as evaluated for that environment", async () => {
+    // A config computing `methods` from `compositionEnvironment()` is a different composition in each environment.
+    const email = (on: boolean): WorkerConfig => ({
+      capabilities: [projecting("auth", { methods: { magicLink: on, emailOtp: on } })],
+    });
+    await runUiAdd({ ...options(BARE), composedFor: async (environment) => email(environment === "dev") });
+    expect((await generated()).auth).toMatchObject({
+      dev: { methods: { magicLink: true, emailOtp: true } },
+      staging: { methods: { magicLink: false, emailOtp: false } },
+      prod: { methods: { magicLink: false, emailOtp: false } },
+    });
+
+    const asked: string[] = [];
+    await runNativeUiSync({
+      projectDir,
+      appDir,
+      workerDir,
+      config: email(true),
+      deployedName: DEPLOYED,
+      composedFor: async (environment) => {
+        asked.push(environment);
+        return email(environment === "prod");
+      },
+    });
+    expect(asked).toEqual(["dev", "staging", "prod"]);
+    expect((await generated()).auth).toMatchObject({
+      dev: { methods: { magicLink: false, emailOtp: false } },
+      prod: { methods: { magicLink: true, emailOtp: true } },
+    });
+  });
+
   test("--worker points the app at another worker, and its manifest remembers it", async () => {
     await runUiAdd(options(BARE));
     const otherDir = join(projectDir, "apps", "edge");

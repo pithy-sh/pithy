@@ -23,7 +23,13 @@ import { pathExists, WORKER_NAME } from "../project/scaffold";
 import { workerDirName } from "../project/workerIdentity";
 import type { UiAddOptions, UiAddReport, UiSyncReport } from "./flow";
 import { importedKitPackages, kitRangesFor } from "./kitRanges";
-import { buildGeneratedConfig, generatedConfigFile, originsFor } from "./nativeConfig";
+import {
+  buildGeneratedConfig,
+  compositionsFor,
+  generatedConfigFile,
+  originsFor,
+  projectedEnvironments,
+} from "./nativeConfig";
 import { backendRails, type RailPlatform, resolveRails, type UiRailPrompt } from "./rails";
 import { SCREEN_TESTS } from "./reactNative";
 import { rootLeavesApp, screenTestsRemedy } from "./rootRunner";
@@ -154,6 +160,15 @@ function withoutScreenTests(stub: UiStub): Pick<UiStub, "devDependencies" | "scr
   return { devDependencies, scripts };
 }
 
+/** Each projected environment's own composition, when the caller can evaluate the Worker's config per environment. */
+async function perEnvironment(
+  origins: Parameters<typeof projectedEnvironments>[0],
+  composedFor: UiAddOptions["composedFor"],
+): Promise<{ compositions?: Awaited<ReturnType<typeof compositionsFor>> }> {
+  if (composedFor === undefined) return {};
+  return { compositions: await compositionsFor(projectedEnvironments(origins), composedFor) };
+}
+
 /** Every file a native add may create or edit, absolute — what a failure has to put back. */
 function touchedPaths(appDir: string, planned: Record<string, string>): string[] {
   return [
@@ -195,16 +210,18 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
   // arrive, so the screen tests wait until it leaves the app to the app's own runner.
   const screenTests = await rootLeavesApp(options.projectDir, app);
   if (!screenTests) for (const rel of Object.keys(files)) if (SCREEN_TESTS.isFile(rel)) delete files[rel];
+  const origins = await originsFor({
+    projectDir: options.projectDir,
+    workerDir: options.workerDir,
+    config: options.config,
+    deployedName: options.deployedName,
+    environments: options.environments,
+  });
   const built = buildGeneratedConfig({
     config: options.config,
+    ...(await perEnvironment(origins, options.composedFor)),
     app,
-    origins: await originsFor({
-      projectDir: options.projectDir,
-      workerDir: options.workerDir,
-      config: options.config,
-      deployedName: options.deployedName,
-      environments: options.environments,
-    }),
+    origins,
     rails,
   });
   const generated = { ...keepAdopterChoices(current.previous, built), rails };
@@ -329,6 +346,8 @@ export async function runNativeUiSync(
     config: UiAddOptions["config"];
     /** The backend Worker's deployed name, which `.dev.config.json` keys its pinned origin by. */
     deployedName?: string;
+    /** The backend Worker's config as evaluated for one environment. See {@link UiAddOptions.composedFor}. */
+    composedFor?: UiAddOptions["composedFor"];
     /** Report the drift and write nothing. */
     check?: boolean;
   } & Pick<RailChoices, "rails">,
@@ -344,15 +363,17 @@ export async function runNativeUiSync(
     scope: { projectDir: options.projectDir, workerDir: options.workerDir, worker },
     ...(previous === null ? {} : { kept: previous.rails }),
   });
+  const origins = await originsFor({
+    projectDir: options.projectDir,
+    workerDir: options.workerDir,
+    config: options.config,
+    deployedName: options.deployedName,
+  });
   const next = buildGeneratedConfig({
     config: options.config,
+    ...(await perEnvironment(origins, options.composedFor)),
     app,
-    origins: await originsFor({
-      projectDir: options.projectDir,
-      workerDir: options.workerDir,
-      config: options.config,
-      deployedName: options.deployedName,
-    }),
+    origins,
     rails,
   });
   const rendered = renderGeneratedConfig({ ...keepAdopterChoices(previous, next), rails }, worker);
