@@ -31,6 +31,8 @@ import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 import { assertToolDeclarations } from "./mcp/tools";
+import { type ModerationConfig, resolveModeration } from "./moderation/config";
+import { guardModerator } from "./moderation/moderator";
 import type { RouteGroup } from "./openapi/document";
 import { recordRouteGroups } from "./openapi/routeGroups";
 import { registerPresenceRoutes } from "./presence/http/routes";
@@ -79,6 +81,12 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    * parse, or overrides an activity nothing declares, refuses to deploy. See `processing/activity.ts`.
    */
   processing?: unknown;
+  /**
+   * How this Worker checks text one person writes and others see — the `moderation` block of the Worker's
+   * `pithy.config.ts`, read through `c.var.moderator`. Absent, the seam checks the blocklist the kit ships. Parsed
+   * here, at assembly, so a block that does not parse refuses to deploy. See `moderation/config.ts`.
+   */
+  moderation?: ModerationConfig;
 }
 
 /** The Hono env `createBackend` returns — `db`/`kv`/`workflows` typed precisely from the merged capabilities. */
@@ -199,6 +207,8 @@ export function createBackend<
   // The seam's behavior with no i18n capability composed — the baked English, no negotiation, no merge.
   // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does.
   const defaultTranslator = bakedTranslator(catalogFor(messages, DEFAULT_LOCALE));
+  // The moderator before its guard. The guard is bound per request, so a failure logs with that request.
+  const moderation = resolveModeration(options.moderation);
   const namespaces = composeKv(all);
   // An encrypted field in a KV store is refused here, at boot: a KV envelope cannot be found by key version,
   // so it could never be rotated. The refusal names the store, the field and D1.
@@ -298,6 +308,10 @@ export function createBackend<
           version: versionOf(env),
         }),
       );
+    }
+    // Zero-config like `t`: a real moderator is always present, so no caller null-checks one.
+    if (c.get("moderator") === undefined) {
+      c.set("moderator", guardModerator(moderation.moderator, { timeoutMs: moderation.timeoutMs, log: c.var.log }));
     }
     if (c.get("db") === undefined) c.set("db", buildDbRegistry(env, databases));
     if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces, c.var.log));

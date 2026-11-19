@@ -26,6 +26,7 @@ import type { Translator } from "../i18n/translator";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import { declareRetained } from "../migrations/retainedDeclaration";
+import type { TextModerator } from "../moderation/moderator";
 import { presenceRoomsSocket } from "../presence/channel";
 import {
   assertPresenceDeclaration,
@@ -85,6 +86,14 @@ export interface PithyVars {
    * byte for byte as it did before.
    */
   t: Translator;
+  /**
+   * The text-moderation seam (`c.var.moderator`) — check text one person writes and others see before showing it.
+   *
+   * **Zero-config, so nothing null-checks it**, like {@link PithyVars.t}. With no `moderation` config it checks
+   * the folded blocklist the kit ships; config extends the list or replaces the moderator. It answers `allow`,
+   * `reject` or `review`, and a moderator that throws or runs out of time is `review`, never `allow`.
+   */
+  moderator: TextModerator;
   /**
    * The verified control-plane caller (`c.var.controlPlane`), populated only by the `control-plane`
    * middleware; `null` on every other request. Read through `requireControlPlane(scope)`.

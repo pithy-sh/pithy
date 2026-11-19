@@ -98,6 +98,7 @@ To build *with* Pithy, use [pithy.sh/docs](https://pithy.sh/docs/start-here/intr
 - [`docs/NAMING.md`](docs/NAMING.md): how every provisioned resource is named, and every limit.
 - [`docs/UI.md`](docs/UI.md): front ends and the one-origin model.
 - [`docs/I18N.md`](docs/I18N.md): the translator seam, catalog keys, and what stays English.
+- [`docs/MODERATION.md`](docs/MODERATION.md): the moderation seam, the shipped blocklist, and plugging in a classifier.
 - [`docs/SOCKETS.md`](docs/SOCKETS.md): socket frames, subprotocol versions, and how a frame may change.
 - [`docs/STACK.md`](docs/STACK.md): the toolchain.
 - [`docs/BRAND.md`](docs/BRAND.md): identity and voice.
