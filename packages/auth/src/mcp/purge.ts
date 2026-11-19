@@ -4,7 +4,7 @@
 import type { PurgeContext } from "@pithy-sh/core/src/capability/purge";
 import { authDatabase } from "../data/tables";
 import { bindingOf, pluginRows, prepared, untyped } from "../purge/contribution";
-import { MCP_MODEL_NAMES } from "./provider";
+import { MCP_MODEL_NAMES } from "./names";
 
 /**
  * What erasing and exporting a person means for the provider's tables.

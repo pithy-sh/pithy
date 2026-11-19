@@ -3,7 +3,7 @@
 
 import { controlPlaneToolName } from "@pithy-sh/core/src/controlPlane/discovery/toolName";
 import { describe, expect, test } from "vitest";
-import { kitComposition } from "../openapi/kitDocument";
+import { kitCapabilities } from "../openapi/kitDocument";
 
 /**
  * **Every kit admin route's operation, as published (`docs/AGENT-ACCESS.md` §5).**
@@ -208,7 +208,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
 
 /** The kit's composed admin surface, as each capability declares it. */
 function declared(): { capability: string; method: string; path: string; operation: string | undefined }[] {
-  return kitComposition().capabilities.flatMap((capability) =>
+  return kitCapabilities().flatMap((capability) =>
     (capability.adminRoutes ?? []).map((route) => ({
       capability: capability.name,
       method: route.method,

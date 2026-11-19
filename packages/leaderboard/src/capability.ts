@@ -3,10 +3,9 @@
 
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { scopeGatesOf } from "@pithy-sh/core/src/http/scopeGates";
 import { LeaderboardConfig, type LeaderboardConfigInput, materializeSchedule } from "./config/config";
 import { leaderboardTables } from "./data/tables";
-import { registerLeaderboardRoutes } from "./http/routes";
+import { leaderboardRouteTable, leaderboardScopeGates } from "./http/routeTable";
 import { leaderboardAdminRoutes } from "./http/scopes";
 import { LEADERBOARD_MIGRATIONS } from "./migrations/all";
 import { type LeaderboardPeer, leaderboardPeer } from "./peer";
@@ -63,7 +62,6 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
   // Resolved once, here, and handed to both the router and the manifest, so the advertised admin paths
   // and the mounted ones cannot disagree about where anything is.
   const mountPath = basePath ?? "/leaderboard";
-  const routes = registerLeaderboardRoutes({ config: resolved, basePath: mountPath });
   const capability = defineCapability({
     name: "leaderboard",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -82,12 +80,15 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
         migrations: LEADERBOARD_MIGRATIONS,
       },
     },
-    routes,
+    routes: {
+      declared: leaderboardRouteTable(mountPath),
+      load: async () =>
+        (await import("./http/routes")).registerLeaderboardRoutes({ config: resolved, basePath: mountPath }),
+    },
     // The management surface a client composes its calls from, with the mount path actually used.
     adminRoutes: leaderboardAdminRoutes(mountPath),
-    // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
-    // this config mounted — a gate the config switched off is not here.
-    scopeGates: scopeGatesOf(routes),
+    // The routes this config gates on a scope, so `pithy doctor` names exactly the gates it mounted.
+    scopeGates: leaderboardScopeGates(mountPath, resolved),
     seeds: [leaderboardExampleSeed],
     // A person's entries: exported on an access request and erased by their purge, as its own step in the adopter's
     // Worker.

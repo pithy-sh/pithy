@@ -12,8 +12,9 @@ import { ConsentConfig, type ConsentConfigInput } from "./config/config";
 import { consentDatabase, consentRetainedTables, consentTables } from "./data/tables";
 import { CONSENT_EVIDENCE_BINDING } from "./evidence/evidence";
 import { mergeOnSignIn } from "./http/merge";
-import { type ConsentRoutesOptions, registerConsentRoutes } from "./http/routes";
+import { consentRouteTable } from "./http/routeTable";
 import { consentAdminRoutes } from "./http/scopes";
+import type { ConsentRoutesOptions } from "./http/store";
 import { consent_0001_init } from "./migrations/0001_init";
 import { CONSENT_PROCESSING } from "./processing/activities";
 import { CONSENT_MESSAGES, consentUserPurge } from "./purge/contribution";
@@ -135,7 +136,10 @@ export function consent(config: ConsentConfigInput = {}): ConsentCapability {
     // What a browser may know: where the routes mount, so a screen follows a custom `basePath`.
     client: (): ConsentClientProjection => ({ enabled: true, basePath: resolved.basePath }),
     middleware: [mergeOnSignIn(options)],
-    routes: registerConsentRoutes(options),
+    routes: {
+      declared: consentRouteTable(resolved.basePath),
+      load: async () => (await import("./http/routes")).registerConsentRoutes(options),
+    },
     adminRoutes: consentAdminRoutes(resolved.basePath),
     // The record is the proof processing was allowed and that it stopped: kept through a purge, with its basis, and
     // exported on an access request.

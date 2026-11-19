@@ -245,18 +245,13 @@ const app = defineCapability({
   name: "${workerNamespace(name)}",
   // Bindings this Worker's own routes need beyond what capabilities declare.
   requiredBindings: [],
-  // Mount your routes here. Every route declares how callers are verified and
-  // what it returns, with \`describeRoute\`. The OpenAPI contract reads it.
-  // routes: (a) => {
-  //   a.get(
-  //     "/hello",
-  //     describeRoute({
-  //       summary: "Say hi.",
-  //       verification: "public",
-  //       responses: { 200: { description: "A greeting.", contentType: "text/plain" } },
-  //     }),
-  //     (c) => c.text("Hi."),
-  //   );
+  // Your routes: every method and path, declared, and a loader for the module
+  // that mounts them, imported on the first request that reaches one. Every
+  // route declares how callers are verified and what it returns, with
+  // \`describeRoute\`. The OpenAPI contract reads it.
+  // routes: {
+  //   declared: [{ method: "GET", path: "/hello" }],
+  //   load: async () => (await import("./src/routes")).mountRoutes,
   // },
 });
 

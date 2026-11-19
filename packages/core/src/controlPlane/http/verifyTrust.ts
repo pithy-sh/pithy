@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { WebhookUnverifiedError } from "../../error/pithyError";
-import { type JwksCache, type OidcJwksFetch, verifyOidcToken } from "../../http/oidcWebhook";
+import type { JwksCache } from "../../http/jwksCache";
+import { type OidcJwksFetch, verifyOidcToken } from "../../http/oidcWebhook";
 import { ControlPlaneContext } from "../context";
 import type { ControlPlaneConnection } from "../data/connection";
 import { claimsMatch, findVerifyingTrust, observedClaims } from "../data/oidcTrust";

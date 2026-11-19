@@ -59,7 +59,7 @@ export interface EvidenceSources {
   /** The field key's retirement guard. Never throws. */
   retirement: (env: Record<string, unknown>) => Promise<RetirementVerdict>;
   /** The route table `createBackend` recorded, or `undefined` for an app it did not assemble. */
-  routeGroups: () => readonly RouteGroup[] | undefined;
+  routeGroups: () => Promise<readonly RouteGroup[] | undefined>;
   /** The app database for this request. */
   database: (c: Context<PithyHonoEnv>) => ControlPlaneDatabase;
   /** The clock. */
@@ -141,7 +141,7 @@ export async function readEvidencePack(
 ): Promise<ControlPlaneEvidenceResponse> {
   const env = c.env as Record<string, unknown>;
   const now = sources.now();
-  const groups = sources.routeGroups();
+  const groups = await sources.routeGroups();
   const operations = groups === undefined ? undefined : describedOperations(groups);
   const migrationsGranted = context.grantedScopes.includes(MIGRATIONS_READ_SCOPE);
 

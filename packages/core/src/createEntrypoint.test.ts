@@ -7,6 +7,7 @@ import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
 import { createEntrypoint } from "./createEntrypoint";
 import { PithyError } from "./error/pithyError";
+import { routesOf } from "./http/lazyRoutes";
 import { SERVICE_ORIGINS_VAR } from "./worker/serviceLoopback";
 
 /** A minimal stand-in for a `ForwardableEmailMessage` — enough to exercise the fan-out + raw replay. */
@@ -49,12 +50,12 @@ describe("createEntrypoint", () => {
       const app = defineCapability({
         name: "appa",
         requiredBindings: [{ type: "service", name: "APP_B", service: "app-b" }],
-        routes: (a) => {
+        routes: routesOf((a) => {
           a.get("/call", async (c) => {
             const service = (c.env as { APP_B: { fetch: (input: string) => Promise<Response> } }).APP_B;
             return c.text(await (await service.fetch("https://app-b/hello")).text());
           });
-        },
+        }),
       });
       const entry = createEntrypoint({ capabilities: [], app });
       const env = { ENVIRONMENT: "dev", [SERVICE_ORIGINS_VAR]: JSON.stringify({ APP_B: "http://localhost:8790" }) };

@@ -27,7 +27,7 @@ import { operationCount, renderDocument } from "./workerContract";
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..");
 
-const composed = kitComposition();
+const composed = await kitComposition();
 const groups = composed.groups;
 const document = kitDocument(groups);
 const sockets = kitSocketDocument(kitSocketGroups(composed.capabilities));

@@ -24,6 +24,7 @@ import { dedupScope, type HashStore } from "../record/hashStore";
 import type { MediaRecord, RecordPage, RecordStore } from "../record/store";
 import { backendForType } from "../storage/backend";
 import type { MediaStorage } from "../storage/storage";
+import { MEDIA_MANAGE_POWER } from "./routeTable";
 import type {
   CreateMediaInput,
   DeliveryUrlQuery,
@@ -59,9 +60,6 @@ import type {
  * the schema cannot express: the R2 size rule, the visibility policy, and `validateRecord`, which
  * validates the *assembled* record against the effective (adopter-extended) schema.
  */
-
-/** The power a role holds to edit, delete and re-scope any record in its own organization. */
-export const MEDIA_MANAGE_POWER = "media:manage";
 
 /** The capability's name, as the permission hook sees it. */
 const CAPABILITY = "media";

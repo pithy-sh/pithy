@@ -4,6 +4,7 @@
 import { type ClientDiscovery, oauthProvider } from "@better-auth/oauth-provider";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
+import { MCP_MODEL_NAMES, MCP_SCOPE, MCP_SCOPES } from "./names";
 
 /**
  * The authorization server the MCP capability composes into the auth instance (`docs/AGENT-ACCESS.md` §4).
@@ -33,26 +34,6 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
  * to be shown nothing (`prompt=none`) is refused with `consent_required` before the provider runs, because the
  * provider would answer it with a code whenever a consent is on record.
  */
-
-/** The one OAuth scope this server issues. A constant, not a vocabulary. */
-export const MCP_SCOPE = "mcp";
-
-/** The scopes a client may request: {@link MCP_SCOPE}, and `offline_access` for a refresh token. */
-export const MCP_SCOPES = [MCP_SCOPE, "offline_access"] as const;
-
-/**
- * The provider's tables, under this capability's prefix. Better Auth names a plugin's tables after its models;
- * every table this kit provides is `pithy_<capability>_<table>`, so each one is renamed here, once.
- */
-export const MCP_MODEL_NAMES = {
-  oauthClient: "pithyMcpClients",
-  oauthResource: "pithyMcpResources",
-  oauthClientResource: "pithyMcpClientResources",
-  oauthRefreshToken: "pithyMcpRefreshTokens",
-  oauthAccessToken: "pithyMcpAccessTokens",
-  oauthConsent: "pithyMcpConsents",
-  oauthClientAssertion: "pithyMcpClientAssertions",
-} as const;
 
 /** The plugin id of the kit's consent-every-time hook. */
 export const MCP_CONSENT_PLUGIN_ID = "pithy-mcp-consent";

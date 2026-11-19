@@ -4,11 +4,11 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { EncryptionConfig } from "@pithy-sh/core/src/crypto/envelope";
+import { adminRouteTable } from "@pithy-sh/core/src/http/lazyRoutes";
 import { secretsHealth } from "./admin/health";
 import { secretsRetainedTables, secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
-import { secretsAdminRoutes } from "./http/guards";
-import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
+import { SECRETS_DEFAULT_BASE_PATH, secretsAdminRoutes } from "./http/guards";
 import { SECRETS_RUNTIME_PERMISSIONS } from "./manager/managerRegistry";
 import { secretsMigrations } from "./migrations/secretsMigrations";
 import { supersededManagerToken } from "./provision/supersededToken";
@@ -209,7 +209,14 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         retained: secretsRetainedTables,
       },
     },
-    routes: registerSecretsRoutes({ registry: () => reported.current, basePath: mountPath }),
+    routes: {
+      declared: adminRouteTable(secretsAdminRoutes(mountPath)),
+      load: async () =>
+        (await import("./http/routes")).registerSecretsRoutes({
+          registry: () => reported.current,
+          basePath: mountPath,
+        }),
+    },
     // Built from the resolved mount path, never the default: an adopter who mounts this at `/vault` gets
     // a manifest naming `/vault/admin/status`, which is what a management client composes its calls from.
     adminRoutes: secretsAdminRoutes(mountPath),

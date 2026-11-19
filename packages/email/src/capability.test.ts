@@ -25,7 +25,7 @@ describe("email capability", () => {
     expect(Object.keys(cap.databases?.app?.tables ?? {})).toEqual(["pithyEmailJobs", "pithyEmailEvents"]);
     expect(cap.databases?.emailSuppressions).toMatchObject({ binding: "EMAIL_SUPPRESSIONS" });
     expect(Object.keys(cap.databases?.emailSuppressions?.tables ?? {})).toEqual(["pithyEmailSuppressions"]);
-    expect(typeof cap.routes).toBe("function");
+    expect(typeof cap.routes?.load).toBe("function");
     expect(typeof cap.email).toBe("function");
   });
 

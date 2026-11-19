@@ -6,12 +6,27 @@ import { ValidationError } from "../error/pithyError";
 import { type LocaleCatalogs, type MessageCatalog, messageDomain } from "./catalog";
 import { DEFAULT_LOCALE } from "./translator";
 
-/** One capability's contribution, kept beside the capability that made it so a refusal can name it. */
-interface Contribution {
-  /** The contributing capability's `name` — the only domain it may write keys under. */
-  readonly capability: string;
-  /** That capability's catalogs, keyed by locale. */
-  readonly catalogs: LocaleCatalogs;
+/**
+ * Refuse a message key a capability contributes outside its own domain.
+ *
+ * Only the keys are read, so it is cheap enough to run at assembly, where a refusal stops the Worker from
+ * starting and so refuses the deploy. The merge itself, {@link composeMessages}, waits for the first message
+ * rendered, and runs this again first.
+ */
+export function assertMessageDomains(capabilities: readonly Capability[]): void {
+  for (const capability of capabilities) {
+    for (const [locale, catalog] of Object.entries(capability.messages ?? {})) {
+      for (const key of Object.keys(catalog)) {
+        const domain = messageDomain(key);
+        if (domain === capability.name) continue;
+        throw new ValidationError({
+          message: "A capability may only contribute messages under its own domain.",
+          action: `Rename \`${key}\` to start with \`${capability.name}/\`, or move it to the capability that owns that domain.`,
+          detail: `\`${capability.name}\` contributed \`${key}\` in locale \`${locale}\`, whose domain is \`${domain}\`.`,
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -29,10 +44,7 @@ interface Contribution {
  * happen between two capabilities sharing a name, which `createBackend` already refuses.
  */
 export function composeMessages(capabilities: readonly Capability[]): LocaleCatalogs {
-  const contributions: Contribution[] = [];
-  for (const capability of capabilities) {
-    if (capability.messages) contributions.push({ capability: capability.name, catalogs: capability.messages });
-  }
+  assertMessageDomains(capabilities);
   // **Accumulated in a `Map`, not in an object literal, and that is not a style preference.**
   //
   // `Object.entries` really does hand back an own `__proto__` key — `JSON.parse('{"__proto__":{}}')`
@@ -47,20 +59,10 @@ export function composeMessages(capabilities: readonly Capability[]): LocaleCata
   // fix rather than a vulnerability — but the rest of this merge path is hardened and a lone exception
   // is the one somebody copies.
   const merged = new Map<string, Map<string, string>>();
-  for (const { capability, catalogs } of contributions) {
-    for (const [locale, catalog] of Object.entries(catalogs)) {
+  for (const capability of capabilities) {
+    for (const [locale, catalog] of Object.entries(capability.messages ?? {})) {
       const target = merged.get(locale) ?? new Map<string, string>();
-      for (const [key, message] of Object.entries(catalog)) {
-        const domain = messageDomain(key);
-        if (domain !== capability) {
-          throw new ValidationError({
-            message: "A capability may only contribute messages under its own domain.",
-            action: `Rename \`${key}\` to start with \`${capability}/\`, or move it to the capability that owns that domain.`,
-            detail: `\`${capability}\` contributed \`${key}\` in locale \`${locale}\`, whose domain is \`${domain}\`.`,
-          });
-        }
-        target.set(key, message);
-      }
+      for (const [key, message] of Object.entries(catalog)) target.set(key, message);
       merged.set(locale, target);
     }
   }

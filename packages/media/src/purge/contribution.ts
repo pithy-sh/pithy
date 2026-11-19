@@ -16,7 +16,7 @@ import {
   mediaDatabase,
   mediaHashDatabase,
 } from "../data/tables";
-import { resolveStorage, type StorageEnv } from "../storage/resolve";
+import type { StorageEnv } from "../storage/resolve";
 import type { MediaStorage } from "../storage/storage";
 
 /**
@@ -113,9 +113,12 @@ async function eraseHeld(
   }
 }
 
-/** The Worker's own storage seam, from its env, for a resolved config. */
+/**
+ * The Worker's own storage seam, from its env, for a resolved config. Imported when a purge first runs: it
+ * carries the Cloudflare client, which nothing at Worker startup needs.
+ */
 function workerStorage(config: MediaConfig): (env: Record<string, unknown>) => Promise<MediaStorage> {
-  return (env) => resolveStorage(env as unknown as StorageEnv, config);
+  return async (env) => (await import("../storage/resolve")).resolveStorage(env as unknown as StorageEnv, config);
 }
 
 /**

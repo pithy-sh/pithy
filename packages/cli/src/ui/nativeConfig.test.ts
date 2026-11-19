@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { auth } from "@pithy-sh/auth/src/capability";
 import { consent } from "@pithy-sh/consent/src/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { email } from "@pithy-sh/email/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
@@ -208,17 +209,17 @@ describe("buildGeneratedConfig", () => {
     const organization = defineCapability({
       name: "organization",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/teams/:id", (c) => c.json({}));
         app.post("/teams", (c) => c.json({}));
-      },
+      }),
     });
     const consent = defineCapability({
       name: "consent",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/privacy/purposes", (c) => c.json({}));
-      },
+      }),
     });
     const config = buildGeneratedConfig({
       config: { capabilities: [organization, consent] },

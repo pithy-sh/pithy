@@ -28,7 +28,7 @@ import {
 import { renderDocument } from "./workerContract";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-const { capabilities, groups } = kitComposition();
+const { capabilities, groups } = await kitComposition();
 const documents = [
   { file: KIT_CONTRACT_PATH, expected: renderDocument(kitDocument(groups)) },
   { file: KIT_SOCKET_CONTRACT_PATH, expected: renderDocument(kitSocketDocument(kitSocketGroups(capabilities))) },

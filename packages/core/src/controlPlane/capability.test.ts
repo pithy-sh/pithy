@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import { CapabilityManifest } from "../capability/manifest";
+import { mountRoutes } from "../http/lazyRoutes";
 import {
   CONTROL_PLANE_KV_BINDING,
   CONTROLPLANE_MIGRATION_ORDER,
@@ -39,9 +40,9 @@ function composedBindings(capability: Capability): string[] {
 }
 
 /** Every `<METHOD> <path>` this capability registers, deduped — `app.routes` holds one entry per handler. */
-function registeredRoutes(capability: Capability): string[] {
+async function registeredRoutes(capability: Capability): Promise<string[]> {
   const app = new Hono<PithyHonoEnv>();
-  capability.routes?.(app);
+  await mountRoutes(capability.routes, app);
   return [...new Set(app.routes.map((route) => `${route.method} ${route.path}`))].sort();
 }
 
@@ -66,8 +67,8 @@ describe("controlplane capability", () => {
     expect(controlplane({ maxKeys: 4 }).controlPlaneConfig.maxKeys).toBe(4);
   });
 
-  test("a custom basePath moves every route, not some of them", () => {
-    expect(registeredRoutes(controlplane({ basePath: "/admin/cp" }))).toEqual([
+  test("a custom basePath moves every route, not some of them", async () => {
+    expect(await registeredRoutes(controlplane({ basePath: "/admin/cp" }))).toEqual([
       "GET /admin/cp/connections",
       "GET /admin/cp/erasure",
       "GET /admin/cp/erasure/:subjectType/:subjectId",
@@ -89,8 +90,8 @@ describe("controlplane capability", () => {
     ]);
   });
 
-  test("registers exactly the eighteen seam routes", () => {
-    expect(registeredRoutes(controlplane())).toEqual([
+  test("registers exactly the eighteen seam routes", async () => {
+    expect(await registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/connections",
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",

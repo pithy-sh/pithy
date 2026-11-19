@@ -64,7 +64,7 @@ function isLimiter(value: unknown): value is Limiter {
 /**
  * Count this request against the route's limit, and refuse it with `rate_limit/exceeded` (429) past the limit.
  *
- * A `user` limit with nobody signed in counts nothing and lets the request on: the composition refuses a `user` limit
+ * A `user` limit with nobody signed in counts nothing and lets the request on: the routes refuse to load with a `user` limit
  * on a route that admits anyone but a `bearer` or `session` caller, so the guard below refuses it, and with the
  * answer auth chose, such as `auth/account_suspended` for a suspended account rather than a bare 401.
  */

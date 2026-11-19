@@ -43,6 +43,7 @@ import {
   RoomCreated,
   RoomJoined,
 } from "./responses";
+import { MATCHMAKING_DEFAULT_BASE_PATH } from "./routeTable";
 import {
   AdminInvitesQuery,
   AdminModeration,
@@ -99,12 +100,6 @@ export interface MatchmakingRoutesOptions {
    */
   peers?: () => MatchmakingPeers;
 }
-
-/**
- * Where matchmaking mounts when an adopter names nothing. Exported because the router and the manifest's
- * `matchmakingAdminRoutes` must agree on it, or a management client composing calls from the manifest 404s.
- */
-export const MATCHMAKING_DEFAULT_BASE_PATH = "/matchmaking";
 
 export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? MATCHMAKING_DEFAULT_BASE_PATH;

@@ -11,6 +11,7 @@ import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import "../algorithm/builtins";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { rating } from "../capability";
 import { RatingConfig, type RatingConfigInput, validateRatingGames } from "../config/config";
 import { registerRatingRoutes } from "./routes";
@@ -158,17 +159,17 @@ describe("the management surface", () => {
     }
   });
 
-  test("every advertised admin route is mounted, and every mounted one is advertised", () => {
+  test("every advertised admin route is mounted, and every mounted one is advertised", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("the advertised paths follow a moved basePath", () => {
+  test("the advertised paths follow a moved basePath", async () => {
     const moved = rating({ ...CONFIG, basePath: "/skill" });
     const app = new Hono<PithyHonoEnv>();
-    moved.routes?.(app);
+    await mountRoutes(moved.routes, app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [moved as unknown as Capability])).toEqual([]);
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/skill/admin/")).toBe(true);
   });

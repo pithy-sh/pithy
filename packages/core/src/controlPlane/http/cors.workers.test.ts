@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { routesOf } from "../../http/lazyRoutes";
 import { controlplane } from "../capability";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
@@ -50,18 +51,18 @@ const inventory = defineCapability({
       summary: "Every pending thing.",
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 /** The adopter's own API. Not an admin surface, and the kit does not decide its CORS. */
 const adopterApp = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/api/things", (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 const backend = createBackend({ capabilities: [controlplane(), inventory], app: adopterApp });

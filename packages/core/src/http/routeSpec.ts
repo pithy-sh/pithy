@@ -107,8 +107,8 @@ export interface RouteSpec {
   readonly tool?: RouteTool;
   /**
    * How often each caller may reach this route. **Declaring it installs the gate**, after the power gate: past the
-   * limit a request answers `rate_limit/exceeded` (429). `key: "user"` counts each signed-in user and is refused at
-   * composition on a route that admits anyone else; `key: "ip"` counts each client address. `pithy worker sync`
+   * limit a request answers `rate_limit/exceeded` (429). `key: "user"` counts each signed-in user and is refused when
+   * the route table is read, or the routes load, on a route that admits anyone else; `key: "ip"` counts each client address. `pithy worker sync`
    * writes the binding that enforces it. See {@link RouteRateLimit}.
    */
   readonly rateLimit?: RouteRateLimit;

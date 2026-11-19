@@ -3,7 +3,7 @@
 
 import { type AppTool, mayCall, type ToolCaller } from "@pithy-sh/core/src/mcp/tools";
 import type { ConsentCapability, ConsentScope, ConsentView } from "./http/responses";
-import { MCP_SCOPES } from "./provider";
+import { MCP_SCOPES } from "./names";
 
 /**
  * What the consent screen shows, built from the tools and the signer (`docs/AGENT-ACCESS.md` §4.3).

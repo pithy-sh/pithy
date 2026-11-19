@@ -5,9 +5,9 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
 import type { Context } from "hono";
 import type { AuthWiring } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { requestRuntime } from "../hooks/runtime";
-import { resolveDb } from "../http/resolve";
 import type { LifecycleAuditContext, LifecycleDeps } from "./transitions";
 
 /**

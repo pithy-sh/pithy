@@ -38,7 +38,7 @@ describe("storage capability", () => {
 
   test("mounts routes and contributes the example seed", () => {
     const capability = storage();
-    expect(typeof capability.routes).toBe("function");
+    expect(typeof capability.routes?.load).toBe("function");
     expect(capability.seeds?.map((set) => set.name)).toEqual(["example"]);
   });
 

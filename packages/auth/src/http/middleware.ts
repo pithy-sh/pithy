@@ -7,13 +7,14 @@ import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AuthWiring, ScopeResolver, ScopeResolverSession } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import type { AuthInstance } from "../instance/auth";
 import { lifecycleRefusalFor, noteRefusal, noticedRefusal, suspendedHolder } from "../lifecycle/enforce";
 import { LifecycleColumns } from "../lifecycle/state";
 import { dispatchedAuth } from "../mcp/dispatch";
 import { withResignedCredentials } from "./credentialResign";
-import { getAuthInstance, resolveDb } from "./resolve";
+import { getAuthInstance } from "./resolve";
 
 /**
  * The session-resolution middleware: it fills core's `AuthContext` seam (`c.var.auth`) for every
@@ -87,31 +88,36 @@ export function carriesCredential(headers: Headers): boolean {
 
 export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
   return (app) => {
-    app.use("*", async (c, next) => {
-      // A tool call the MCP endpoint dispatched to a route. Its caller was verified there, against the
-      // token, the consent, the session and the account's standing, and it arrives with no credential of its own:
-      // the identity rides beside the request in process, where nothing on the network can put one.
-      const dispatched = dispatchedAuth(c.req.raw);
-      if (dispatched !== undefined) {
-        c.set("auth", dispatched);
-        return await next();
-      }
-      if (!carriesCredential(c.req.raw.headers)) return await next();
-      // A credential signed under a session secret this deployment has since rotated is re-signed under the
-      // current one before anything reads it, and the re-signed one rides back on the response. A
-      // failure building the instance is not this middleware's to raise, so it is left to the routes.
-      let instance: AuthInstance | undefined;
-      try {
-        instance = await getAuthInstance(c, wiring);
-      } catch {
-        instance = undefined;
-      }
-      if (instance === undefined) return await next();
-      const built = instance;
-      await withResignedCredentials(c, built, async () => {
-        await resolveSession(c, wiring, built);
-        await next();
-      });
+    app.use("*", sessionResolver(wiring));
+  };
+}
+
+/** The handler `createSessionMiddleware` registers on `*`: fills `c.var.auth` from the request's credential. */
+export function sessionResolver(wiring: AuthWiring): MiddlewareHandler<PithyHonoEnv> {
+  return async (c, next) => {
+    // A tool call the MCP endpoint dispatched to a route. Its caller was verified there, against the
+    // token, the consent, the session and the account's standing, and it arrives with no credential of its own:
+    // the identity rides beside the request in process, where nothing on the network can put one.
+    const dispatched = dispatchedAuth(c.req.raw);
+    if (dispatched !== undefined) {
+      c.set("auth", dispatched);
+      return await next();
+    }
+    if (!carriesCredential(c.req.raw.headers)) return await next();
+    // A credential signed under a session secret this deployment has since rotated is re-signed under the
+    // current one before anything reads it, and the re-signed one rides back on the response. A
+    // failure building the instance is not this middleware's to raise, so it is left to the routes.
+    let instance: AuthInstance | undefined;
+    try {
+      instance = await getAuthInstance(c, wiring);
+    } catch {
+      instance = undefined;
+    }
+    if (instance === undefined) return await next();
+    const built = instance;
+    await withResignedCredentials(c, built, async () => {
+      await resolveSession(c, wiring, built);
+      await next();
     });
   };
 }
@@ -129,7 +135,7 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
       // capability's own guard raises the refusal itself, with its code; see `requireAuth` below.
       const refusal = await standingRefusal(c, wiring, session.user);
       if (refusal) {
-        noteRefusal(c, refusal, { userId: session.user.id, sessionId: session.session.id });
+        noteRefusal(c.req.raw, refusal, { userId: session.user.id, sessionId: session.session.id });
         return;
       }
       // Before the context is built, so a resolver sees the request exactly as it arrived and the
@@ -247,7 +253,7 @@ export function requireAuth(): MiddlewareHandler<SignedInEnv> {
 export function requireAuthUnnarrowed(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!c.var.auth) {
-      const refusal = noticedRefusal(c);
+      const refusal = noticedRefusal(c.req.raw);
       if (refusal) throw refusal;
       throw new UnauthorizedError({
         message: "Authentication required.",
@@ -278,7 +284,7 @@ export interface AccountHolder {
  */
 export function accountHolder(c: Context<PithyHonoEnv>): AccountHolder | null {
   if (c.var.auth) return { userId: c.var.auth.userId, sessionId: c.var.auth.sessionId, suspended: false };
-  const held = suspendedHolder(c);
+  const held = suspendedHolder(c.req.raw);
   return held ? { ...held, suspended: true } : null;
 }
 
@@ -290,7 +296,7 @@ export function accountHolder(c: Context<PithyHonoEnv>): AccountHolder | null {
 export function requireAccountHolder(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!accountHolder(c)) {
-      const refusal = noticedRefusal(c);
+      const refusal = noticedRefusal(c.req.raw);
       if (refusal) throw refusal;
       throw new UnauthorizedError({
         message: "Authentication required.",

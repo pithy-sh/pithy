@@ -3,7 +3,7 @@
 
 import { beforeAll, describe, expect, test } from "vitest";
 import { UpstreamError } from "../../error/pithyError";
-import { memoryJwksCache } from "../../http/oidcWebhook";
+import { memoryJwksCache } from "../../http/jwksCache";
 import { type MintedKey, mintKey, publishing, signToken } from "../../test-utils/oidcFixtures";
 import type { ControlPlaneConnection } from "../data/connection";
 import type { OidcTrust } from "../data/oidcTrust";

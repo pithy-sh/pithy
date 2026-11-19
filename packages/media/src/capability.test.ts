@@ -34,7 +34,7 @@ describe("media()", () => {
     expect(isMediaCapability(cap)).toBe(true);
     expect(cap.dependsOn).toContain("secrets");
     expect(cap.secretRegistry).toBeDefined();
-    expect(cap.routes).toBeTypeOf("function");
+    expect(cap.routes?.load).toBeTypeOf("function");
     expect(cap.databases?.app?.binding).toBe("DB");
     expect(cap.databases?.app?.migrationOrder).toBe(MEDIA_MIGRATION_ORDER);
     expect(migrationKeys(cap)).toEqual(["0001_init", "0003_ownership"]);

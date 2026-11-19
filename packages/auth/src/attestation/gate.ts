@@ -3,8 +3,8 @@
 
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import type { Context, MiddlewareHandler } from "hono";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
-import { resolveDb } from "../http/resolve";
 import { consumeChallenge } from "./challenge";
 import { type AttestationConfig, type AttestationEnvironment, attestationFor } from "./config";
 import { AttestationConfigError, AttestationFailedError, AttestationMissingError } from "./errors";

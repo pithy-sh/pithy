@@ -3,6 +3,7 @@
 
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
@@ -267,9 +268,9 @@ const PUBLISHED_CLIENT_KEYS = [
 ];
 
 /** Every `METHOD /path` a composed capability actually mounts. The route table, not the config. */
-function mountedRoutes(capability: SupportCapability): string[] {
+async function mountedRoutes(capability: SupportCapability): Promise<string[]> {
   const app = new Hono<PithyHonoEnv>();
-  capability.routes?.(app);
+  await mountRoutes(capability.routes, app);
   return app.routes.map((route) => `${route.method} ${route.path}`);
 }
 
@@ -353,13 +354,13 @@ describe("support().client — virtual:pithy/support", () => {
     expect((off.submission as Record<string, unknown>).attachments).toBeNull();
   });
 
-  test("the submission channel off is { enabled: false } — there is no route for a browser to call", () => {
+  test("the submission channel off is { enabled: false } — there is no route for a browser to call", async () => {
     // `registerSupportRoutes` does not mount the feedback routes when submission is off; they answer
     // 404. So "composed with the channel closed" has to read the same as "not composed at all", and a
     // screen branches on `enabled` rather than guarding down two levels.
     const closed = composed({ submission: { enabled: false } });
     expect(resolveClientProjection(closed, { environment: "prod" })).toEqual({ enabled: false });
-    expect(mountedRoutes(closed).some((route) => route.includes("/feedback"))).toBe(false);
+    expect((await mountedRoutes(closed)).some((route) => route.includes("/feedback"))).toBe(false);
   });
 
   test("an uncomposed capability is { enabled: false } too", () => {
@@ -378,10 +379,10 @@ describe("support().client — virtual:pithy/support", () => {
  * request actually lands.
  */
 describe("the address a browser posts a submission to", () => {
-  test("**the projected basePath is where the feedback routes actually mount**", () => {
+  test("**the projected basePath is where the feedback routes actually mount**", async () => {
     const moved = composed({ basePath: "/help" });
     const projected = resolveClientProjection(moved, { environment: "prod" }).basePath;
-    const routes = mountedRoutes(moved);
+    const routes = await mountedRoutes(moved);
     // Built from what the projection published, checked against what the router registered. A
     // projection stuck on `/support` names three routes this table does not contain.
     expect(routes).toEqual(
@@ -395,10 +396,10 @@ describe("the address a browser posts a submission to", () => {
     expect(routes.some((route) => route.startsWith("POST /support/"))).toBe(false);
   });
 
-  test("the literal, so the gate above cannot be satisfied by an empty route table", () => {
+  test("the literal, so the gate above cannot be satisfied by an empty route table", async () => {
     expect(resolveClientProjection(composed({ basePath: "/help" }), { environment: "prod" }).basePath).toBe("/help");
     expect(resolveClientProjection(composed(), { environment: "prod" }).basePath).toBe("/support");
-    expect(mountedRoutes(composed())).toContain("POST /support/feedback");
+    expect(await mountedRoutes(composed())).toContain("POST /support/feedback");
   });
 });
 

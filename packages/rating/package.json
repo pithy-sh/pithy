@@ -16,6 +16,10 @@
     "!dist/**/*.test.*"
   ],
   "type": "module",
+  "sideEffects": [
+    "./src/algorithm/builtins.ts",
+    "./dist/algorithm/builtins.js"
+  ],
   "engines": {
     "node": ">=22"
   },

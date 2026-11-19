@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { BindingSpec } from "../capability/bindings";
+import { validateBindings } from "../capability/validateBindings";
 import { ValidationError } from "../error/pithyError";
-import type { RouteGroup } from "../openapi/document";
+import type { RouteGroup, RouterRoute } from "../openapi/document";
 import { describedOperations } from "../openapi/operations";
 import { routeRateLimitBinding } from "./routeRateLimit";
 import type { VerificationStrategy } from "./verification";
@@ -31,7 +33,8 @@ export function routeRateLimitBindings(groups: readonly RouteGroup[]): RouteRate
 
 /**
  * Refuse a composition where a route counts users it cannot name: a `user` limit on a route whose verification
- * admits a caller who is not signed in. `createBackend` calls it at assembly, so the Worker refuses to boot.
+ * admits a caller who is not signed in. Every reader of the route table refuses it (`routeGroupsOf`), and so does
+ * the first request to reach the capability's routes once they load, so such a route is never served.
  */
 export function assertRateLimitDeclarations(groups: readonly RouteGroup[]): void {
   for (const { method, path, spec } of describedOperations(groups)) {
@@ -47,4 +50,24 @@ export function assertRateLimitDeclarations(groups: readonly RouteGroup[]): void
       detail: `${where} declares rateLimit key "user" with verification ${JSON.stringify(strategies)}`,
     });
   }
+}
+
+/**
+ * The check a capability's routes run once they load, before any request reaches them: refused when a declared
+ * limit counts users the route cannot name, and on each request until it passes, a Worker missing a limit's binding
+ * fails naming it rather than serving the route unlimited. `undefined` when the routes declare no limit.
+ */
+export function rateLimitGate(table: readonly RouterRoute[]): ((env: unknown) => void) | undefined {
+  const groups = [{ tag: "", routes: table }];
+  assertRateLimitDeclarations(groups);
+  const required = routeRateLimitBindings(groups).map((binding) =>
+    BindingSpec.parse({ type: "ratelimit", name: binding.name }),
+  );
+  if (required.length === 0) return undefined;
+  let validated = false;
+  return (env) => {
+    if (validated) return;
+    validateBindings((env ?? {}) as Record<string, unknown>, required);
+    validated = true;
+  };
 }

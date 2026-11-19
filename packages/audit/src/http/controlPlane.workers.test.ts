@@ -14,6 +14,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
@@ -730,7 +731,7 @@ describe("GET /audit/control-plane/reach", () => {
     await userRead("u_1", "acme", 1_000);
     const reachOf = async (capability: ReturnType<typeof audit>) => {
       const app = harness([AUDIT_TRAIL_READ_SCOPE]);
-      capability.routes?.(app);
+      await mountRoutes(capability.routes, app);
       const body = await (await call(app, REACH, AUDIT_TRAIL_READ_SCOPE)).json<ControlPlaneReachResponse>();
       return body.reach.map((row) => [row.route, row.matched]);
     };
@@ -1736,7 +1737,7 @@ describe("GET /audit/control-plane/sinks", () => {
     // Through `audit({ sinks })` rather than `registerAuditRoutes`: the routes default to no sinks, so a
     // capability that forgot to pass its own would answer an empty list while its health reported a backlog.
     const app = harness([AUDIT_TRAIL_READ_SCOPE]);
-    audit({ sinks: SINKS }).routes?.(app);
+    await mountRoutes(audit({ sinks: SINKS }).routes, app);
     const body = AuditSinksResponse.parse(await (await call(app, SINKS_PATH, AUDIT_TRAIL_READ_SCOPE)).json());
     expect(body.sinks.map((sink) => [sink.name, sink.profile])).toEqual([
       ["splunk", "splunk-hec"],

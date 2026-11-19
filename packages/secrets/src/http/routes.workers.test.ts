@@ -9,6 +9,7 @@ import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/contex
 import type { ControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { Hono } from "hono";
@@ -309,7 +310,7 @@ interface Harness {
  * A Worker composing `secrets()` and `email`, with the seam's verifier stubbed. `compose` runs, which is
  * what makes the status surface report the combined registry rather than only the adopter's own slice.
  */
-function harness(granted: string[] = [SECRETS_STATUS_READ_SCOPE], environment = "prod"): Harness {
+async function harness(granted: string[] = [SECRETS_STATUS_READ_SCOPE], environment = "prod"): Promise<Harness> {
   const capability = secrets({ registry });
   const emailCap = defineCapability({ name: "email", requiredBindings: [], secretRegistry: emailSlice });
   capability.compose?.({ capabilities: [capability, emailCap] });
@@ -334,7 +335,7 @@ function harness(granted: string[] = [SECRETS_STATUS_READ_SCOPE], environment = 
     c.set("log", noopLogger);
     await next();
   });
-  capability.routes?.(app);
+  await mountRoutes(capability.routes, app);
   return { app, events };
 }
 
@@ -349,8 +350,8 @@ async function rotate(h: Harness, name: string): Promise<Response> {
 }
 
 /** A harness whose credential may rotate. The read scope comes with it, because a client holding both is real. */
-function rotator(environment = "prod"): Harness {
-  return harness([SECRETS_STATUS_READ_SCOPE, SECRETS_ROTATE_SCOPE], environment);
+async function rotator(environment = "prod"): Promise<Harness> {
+  return await harness([SECRETS_STATUS_READ_SCOPE, SECRETS_ROTATE_SCOPE], environment);
 }
 
 /** One secret's stored ciphertext, so a test can prove a rotation actually replaced it. */
@@ -413,7 +414,7 @@ beforeEach(async () => {
 
 describe("GET {base}/admin/status", () => {
   test("reports every composed capability's secrets, dates as ISO-8601", async () => {
-    const h = harness();
+    const h = await harness();
     const response = await call(h, "/secrets/admin/status");
     expect(response.status).toBe(200);
     const body = (await response.json()) as SecretsStatusResponse;
@@ -433,7 +434,7 @@ describe("GET {base}/admin/status", () => {
 
   test("a failed automatic rotation reports when and why, as a code, and never its text (#602)", async () => {
     // The seeded failure is free text no code wrote, so it crosses as a failure with no reason.
-    let body = (await (await call(harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
+    let body = (await (await call(await harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
     expect(body.secrets.find((secret) => secret.name === "auth-signing-key")?.lastFailure).toEqual({
       at: FAILED_AT,
       reason: null,
@@ -444,14 +445,14 @@ describe("GET {base}/admin/status", () => {
     )
       .bind(FAILED_AT_MS, FAILED_AT_MS, rotationFailureText("not-recorded"))
       .run();
-    body = (await (await call(harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
+    body = (await (await call(await harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
     expect(body.secrets.find((secret) => secret.name === "session-key")?.lastFailure).toEqual({
       at: FAILED_AT,
       reason: "not-recorded",
     });
     expect(body.secrets.find((secret) => secret.name === "unwritten-token")?.lastFailure).toBeNull();
     const history = (await (
-      await call(harness(), "/secrets/admin/status/session-key/rotations")
+      await call(await harness(), "/secrets/admin/status/session-key/rotations")
     ).json()) as SecretRotationsResponse;
     expect(history.rotations[0]?.failure).toBe("not-recorded");
   });
@@ -461,7 +462,7 @@ describe("GET {base}/admin/status", () => {
     // dashboard's only conservative reading was to give every secret an instruction and none of them a
     // control. All three answers are asserted, from one response, because a client branches on which of
     // them it got and a surface that could only ever return one of the three would pass a looser check.
-    const body = (await (await call(harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
+    const body = (await (await call(await harness(), "/secrets/admin/status")).json()) as SecretsStatusResponse;
     const secrets: Record<string, SecretStatusView | undefined> = Object.fromEntries(
       body.secrets.map((secret) => [secret.name, secret]),
     );
@@ -488,7 +489,7 @@ describe("GET {base}/admin/status", () => {
     // gaining a *field*, which is exactly the event a value list cannot observe. Here every leaf must be
     // a fact this surface publishes and every key must be one named above, so a new field carrying
     // anything at all is refused, whatever it is called and whatever type it is.
-    const raw = (await (await call(harness(), "/secrets/admin/status")).json()) as unknown;
+    const raw = (await (await call(await harness(), "/secrets/admin/status")).json()) as unknown;
 
     const published = [
       ...DECLARED,
@@ -544,7 +545,7 @@ describe("GET {base}/admin/status", () => {
     expect(failed?.rotated_by).toBe(ROTATED_BY);
 
     // And what is meant to cross does cross, so the sweep is not passing over an empty response.
-    const text = await (await call(harness(), "/secrets/admin/status")).text();
+    const text = await (await call(await harness(), "/secrets/admin/status")).text();
     for (const name of DECLARED) expect(text, name).toContain(name);
     expect(text).toContain(SEEDED_AT);
   });
@@ -576,7 +577,7 @@ describe("GET {base}/admin/status", () => {
   test("the read is audited, in counts and never in content", async () => {
     // The seam records that the call was allowed; this capability records what the call read. Both, and
     // the second is the one that says a credential enumerated somebody's secret estate.
-    const h = harness();
+    const h = await harness();
     await call(h, "/secrets/admin/status");
     const event = h.events.find((candidate) => candidate.action === "secrets/status_read");
     expect(event).toBeDefined();
@@ -587,14 +588,14 @@ describe("GET {base}/admin/status", () => {
   });
 
   test("a connection without the scope is refused, and the refusal is not a 200 with fewer rows", async () => {
-    const response = await call(harness(["manifest:read"]), "/secrets/admin/status");
+    const response = await call(await harness(["manifest:read"]), "/secrets/admin/status");
     expect(response.status).toBeGreaterThanOrEqual(400);
   });
 });
 
 describe("GET {base}/admin/status/:name/rotations", () => {
   test("returns one secret's history, newest first", async () => {
-    const response = await call(harness(), "/secrets/admin/status/auth-signing-key/rotations");
+    const response = await call(await harness(), "/secrets/admin/status/auth-signing-key/rotations");
     expect(response.status).toBe(200);
     const body = (await response.json()) as SecretRotationsResponse;
     expect(body.name).toBe("auth-signing-key");
@@ -617,7 +618,9 @@ describe("GET {base}/admin/status/:name/rotations", () => {
     // exception site, which is precisely where a value gets interpolated by accident, and
     // `metadata_snapshot` is what somebody took "for debugging". Both sit on the failed row this history
     // returns, so the invariant here is doing real work rather than describing an empty table.
-    const raw = (await (await call(harness(), "/secrets/admin/status/auth-signing-key/rotations")).json()) as unknown;
+    const raw = (await (
+      await call(await harness(), "/secrets/admin/status/auth-signing-key/rotations")
+    ).json()) as unknown;
 
     const published = [
       "auth-signing-key",
@@ -653,7 +656,7 @@ describe("GET {base}/admin/status/:name/rotations", () => {
   test("a name no capability declares is a 404, not an empty history", async () => {
     // An empty history reads as "this secret has never been rotated", which is a fact about a secret
     // that does not exist. It would also make the route a listing of the rotations table by any name.
-    const response = await call(harness(), "/secrets/admin/status/nope/rotations");
+    const response = await call(await harness(), "/secrets/admin/status/nope/rotations");
     expect(response.status).toBe(404);
     expect(((await response.json()) as { error?: { code?: string } }).error?.code).toBe("secrets/not_found");
   });
@@ -662,12 +665,12 @@ describe("GET {base}/admin/status/:name/rotations", () => {
     await env.SECRETS.prepare(
       "insert into pithy_secrets_rotations (name, started_at, completed_at, status, \"trigger\", rotated_by) values ('__at_rest_key_rotation__', 1, 1, 'success', 'cron', 'wf')",
     ).run();
-    const response = await call(harness(), "/secrets/admin/status/__at_rest_key_rotation__/rotations");
+    const response = await call(await harness(), "/secrets/admin/status/__at_rest_key_rotation__/rotations");
     expect(response.status).toBe(404);
   });
 
   test("the read is audited against the secret it named", async () => {
-    const h = harness();
+    const h = await harness();
     await call(h, "/secrets/admin/status/auth-signing-key/rotations");
     const event = h.events.find((candidate) => candidate.action === "secrets/rotations_read");
     expect(event?.resourceId).toBe("auth-signing-key");
@@ -678,7 +681,7 @@ describe("GET {base}/admin/status/:name/rotations", () => {
 describe("POST {base}/admin/status/:name/rotate — what it does", () => {
   test("a local secret is re-minted here, stored, and recorded against the operator", async () => {
     const before = await ciphertextOf("session-key");
-    const h = rotator();
+    const h = await rotator();
     const response = await rotate(h, "session-key");
 
     expect(response.status).toBe(200);
@@ -705,7 +708,7 @@ describe("POST {base}/admin/status/:name/rotate — what it does", () => {
   });
 
   test("a provider secret is rolled at its issuer, and the credential it returns reaches nothing but the store", async () => {
-    const h = rotator();
+    const h = await rotator();
     const response = await rotate(h, "provider-token");
     const text = await response.text();
 
@@ -729,12 +732,12 @@ describe("POST {base}/admin/status/:name/rotate — what it does", () => {
     // The one rule `valueRotator.ts` exists to state. Rolling twice does not repair a failed store; it
     // issues a third credential and loses the second, which is the failure the retry was meant to prevent
     // arriving by way of the retry.
-    await rotate(rotator(), "provider-token");
+    await rotate(await rotator(), "provider-token");
     expect(rolls).toEqual(["provider-token"]);
   });
 
   test("a manual secret is unchanged, calls nothing, and writes no history", async () => {
-    const h = rotator();
+    const h = await rotator();
     const response = await rotate(h, "gitlab-token");
 
     expect(response.status).toBe(200);
@@ -749,7 +752,7 @@ describe("POST {base}/admin/status/:name/rotate — what it does", () => {
   });
 
   test("the rotation is audited with the operator, the secret, the environment and the outcome", async () => {
-    const h = rotator();
+    const h = await rotator();
     await rotate(h, "session-key");
     const event = h.events.find((candidate) => candidate.action === "secrets/rotated");
     expect(event?.outcome).toBe("success");
@@ -769,7 +772,7 @@ describe("POST {base}/admin/status/:name/rotate — what it does", () => {
 
 describe("POST {base}/admin/status/:name/rotate — the failure that cannot be undone", () => {
   test("a rotator that throws reports `unrecorded`, not `failed`, and says the roll is unconfirmed", async () => {
-    const h = rotator();
+    const h = await rotator();
     const response = await rotate(h, "flaky-token");
 
     // 200 with the outcome, deliberately. Throwing would render one sentence and drop `recorded` and
@@ -789,7 +792,7 @@ describe("POST {base}/admin/status/:name/rotate — the failure that cannot be u
   });
 
   test("the unrecorded state is audited `critical`, as a failure, naming what is stranded", async () => {
-    const h = rotator();
+    const h = await rotator();
     await rotate(h, "flaky-token");
     const event = h.events.find((candidate) => candidate.action === "secrets/rotated");
     expect(event?.outcome).toBe("failure");
@@ -804,7 +807,7 @@ describe("POST {base}/admin/status/:name/rotate — the failure that cannot be u
     // a credential is definitely in scope, and `rotateSecretValue` puts it on the outcome as `cause`. The
     // wire projection has no field for it, the audit metadata is composed from named facts, and the
     // rotation row's failure text is written from the outcome's status rather than from the exception.
-    const h = rotator();
+    const h = await rotator();
     const text = await (await rotate(h, "flaky-token")).text();
     expect(text).not.toContain(ROLL_FAIL);
     expect(text).not.toContain("cause");
@@ -816,7 +819,7 @@ describe("POST {base}/admin/status/:name/rotate — the failure that cannot be u
   test("a rotator that threw still leaves a trace in the history, closed as failed", async () => {
     // Opened before the roll for exactly this: a rotator that never returns must not leave the act it
     // performed invisible to the review that comes looking for it.
-    await rotate(rotator(), "flaky-token");
+    await rotate(await rotator(), "flaky-token");
     const history = await historyOf("flaky-token");
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ status: "failed", trigger: "manual", rotated_by: "operator-1" });
@@ -828,14 +831,14 @@ describe("POST {base}/admin/status/:name/rotate — what a Worker refuses, befor
     // The whole reason this check is up front. `runWriteSecret` in `update` mode raises on a missing name,
     // and reaching that raise *after* a provider roll would manufacture the unrecorded incident out of a
     // configuration gap that cost nothing to check.
-    const response = await rotate(rotator(), "unwritten-token");
+    const response = await rotate(await rotator(), "unwritten-token");
     expect(response.status).toBe(404);
     expect(((await response.json()) as { error?: { code?: string } }).error?.code).toBe("secrets/not_found");
     expect(rolls).toEqual([]);
   });
 
   test("a Cloudflare Secrets Store secret is refused, naming the command that can", async () => {
-    const response = await rotate(rotator(), "store-token");
+    const response = await rotate(await rotator(), "store-token");
     expect(response.status).toBe(409);
     const error = (await response.json()) as { error?: { code?: string; message?: string; action?: string } };
     expect(error.error?.code).toBe("secrets/rotation_unsupported");
@@ -846,7 +849,7 @@ describe("POST {base}/admin/status/:name/rotate — what a Worker refuses, befor
   });
 
   test("a global secret is refused rather than rotated in one environment and stranded in the rest", async () => {
-    const response = await rotate(rotator(), "global-signing-key");
+    const response = await rotate(await rotator(), "global-signing-key");
     expect(response.status).toBe(409);
     const error = (await response.json()) as { error?: { code?: string; message?: string } };
     expect(error.error?.code).toBe("secrets/rotation_unsupported");
@@ -858,19 +861,19 @@ describe("POST {base}/admin/status/:name/rotate — what a Worker refuses, befor
   });
 
   test("the master key is refused — nothing replaces the key every other secret is read through", async () => {
-    const response = await rotate(rotator(), "SECRETS_ENCRYPTION_KEYS");
+    const response = await rotate(await rotator(), "SECRETS_ENCRYPTION_KEYS");
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(await historyOf("SECRETS_ENCRYPTION_KEYS")).toEqual([]);
   });
 
   test("a secret declaring no rotation is refused, and told to declare one", async () => {
-    const response = await rotate(rotator(), "auth-signing-key");
+    const response = await rotate(await rotator(), "auth-signing-key");
     expect(response.status).toBe(400);
     expect(await historyOf("auth-signing-key")).toHaveLength(2); // the two seeded rows, and no third
   });
 
   test("a name no capability declares is a 404, and never a rotation of a row found by name", async () => {
-    const response = await rotate(rotator(), "nope");
+    const response = await rotate(await rotator(), "nope");
     expect(response.status).toBe(404);
     expect(((await response.json()) as { error?: { code?: string } }).error?.code).toBe("secrets/not_found");
   });
@@ -880,7 +883,7 @@ describe("POST {base}/admin/status/:name/rotate — what a Worker refuses, befor
     // deployment cannot say where a value would land, and an outcome that cannot name its environments is
     // the aggregate the whole design refuses — so it does not roll one.
     for (const environment of ["dev", ""]) {
-      const response = await rotate(rotator(environment), "provider-token");
+      const response = await rotate(await rotator(environment), "provider-token");
       expect(response.status, environment).toBe(409);
       expect(((await response.json()) as { error?: { code?: string } }).error?.code, environment).toBe(
         "secrets/rotation_unsupported",
@@ -895,7 +898,7 @@ describe("POST {base}/admin/status/:name/rotate — the scope is a boundary", ()
     // The escalation this scope exists to prevent. A connection granted `secrets:status:read` can enumerate
     // a project's whole secret estate; if that grant also rotated, every adopter who ever wanted a status
     // pane would have handed over credential replacement without being asked.
-    const h = harness([SECRETS_STATUS_READ_SCOPE]);
+    const h = await harness([SECRETS_STATUS_READ_SCOPE]);
     expect((await call(h, "/secrets/admin/status")).status).toBe(200);
 
     const response = await rotate(h, "session-key");
@@ -905,7 +908,7 @@ describe("POST {base}/admin/status/:name/rotate — the scope is a boundary", ()
   });
 
   test("a connection with neither scope is refused, and reaches no registry lookup", async () => {
-    const response = await rotate(harness(["manifest:read"]), "session-key");
+    const response = await rotate(await harness(["manifest:read"]), "session-key");
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(rolls).toEqual([]);
   });
@@ -937,7 +940,7 @@ describe("POST {base}/admin/status/:name/rotate — the scope is a boundary", ()
       null,
     ];
     for (const name of ["provider-token", "flaky-token"]) {
-      const raw = (await (await rotate(rotator(), name)).json()) as unknown;
+      const raw = (await (await rotate(await rotator(), name)).json()) as unknown;
       const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_ROTATE_KEYS });
       expect(escaped, `Rotating ${name} published this:\n  ${escaped.join("\n  ")}`).toEqual([]);
     }

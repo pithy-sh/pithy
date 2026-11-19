@@ -77,12 +77,12 @@ export interface RefusedHolder {
 }
 
 /**
- * The refusal the session middleware reached for this request, keyed by the request's context.
+ * The refusal the session middleware reached for this request, keyed by the request.
  *
  * A WeakMap rather than a request variable because `PithyVars` is core's, and this is a fact only this
  * capability's own guards read — a refused account already has no `AuthContext`, which is the part every
- * other capability's guard needs. Keyed by the context the way `../http/resolve.ts` caches the instance, so
- * it dies with the request.
+ * other capability's guard needs. Keyed by the request the way `../http/resolve.ts` caches the instance, so a
+ * guard in a route group loaded on first use reads what the Worker's middleware noted, and it dies with the request.
  *
  * **The holder rides with it (#622).** A suspended account may still delete itself — the app stores require
  * that a person can always leave — and that one route has to know whose account the refused credential

@@ -4,7 +4,8 @@
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { verifyToken } from "../crypto/token";
-import { CALLBACK_BASE, listTemplates, renderEmail } from "./engine";
+import { CALLBACK_BASE } from "../http/routeTable";
+import { listTemplates, renderEmail } from "./engine";
 import { catalogLayers, emailTranslator } from "./messages";
 import { templates } from "./registry";
 import { defaultTheme, type EmailTheme } from "./theme";

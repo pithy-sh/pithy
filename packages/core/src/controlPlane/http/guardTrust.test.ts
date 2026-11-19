@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import type { AuditEventInput } from "../../audit/auditEvent";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
-import { memoryJwksCache } from "../../http/oidcWebhook";
+import { memoryJwksCache } from "../../http/jwksCache";
 import { type MintedKey, mintKey, publishing, signToken } from "../../test-utils/oidcFixtures";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection } from "../data/connection";

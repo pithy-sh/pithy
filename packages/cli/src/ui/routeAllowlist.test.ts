@@ -4,6 +4,7 @@
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { CI_ENV } from "@pithy-sh/core/src/env/ci";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import { afterEach, describe, expect, test } from "vitest";
@@ -18,13 +19,13 @@ function routed(name: string, base: string) {
   return defineCapability({
     name,
     requiredBindings: [],
-    routes: (app) => {
+    routes: routesOf((app) => {
       app.get(base, (c) => c.json({}));
       app.get(`${base}/:id`, (c) => c.json({}));
       app.use(`${base}/*`, async (_c, next) => {
         await next();
       });
-    },
+    }),
   });
 }
 
@@ -36,10 +37,10 @@ function conditionallyRouted(name: string, environment: string, path: string) {
   return defineCapability({
     name,
     requiredBindings: [],
-    routes: (app) => {
+    routes: routesOf((app) => {
       if (compositionEnvironment() !== environment) return;
       app.get(path, (c) => c.json({}));
-    },
+    }),
   });
 }
 
@@ -89,9 +90,9 @@ describe("deriveWorkerFirst", () => {
         app: defineCapability({
           name: "api",
           requiredBindings: [],
-          routes: (app) => {
+          routes: routesOf((app) => {
             app.get("/things", (c) => c.json({}));
-          },
+          }),
         }),
       },
       DECLARED,
@@ -192,10 +193,10 @@ describe("uncoveredRoutes", () => {
       app: defineCapability({
         name: "api",
         requiredBindings: [],
-        routes: (app) => {
+        routes: routesOf((app) => {
           app.get("/api/organizations", (c) => c.json({}));
           app.post("/api/cli/device/start", (c) => c.json({}));
-        },
+        }),
       }),
     };
     expect(uncoveredRoutes(config, scaffoldTime, DECLARED)).toEqual(["/api/cli/device/start", "/api/organizations"]);
@@ -214,9 +215,9 @@ describe("uncoveredRoutes", () => {
       app: defineCapability({
         name: "api",
         requiredBindings: [],
-        routes: (app) => {
+        routes: routesOf((app) => {
           app.get("/", (c) => c.json({}));
-        },
+        }),
       }),
     };
     expect(uncoveredRoutes(config, scaffoldTime, DECLARED)).toEqual([]);

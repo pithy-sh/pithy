@@ -105,7 +105,7 @@ describe("auth capability", () => {
     // auth's and the adopter's — can gate on it; then the tier-1 edge rate limiter; then session
     // resolution.
     expect(cap.middleware?.length).toBe(3);
-    expect(typeof cap.routes).toBe("function");
+    expect(typeof cap.routes?.load).toBe("function");
   });
 
   test("honors a configured database binding", () => {

@@ -4,7 +4,8 @@
 import { sendMagicLink } from "@pithy-sh/auth/src/client/api";
 import { type LiveApp, resetLiveSecrets, startLiveApp } from "@pithy-sh/auth/src/test-utils/liveApp";
 import { decodingsHolding } from "@pithy-sh/core/src/test-utils/urlDecodings";
-import { CALLBACK_BASE, listTemplates, renderEmail } from "@pithy-sh/email/src/templates/engine";
+import { CALLBACK_BASE } from "@pithy-sh/email/src/http/routeTable";
+import { listTemplates, renderEmail } from "@pithy-sh/email/src/templates/engine";
 import { samplePayloads } from "@pithy-sh/email/src/templates/samples";
 import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
 import { mintInvitationToken } from "@pithy-sh/organization/src/invite/token";

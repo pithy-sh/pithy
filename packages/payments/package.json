@@ -8,6 +8,7 @@
     "directory": "packages/payments"
   },
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=22"
   },

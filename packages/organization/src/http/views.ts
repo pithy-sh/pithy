@@ -29,6 +29,7 @@ import type {
   NominationView,
   OrganizationView,
 } from "./responses";
+import { MARKS_SEGMENT } from "./routeTable";
 
 /**
  * The projections — what leaves the Worker for an organization, a member, an offer and a nomination.
@@ -54,9 +55,6 @@ import type {
  * adopter's matrix, which their client imports directly — a copy on the wire would be a second
  * authorization vocabulary, free to disagree with the one the gates read.
  */
-
-/** The path segment an organization's mark is served under. */
-export const MARKS_SEGMENT = "/marks";
 
 /**
  * Where an organization's mark is served.

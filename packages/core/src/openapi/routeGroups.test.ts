@@ -6,6 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { defineCapability } from "../capability/capability";
 import { createBackend } from "../createBackend";
+import { routesOf } from "../http/lazyRoutes";
 import { describeRoute } from "../http/routeSpec";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "./document";
 import { recordRouteGroups, routeGroupsOf } from "./routeGroups";
@@ -15,25 +16,25 @@ const Pong = z.object({ pong: z.boolean().describe("Always true.") }).describe("
 const ping = defineCapability({
   name: "ping",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/ping", describeRoute({ summary: "Ping.", verification: "public", responses: { 200: Pong } }), (c) =>
       c.json({ pong: true }),
     );
-  },
+  }),
 });
 
 const app = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (hono) => {
+  routes: routesOf((hono) => {
     hono.get("/mine", (c) => c.text("undescribed"));
-  },
+  }),
 });
 
 describe("routeGroupsOf", () => {
-  test("is what createBackend recorded: health under core, then each capability's own routes", () => {
+  test("is what createBackend recorded: health under core, then each capability's own routes", async () => {
     const backend = createBackend({ capabilities: [ping], app });
-    const groups = routeGroupsOf(backend) ?? [];
+    const groups = (await routeGroupsOf(backend)) ?? [];
     // Hono keeps one entry per handler, so a route with a describeRoute ahead of its handler appears twice.
     const routes = (group: (typeof groups)[number]) => [
       ...new Set(group.routes.map((route) => `${route.method} ${route.path}`)),
@@ -45,41 +46,41 @@ describe("routeGroupsOf", () => {
     ]);
   });
 
-  test("feeds a contract that describes health and every capability, and names what it cannot describe", () => {
-    const groups = routeGroupsOf(createBackend({ capabilities: [ping], app })) ?? [];
+  test("feeds a contract that describes health and every capability, and names what it cannot describe", async () => {
+    const groups = (await routeGroupsOf(createBackend({ capabilities: [ping], app }))) ?? [];
     const document = openApiDocument({ title: "t", version: "0" }, groups);
     expect(Object.keys(document.paths)).toEqual(["/health", "/ping"]);
     expect(undescribedFields(document)).toEqual([]);
     expect(undescribedRoutes(groups)).toEqual([{ method: "GET", path: "/mine" }]);
   });
 
-  test("an app createBackend did not assemble has none", () => {
-    expect(routeGroupsOf(new Hono())).toBeUndefined();
+  test("an app createBackend did not assemble has none", async () => {
+    expect(await routeGroupsOf(new Hono())).toBeUndefined();
   });
 
-  test("the last record wins, it is the app's own, and the app has no enumerable mark", () => {
+  test("the last record wins, it is the app's own, and the app has no enumerable mark", async () => {
     const hono = new Hono();
     const keys = Reflect.ownKeys(hono).filter((key) => Object.getOwnPropertyDescriptor(hono, key)?.enumerable);
     recordRouteGroups(hono, [{ tag: "one", routes: [] }]);
     recordRouteGroups(hono, [{ tag: "two", routes: [] }]);
-    expect(routeGroupsOf(hono)?.map((group) => group.tag)).toEqual(["two"]);
-    expect(routeGroupsOf(Object.create(hono))).toBeUndefined();
+    expect((await routeGroupsOf(hono))?.map((group) => group.tag)).toEqual(["two"]);
+    expect(await routeGroupsOf(Object.create(hono))).toBeUndefined();
     expect(Reflect.ownKeys(hono).filter((key) => Object.getOwnPropertyDescriptor(hono, key)?.enumerable)).toEqual(keys);
   });
 
-  test("a frozen app records its groups too, and the last record wins", () => {
+  test("a frozen app records its groups too, and the last record wins", async () => {
     const hono = Object.freeze(new Hono());
     recordRouteGroups(hono, [{ tag: "one", routes: [] }]);
     recordRouteGroups(hono, [{ tag: "two", routes: [] }]);
-    expect(routeGroupsOf(hono)?.map((group) => group.tag)).toEqual(["two"]);
+    expect((await routeGroupsOf(hono))?.map((group) => group.tag)).toEqual(["two"]);
   });
 
-  test("an app frozen after its first record takes the next", () => {
+  test("an app frozen after its first record takes the next", async () => {
     const hono = new Hono();
     recordRouteGroups(hono, [{ tag: "one", routes: [] }]);
     Object.freeze(hono);
     recordRouteGroups(hono, [{ tag: "two", routes: [] }]);
-    expect(routeGroupsOf(hono)?.map((group) => group.tag)).toEqual(["two"]);
+    expect((await routeGroupsOf(hono))?.map((group) => group.tag)).toEqual(["two"]);
   });
 
   test("an app one copy of core assembles has the route groups another copy reads", async () => {
@@ -94,12 +95,12 @@ describe("routeGroupsOf", () => {
     const mine = other.capability.defineCapability({
       name: "mine",
       requiredBindings: [],
-      routes: (hono) => {
+      routes: routesOf((hono) => {
         hono.get("/mine", (c) => c.text("ok"));
-      },
+      }),
     });
 
-    const groups = routeGroupsOf(other.backend.createBackend({ capabilities: [mine], app })) ?? [];
+    const groups = (await routeGroupsOf(other.backend.createBackend({ capabilities: [mine], app }))) ?? [];
 
     expect(groups.map((group) => group.tag)).toEqual(["core", "mine", "app"]);
   });

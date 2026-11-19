@@ -84,7 +84,7 @@ describe("vector()", () => {
     const capability = vector(options);
     expect(Object.keys(capability.workflows ?? {})).toEqual(["reprocess"]);
     expect(capability.seeds?.map((set) => set.name)).toEqual(["example"]);
-    expect(capability.routes).toBeTypeOf("function");
+    expect(capability.routes?.load).toBeTypeOf("function");
   });
 
   it("contributes the document corpus to the app database at its own migration order", () => {

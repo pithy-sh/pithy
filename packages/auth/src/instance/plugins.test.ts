@@ -11,8 +11,8 @@ import { admin } from "better-auth/plugins/admin";
 import { multiSession } from "better-auth/plugins/multi-session";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
-import { AuthPlugin, assertAdditivePlugins, KIT_PLUGIN_IDS, kitPlugins } from "./plugins";
-import { PROVIDER_SIGN_IN_GATE_ID } from "./providerSignInGate";
+import { AuthPlugin, assertAdditivePlugins, KIT_PLUGIN_IDS, PROVIDER_SIGN_IN_GATE_ID } from "./pluginPolicy";
+import { kitPlugins } from "./plugins";
 import { REFUSED_PLUGIN_IDS } from "./refusalTransport";
 
 /** The schema-only deps: `kitPlugins` reads them for lifetimes and delivery, never for identity. */

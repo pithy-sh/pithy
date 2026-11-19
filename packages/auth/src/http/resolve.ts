@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { D1Database } from "@cloudflare/workers-types";
+import type { ClientDiscovery } from "@better-auth/oauth-provider";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
@@ -10,6 +10,7 @@ import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context } from "hono";
 import type { AuthWiring } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { makeSendAuthEmail, type ResolveRecipientLocale } from "../email/send";
 import { requestRuntime } from "../hooks/runtime";
@@ -24,30 +25,32 @@ import {
   resolveMicrosoftCredentials,
   resolveSessionSecrets,
 } from "../instance/secrets";
+import { clientMetadataDiscovery } from "../mcp/clientMetadata";
+import type { McpWiring } from "../mcp/host";
 import { mcpAuthorizationServer } from "../mcp/provider";
 import { baseURLResolver } from "./baseUrl";
 
 /**
- * Build the Better-Auth instance for one request, memoized on the request context so the
- * session-resolving middleware and the route handler share a single instance (one secret resolution,
+ * Build the Better-Auth instance for one request, memoized on the request so the session-resolving
+ * middleware and the route handler share a single instance, whichever context each runs in (one secret resolution,
  * one construction). The instance closes over request-scoped state: the audit `emit` seam and the D1
  * binding from `c.env`.
  */
 const cache = new WeakMap<object, Promise<AuthInstance>>();
 
-type AuthEnv = SecretsStoreEnv & EmailEnqueueEnv;
+/** How a client whose id is its metadata document's URL is resolved. One per composed `mcp()`, so its cache lasts. */
+const discoveries = new WeakMap<McpWiring, ClientDiscovery>();
 
-/** Read the configured D1 binding by name from the worker env, or fail loudly (not a silent undefined). */
-export function resolveDb(env: Record<string, unknown>, bindingName: string): D1Database {
-  const binding = env[bindingName];
-  if (!binding) {
-    throw new InternalError({
-      message: "The auth database binding is missing.",
-      detail: `D1 binding "${bindingName}" is not present on the worker env`,
-    });
+function discoveryFor(wiring: McpWiring): ClientDiscovery {
+  let discovery = discoveries.get(wiring);
+  if (discovery === undefined) {
+    discovery = clientMetadataDiscovery();
+    discoveries.set(wiring, discovery);
   }
-  return binding as D1Database;
+  return discovery;
 }
+
+type AuthEnv = SecretsStoreEnv & EmailEnqueueEnv;
 
 /**
  * The language to write a sign-in email in, for one address.
@@ -74,10 +77,10 @@ function recipientLocale(c: Context<PithyHonoEnv>, db: ReturnType<typeof authDat
 }
 
 export function getAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): Promise<AuthInstance> {
-  const existing = cache.get(c);
+  const existing = cache.get(c.req.raw);
   if (existing) return existing;
   const built = buildAuthInstance(c, wiring);
-  cache.set(c, built);
+  cache.set(c.req.raw, built);
   return built;
 }
 
@@ -197,7 +200,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
           ...mcpAuthorizationServer({
             resource: `${baseURL}${wiring.mcp.path}`,
             consentPage: wiring.mcp.consentPage,
-            clientDiscovery: wiring.mcp.clientDiscovery,
+            clientDiscovery: discoveryFor(wiring.mcp),
           }),
         ]
       : cfg.plugins,

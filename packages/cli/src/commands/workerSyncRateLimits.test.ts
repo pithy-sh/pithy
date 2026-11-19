@@ -16,12 +16,13 @@ import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 const limitedConfig = (
   limit: number,
 ): string => `import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 
 const app = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (hono) => {
+  routes: routesOf((hono) => {
     hono.post(
       "/ingest",
       describeRoute({
@@ -32,7 +33,7 @@ const app = defineCapability({
       }),
       (c) => c.body(null, 204),
     );
-  },
+  }),
 });
 
 export default { capabilities: [], app };

@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { ErrorBody } from "../error/wire";
 import type { SocketVersions } from "../http/subprotocol";
-import { PresenceActivity } from "./names";
+import { PRESENCE_PARTICIPANT_NAME_MAX, PresenceActivity } from "./names";
 
 /**
  * **Every frame on a presence room socket, as the Zod schema it is sent and parsed with.**
@@ -40,9 +40,6 @@ export const PresenceParticipantRef = z
   .describe(
     "Who the participant is. A management client's own opaque reference, which it chose; or the signed-in user's id, which the Worker chose.",
   );
-
-/** The longest participant name, in UTF-16 code units — what zod's `.max` counts. */
-export const PRESENCE_PARTICIPANT_NAME_MAX = 80;
 
 /** How the others see a participant. */
 export const PresenceParticipantName = z

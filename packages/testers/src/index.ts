@@ -57,7 +57,7 @@ export {
   testersTables,
 } from "./data/tables";
 export { DISCLAIMER, ESTIMATE_STATEMENT } from "./http/responses";
-export { TESTERS_ROUTES, type TestersRouteDeclaration } from "./http/routes";
+export { TESTERS_ROUTES, type TestersRouteDeclaration } from "./http/routeTable";
 export {
   TESTERS_CONTROL_PLANE_SCOPES,
   TESTERS_NUDGE_SEND_SCOPE,

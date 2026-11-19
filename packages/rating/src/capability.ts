@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ratingRouteTable, ratingScopeGates } from "./http/routeTable";
 import "./algorithm/builtins";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { scopeGatesOf } from "@pithy-sh/core/src/http/scopeGates";
 import type { Migration } from "kysely/migration";
 import { RatingConfig, type RatingConfigInput, type ResolvedRatingGame, validateRatingGames } from "./config/config";
 import { ratingTables } from "./data/tables";
-import { registerRatingRoutes } from "./http/routes";
 import { ratingAdminRoutes } from "./http/scopes";
 import { rating_0001_rating } from "./migrations/0001_rating";
 import { rating_0002_outcome_log } from "./migrations/0002_outcome_log";
@@ -71,7 +70,6 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
   };
   const requiredBindings: BindingSpecInput[] = [{ type: "d1", name: "DB" }];
 
-  const routes = registerRatingRoutes({ games, config: resolved, basePath: mountPath });
   const capability = defineCapability({
     name: "rating",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -90,10 +88,13 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
         migrations,
       },
     },
-    routes,
-    // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
-    // this config mounted — a gate the config switched off is not here (#560).
-    scopeGates: scopeGatesOf(routes),
+    routes: {
+      declared: ratingRouteTable(mountPath),
+      load: async () =>
+        (await import("./http/routes")).registerRatingRoutes({ games, config: resolved, basePath: mountPath }),
+    },
+    // The routes this config gates on a scope, so `pithy doctor` names exactly the gates it mounted.
+    scopeGates: ratingScopeGates(mountPath, resolved),
     // The management surface, built from the resolved mount path: always declared and always mounted, and
     // with `controlplane()` uncomposed each route denies with `controlplane/not_connected` (#818).
     adminRoutes: ratingAdminRoutes(mountPath),

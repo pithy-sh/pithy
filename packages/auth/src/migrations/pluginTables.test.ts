@@ -11,7 +11,8 @@ import { twoFactor } from "better-auth/plugins/two-factor";
 import { describe, expect, test } from "vitest";
 import { User } from "../data/betterAuth";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
-import { authPluginPlan, authSchemaOptions, pluginMigrationKey, pluginSchemaDelta } from "./pluginTables";
+import { authSchemaOptions } from "./kitSchema";
+import { authPluginPlan, KIT_SCHEMA_FIELDS, pluginMigrationKey, pluginSchemaDelta } from "./pluginTables";
 
 describe("pluginSchemaDelta()", () => {
   test("organization → its three tables, and the session column it puts the active org in", () => {
@@ -72,6 +73,49 @@ describe("pluginSchemaDelta()", () => {
       schema: { user: { fields: { locale: { type: "string", required: false } } } },
     };
     expect(pluginSchemaDelta(clashing)).toEqual({ tables: [], columns: [] });
+  });
+});
+
+describe("pluginSchemaDelta() reads a plugin's schema the way Better Auth does", () => {
+  /** What `getSchema` adds for one plugin over the kit's own composition, by model and column. */
+  function getSchemaDelta(plugin: BetterAuthPlugin): Record<string, string[]> {
+    const added: Record<string, string[]> = {};
+    for (const [model, spec] of Object.entries(getSchema(authSchemaOptions([plugin])))) {
+      const columns = Object.keys(spec.fields).filter((name) => !KIT_SCHEMA_FIELDS[model]?.includes(name));
+      if (columns.length > 0) added[model] = columns;
+    }
+    return added;
+  }
+
+  /** The same, from the delta this package derives without Better Auth. */
+  function derived(plugin: BetterAuthPlugin): Record<string, string[]> {
+    const delta = pluginSchemaDelta(plugin);
+    const added: Record<string, string[]> = {};
+    for (const table of delta.tables) added[table.name] = table.columns.slice(1).map((column) => column.name);
+    for (const column of delta.columns) {
+      const columns = added[column.table] ?? [];
+      columns.push(column.name);
+      added[column.table] = columns;
+    }
+    return added;
+  }
+
+  test.each([
+    ["organization", organization()],
+    ["two-factor", twoFactor()],
+    ["admin", admin()],
+    [
+      "a renamed model and field",
+      {
+        id: "renamed",
+        schema: {
+          widget: { modelName: "gadget", fields: { label: { type: "string", fieldName: "title" } } },
+          user: { fields: { nickname: { type: "string", required: false } } },
+        },
+      } as BetterAuthPlugin,
+    ],
+  ])("%s", (_name, plugin) => {
+    expect(derived(plugin)).toEqual(getSchemaDelta(plugin));
   });
 });
 

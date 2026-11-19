@@ -4,8 +4,8 @@
 import type { z } from "zod";
 import type { MessageParams } from "../i18n/catalog";
 import type { UnmarkedString } from "../privacy/types";
-import type { ValidationIssue } from "./payload";
-import { ErrorPayload } from "./payload";
+import type { ErrorPayload, ValidationIssue } from "./payload";
+import { errorSchemas } from "./payloadSchemas";
 
 /**
  * `PithyError` is the one throw/catch vehicle. A thrown thing must be `instanceof Error`
@@ -33,7 +33,7 @@ export class PithyError extends Error {
     },
     options?: { cause?: unknown },
   ) {
-    const parsed = ErrorPayload.parse(payload);
+    const parsed = errorSchemas().ErrorPayload.parse(payload);
     super(parsed.message, options);
     this.payload = parsed;
     this.name = "PithyError";

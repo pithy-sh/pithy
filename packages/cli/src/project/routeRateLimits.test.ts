@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -126,11 +127,11 @@ describe("reconcileRouteRateLimits", () => {
 });
 
 describe("composedRouteRateLimits", () => {
-  test("reads every limit off the routes the Worker composes, app and libraries alike", () => {
+  test("reads every limit off the routes the Worker composes, app and libraries alike", async () => {
     const library = defineCapability({
       name: "library",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.post(
           "/library/upload",
           describeRoute({
@@ -141,12 +142,12 @@ describe("composedRouteRateLimits", () => {
           }),
           (c) => c.text(""),
         );
-      },
+      }),
     });
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (hono) => {
+      routes: routesOf((hono) => {
         hono.post(
           "/runs",
           describeRoute({
@@ -157,9 +158,9 @@ describe("composedRouteRateLimits", () => {
           }),
           (c) => c.text(""),
         );
-      },
+      }),
     });
-    expect(composedRouteRateLimits("dev", { capabilities: [library], app })).toEqual([
+    expect(await composedRouteRateLimits("dev", { capabilities: [library], app })).toEqual([
       { name: "ROUTE_RATE_LIMIT_20_PER_60S", limit: 20, period: 60 },
       { name: "ROUTE_RATE_LIMIT_5_PER_10S", limit: 5, period: 10 },
     ]);
@@ -192,7 +193,7 @@ describe("addRouteRateLimits", () => {
   const limitedApp = defineCapability({
     name: "app",
     requiredBindings: [],
-    routes: (hono) => {
+    routes: routesOf((hono) => {
       hono.post(
         "/runs",
         describeRoute({
@@ -203,7 +204,7 @@ describe("addRouteRateLimits", () => {
         }),
         (c) => c.text(""),
       );
-    },
+    }),
   });
 
   test("writes what pithy worker sync would, and says so", async () => {

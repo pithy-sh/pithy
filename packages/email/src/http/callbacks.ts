@@ -19,7 +19,7 @@ import {
 import { EmailInvalidTokenError } from "../error/errors";
 import { recordEvent } from "../send/events";
 import { suppress } from "../send/suppression";
-import { CALLBACK_BASE } from "../templates/engine";
+import { CALLBACK_BASE } from "./routeTable";
 import { CallbackTokenParam, UnsubscribeForm } from "./schemas";
 
 /**

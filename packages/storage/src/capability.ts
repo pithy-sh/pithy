@@ -12,8 +12,7 @@ import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
 import { refuseRenamedStorageOptions, StorageConfig, type StorageConfigInput } from "./config/config";
 import { storageTables } from "./data/tables";
-import { STORAGE_MANAGE_POWER } from "./http/handlers";
-import { registerStorageRoutes } from "./http/routes";
+import { STORAGE_MANAGE_POWER, storageRouteTable } from "./http/routeTable";
 import { storageAdminRoutes } from "./http/scopes";
 import { storage_0001_objects } from "./migrations/0001_objects";
 import { storage_0002_ownership } from "./migrations/0002_ownership";
@@ -139,12 +138,16 @@ export function storage(options: StorageOptions = {}): StorageCapability {
       }),
       bundleTokenCheck({ secret: STORAGE_R2_SECRET, provision: "storage provision" }),
     ),
-    routes: registerStorageRoutes({
-      config: resolved,
-      basePath: mountPath,
-      sharePath,
-      ...(permission ? { permission } : {}),
-    }),
+    routes: {
+      declared: storageRouteTable(mountPath, sharePath),
+      load: async () =>
+        (await import("./http/routes")).registerStorageRoutes({
+          config: resolved,
+          basePath: mountPath,
+          sharePath,
+          ...(permission ? { permission } : {}),
+        }),
+    },
     seeds: [storageExampleSeed],
   });
 

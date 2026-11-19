@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createLogger } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import type { Kysely } from "kysely";
@@ -25,7 +26,7 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/login", async (c) => {
           await c.var.emit({
             action: "auth/login",
@@ -36,7 +37,7 @@ describe("audit capability through createBackend", () => {
           });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app });
@@ -55,12 +56,12 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/act", async (c) => {
           await c.var.emit({ action: "admin/config_changed", outcome: "success", actorType: "user", actorId: "u-org" });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app });
@@ -81,7 +82,7 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/act", async (c) => {
           await c.var.emit({
             action: "admin/config_changed",
@@ -91,7 +92,7 @@ describe("audit capability through createBackend", () => {
           });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app });
@@ -106,7 +107,7 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/act", async (c) => {
           await c.var.emit({
             action: "admin/config_changed",
@@ -119,7 +120,7 @@ describe("audit capability through createBackend", () => {
           } as never);
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app });
@@ -137,7 +138,7 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/act/:tenant", async (c) => {
           await c.var.emit({
             action: "admin/config_changed",
@@ -148,7 +149,7 @@ describe("audit capability through createBackend", () => {
           });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app });
@@ -174,12 +175,12 @@ describe("audit capability through createBackend", () => {
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/login", async (c) => {
           await c.var.emit({ action: "auth/login", outcome: "success", actorType: "system" });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
 
     const backend = createBackend({ capabilities: [audit()], app, logger });

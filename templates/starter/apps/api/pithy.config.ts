@@ -45,35 +45,24 @@ const app = defineCapability({
   // Bindings your own routes need beyond what capabilities declare. Validated
   // on the first request — a missing binding fails fast with the binding's name.
   requiredBindings: [],
-  // Mount your routes here. Every route declares how callers are verified —
+  // Your routes: every method and path, declared, and a loader for the module
+  // that mounts them. The Worker imports that module on the first request that
+  // reaches one, not at startup. Every route declares how callers are verified —
   // bearer, session, signed-webhook, or public — and what it returns, with
   // `describeRoute` from @pithy-sh/core/src/http/routeSpec. `pithy contract`
   // writes that into apps/api/openapi.json for every client to build against.
   // Read a request through `validate(target, Schema)` from
   // @pithy-sh/core/src/http/validation. `GET /health` is built in.
-  // routes: (a) => {
-  //   a.get(
-  //     "/hello",
-  //     describeRoute({
-  //       summary: "Say hi.",
-  //       verification: "public",
-  //       responses: { 200: { description: "A greeting.", contentType: "text/plain" } },
-  //     }),
-  //     (c) => c.text("Hi."),
-  //   );
-  //   // With auth composed (`pithy add auth`), requireAuth() from auth's
-  //   // src/http/middleware admits a signed-in caller and answers 401
-  //   // otherwise. The handler after it reads c.var.auth with no null check.
-  //   a.get(
-  //     "/me",
-  //     describeRoute({
-  //       summary: "Say who is signed in.",
-  //       verification: ["bearer", "session"],
-  //       responses: { 200: { description: "The caller's user id.", contentType: "text/plain" } },
-  //     }),
-  //     requireAuth(),
-  //     (c) => c.text(c.var.auth.userId),
-  //   );
+  // routes: {
+  //   declared: [
+  //     { method: "GET", path: "/hello" },
+  //     // With auth composed (`pithy add auth`), the module mounts this one behind
+  //     // requireAuth() from auth's src/http/middleware, which admits a signed-in
+  //     // caller and answers 401 otherwise. The handler after it reads
+  //     // c.var.auth with no null check.
+  //     { method: "GET", path: "/me" },
+  //   ],
+  //   load: async () => (await import("./src/routes")).mountRoutes,
   // },
 });
 

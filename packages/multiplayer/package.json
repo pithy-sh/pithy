@@ -16,6 +16,10 @@
     "!dist/**/*.test.*"
   ],
   "type": "module",
+  "sideEffects": [
+    "./src/game/builtins.ts",
+    "./dist/game/builtins.js"
+  ],
   "engines": {
     "node": ">=22"
   },

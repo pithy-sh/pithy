@@ -15,6 +15,7 @@ import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/contr
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -192,7 +193,7 @@ const CLINIC_RECORDS = {
   writtenWithdrawal: true,
 } as const;
 
-function makeApp(granted: readonly ControlPlaneScope[] = [CONSENT_READ_SCOPE]) {
+async function makeApp(granted: readonly ControlPlaneScope[] = [CONSENT_READ_SCOPE]) {
   const capability = consent({ purposes: [{ ...CLINIC_RECORDS, classes: [...CLINIC_RECORDS.classes] }] });
   const capabilities: Capability[] = [auth, email, capability];
   capability.compose?.({ capabilities });
@@ -217,7 +218,7 @@ function makeApp(granted: readonly ControlPlaneScope[] = [CONSENT_READ_SCOPE]) {
     if (user) c.set("auth", { userId: user, sessionId: "s1", scopes: [] });
     await next();
   });
-  capability.routes?.(app);
+  await mountRoutes(capability.routes, app);
   return { app, capability, capabilities };
 }
 
@@ -261,14 +262,14 @@ const marketing = { purpose: "email.marketing", noticeVersion: 1, method: "click
 
 describe("the person's routes", () => {
   test("the purposes list the composed and the adopter's own", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const response = await request(app, "GET", "/consent/purposes");
     const body = ConsentPurposesResponse.parse(await response.json());
     expect(body.purposes.map((purpose) => purpose.id)).toEqual(["email.marketing", "clinic.records"]);
   });
 
   test("the device-id cookie is set only once a choice is made", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     for (const path of ["/consent/purposes", "/consent/me"]) {
       expect(visitorCookie(await request(app, "GET", path)), path).toBeNull();
     }
@@ -293,7 +294,7 @@ describe("the person's routes", () => {
   });
 
   test("declining is a choice too: a visitor's withdrawal is recorded and holds the cookie", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const response = await request(app, "POST", "/consent/withdrawals", {
       body: { purpose: "email.marketing", method: "click", surface: "banner" },
     });
@@ -304,7 +305,7 @@ describe("the person's routes", () => {
   });
 
   test("a signed-in person reads and withdraws their own consent, and withdrawing is the same request as granting", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const grant = await request(app, "POST", "/consent/grants", { user: "ada", body: marketing });
     expect(ConsentChoiceResponse.parse(await grant.json()).granted).toBe(true);
     expect(visitorCookie(grant)).toBeNull();
@@ -320,7 +321,7 @@ describe("the person's routes", () => {
   });
 
   test("a withdrawal reaches the capability that owns the purpose, with the account's address", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     await request(app, "POST", "/consent/grants", { user: "ada", body: marketing });
     await request(app, "POST", "/consent/withdrawals", {
       user: "ada",
@@ -330,7 +331,7 @@ describe("the person's routes", () => {
   });
 
   test("a grant that stands reaches the capability that owns the purpose; a refused one reaches nothing", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     await request(app, "POST", "/consent/grants", { user: "ada", body: { ...marketing, noticeVersion: 9 } });
     expect(grants).toEqual([]);
     await request(app, "POST", "/consent/grants", { user: "ada", body: marketing });
@@ -338,7 +339,7 @@ describe("the person's routes", () => {
   });
 
   test("a device-id cookie that is not a UUID is no visitor at all", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const cookie = `${CONSENT_VISITOR_COOKIE}=not-a-uuid`;
     const me = MyConsentResponse.parse(await (await request(app, "GET", "/consent/me", { cookie })).json());
     expect(me.subject).toBeNull();
@@ -351,7 +352,7 @@ describe("the person's routes", () => {
   });
 
   test("both writes are rate-limited per address, under their own key, before anything is read or written", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const keys: string[] = [];
     const limiter = {
       limit: async ({ key }: { key: string }) => {
@@ -375,7 +376,7 @@ describe("the person's routes", () => {
   });
 
   test("both writes refuse a cross-site request before reading it", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     for (const path of ["/consent/grants", "/consent/withdrawals"]) {
       const response = await request(app, "POST", path, { body: marketing, crossSite: true });
       expect(response.status, path).toBe(403);
@@ -385,7 +386,7 @@ describe("the person's routes", () => {
   });
 
   test("a person reads back a document they signed, and never someone else's", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     await request(app, "POST", "/consent/grants", {
       user: "ada",
       body: {
@@ -406,7 +407,7 @@ describe("the person's routes", () => {
   });
 
   test("a stale notice and a method below the minimum are refused with their codes", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const stale = await request(app, "POST", "/consent/grants", {
       user: "ada",
       body: { ...marketing, noticeVersion: 9 },
@@ -422,7 +423,7 @@ describe("the person's routes", () => {
 
 describe("a phone, which holds no cookie", () => {
   test("a signed-out phone's choice is held against the visitor id it sends, and read back by it", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const granted = await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
     expect(granted.status).toBe(201);
     expect(granted.headers.get("set-cookie")).toBeNull();
@@ -433,7 +434,7 @@ describe("a phone, which holds no cookie", () => {
   });
 
   test("a device id that is not a UUID is no visitor, and a cookie always wins over the header", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const odd = MyConsentResponse.parse(
       await (await request(app, "GET", "/consent/me", { device: "device-1" })).json(),
     );
@@ -448,7 +449,7 @@ describe("a phone, which holds no cookie", () => {
   });
 
   test("a phone's write has nothing ambient to forge, so the same-origin gate stands aside", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     for (const path of ["/consent/grants", "/consent/withdrawals"]) {
       const body =
         path === "/consent/grants" ? marketing : { purpose: "email.marketing", method: "click", surface: "app" };
@@ -467,7 +468,7 @@ describe("a phone, which holds no cookie", () => {
   });
 
   test("the device merges into the account it signs in as, and is no visitor once merged", async () => {
-    const { app, capabilities } = makeApp();
+    const { app, capabilities } = await makeApp();
     await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
     const signedIn = await request(app, "GET", "/consent/purposes", { user: "ada", device: DEVICE });
     expect(signedIn.status).toBe(200);
@@ -489,7 +490,7 @@ describe("a phone, which holds no cookie", () => {
 
 describe("the device id auth registers, which is no secret", () => {
   test("names no visitor: it reads nobody's choices, writes none cross-site, and merges nothing at sign-in", async () => {
-    const { app, capabilities } = makeApp();
+    const { app, capabilities } = await makeApp();
     await request(app, "POST", "/consent/grants", { body: marketing, device: DEVICE });
 
     const read = MyConsentResponse.parse(
@@ -515,7 +516,7 @@ describe("the device id auth registers, which is no secret", () => {
 
 describe("the merge at sign-in", () => {
   test("the first signed-in request carrying a visitor's cookie merges it, records it, and lets the cookie go", async () => {
-    const { app, capabilities } = makeApp();
+    const { app, capabilities } = await makeApp();
     const granted = await request(app, "POST", "/consent/grants", { body: marketing });
     const cookie = visitorCookie(granted) ?? "";
     const signedIn = await request(app, "GET", "/consent/purposes", { user: "ada", cookie });
@@ -556,7 +557,7 @@ async function send(app: Hono<PithyHonoEnv>, path: string, scope: ControlPlaneSc
 
 describe("the control plane", () => {
   test("counts per purpose and version, a subject's record, and the signed document, behind consent:read", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     await request(app, "POST", "/consent/grants", { user: "ada", body: marketing });
     await request(app, "POST", "/consent/grants", { user: "grace", body: marketing });
     await request(app, "POST", "/consent/withdrawals", {
@@ -595,7 +596,7 @@ describe("the control plane", () => {
   });
 
   test("the signed grants expired or expiring within the window, soonest first, with no name on them", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const day = 86_400_000;
     const signedBody = (user: string, days: number) =>
       request(app, "POST", "/consent/grants", {
@@ -662,7 +663,7 @@ describe("the control plane", () => {
   });
 
   test("a window outside 1 to 366 days is refused, naming the range", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     for (const within of ["0", "367", "1.5", "soon"]) {
       const response = await send(app, `/consent/control-plane/expiring?within=${within}`, CONSENT_READ_SCOPE);
       expect(response.status, within).toBe(400);
@@ -679,17 +680,17 @@ describe("the control plane", () => {
   test("every management route refuses a connection without consent:read, whatever else it was granted", async () => {
     for (const route of consentAdminRoutes("/consent")) {
       const path = route.path.replace(":kind", "account").replace(":subjectId", "ada").replace(":hash", "a".repeat(64));
-      const { app: ungranted } = makeApp([]);
+      const { app: ungranted } = await makeApp([]);
       const refused = await send(ungranted, path, CONSENT_READ_SCOPE);
       expect(refused.status, path).toBe(403);
-      const { app: elsewhere } = makeApp([PRIVACY_READ_SCOPE]);
+      const { app: elsewhere } = await makeApp([PRIVACY_READ_SCOPE]);
       const otherScope = await send(elsewhere, path, PRIVACY_READ_SCOPE);
       expect(otherScope.status, path).toBe(403);
     }
   });
 
   test("evidence is served as an attachment that will not render on this origin", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     await request(app, "POST", "/consent/grants", {
       user: "ada",
       body: {

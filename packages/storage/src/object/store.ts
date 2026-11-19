@@ -6,7 +6,6 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
 import { type R2StorageCredentials, r2CredentialsRegistry, STORAGE_R2_SECRET } from "../secret/registry";
-import { r2Presigned } from "./cloudflare";
 import type { ReportedPart } from "./multipart";
 import type { UploadedPart } from "./uploadedPart";
 
@@ -233,7 +232,7 @@ export interface ObjectStoreOptions {
    * Test seam: build the S3 port from resolved credentials. Defaults to the real R2 adapter. Overriding
    * it is how a test drives the store with no SDK, no credentials, and no network.
    */
-  presigned?: (credentials: R2StorageCredentials) => PresignedObjects;
+  presigned?: (credentials: R2StorageCredentials) => PresignedObjects | Promise<PresignedObjects>;
 }
 
 /** Map our range shape onto R2's — the binding's union admits exactly one of these three forms. */
@@ -273,7 +272,9 @@ function toMetadata(object: R2Object): ObjectMetadata {
  */
 export function objectStore(options: ObjectStoreOptions): ObjectStore {
   const secretName = options.secretName ?? STORAGE_R2_SECRET;
-  const build = options.presigned ?? r2Presigned;
+  // The real adapter is imported on the first presign: it carries the Cloudflare and S3 clients, which a
+  // Worker that only reads through the binding never needs at startup.
+  const build = options.presigned ?? (async (credentials) => (await import("./cloudflare")).r2Presigned(credentials));
   const bucket = options.bucket;
   let presignedPromise: Promise<PresignedObjects> | null = null;
 

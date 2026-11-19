@@ -29,6 +29,7 @@ import type { ObjectStore } from "../object/store";
 import type { UploadedPart } from "../object/uploadedPart";
 import type { StorageCeiling } from "../quota/ceiling";
 import { assertWithinQuota, insertReservingQuota, type QuotaCheck, updateSettlingQuota } from "../quota/quota";
+import { STORAGE_MANAGE_POWER } from "./routeTable";
 import type {
   CompleteUploadInput,
   CopyObjectInput,
@@ -66,9 +67,6 @@ import type {
  * cannot see confirms it exists, which is exactly the oracle an enumeration attack wants. A file they
  * can already read has nothing left to hide, so there the honest answer is the useful one.
  */
-
-/** The power a role holds to edit, delete and re-scope any file in its own organization. */
-export const STORAGE_MANAGE_POWER = "storage:manage";
 
 /** The capability's name, as the permission hook sees it. */
 const CAPABILITY = "storage";

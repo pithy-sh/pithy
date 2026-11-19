@@ -17,10 +17,25 @@ The caller decides what each verdict means. `reject` is a refusal. `review` asks
 
 ## Checking a title in a route
 
+The app's routes load on first use, so the route lives in its own module and the capability declares it with a loader for that module:
+
 ```ts
+// apps/api/pithy.config.ts
+const app = defineCapability({
+  name: "app",
+  requiredBindings: [],
+  routes: {
+    declared: [{ method: "POST", path: "/levels" }],
+    load: async () => (await import("./src/levels")).mountLevels,
+  },
+});
+```
+
+```ts
+// apps/api/src/levels.ts
 import { requireAuth } from "@pithy-sh/auth/src/http/middleware";
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { RouteMount } from "@pithy-sh/core/src/http/lazyRoutes";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { z } from "zod";
@@ -33,30 +48,26 @@ const LevelCreated = z
   .object({ held: z.boolean().describe("Whether the level waits for a person to look before it is listed.") })
   .describe("The level was saved.");
 
-export const app = defineCapability({
-  name: "app",
-  requiredBindings: [],
-  routes: (a) => {
-    a.post(
-      "/levels",
-      describeRoute({
-        summary: "Publish a level.",
-        verification: ["bearer", "session"],
-        responses: { 201: LevelCreated },
-      }),
-      requireAuth(),
-      validate("json", CreateLevel),
-      async (c) => {
-        const { title } = c.req.valid("json");
-        const verdict = await c.var.moderator.check(title, "title");
-        if (verdict.verdict === "reject") throw new ValidationError({ message: "Pick another title." });
-        const held = verdict.verdict === "review";
-        // Save the level with `held`, and list only what is not held.
-        return c.json({ held } satisfies z.output<typeof LevelCreated>, 201);
-      },
-    );
-  },
-});
+export const mountLevels: RouteMount = (a) => {
+  a.post(
+    "/levels",
+    describeRoute({
+      summary: "Publish a level.",
+      verification: ["bearer", "session"],
+      responses: { 201: LevelCreated },
+    }),
+    requireAuth(),
+    validate("json", CreateLevel),
+    async (c) => {
+      const { title } = c.req.valid("json");
+      const verdict = await c.var.moderator.check(title, "title");
+      if (verdict.verdict === "reject") throw new ValidationError({ message: "Pick another title." });
+      const held = verdict.verdict === "review";
+      // Save the level with `held`, and list only what is not held.
+      return c.json({ held } satisfies z.output<typeof LevelCreated>, 201);
+    },
+  );
+};
 ```
 
 The refusal message names no word. Telling someone which word tripped the list teaches them the next spelling to try.

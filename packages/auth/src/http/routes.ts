@@ -22,6 +22,7 @@ import { assertAttestationBlock, sendGate } from "../attestation/gate";
 import { PLATFORM_VERIFIERS } from "../attestation/verifier";
 import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
 import type { AuthWiring } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
 import type { SignInMethods } from "../instance/signInMethods";
@@ -45,7 +46,7 @@ import { admitsRefusedAccount, lifecycleRedirect } from "./lifecycleGate";
 import { accountHolder, requireAccountHolder, requireAuthUnnarrowed } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
-import { getAuthInstance, resolveDb } from "./resolve";
+import { getAuthInstance } from "./resolve";
 import {
   AccountDeleteResponse,
   AppAttestKeyResponse,
@@ -487,7 +488,7 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   // the credential's holder — and not on the ones that end a session or start a new one. `./lifecycleGate`
   // says which, and why a stale cookie must not stop somebody else signing in.
   const pathname = new URL(c.req.raw.url).pathname;
-  const refusal = noticedRefusal(c);
+  const refusal = noticedRefusal(c.req.raw);
   if (refusal && !admitsRefusedAccount(pathname.slice(wiring.config.basePath.length))) throw refusal;
 
   // **The first of the two guards on the refusal redirect.** `errorCallbackURL` is the caller's
@@ -624,7 +625,7 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
   // An account that may not act gets no successor. `session.create.before` would refuse the mint below
   // anyway; refusing here, from the middleware's verdict, is what keeps the presented token unspent and the
   // successor never written, so a reinstated account's device still holds a credential that works.
-  const refusal = noticedRefusal(c);
+  const refusal = noticedRefusal(c.req.raw);
   if (refusal) throw refusal;
 
   const ip = headers.get("cf-connecting-ip") ?? undefined;

@@ -22,9 +22,9 @@ import { type AppTool, offeredTools } from "@pithy-sh/core/src/mcp/tools";
 import { verifyJwsAccessToken } from "better-auth/oauth2";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { AuthAuditActions } from "../../audit/actions";
+import { resolveDb } from "../../data/binding";
 import { authDatabase } from "../../data/tables";
 import { requireAuthUnnarrowed } from "../../http/middleware";
-import { resolveDb } from "../../http/resolve";
 import type { AuthInstance } from "../../instance/auth";
 import { lifecycleRefusalFor } from "../../lifecycle/enforce";
 import { PACKAGE_VERSION } from "../../version.generated";
@@ -34,7 +34,7 @@ import { consentView } from "../consent";
 import { dispatchedOutcome, dispatchRequest, type ToolArguments, toolArguments } from "../dispatch";
 import { floorAdmits, type McpFloor } from "../floor";
 import type { McpHost } from "../host";
-import { MCP_SCOPE, MCP_SCOPES } from "../provider";
+import { MCP_SCOPE, MCP_SCOPES } from "../names";
 import { answer } from "../rpc";
 import {
   recordToolCall,
@@ -74,7 +74,8 @@ export interface McpRouteDeps {
   readonly floor: McpFloor;
   readonly host: () => McpHost;
   readonly app: () => Hono<PithyHonoEnv>;
-  readonly tools: () => readonly AppTool[];
+  /** Every tool the composed app offers, every capability's routes loaded. */
+  readonly tools: () => Promise<readonly AppTool[]>;
 }
 
 /** A verified MCP caller: who, through which client, for which organization, and what their role allows. */
@@ -454,12 +455,13 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       const correlation = correlationOf(c);
       const reply = await answer(c.req.valid("json"), {
         server: { name: "pithy", version: PACKAGE_VERSION },
-        tools: async () => offeredTools(deps.tools(), { roleAllows: caller.roleAllows, scopes: caller.auth.scopes }),
+        tools: async () =>
+          offeredTools(await deps.tools(), { roleAllows: caller.roleAllows, scopes: caller.auth.scopes }),
         call: (tool, args) => auditedCall(c, deps, caller, correlation, tool, args),
-        refused: (name) =>
+        refused: async (name) =>
           auditToolCall(c, deps, caller, correlation, requestedToolName(name), {
             kind: "refused",
-            reason: deps.tools().some((tool) => tool.name === name) ? "withheld" : "unknown",
+            reason: (await deps.tools()).some((tool) => tool.name === name) ? "withheld" : "unknown",
           }),
       });
       if (reply === null) return c.body(null, 202);
@@ -515,7 +517,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
           reportedUri: client.uri ?? null,
           redirectUri: query.get("redirect_uri") ?? "",
         },
-        tools: deps.tools(),
+        tools: await deps.tools(),
         caller,
         requestedScopes: (query.get("scope") ?? "").split(" ").filter((scope) => scope.length > 0),
       });

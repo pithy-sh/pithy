@@ -10,7 +10,7 @@ import { isRouteRateLimitBinding } from "@pithy-sh/core/src/http/routeRateLimit"
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { routeGroupsOf } from "@pithy-sh/core/src/openapi/routeGroups";
 import { bindingSlot, envStanzas, rateLimitNamespaceId, type WranglerStanza } from "./bindingEntries";
-import { composeForSync } from "./composeFor";
+import { composeFor } from "./composeFor";
 import type { WorkerConfig } from "./config";
 import { writeTestBindings } from "./workersTestConfig";
 import { readOptionalWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -27,10 +27,10 @@ import { readOptionalWranglerConfig, writeWranglerConfig } from "./wrangler";
  */
 
 /** Every rate-limit binding the routes of this Worker declare, composed for `environment`. */
-export function composedRouteRateLimits(environment: string, config: WorkerConfig): RouteRateLimitBinding[] {
-  return composeForSync(environment, () => {
+export function composedRouteRateLimits(environment: string, config: WorkerConfig): Promise<RouteRateLimitBinding[]> {
+  return composeFor(environment, async () => {
     const app = createBackend({ capabilities: config.capabilities, ...(config.app ? { app: config.app } : {}) });
-    const groups = routeGroupsOf(app);
+    const groups = await routeGroupsOf(app);
     if (groups === undefined) {
       throw new InternalError({ detail: "createBackend assembled an app without recording its route groups." });
     }
@@ -132,7 +132,7 @@ export async function addRouteRateLimits(options: {
 }): Promise<string[]> {
   let limits: RouteRateLimitBinding[];
   try {
-    limits = composedRouteRateLimits(LOCAL_ENVIRONMENT, await options.config());
+    limits = await composedRouteRateLimits(LOCAL_ENVIRONMENT, await options.config());
   } catch {
     return [];
   }

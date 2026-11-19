@@ -3,8 +3,8 @@
 
 import type { MessageParams } from "../i18n/catalog";
 import type { UnmarkedString } from "../privacy/types";
-import type { ErrorPayload, KitErrorDomain } from "./payload";
-import { ExtendedErrorPayload } from "./payload";
+import type { ErrorPayload, ExtendedErrorPayload, KitErrorDomain } from "./payload";
+import { errorSchemas } from "./payloadSchemas";
 import { InternalError } from "./pithyError";
 
 /** How much of a rejected code the public message will quote. Enough to debug, not enough to abuse. */
@@ -112,7 +112,7 @@ export function defineErrorPayload<const Code extends `${string}/${string}`>(
     params?: MessageParams;
   } & ReservedDomain<Code>,
 ): ErrorPayloadOf<Code> {
-  const parsed = ExtendedErrorPayload.safeParse(payload);
+  const parsed = errorSchemas().ExtendedErrorPayload.safeParse(payload);
   if (!parsed.success) {
     // An author error, like a malformed secret registry — so it reads as one. The offending code and
     // status are the adopter's own source, safe to name; the caller's `detail` is not echoed back.

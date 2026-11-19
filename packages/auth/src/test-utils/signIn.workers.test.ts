@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { email } from "@pithy-sh/email/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -30,9 +31,9 @@ import { signInTestUser } from "./signIn";
 const appCapability = defineCapability({
   name: "things",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/things/me", requireAuth(), (c) => c.json({ userId: c.var.auth.userId }));
-  },
+  }),
 });
 
 /** An app on `https://app.example.com`, where Better Auth names its session cookie with the `__Secure-` prefix. */

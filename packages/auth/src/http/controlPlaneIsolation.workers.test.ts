@@ -18,6 +18,7 @@ import {
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { EMAIL_MIGRATION_ORDER, email } from "@pithy-sh/email/src/capability";
@@ -151,7 +152,7 @@ interface Probe {
 const probeCapability = defineCapability({
   name: "probe",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/probe/control-plane", requireControlPlane(ANY_VERIFIED_CALLER), (c) =>
       c.json<Probe>({
         authIsNull: c.var.auth === null,
@@ -168,7 +169,7 @@ const probeCapability = defineCapability({
         cookie: c.req.header("cookie") ?? null,
       }),
     );
-  },
+  }),
 });
 
 /** One backend composing both seams — the arrangement the property is actually about. */

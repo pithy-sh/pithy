@@ -4,7 +4,7 @@
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { AUDIT_CHECKPOINT_BINDING } from "../chain/checkpoint";
+import { AUDIT_CHECKPOINT_BINDING } from "../chain/bucket";
 import { AUDIT_CAPABILITY, auditWorkflowRegistry } from "../workflows/specs";
 
 /**

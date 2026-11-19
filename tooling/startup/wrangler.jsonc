@@ -1,0 +1,14 @@
+// The reference Worker `scripts/startupBudget.ts` measures: every kit capability, composed for prod.
+// It is built and profiled locally by `wrangler check startup` and never deployed, so it declares no
+// binding: startup evaluates the bundle and composes the capabilities, and reads no binding to do it.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pithy-startup-reference",
+  "main": "src/worker.ts",
+  // Copied from compatibility.ts at the repository root: JSONC cannot import it.
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "prod"
+  }
+}

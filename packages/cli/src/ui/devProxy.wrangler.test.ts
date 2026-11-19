@@ -42,18 +42,19 @@ import { publishSameOrigin } from "@pithy-sh/auth/src/http/csrf";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 
 const gate = defineCapability({
   name: "auth",
   requiredBindings: [],
   middleware: [publishSameOrigin({ config: { baseURL: "https://api.example.com", trustedOrigins: [] } })],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/auth/start", (c) => {
       c.header("set-cookie", "pithy.session=signed-in; Path=/; HttpOnly; SameSite=Lax");
       return c.json({ url: c.req.url });
     });
     app.post("/auth/write", requireSameOrigin(), (c) => c.json({ url: c.req.url, cookie: c.req.header("cookie") ?? null }));
-  },
+  }),
 });
 
 export default createEntrypoint({ capabilities: [gate] });

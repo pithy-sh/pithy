@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { InternalError } from "../../error/pithyError";
+import { routesOf } from "../../http/lazyRoutes";
 import { controlplane } from "../capability";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { allowedOriginSet, corsSurface, devLoopbackAllows, originOf } from "./cors";
@@ -47,9 +48,9 @@ const inventory = defineCapability({
       summary: "Every pending thing.",
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 /** A second one, so "one capability happened to work" cannot pass for "the surface is derived". */
@@ -65,9 +66,9 @@ const vault = defineCapability({
       summary: "Every secret, in full.",
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/vault/admin/secrets", requireControlPlane(VAULT_READ_SCOPE), (c) => c.json({ secrets: [] }));
-  },
+  }),
 });
 
 /**
@@ -95,19 +96,19 @@ const desk = defineCapability({
       summary: "Search the tickets.",
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.post("/desk/admin/tickets/search", requireControlPlane("desk:tickets:read"), (c) => c.json({ tickets: [] }));
     app.get("/desk/admin/tickets/:id", requireControlPlane("desk:tickets:read"), (c) => c.json({ ticket: null }));
-  },
+  }),
 });
 
 /** The adopter's own API: not an admin surface, and never the kit's to decide CORS for. */
 const adopterApp = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/api/things", (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 /** The stock composition: no CORS config of any kind passed to `controlplane()`. */

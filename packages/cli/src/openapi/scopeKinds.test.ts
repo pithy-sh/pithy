@@ -3,7 +3,7 @@
 
 import { type ScopeKind, scopeKindConflicts } from "@pithy-sh/core/src/controlPlane/scope/kind";
 import { describe, expect, test } from "vitest";
-import { kitComposition } from "./kitDocument";
+import { kitCapabilities } from "./kitDocument";
 
 /**
  * Every kit scope that grants more than a read, by kind. Every scope absent here is `reads`.
@@ -55,7 +55,7 @@ const PUBLISHED: Readonly<Record<Exclude<ScopeKind, "reads">, readonly string[]>
 
 /** Every kit admin route, as its capability declares it. */
 function declared() {
-  return kitComposition().capabilities.flatMap((capability) =>
+  return kitCapabilities().flatMap((capability) =>
     (capability.adminRoutes ?? []).map((route) => ({
       capability: capability.name,
       method: route.method,

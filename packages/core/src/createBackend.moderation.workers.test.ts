@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
+import { routesOf } from "./http/lazyRoutes";
 import type { ModerationContext, TextModerator } from "./moderation/moderator";
 
 /** An app with one route that checks the `text` query value as `context` and answers the verdict. */
@@ -12,7 +13,7 @@ function probe() {
   return defineCapability({
     name: "app",
     requiredBindings: [],
-    routes: (a) => {
+    routes: routesOf((a) => {
       a.get("/check/:context/:text", async (c) => {
         const verdict = await c.var.moderator.check(
           decodeURIComponent(c.req.param("text")),
@@ -20,7 +21,7 @@ function probe() {
         );
         return c.json(verdict);
       });
-    },
+    }),
   });
 }
 

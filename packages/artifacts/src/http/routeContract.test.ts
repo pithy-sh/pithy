@@ -5,6 +5,7 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
@@ -112,17 +113,17 @@ function concrete(path: string): string {
 describe("the control-plane surface", () => {
   const capability = artifacts() as unknown as Capability;
 
-  test("every advertised admin route is mounted, and every mounted one is advertised", () => {
+  test("every advertised admin route is mounted, and every mounted one is advertised", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("the advertised paths follow a moved basePath", () => {
+  test("the advertised paths follow a moved basePath", async () => {
     const moved = artifacts({ basePath: "/git" });
     const app = new Hono<PithyHonoEnv>();
-    moved.routes?.(app);
+    await mountRoutes(moved.routes, app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [moved as unknown as Capability])).toEqual([]);
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/git/admin/")).toBe(true);
   });

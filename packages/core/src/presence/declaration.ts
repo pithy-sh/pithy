@@ -8,8 +8,8 @@ import { remedy } from "../cli/command";
 import { type ReadJudgedRoute, readsOnly } from "../controlPlane/discovery/readRoute";
 import { ControlPlaneScope } from "../controlPlane/scope/scope";
 import { InternalError } from "../error/pithyError";
-import { PRESENCE_PARTICIPANT_NAME_MAX } from "./frames";
-import { PresenceActivity, PresenceRoomKindName } from "./names";
+import type { PresenceRoomDescriptor } from "./http/responses";
+import { PRESENCE_PARTICIPANT_NAME_MAX, PresenceActivity, PresenceRoomKindName } from "./names";
 
 /**
  * **Presence rooms: who else has a record open, live, from the adopter's own Worker.**
@@ -280,4 +280,16 @@ export async function resolveTicketKeys(key: PresenceTicketKey, env: Record<stri
     });
   }
   return keys;
+}
+
+/** The room kinds a declaration serves, as the manifest reports them. */
+export function describePresenceRooms(presence: PresenceDeclaration): PresenceRoomDescriptor[] {
+  return presence.rooms.map((room) => ({
+    kind: room.kind,
+    scope: room.scope,
+    activities: [...room.activities],
+    maxParticipants: participantCap(room),
+    sessionTicketPath: room.session ? presenceTicketPath(presence.basePath) : null,
+    socketPath: presenceSocketPath(presence.basePath),
+  }));
 }

@@ -152,7 +152,7 @@ export {
 } from "./grants/ledgerSeam";
 export { PAYMENTS_RECONCILE_KEY, triggerPaymentsReconcile } from "./http/dispatch";
 export { requireAuth } from "./http/guards";
-export { type PaymentsRoutesOptions, registerPaymentsRoutes } from "./http/routes";
+export type { PaymentsRoutesOptions } from "./http/routes";
 export {
   AppleWebhookNotification,
   CheckoutRequest,

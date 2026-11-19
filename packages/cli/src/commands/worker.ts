@@ -860,7 +860,7 @@ async function syncWorker(options: {
   const declaredVars = declaredWorkerVars(target.config, target.capabilities);
   // Before any write too: the routes are read off the composed app, and a composition the Worker would refuse to
   // boot, such as a per-user limit on an open route, is refused here with wrangler.jsonc untouched.
-  const routeLimits = composedRouteRateLimits(env ?? LOCAL_ENVIRONMENT, target.config);
+  const routeLimits = await composedRouteRateLimits(env ?? LOCAL_ENVIRONMENT, target.config);
 
   // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
   // and a Worker with no `app` block still answers somewhere.

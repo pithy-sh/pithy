@@ -6,6 +6,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { resolveTemplateSource } from "../project/scaffold";
@@ -44,9 +45,9 @@ const CONFIG: WorkerConfig = {
     defineCapability({
       name: "auth",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.post("/auth/sign-in/magic-link", (c) => c.json({}));
-      },
+      }),
     }),
   ],
 };
@@ -149,9 +150,9 @@ describe("what pithy ui writes, the scaffolded Biome would print", () => {
             defineCapability({
               name: "control-plane",
               requiredBindings: [],
-              routes: (app) => {
+              routes: routesOf((app) => {
                 app.get("/control-plane/manifest", (c) => c.json({}));
-              },
+              }),
             }),
           ],
         },

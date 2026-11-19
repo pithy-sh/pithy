@@ -44,9 +44,12 @@ function foldList(words: readonly string[]): FoldedEntry[] {
  * and for the seam when a moderator fails.
  */
 export function blocklistModerator(options: { readonly words: readonly string[] }): TextModerator {
-  const entries = foldList(options.words);
+  // Folded on the first check rather than here, since a Worker builds its moderator at startup.
+  let folded: FoldedEntry[] | undefined;
   return {
     async check(text) {
+      folded ??= foldList(options.words);
+      const entries = folded;
       for (const words of wordSequences(text)) {
         for (let start = 0; start < words.length; start++) {
           if (entries.some((entry) => matchesAt(words, start, entry)))

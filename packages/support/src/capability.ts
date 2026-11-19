@@ -5,6 +5,7 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { deferred } from "@pithy-sh/core/src/capability/deferred";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
@@ -19,10 +20,8 @@ import {
 } from "./config/config";
 import { resolveCategories, type SupportCategories } from "./data/categories";
 import { supportTables } from "./data/tables";
-import { makeResolveDeps } from "./http/resolve";
-import { registerSupportRoutes } from "./http/routes";
+import { supportRouteTable } from "./http/routeTable";
 import { supportAdminRoutes } from "./http/scopes";
-import { createSupportEmailHandler } from "./inbound/handler";
 import { senderPeers } from "./link/peers";
 import type { SenderPeers } from "./link/sender";
 import { SUPPORT_MIGRATIONS } from "./migrations/set";
@@ -325,13 +324,23 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // Who else has a thread open: one `support.thread` room per thread, on core's presence seam.
     // Declaring it is the whole of the wiring — core adds the room's binding, socket and ticket routes.
     presence: supportPresence(mountPath, wiring),
-    routes: registerSupportRoutes({
-      basePath: mountPath,
-      submission: resolved.submission.enabled,
-      resolveDeps: makeResolveDeps(wiring),
-      staff: resolved.staff,
-    }),
-    email: createSupportEmailHandler(wiring),
+    routes: {
+      declared: supportRouteTable(mountPath, resolved.submission.enabled),
+      load: async () => {
+        const [{ registerSupportRoutes }, { makeResolveDeps }] = await Promise.all([
+          import("./http/routes"),
+          import("./http/resolve"),
+        ]);
+        return registerSupportRoutes({
+          basePath: mountPath,
+          submission: resolved.submission.enabled,
+          resolveDeps: makeResolveDeps(wiring),
+          staff: resolved.staff,
+        });
+      },
+    },
+    // The MIME parser and the sender checks load with the first inbound message, not with the Worker.
+    email: deferred(async () => (await import("./inbound/handler")).createSupportEmailHandler(wiring)),
     seeds: [supportExampleSeed],
     // A person's threads — linked to their account, or sent from their address and linked to no other — with every
     // message, attachment and raw mail in them: exported on an access request and erased by their purge, as its own

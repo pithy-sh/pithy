@@ -167,3 +167,22 @@ export const DEFAULT_LOCALE = "en";
 export function bakedTranslator(catalog: MessageCatalog, locale: string = DEFAULT_LOCALE): Translator {
   return createTranslator({ catalogLocale: locale, layers: [catalog] });
 }
+
+/**
+ * A translator for `locale` whose catalog is built on the first message it renders, once. The locale, the
+ * direction and every formatter answer without building it, since none of them reads a catalog.
+ */
+export function deferredTranslator(locale: string, build: () => Translator): Translator {
+  let built: Translator | undefined;
+  const translator = (): Translator => {
+    built ??= build();
+    return built;
+  };
+  const formatting = createTranslator({ catalogLocale: locale, layers: [] });
+  return {
+    ...formatting,
+    t: (key, params) => translator().t(key, params),
+    maybe: (key, params) => translator().maybe(key, params),
+    plural: (key, count, params) => translator().plural(key, count, params),
+  };
+}

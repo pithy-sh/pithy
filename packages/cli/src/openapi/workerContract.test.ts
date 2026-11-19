@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -15,22 +16,22 @@ const Pong = z.object({ pong: z.boolean().describe("Always true.") }).describe("
 const app = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (hono) => {
+  routes: routesOf((hono) => {
     hono.get("/ping", describeRoute({ summary: "Ping.", verification: "public", responses: { 200: Pong } }), (c) =>
       c.json({ pong: true }),
     );
     hono.put("/ping", (c) => c.text("undescribed"));
-  },
+  }),
+});
+
+const { document, undescribed } = await workerDocument({
+  worker: "api",
+  project: "acme",
+  version: "1.2.3",
+  config: { capabilities: [], app },
 });
 
 describe("workerDocument", () => {
-  const { document, undescribed } = workerDocument({
-    worker: "api",
-    project: "acme",
-    version: "1.2.3",
-    config: { capabilities: [], app },
-  });
-
   test("titles the document by project and Worker, at the project's version", () => {
     expect(document.info).toEqual(expect.objectContaining({ title: "acme api", version: "1.2.3" }));
   });

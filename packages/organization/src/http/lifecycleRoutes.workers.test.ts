@@ -253,6 +253,13 @@ interface AppOptions {
 
 const LIFECYCLE_SCOPES = [ORGANIZATION_ACCOUNTS_SUSPEND_SCOPE, ORGANIZATION_ACCOUNTS_DELETE_SCOPE] as const;
 
+/** A capability's own route mount, loaded, for `buildApp` to put behind the test middleware. */
+async function mountOf(capability: Capability): Promise<(app: Hono<PithyHonoEnv>) => void> {
+  const mount = await capability.routes?.load();
+  if (mount === undefined) throw new Error("expected the capability to contribute routes");
+  return (app) => mount(app, { composed: app });
+}
+
 function buildApp(options: AppOptions = {}): Hono<PithyHonoEnv> {
   const app = new Hono<PithyHonoEnv>();
   app.onError((error, c) => {
@@ -959,7 +966,7 @@ describe("the member cascade's wiring from the composed auth", () => {
     const composed = organization({ roles: catalog, baseUrl: "https://app.example.test", ownership: OWNERSHIP });
     composed.compose?.({ capabilities: [authShaped, emailShaped, composed] });
 
-    const wired = buildApp({ routes: composed.routes });
+    const wired = buildApp({ routes: await mountOf(composed) });
     const response = await call("POST", `${ADMIN}/${ACME}/suspend`, {
       body: { reason: REASON, members: "sole" },
       app: wired,
@@ -1008,7 +1015,7 @@ describe("the member cascade's wiring from the composed auth", () => {
 
     const response = await call("POST", `${ADMIN}/${ACME}/suspend`, {
       body: { reason: REASON, members: "sole" },
-      app: buildApp({ routes: composed.routes }),
+      app: buildApp({ routes: await mountOf(composed) }),
       env: { MARKER: "this request" },
       executionCtx,
     });

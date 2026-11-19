@@ -43,3 +43,6 @@ export const PresenceRecordId = z
   .regex(/^[A-Za-z0-9._:-]+$/, "A record id is letters, digits, `.`, `_`, `:` and `-`.")
   .describe("The record the room is about — the id the declaring capability's own routes use for it.");
 export type PresenceRecordId = z.infer<typeof PresenceRecordId>;
+
+/** The longest participant name, in UTF-16 code units — what zod's `.max` counts. */
+export const PRESENCE_PARTICIPANT_NAME_MAX = 80;

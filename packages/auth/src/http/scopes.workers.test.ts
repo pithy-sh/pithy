@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import type { D1Database } from "@cloudflare/workers-types";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createLogger } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { email } from "@pithy-sh/email/src/capability";
@@ -39,11 +40,11 @@ interface Probe {
 const probe = defineCapability({
   name: "probe",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     const read = (c: { var: { auth: { scopes: string[] } | null } }) => ({ scopes: c.var.auth?.scopes ?? null });
     app.get("/probe", requireAuth(), (c) => c.json<Probe>(read(c)));
     app.post("/probe", requireAuth(), (c) => c.json<Probe>(read(c)));
-  },
+  }),
 });
 
 /** Every log record the backend wrote, so a test can assert the warning a failed resolver leaves. */

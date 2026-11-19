@@ -6,6 +6,7 @@ import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/cap
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { ledger } from "@pithy-sh/ledger/src/capability";
@@ -150,9 +151,9 @@ describe("payments()", () => {
     expect(payments(CATALOG).inapplicableSecrets).toEqual({});
   });
 
-  test("contributes its routes, mounted under the configured basePath", () => {
+  test("contributes its routes, mounted under the configured basePath", async () => {
     const app = new Hono<PithyHonoEnv>();
-    payments({ ...CATALOG, basePath: "/billing" }).routes?.(app);
+    await mountRoutes(payments({ ...CATALOG, basePath: "/billing" }).routes, app);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
     expect(paths).toEqual([
       // The management surface (#247, #300), under `admin/` because the player surface already owns

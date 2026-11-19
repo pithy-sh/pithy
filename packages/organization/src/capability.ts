@@ -16,7 +16,8 @@ import { actingOrganizationMiddleware } from "./acting/seam";
 import { OrganizationAuditActions } from "./audit/actions";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 import { organizationTables } from "./data/tables";
-import { type OrganizationRoutesOptions, ownerDeletionWiring, registerOrganizationRoutes } from "./http/routes";
+import type { OrganizationRoutesOptions } from "./http/routes";
+import { organizationRouteTable, ownerDeletionWiring } from "./http/routeTable";
 import { organizationAdminRoutes } from "./http/scopes";
 import type { UserLifecycleWiring } from "./lifecycle/cascade";
 import { organizationErasureRecords } from "./lifecycle/erasure";
@@ -414,7 +415,10 @@ export function organization<
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/accounts`
     // gets a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: organizationAdminRoutes(resolved.basePath, { ownership: ownership !== undefined }),
-    routes: registerOrganizationRoutes(routeOptions),
+    routes: {
+      declared: organizationRouteTable(resolved.basePath, ownership !== undefined),
+      load: async () => (await import("./http/routes")).registerOrganizationRoutes(routeOptions),
+    },
     // What erasing an organization means for the tenancy tables — and, in the same batch, the adopter's.
     // And a person's memberships, selections, offers and invitations: exported on an access request and erased
     // by their purge, as its own step in the adopter's Worker.

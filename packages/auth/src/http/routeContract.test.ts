@@ -6,6 +6,7 @@ import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/cap
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
@@ -328,7 +329,7 @@ describe("the advertised admin surface matches what is mounted", () => {
 
   test("every advertised admin route is actually mounted", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     const drift = missingAdminRoutes(app as unknown as Hono<never>, [capability]);
     expect(
       drift,
@@ -474,29 +475,35 @@ describe("route contract: the email sign-in routes follow the methods composed",
   const OTP = ["/auth/email-otp/send-verification-otp", "/auth/sign-in/email-otp"];
 
   /** The paths the OpenAPI document names for one `auth()`, composed the way `createBackend` mounts it. */
-  function documentedPaths(capability: Capability): string[] {
+  async function documentedPaths(capability: Capability): Promise<string[]> {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
-    return Object.keys(openApiDocument({ title: "auth", version: "0" }, [{ tag: "auth", routes: app.routes }]).paths);
+    await mountRoutes(capability.routes, app);
+    const paths = Object.keys(
+      openApiDocument({ title: "auth", version: "0" }, [{ tag: "auth", routes: app.routes }]).paths,
+    );
+    // The declared table core registers at startup follows the same methods, or a request never reaches a route.
+    const declared = new Set((capability.routes?.declared ?? []).map((route) => route.path));
+    for (const path of [...MAGIC_LINK, ...OTP]) expect(declared.has(path)).toBe(paths.includes(path));
+    return paths;
   }
 
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  test("without methods, every email sign-in route is in the document", () => {
-    const paths = documentedPaths(auth({ baseURL: "http://localhost" }));
+  test("without methods, every email sign-in route is in the document", async () => {
+    const paths = await documentedPaths(auth({ baseURL: "http://localhost" }));
     for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).toContain(path);
   });
 
-  test("magicLink: false drops the magic-link routes and keeps OTP's", () => {
-    const paths = documentedPaths(auth({ baseURL: "http://localhost", methods: { magicLink: false } }));
+  test("magicLink: false drops the magic-link routes and keeps OTP's", async () => {
+    const paths = await documentedPaths(auth({ baseURL: "http://localhost", methods: { magicLink: false } }));
     for (const path of MAGIC_LINK) expect(paths).not.toContain(path);
     for (const path of OTP) expect(paths).toContain(path);
   });
 
-  test("emailOtp: false drops the OTP routes and keeps the magic link's", () => {
-    const paths = documentedPaths(auth({ baseURL: "http://localhost", methods: { emailOtp: false } }));
+  test("emailOtp: false drops the OTP routes and keeps the magic link's", async () => {
+    const paths = await documentedPaths(auth({ baseURL: "http://localhost", methods: { emailOtp: false } }));
     for (const path of OTP) expect(paths).not.toContain(path);
     for (const path of MAGIC_LINK) expect(paths).toContain(path);
   });
@@ -507,19 +514,19 @@ describe("route contract: the email sign-in routes follow the methods composed",
     return auth({ baseURL: "http://localhost", methods: { magicLink: dev, emailOtp: dev } });
   }
 
-  test("a config branching on compositionEnvironment() composes email in dev", () => {
+  test("a config branching on compositionEnvironment() composes email in dev", async () => {
     vi.stubEnv("ENVIRONMENT", "dev");
     const capability = devOnlyEmail();
     expect((capability as ReturnType<typeof auth>).authConfig.methods).toEqual({ magicLink: true, emailOtp: true });
-    const paths = documentedPaths(capability);
+    const paths = await documentedPaths(capability);
     for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).toContain(path);
   });
 
-  test("and not in prod", () => {
+  test("and not in prod", async () => {
     vi.stubEnv("ENVIRONMENT", "prod");
     const capability = devOnlyEmail();
     expect((capability as ReturnType<typeof auth>).authConfig.methods).toEqual({ magicLink: false, emailOtp: false });
-    const paths = documentedPaths(capability);
+    const paths = await documentedPaths(capability);
     for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).not.toContain(path);
   });
 });

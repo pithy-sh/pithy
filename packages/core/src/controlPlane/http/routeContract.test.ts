@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
+import { mountRoutes } from "../../http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "../../openapi/document";
 import { type ControlPlaneOptions, controlplane } from "../capability";
@@ -32,9 +33,9 @@ import { PlaceHoldRequest, ReleaseHoldRequest } from "./schemas";
  * `registerControlPlaneRoutes` directly, so what is inspected is the route tree an adopter actually
  * gets — base path resolved from parsed config included.
  */
-function makeApp(options: ControlPlaneOptions = {}): Hono<PithyHonoEnv> {
+async function makeApp(options: ControlPlaneOptions = {}): Promise<Hono<PithyHonoEnv>> {
   const app = new Hono<PithyHonoEnv>();
-  controlplane(options).routes?.(app);
+  await mountRoutes(controlplane(options).routes, app);
   return app;
 }
 
@@ -46,7 +47,7 @@ function paramPaths(app: Hono<PithyHonoEnv>): string[] {
 
 describe("control-plane route contract", () => {
   test("every route that declares a path param validates it", async () => {
-    const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
+    const uncovered = await uncoveredParamRoutes((await makeApp()) as unknown as Hono<never>);
     expect(
       uncovered,
       `These control-plane routes read a path param they never declared a schema for. Add \`validate("param", <Schema>)\` to each route line, with the schema in src/controlPlane/http/schemas.ts:\n${uncovered
@@ -55,8 +56,8 @@ describe("control-plane route contract", () => {
     ).toEqual([]);
   });
 
-  test("the gate is inspecting the real control-plane routes, not an empty app", () => {
-    const app = makeApp();
+  test("the gate is inspecting the real control-plane routes, not an empty app", async () => {
+    const app = await makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
     // Every route this seam serves. The list is what makes adding a route a deliberate edit rather
@@ -89,10 +90,10 @@ describe("control-plane route contract", () => {
     ]);
   });
 
-  test("mounts under the configured basePath, every route included", () => {
+  test("mounts under the configured basePath, every route included", async () => {
     // A basePath that moved only some routes would leave a management client half-connected: the seam
     // it can reach would work and the one it cannot would 404, with nothing saying why.
-    const app = makeApp({ basePath: "/admin/cp" });
+    const app = await makeApp({ basePath: "/admin/cp" });
     expect([...new Set(app.routes.map((route) => route.path))].every((path) => path.startsWith("/admin/cp/"))).toBe(
       true,
     );
@@ -104,10 +105,10 @@ describe("control-plane route contract", () => {
     ]);
   });
 
-  test("every route carries at least one guard ahead of its handler", () => {
+  test("every route carries at least one guard ahead of its handler", async () => {
     // The positive half of "no public routes". A route registered with a bare handler has one entry in
     // `app.routes`; every route here must have more, and the first of them is `requireControlPlane`.
-    const app = makeApp();
+    const app = await makeApp();
     const handlerCounts = new Map<string, number>();
     for (const route of app.routes) {
       const key = `${route.method} ${route.path}`;
@@ -117,13 +118,13 @@ describe("control-plane route contract", () => {
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
-  test("every admin route the seam advertises is a route it actually mounts", () => {
+  test("every admin route the seam advertises is a route it actually mounts", async () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
     // tells a management client these routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
 
     expect(capability.adminRoutes).toHaveLength(18);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
@@ -132,12 +133,12 @@ describe("control-plane route contract", () => {
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("a moved base path moves the advertised routes too", () => {
+  test("a moved base path moves the advertised routes too", async () => {
     // The reason paths are described rather than assumed. An adopter who mounts the seam elsewhere must
     // get a manifest naming where it actually is.
     const capability = controlplane({ basePath: "/admin/cp" });
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
 
     expect(capability.adminRoutes?.every((route) => route.path.startsWith("/admin/cp/"))).toBe(true);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
@@ -156,13 +157,13 @@ describe("control-plane route contract", () => {
     ]);
   });
 
-  test("every route requiring migrations:read is a GET, so connect grants it as a read", () => {
+  test("every route requiring migrations:read is a GET, so connect grants it as a read", async () => {
     // `pithy dashboard connect` derives its default grant by method: a scope is a read only when every
     // route requiring it is a `GET`. One write behind this scope would drop it from every new connection.
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === MIGRATIONS_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/migrations"]);
-    const app = makeApp();
+    const app = await makeApp();
     const mounted = app.routes.filter((route) => route.path === "/control-plane/migrations");
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
@@ -173,30 +174,30 @@ describe("control-plane route contract", () => {
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/privacy"]);
   });
 
-  test("every route requiring evidence:read is a GET, so connect offers it as a read", () => {
+  test("every route requiring evidence:read is a GET, so connect offers it as a read", async () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === EVIDENCE_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/evidence"]);
-    const mounted = makeApp().routes.filter((route) => route.path === "/control-plane/evidence");
+    const mounted = (await makeApp()).routes.filter((route) => route.path === "/control-plane/evidence");
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
-  test("every route requiring processing:read is a GET, so connect offers it as a read", () => {
+  test("every route requiring processing:read is a GET, so connect offers it as a read", async () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === PROCESSING_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/processing"]);
-    const mounted = makeApp().routes.filter((route) => route.path === "/control-plane/processing");
+    const mounted = (await makeApp()).routes.filter((route) => route.path === "/control-plane/processing");
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
-  test("every route requiring erasure:read is a GET, so connect offers it as a read", () => {
+  test("every route requiring erasure:read is a GET, so connect offers it as a read", async () => {
     const advertised = controlplane().adminRoutes ?? [];
     const reading = advertised.filter((route) => route.scope === ERASURE_READ_SCOPE);
     expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual([
       "GET /control-plane/erasure",
       "GET /control-plane/erasure/:subjectType/:subjectId",
     ]);
-    const mounted = makeApp().routes.filter((route) => route.path.startsWith("/control-plane/erasure"));
+    const mounted = (await makeApp()).routes.filter((route) => route.path.startsWith("/control-plane/erasure"));
     expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
   });
 
@@ -228,8 +229,8 @@ describe("control-plane route contract", () => {
     ).toEqual(["POST /control-plane/holds", "POST /control-plane/holds/:holdId/release"]);
   });
 
-  test("no route shortens a retention: none takes a window, a duration or a deletion of a hold", () => {
-    const app = makeApp();
+  test("no route shortens a retention: none takes a window, a duration or a deletion of a hold", async () => {
+    const app = await makeApp();
     // Holds are the only retention surface, and they can only add a preservation or end one with a reason.
     expect(app.routes.some((route) => route.method === "DELETE")).toBe(false);
     for (const schema of [PlaceHoldRequest, ReleaseHoldRequest]) {
@@ -240,20 +241,20 @@ describe("control-plane route contract", () => {
 });
 
 describe("control-plane route contract: every route is described for the OpenAPI contract", () => {
-  const groups = () => [{ tag: "controlplane", routes: makeApp().routes }];
+  const groups = async () => [{ tag: "controlplane", routes: (await makeApp()).routes }];
 
-  test("every route declares describeRoute", () => {
-    expect(undescribedRoutes(groups())).toEqual([]);
+  test("every route declares describeRoute", async () => {
+    expect(undescribedRoutes(await groups())).toEqual([]);
   });
 
-  test("every field and parameter in the contract carries a description", () => {
-    const document = openApiDocument({ title: "controlplane", version: "0" }, groups());
+  test("every field and parameter in the contract carries a description", async () => {
+    const document = openApiDocument({ title: "controlplane", version: "0" }, await groups());
     expect(Object.keys(document.paths).length).toBeGreaterThan(0);
     expect(undescribedFields(document)).toEqual([]);
   });
 
-  test("GET /privacy names its response schema and the scope it needs", () => {
-    const document = openApiDocument({ title: "controlplane", version: "0" }, groups());
+  test("GET /privacy names its response schema and the scope it needs", async () => {
+    const document = openApiDocument({ title: "controlplane", version: "0" }, await groups());
     const operation = (document.paths as Record<string, Record<string, unknown>>)["/control-plane/privacy"]?.get as
       | { responses?: Record<string, unknown> }
       | undefined;

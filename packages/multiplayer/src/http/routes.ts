@@ -37,6 +37,7 @@ import {
   SessionResult,
   SessionView,
 } from "./responses";
+import { MULTIPLAYER_DEFAULT_BASE_PATH } from "./routeTable";
 import {
   AdminAct,
   AdminResultsQuery,
@@ -155,12 +156,6 @@ function snapshot(game: ResolvedGame): GameSnapshot {
     rules: game.rules,
   };
 }
-
-/**
- * Where multiplayer mounts when an adopter names nothing. Exported because the router and the manifest's
- * `multiplayerAdminRoutes` must agree on it, or a management client composing calls from the manifest 404s.
- */
-export const MULTIPLAYER_DEFAULT_BASE_PATH = "/multiplayer";
 
 /** A game filter resolved against config: a mistyped key is the capability's own 404, not an empty pane. */
 function filteredGame(games: readonly ResolvedGame[], key: string | undefined): string | undefined {

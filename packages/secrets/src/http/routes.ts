@@ -18,7 +18,7 @@ import { secretsStatusDatabase } from "../data/statusDb";
 import { SecretNotFoundError } from "../error/errors";
 import type { SecretRegistry, SecretRegistryEntry } from "../registry";
 import type { SecretRotationOutcome } from "../rotation/rotateValue";
-import { SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "./guards";
+import { SECRETS_DEFAULT_BASE_PATH, SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "./guards";
 import { SecretRotateResponse, SecretRotationsResponse, SecretsStatusResponse } from "./responses";
 import { runWorkerRotation, workerRotationDeps, workerRotationEnvironment } from "./rotate";
 import { RotationsQuery, SecretNameParam } from "./schemas";
@@ -78,16 +78,6 @@ import { secretRotationOutcomeView, secretRotationView, secretStatusView } from 
  * credential which requests were well-formed. On a surface that enumerates a project's credentials, that
  * is a live oracle.
  */
-
-/**
- * Where the secrets management surface mounts when an adopter names nothing.
- *
- * Exported because two places must agree on it: the router below, and `secretsAdminRoutes` in
- * `guards.ts`. A default living only in the registrar would let the manifest advertise `/secrets/...`
- * while the routes mounted somewhere else, and a management client composing its calls from the
- * manifest would 404 with nothing to diagnose.
- */
-export const SECRETS_DEFAULT_BASE_PATH = "/secrets";
 
 /**
  * What every route this capability mounts declares: its path, its verification strategy, and the

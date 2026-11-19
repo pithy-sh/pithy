@@ -6,6 +6,7 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { appTools } from "@pithy-sh/core/src/mcp/tools";
@@ -76,7 +77,7 @@ const notes = defineCapability({
       });
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get(
       "/notes/:id",
       describeRoute({
@@ -146,7 +147,7 @@ const notes = defineCapability({
       requireAuth(),
       (c) => c.json({ id: "all" }),
     );
-  },
+  }),
 });
 
 function buildApp(floor: McpConfigInput["floor"] = "signed-in", baseURL = SCOPED_ORIGIN) {
@@ -508,7 +509,7 @@ describe("the role is the only authority", () => {
     const app = buildApp();
     const { userId } = await connected(app);
     const asUser = { userId, sessionId: "s", scopes: [] };
-    const tools = appTools(routeGroupsOf(app) ?? []);
+    const tools = appTools((await routeGroupsOf(app)) ?? []);
     const write = tools.find((tool) => tool.name === "notes_notes_write");
     if (write === undefined) throw new Error("expected the write tool");
     const refused = await app.fetch(

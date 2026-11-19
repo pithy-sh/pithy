@@ -12,6 +12,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { ForbiddenError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import type { SameOriginGate } from "@pithy-sh/core/src/http/sameOrigin";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
@@ -1547,7 +1548,7 @@ describe("founding an account", () => {
     });
     const contributed = organization({ roles: catalog, slugs: "derived", baseUrl: "https://app.example.test" }).routes;
     if (!contributed) throw new Error("expected the tenancy capability to contribute routes");
-    contributed(composed);
+    await mountRoutes(contributed, composed);
 
     await seedUser("user_founder");
     expect(

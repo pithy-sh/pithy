@@ -779,9 +779,9 @@ app.post(
 );
 ```
 
-`key: "user"` counts each signed-in user, and `key: "ip"` counts each client address. `period` is 10 or 60 seconds, the only two Workers Rate Limiting accepts. The gate runs after the power gate, so a caller whose role is refused spends nothing. A `user` limit on a route whose `verification` admits anyone but a `bearer` or `session` caller is refused when the Worker composes, naming the route. The OpenAPI document states each limit as `x-pithy-rate-limit` on its operation.
+`key: "user"` counts each signed-in user, and `key: "ip"` counts each client address. `period` is 10 or 60 seconds, the only two Workers Rate Limiting accepts. The gate runs after the power gate, so a caller whose role is refused spends nothing. A `user` limit on a route whose `verification` admits anyone but a `bearer` or `session` caller is refused whenever the route table is read, so `pithy worker sync` and `pithy deploy` refuse it naming the route, and the Worker refuses the first request to that capability's routes. The OpenAPI document states each limit as `x-pithy-rate-limit` on its operation.
 
-Each limit is enforced by a Workers Rate Limiting binding, and you never write it. `pithy worker sync` writes one per policy into every stanza (§6.5), named for it: `ROUTE_RATE_LIMIT_20_PER_60S`. Routes declaring the same policy share the binding and keep their own budgets, because each counts under a key naming its method and path. `createBackend` requires every one, so a Worker missing one fails its first request naming it, and never serves the route unlimited.
+Each limit is enforced by a Workers Rate Limiting binding, and you never write it. `pithy worker sync` writes one per policy into every stanza (§6.5), named for it: `ROUTE_RATE_LIMIT_20_PER_60S`. Routes declaring the same policy share the binding and keep their own budgets, because each counts under a key naming its method and path. The capability's routes require every one they declare when they load, so a Worker missing one fails the first request to those routes naming it, and never serves the route unlimited.
 
 An oversized request body is `core/payload_too_large` (413), thrown as `PayloadTooLargeError`. Hono's own body limit answers the same code through `pithyErrorHandler`.
 

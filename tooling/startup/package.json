@@ -1,0 +1,50 @@
+{
+  "name": "@pithy-sh/startup",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "bun check -p tsconfig.json",
+    "test": "vitest run",
+    "test:node": "vitest run",
+    "clean": "rm -rf .turbo .wrangler",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@pithy-sh/artifacts": "workspace:*",
+    "@pithy-sh/audit": "workspace:*",
+    "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/consent": "workspace:*",
+    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/email": "workspace:*",
+    "@pithy-sh/i18n": "workspace:*",
+    "@pithy-sh/leaderboard": "workspace:*",
+    "@pithy-sh/ledger": "workspace:*",
+    "@pithy-sh/matchmaking": "workspace:*",
+    "@pithy-sh/media": "workspace:*",
+    "@pithy-sh/multiplayer": "workspace:*",
+    "@pithy-sh/organization": "workspace:*",
+    "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/rating": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
+    "@pithy-sh/storage": "workspace:*",
+    "@pithy-sh/support": "workspace:*",
+    "@pithy-sh/testers": "workspace:*",
+    "@pithy-sh/turnstile": "workspace:*",
+    "@pithy-sh/vector": "workspace:*",
+    "hono": "^4.13.2",
+    "kysely": "^0.29.0",
+    "zod": "^4.4.0"
+  },
+  "devDependencies": {
+    "@pithy-sh/cli": "workspace:*",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "miniflare": "5.20261012.0-beta",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.151.0"
+  }
+}
