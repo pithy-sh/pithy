@@ -166,8 +166,8 @@ export async function purgeUser(
     env: run.env,
     address: () => run.ops.address(userId),
   };
-  const auth = run.steps.filter((each) => each.step === AUTH_CAPABILITY);
-  const others = run.steps.filter((each) => each.step !== AUTH_CAPABILITY);
+  const auth = run.steps.filter((each) => each.capability === AUTH_CAPABILITY);
+  const others = run.steps.filter((each) => each.capability !== AUTH_CAPABILITY);
   const erased: string[] = [];
   const retained: string[] = [];
   // The step running now, so a failure records where it stopped.

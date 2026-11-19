@@ -161,8 +161,8 @@ export async function purgeOrganization(
   const stopped = (next: string) => own.do(`hold ${next}`, () => held(organizationId));
 
   const context: PurgeContext = { subject: { type: "organization", id: organizationId }, env: run.env };
-  const mine = run.steps.filter((each) => each.step === ORGANIZATION_CAPABILITY);
-  const others = run.steps.filter((each) => each.step !== ORGANIZATION_CAPABILITY);
+  const mine = run.steps.filter((each) => each.capability === ORGANIZATION_CAPABILITY);
+  const others = run.steps.filter((each) => each.capability !== ORGANIZATION_CAPABILITY);
   const erased: string[] = [];
   const retained: string[] = [];
   // The step running now, so a failure records where it stopped.

@@ -185,6 +185,33 @@ const appCapability = defineCapability({
 });
 
 /**
+ * The same adopter's `app` with two features that each keep a person's rows, each its own named step. Composed in
+ * place of {@link appCapability} by the tests that set {@link withSplitApp}.
+ */
+const scores = new Map<string, number[]>();
+const splitAppCapability = defineCapability({
+  name: "app",
+  requiredBindings: [],
+  purge: [
+    {
+      subject: "user",
+      step: "scores",
+      summary: "Deletes the user's scores.",
+      erase: async ({ subject }) => void scores.delete(subject.id),
+      export: async ({ subject }) => ({ scores: scores.get(subject.id) ?? [] }),
+    },
+    {
+      subject: "user",
+      step: "drafts",
+      summary: "Deletes the user's drafts.",
+      erase: async ({ subject }) => void drafts.delete(subject.id),
+      export: async ({ subject }) => ({ drafts: drafts.get(subject.id) ?? [] }),
+    },
+  ],
+});
+let withSplitApp = false;
+
+/**
  * The audit recorder a Workflow step records through — what `@pithy-sh/audit` declares — writing to the same
  * capture the request-time events land in, so one list holds the whole trail.
  */
@@ -270,7 +297,7 @@ function buildApp(retention?: unknown) {
       captureCapability,
       ...(withI18n ? [i18nCapability] : []),
     ],
-    app: appCapability,
+    app: withSplitApp ? splitAppCapability : appCapability,
   });
 }
 
@@ -549,7 +576,9 @@ beforeEach(async () => {
   bindPurge = true;
   failSilent = false;
   withI18n = false;
+  withSplitApp = false;
   drafts.clear();
+  scores.clear();
   await grant([AUTH_USERS_DELETE_SCOPE, AUTH_USERS_EXPORT_SCOPE, AUTH_USERS_SUSPEND_SCOPE]);
 });
 
@@ -1046,6 +1075,42 @@ describe("the erasure attestation (#823)", () => {
     expect(text).not.toContain("Ada");
   });
 
+  test("a capability's named steps each run, record, are audited and attested as <capability>/<step>", async () => {
+    withSplitApp = true;
+    await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
+    await seedAccountFootprint(env.DB, "u-1");
+    scores.set("u-1", [10, 20]);
+    drafts.set("u-1", ["a draft"]);
+    await remove("u-1", { mode: "hard", reason: "Fraud." });
+    const steps = journal();
+    const outcome = await purge("u-1", steps);
+    expect(outcome.erased).toEqual(["silent", "app/scores", "app/drafts", "auth"]);
+    expect(steps.ran).toEqual(expect.arrayContaining(["erase app/scores", "erase app/drafts"]));
+    expect(scores.has("u-1")).toBe(false);
+    expect(drafts.has("u-1")).toBe(false);
+    // Each step records its own row with its own sentence, so the trail says what each feature erased.
+    const recorded = (await history("u-1")).filter((row) => row.action === "purge_step");
+    expect(recorded.map((row) => [row.step, row.reason])).toEqual([
+      ["silent", "Deletes the user's scores."],
+      ["app/scores", "Deletes the user's scores."],
+      ["app/drafts", "Deletes the user's drafts."],
+      ["auth", expect.any(String)],
+    ]);
+    expect(
+      events("auth/admin_user_purge_step")
+        .map((event) => event.metadata?.step)
+        .filter((step) => typeof step === "string" && step.startsWith("app")),
+    ).toEqual(["app/scores", "app/drafts"]);
+
+    const response = await call("/control-plane/erasure/user/u-1", undefined, ERASURE_READ_SCOPE, "GET");
+    const { attestation } = ControlPlaneErasureSubjectResponse.parse(await response.json());
+    const appSteps = attestation?.steps.filter((step) => step.capability.startsWith("app")) ?? [];
+    expect(appSteps.map((step) => [step.capability, step.summary, step.audit !== null])).toEqual([
+      ["app/scores", "Deletes the user's scores.", true],
+      ["app/drafts", "Deletes the user's drafts.", true],
+    ]);
+  });
+
   test("the period counts the purge, and names none for attention when it completed", async () => {
     await grant([AUTH_USERS_DELETE_SCOPE, ERASURE_READ_SCOPE]);
     await seedAccountFootprint(env.DB, "u-1");
@@ -1292,6 +1357,40 @@ describe("POST /auth/admin/users/:userId/export", () => {
     for (const credential of ["token-u-1", "access-u-1", "refresh-u-1", "push-u-1"]) {
       expect(JSON.stringify(raw)).not.toContain(credential);
     }
+  });
+
+  test("a capability's named steps each answer their own part under the capability, audited by step", async () => {
+    withSplitApp = true;
+    await seedAccountFootprint(env.DB, "u-1");
+    scores.set("u-1", [10, 20]);
+    drafts.set("u-1", ["a draft"]);
+    const raw = await (await exportOf("u-1", "Access request 4411.")).json();
+    const document = AdminUserExportResponse.parse(raw);
+    expect(document).toEqual(raw);
+    const appParts = document.capabilities.filter((entry) => entry.capability === "app");
+    expect(appParts).toEqual([
+      {
+        capability: "app",
+        step: "scores",
+        summary: "Deletes the user's scores.",
+        disposition: "erase",
+        state: "exported",
+        data: { scores: [10, 20] },
+      },
+      {
+        capability: "app",
+        step: "drafts",
+        summary: "Deletes the user's drafts.",
+        disposition: "erase",
+        state: "exported",
+        data: { drafts: ["a draft"] },
+      },
+    ]);
+    // The unnamed parts carry no step, as they never did.
+    expect(document.capabilities.find((entry) => entry.capability === "auth")).not.toHaveProperty("step");
+    expect(events("auth/admin_user_exported")[0]?.metadata?.capabilities).toEqual(
+      expect.arrayContaining(["app/scores:exported", "app/drafts:exported", "auth:exported"]),
+    );
   });
 
   test("a retained basis is read in the person's own locale, with its key beside it", async () => {
