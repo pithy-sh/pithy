@@ -32,7 +32,7 @@ function authenticatedDate(session: unknown): Date | null {
 /**
  * The scopes this request's caller resolves to — what the adopter's resolver answered, or `[]`.
  *
- * **Closed on every failure, and never fatal** (#560). A resolver that throws or rejects, and one that answers
+ * **Closed on every failure, and never fatal**. A resolver that throws or rejects, and one that answers
  * something other than a list of strings, both leave the request with no scopes and a warning: a gate then
  * refuses it as it would any untrusted caller, rather than the request becoming a 500 or — worse — a
  * malformed answer reaching a guard that would read `includes` off a string. Validated through
@@ -98,7 +98,7 @@ export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
       }
       if (!carriesCredential(c.req.raw.headers)) return await next();
       // A credential signed under a session secret this deployment has since rotated is re-signed under the
-      // current one before anything reads it (#602), and the re-signed one rides back on the response. A
+      // current one before anything reads it, and the re-signed one rides back on the response. A
       // failure building the instance is not this middleware's to raise, so it is left to the routes.
       let instance: AuthInstance | undefined;
       try {
@@ -122,7 +122,7 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
   try {
     const session = await instance.api.getSession({ headers });
     if (session) {
-      // **A suspended or deleted account gets no `AuthContext` at all** (#620). Read off the user Better
+      // **A suspended or deleted account gets no `AuthContext` at all**. Read off the user Better
       // Auth just loaded, which carries the four columns, so an account in good standing costs nothing
       // here. Leaving `auth` null is what makes every `requireAuth()` in the kit refuse it — the copies
       // other capabilities carry included, since each one only asks whether `auth` was filled. This
@@ -134,7 +134,7 @@ async function resolveSession(c: Context<PithyHonoEnv>, wiring: AuthWiring, inst
       }
       // Before the context is built, so a resolver sees the request exactly as it arrived and the
       // context is published once, whole. Per request and never cached: the answer is about this
-      // request's caller, and a cached one is a revocation that has not taken effect (#560).
+      // request's caller, and a cached one is a revocation that has not taken effect.
       const scopes = await resolvedScopes(c, wiring.resolveScopes, {
         userId: session.user.id,
         sessionId: session.session.id,
@@ -207,15 +207,44 @@ async function standingRefusal(
 }
 
 /**
- * The gate other capabilities stack on a protected route. Rejects a request whose `AuthContext` was
- * not filled (no valid credential) with a `PithyError` `auth/invalid_token` (401).
+ * What the handlers after {@link requireAuth} run in: `c.var.auth` is a filled `AuthContext`, never `null`.
+ *
+ * Hono intersects a middleware's env with the app's for every handler after it on the same route, so
+ * `app.get(path, requireAuth(), (c) => c.var.auth.userId)` reads the caller without a null check. It reaches
+ * only the handlers chained after the guard: a separate `app.use(path, requireAuth())` refuses the same
+ * requests but types nothing, since Hono cannot carry a type from one statement to the next.
+ */
+export interface SignedInEnv {
+  Variables: {
+    /** The caller, which `requireAuth()` has already checked is there. */
+    auth: AuthContext;
+  };
+}
+
+/**
+ * The gate for any route that needs a signed-in caller: the routes of an app built on the kit, and the protected
+ * routes of every capability. Rejects a request whose `AuthContext` was not filled (no valid credential —
+ * session cookie, bearer token, or an API key standing for its owner's session) with a `PithyError`
+ * `auth/invalid_token` (401), and narrows `c.var.auth` for the handlers after it ({@link SignedInEnv}).
  *
  * **A genuine credential for an account that may not act is refused with what happened to it** —
  * `auth/account_suspended` or `auth/account_deleted`, 403 — rather than the 401, because signing in again
  * cannot help and a client that read it as an expired token would loop. The verdict is the session
  * middleware's, remembered for this request; this guard only raises it.
  */
-export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
+export function requireAuth(): MiddlewareHandler<SignedInEnv> {
+  // The check is what makes the narrower env true; the cast only states it.
+  return requireAuthUnnarrowed() as unknown as MiddlewareHandler<SignedInEnv>;
+}
+
+/**
+ * {@link requireAuth}'s check, typed for the app's own env and narrowing nothing.
+ *
+ * Hono's context is invariant in its variables, so the narrowed context is not assignable to
+ * `Context<PithyHonoEnv>`. A route whose handler hands `c` on to a function that takes that type, and is
+ * used before the guard as well, stacks this instead.
+ */
+export function requireAuthUnnarrowed(): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     if (!c.var.auth) {
       const refusal = noticedRefusal(c);
@@ -241,7 +270,7 @@ export interface AccountHolder {
 
 /**
  * The account this request's credential opens, for a route a **suspended** account may still use — and there is
- * exactly one, deleting it (#622). The App Store and Google Play require that a person can delete their account
+ * exactly one, deleting it. The App Store and Google Play require that a person can delete their account
  * from inside the app, and a suspension is no reason to keep somebody who wants to leave.
  *
  * A deleted account is not admitted: there is nothing left to delete. Neither is a request whose standing could
