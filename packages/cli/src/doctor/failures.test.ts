@@ -1087,6 +1087,18 @@ describe("every finding in every block carries fix", () => {
           },
         ],
       }),
+      checkExpoReact: async () => ({
+        state: "mismatched",
+        mismatched: [
+          {
+            app: "apps/app",
+            renderer: "19.2.3",
+            react: "19.3.1",
+            reactDom: "19.3.1",
+            command: "bunx expo install react@19.2.3 react-dom@19.2.3 @types/react@~19.2.4",
+          },
+        ],
+      }),
       checkRootImports: async () => ({
         state: "unresolved",
         unresolved: [

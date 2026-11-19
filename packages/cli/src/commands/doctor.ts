@@ -82,6 +82,7 @@ import {
 } from "../doctor/environmentInheritance";
 import type { EnvironmentMigrations, RemoteSkip } from "../doctor/environmentMigrations";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
+import { checkExpoReact, describeExpoReact, EXPO_REACT_ACTION, type ExpoReactCheck } from "../doctor/expoReact";
 import { DoctorFailures, doctorFailures } from "../doctor/failures";
 import {
   checkFeatureRatelimitIds,
@@ -435,6 +436,12 @@ export interface DoctorReport {
    * project, and `could-not-check` when the check threw. A finding prints in both forms and never fails the exit.
    */
   rootImports: RootImportsCheck | null;
+  /**
+   * Whether every Expo app resolves the React, and the React DOM it has, that its React Native renderer was built
+   * from. `null` outside a project, and `could-not-check` when the check threw or a renderer would not read. A
+   * finding prints in both forms and never fails the exit.
+   */
+  expoReact: ExpoReactCheck | null;
   /**
    * Whether the project root declares a capability as a runtime dependency beside a Worker that declares it. `null`
    * outside a project, and `could-not-check` when the check threw. A finding prints in both forms and never fails
@@ -956,6 +963,8 @@ export interface DoctorReportOptions {
   }) => Promise<TestBindingsCheck>;
   /** Root-import seam; defaults to {@link checkRootImports}. Reads files only. */
   checkRootImports?: (projectDir: string) => Promise<RootImportsCheck>;
+  /** Expo React seam; defaults to {@link checkExpoReact}. Reads files only. */
+  checkExpoReact?: (projectDir: string) => Promise<ExpoReactCheck>;
   /** Duplicate-capability seam; defaults to {@link checkDuplicateCapabilities}. Reads files only. */
   checkDuplicateCapabilities?: (projectDir: string) => Promise<DuplicateCapabilitiesCheck>;
   /** Var-stanza seam; defaults to {@link checkVarStanzas}. Reads files, and each Worker's `pithy.config.ts`. */
@@ -1176,6 +1185,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeTestBindings = options.checkTestBindings ?? checkTestBindings;
   const probeRootImports = options.checkRootImports ?? checkRootImports;
+  const probeExpoReact = options.checkExpoReact ?? checkExpoReact;
   const probeDuplicateCapabilities = options.checkDuplicateCapabilities ?? checkDuplicateCapabilities;
   const probeVarStanzas = options.checkVarStanzas ?? ((projectDir: string) => checkVarStanzas(projectDir));
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
@@ -1881,6 +1891,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       })
     : null;
 
+  // Each Expo app's React against the renderer its React Native was built from. Files only.
+  const expoReact = inProject
+    ? await probed<ExpoReactCheck>(() => probeExpoReact(options.projectDir), {
+        state: "could-not-check",
+        mismatched: [],
+      })
+    : null;
+
   // A capability the root declares at runtime beside a Worker that declares it. Files only.
   const duplicateCapabilities = inProject
     ? await probed<DuplicateCapabilitiesCheck>(() => probeDuplicateCapabilities(options.projectDir), {
@@ -1957,6 +1975,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     localDelivery,
     testBindings,
     rootImports,
+    expoReact,
     duplicateCapabilities,
     varStanzas,
     sharedRuntimes,
@@ -3836,6 +3855,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // An Expo app whose React is not its renderer's. Printed in both forms.
+  if (report.expoReact?.state === "mismatched") {
+    blocks.push(
+      [
+        "Expo apps:",
+        ...describeExpoReact(report.expoReact).map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${EXPO_REACT_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // A capability the root declares beside a Worker. Printed in both forms.
   if (report.duplicateCapabilities?.state === "duplicated") {
     blocks.push(
@@ -4130,6 +4160,18 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             fix: null,
           })),
           findings: describeRootImports(report.rootImports),
+        }
+      : null,
+    expoReact: report.expoReact
+      ? {
+          state: report.expoReact.state,
+          mismatched: report.expoReact.mismatched.map((entry) => ({
+            ...entry,
+            detail: describeExpoReact({ state: "mismatched", mismatched: [entry] }).join(" "),
+            // `command` is Expo's install, which no `pithy` command runs.
+            fix: null,
+          })),
+          findings: describeExpoReact(report.expoReact),
         }
       : null,
     duplicateCapabilities: report.duplicateCapabilities
@@ -4755,6 +4797,32 @@ const DoctorPayload = z
         )
         .describe("One entry per package, in import order."),
       findings: z.array(z.string().describe("One finding.")).describe("One sentence per package."),
+    }),
+    expoReact: Check("Expo apps whose React is not the version their React Native renderer takes, or `null`.", {
+      state: State("`ok`, `mismatched`, `could-not-check`"),
+      mismatched: z
+        .array(
+          z
+            .object({
+              app: z.string().describe("The app's directory, from the project root."),
+              renderer: z.string().describe("The React version React Native's renderer was built from."),
+              react: z.string().describe("The React the app resolves."),
+              reactDom: z
+                .string()
+                .nullable()
+                .describe("The React DOM the app resolves, or `null` when it has none installed."),
+              command: z
+                .string()
+                .describe(
+                  "The `expo install` command that pins React, the React DOM it has and their types, run in the app.",
+                ),
+              detail: z.string().describe("The sentence."),
+              fix: DoctorFix,
+            })
+            .describe("One Expo app whose React or React DOM differs from its renderer."),
+        )
+        .describe("One entry per mismatched app, in member order."),
+      findings: z.array(z.string().describe("One finding.")).describe("One sentence per app."),
     }),
     duplicateCapabilities: Check(
       "Capabilities the project root declares as a runtime dependency beside a Worker that declares them, or `null`.",
