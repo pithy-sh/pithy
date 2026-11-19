@@ -693,6 +693,120 @@ describe("the pithy-games add-on", () => {
     for (const flag of ["--origin", "--game", "--players", "--moves", "--token"]) expect(source).toContain(flag);
   });
 
+  /**
+   * **A single-player game has its own path through all three skills.** It may still need sign-in,
+   * purchases, leaderboards and server-verified scores, and it has no room, no socket and no matchmaking.
+   * So `new-game` adds `multiplayer` and `matchmaking` only when players share a live room, `game-design`
+   * plans a run the server re-simulates, and `playtest` submits a run and a tampered copy of it.
+   */
+  describe("a single-player game has its own path through all three skills", () => {
+    /** The `## ` section whose heading matches, up to the next `## ` heading. */
+    function section(source: string, heading: RegExp): string {
+      const parts = source.split(/^(?=## )/m);
+      const found = parts.find((part) => heading.test(part.split("\n")[0] ?? ""));
+      expect(found, `no section matching ${heading}`).toBeDefined();
+      return found as string;
+    }
+
+    /** The `When` cell of a capability row in `new-game`'s table. */
+    function when(source: string, capability: string): string | undefined {
+      return source.match(new RegExp(`^\\| \`${capability}\` \\| (.+) \\|$`, "m"))?.[1];
+    }
+
+    test("new-game adds multiplayer and matchmaking only when players share a live room", () => {
+      const source = games.skill("new-game");
+      for (const capability of ["multiplayer", "matchmaking"]) {
+        expect(when(source, capability), capability).toMatch(/share a live room/);
+        expect(when(source, capability), capability).not.toMatch(/^Always/);
+      }
+      expect(when(source, "auth")).toMatch(/^Always/);
+      expect(when(source, "storage")).toBeDefined();
+      expect(when(source, "payments")).toBeDefined();
+      expect(source).toMatch(/\*\*Do players share a live room\?\*\*/);
+    });
+
+    test("new-game's step 2 routes a single-player game to game-design's single-player branch", () => {
+      const step = section(games.skill("new-game"), /^## 2\./);
+      expect(step).toContain("/pithy-games:game-design");
+      expect(step).toMatch(/single-player branch/);
+    });
+
+    test("game-design's single-player branch plans a re-simulated run, and no room", () => {
+      const branch = section(games.skill("game-design"), /single-player/i);
+      for (const term of [
+        /re-simulat/i,
+        /submission route/i,
+        /engine version/i,
+        /tick count/i,
+        /input range/i,
+        /\.describe\(\)/,
+      ])
+        expect(branch).toMatch(term);
+      expect(branch).not.toMatch(/\broom\b|socket|`action`|`view`/i);
+    });
+
+    test("playtest's single-player mode submits a run against pithy dev, and a tampered one the server refuses", () => {
+      const mode = section(games.skill("playtest"), /single-player/i);
+      expect(mode).toContain("pithy dev");
+      expect(mode).toMatch(/Dispatch `pithy:runner`/);
+      expect(mode).toMatch(/tampered/);
+      expect(mode).toMatch(/refuse/);
+      expect(mode).toMatch(/verdict/);
+    });
+
+    test("playtest gives each tampered submission its own run, and reuses a run only for the duplicate", () => {
+      const mode = section(games.skill("playtest"), /single-player/i);
+      expect(mode).toMatch(/each tampered submission is its own run/);
+      expect(mode).toMatch(/calls the start route again, plays the new run through the engine on that run's seed/);
+      expect(mode).toMatch(/the only case that reuses a run: the genuine run submitted again/);
+      expect(mode).not.toMatch(/the same run with a score/);
+    });
+
+    test("playtest waits out each run's tick count before submitting it, so the wall-clock bound passes", () => {
+      const mode = section(games.skill("playtest"), /single-player/i);
+      expect(games.skill("game-design")).toMatch(/no more ticks than the time since the run started could hold/);
+      expect(mode).toMatch(
+        /before every submission the script waits until the tick count it submits, divided by the tick rate, has passed since the start route answered/,
+      );
+      expect(mode).toMatch(/It waits on the tick count it sends, tampered or not/);
+      expect(mode).toMatch(/uses no dev-only allowance/);
+    });
+
+    test("playtest takes its runs one after another, because a player has one open run at a time", () => {
+      const mode = section(games.skill("playtest"), /single-player/i);
+      expect(section(games.skill("game-design"), /single-player/i)).toMatch(/one open run at a time/);
+      expect(mode).toMatch(/takes the runs one after another/);
+      expect(mode).toMatch(/only then start the next/);
+      expect(mode).not.toMatch(/Start every run first|waits overlap/);
+    });
+
+    test("game-design does not claim a server seed stops a reroll, and settles the open-run limit", () => {
+      const branch = section(games.skill("game-design"), /single-player/i);
+      expect(branch).not.toMatch(/cannot draw until it likes what it gets/);
+      expect(branch).toMatch(/does not stop a reroll/);
+      expect(branch).toMatch(/\*\*Open runs\.\*\* .*one open run at a time/);
+      expect(branch).toMatch(/\*\*A rerolled seed\.\*\*/);
+      expect(branch).toMatch(/a run closed as abandoned/);
+    });
+
+    test("new-game tells the Unity agent it is single-player, and the agent has a branch for it", () => {
+      const step = section(games.skill("new-game"), /^## 4\./);
+      expect(step).toMatch(/\*\*Single-player\.\*\* There is no socket\./);
+      expect(step).toMatch(/C# engine as the twin of the TypeScript engine/);
+      const agent = games.agent("client-unity");
+      expect(frontmatter(agent).description).toMatch(/single-player/);
+      expect(section(agent, /single-player game: the engine twin/)).toMatch(/start route/);
+      expect(section(agent, /single-player game: the engine twin/)).toMatch(/submission route|Submit the run/);
+      expect(section(agent, /^## What you do not do/)).not.toMatch(/^- A game engine/m);
+    });
+
+    test("the multiplayer path still runs through the room, its schemas and the shipped script", () => {
+      expect(games.skill("game-design")).toMatch(/## \d\. The `action` and `view` schemas/);
+      expect(games.skill("playtest")).toContain("POST /multiplayer/games/<key>");
+      expect(games.skill("new-game")).toContain("Then run `/pithy-games:playtest`");
+    });
+  });
+
   test.each(GAMES_SKILLS)("%s exists, says what it is for, and is documented in the README", (skill) => {
     expect(frontmatter(games.skill(skill)).name).toBe(skill);
     expect(frontmatter(games.skill(skill)).description?.length).toBeGreaterThan(40);
