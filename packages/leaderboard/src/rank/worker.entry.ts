@@ -5,7 +5,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
-import { instancePage } from "../board/instances";
+import { INSTANCE_PAGE_SIZE, instancePage } from "../board/instances";
 import { LeaderboardConfig, resolveBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { pruneBoards } from "../retention/prune";
@@ -55,11 +55,20 @@ interface RankWorkerEnv {
   LEADERBOARD_CONFIG: string;
   /** Optional override for how long a held refresh lock stays valid before it is reclaimed (see lock.ts). */
   LEADERBOARD_LOCK_STALE_MS?: string;
-  /** The Workflow binding — this worker's own class, used by `scheduled()` to start an instance. */
-  RANK_REFRESH: { create(options?: { id?: string; params?: RankPassContinuation }): Promise<unknown> };
+  /**
+   * The Workflow binding — this worker's own class, used by `scheduled()` to start an instance and by a run to
+   * start the next. `get` resolves when an instance of that id exists.
+   */
+  RANK_REFRESH: {
+    create(options?: { id?: string; params?: RankPassContinuation }): Promise<unknown>;
+    get?(id: string): Promise<unknown>;
+  };
 }
 
 export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unknown> {
+  /** How many instances one run walks before it hands the pass on. A subclass may lower it to test the handoff. */
+  protected readonly instancePageSize: number = INSTANCE_PAGE_SIZE;
+
   override async run(event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
     // Every step below runs under `leaderboardWorkflowRetry`. Its record is empty and that is the whole
     // statement: this refresh talks to D1 and to nothing else, core answers for D1's transient
@@ -105,7 +114,7 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       // This run's page of instances is read once, in a step, so a replay walks the boards the first
       // attempt walked. The configured boards belong to the run that starts the pass.
       const page: { keys: string[]; next: string | null } = await steps.do("instances", async () => {
-        const read = await instancePage(db, config, continuation?.after ?? null);
+        const read = await instancePage(db, config, continuation?.after ?? null, this.instancePageSize);
         return { keys: read.boards.map((board) => board.key), next: read.next };
       });
       const boards = [
@@ -158,13 +167,17 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       const after = page.next;
       if (after !== null) {
         // More instances follow: the next run walks them. Its id is fixed by the pass and its position, so
-        // the pass names each run once.
+        // the pass names each run once. A replay of this step after its create was accepted is refused that
+        // id; the run it names exists, so that refusal is the handoff done. Any other refusal is thrown.
         const run = (continuation?.run ?? 0) + 1;
+        const id = `${ctx.holder}-${run}`;
         await steps.do("continue", async () => {
-          await this.env.RANK_REFRESH.create({
-            id: `${ctx.holder}-${run}`,
-            params: { holder: ctx.holder, nowMs: ctx.nowMs, after, run },
-          });
+          try {
+            await this.env.RANK_REFRESH.create({ id, params: { holder: ctx.holder, nowMs: ctx.nowMs, after, run } });
+          } catch (error) {
+            if (await this.runExists(id)) return;
+            throw error;
+          }
         });
         handedOff = true;
       }
@@ -174,6 +187,16 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       // that handed the pass on leaves the lock to the run that now holds it.
       if (!handedOff) await releaseRefreshLock(db, ctx.holder);
     }
+  }
+
+  /** Whether an instance of `id` exists. False when the binding cannot look one up, so a refusal stays one. */
+  private async runExists(id: string): Promise<boolean> {
+    const binding = this.env.RANK_REFRESH;
+    if (typeof binding.get !== "function") return false;
+    return binding.get(id).then(
+      () => true,
+      () => false,
+    );
   }
 }
 
