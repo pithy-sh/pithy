@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { JwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
+import type { JwksCache } from "@pithy-sh/core/src/http/jwksCache";
 import type { PaymentsPurchase } from "../../data/purchase";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsGoogleCredentials } from "../../secret/registry";

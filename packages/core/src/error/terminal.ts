@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { ErrorPayload } from "./payload";
-import { PublicErrorPayload } from "./payload";
+import type { ErrorPayload, PublicErrorPayload } from "./payload";
+import { errorSchemas } from "./payloadSchemas";
 
 /**
  * Render an error for the terminal: the public `message` on top and the optional `action` last — the
@@ -42,6 +42,6 @@ export type OperatorError = PublicErrorPayload & { action?: string };
  * One rule, applied twice, rather than a second rule here that could drift from the first.
  */
 export function operatorError(payload: ErrorPayload): OperatorError {
-  const wire = PublicErrorPayload.parse(payload);
+  const wire = errorSchemas().PublicErrorPayload.parse(payload);
   return payload.action === undefined ? wire : { ...wire, action: payload.action };
 }

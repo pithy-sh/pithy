@@ -5,6 +5,7 @@ import { getUsers, MAX_USER_LOOKUP } from "@pithy-sh/auth/src/admin/users";
 import type { User } from "@pithy-sh/auth/src/data/betterAuth";
 import type { AuthDatabase } from "@pithy-sh/auth/src/data/tables";
 import { isInlineImage, userImageSource } from "@pithy-sh/auth/src/profile/profile";
+import { MEMBERS_PATH_SEGMENT } from "../http/routeTable";
 
 /**
  * Turning membership rows into people, through the auth capability's own published reader.
@@ -47,9 +48,6 @@ import { isInlineImage, userImageSource } from "@pithy-sh/auth/src/profile/profi
  * because a trail is append-only, long-lived and nobody prunes it. Two surfaces, two rules, and the
  * reason they differ is retention rather than sensitivity.
  */
-
-/** Where a member's mark is served from, under the capability's base path. */
-export const MEMBERS_PATH_SEGMENT = "/members";
 
 /**
  * The path a member's stored raster is served from.

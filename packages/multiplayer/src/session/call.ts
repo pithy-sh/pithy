@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { errorSchemas } from "@pithy-sh/core/src/error/payloadSchemas";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { RPC_ERROR_PREFIX } from "./protocol";
 
@@ -22,7 +22,7 @@ export async function callSession<T>(run: () => Promise<T>): Promise<T> {
     const message = (error as { message?: unknown } | null)?.message;
     if (typeof message === "string" && message.startsWith(RPC_ERROR_PREFIX)) {
       try {
-        const parsed = ErrorPayload.safeParse(JSON.parse(message.slice(RPC_ERROR_PREFIX.length)));
+        const parsed = errorSchemas().ErrorPayload.safeParse(JSON.parse(message.slice(RPC_ERROR_PREFIX.length)));
         if (parsed.success) throw new PithyError(parsed.data, { cause: error });
       } catch (reviveError) {
         // A revived PithyError is the intended result — rethrow it. Only a genuinely malformed envelope

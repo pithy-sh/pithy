@@ -736,6 +736,56 @@ jobs:
         working-directory: packages/cli
         run: node --run test:windows
 
+  # The reference Worker's startup CPU, held to the pull request's base. `tooling/startup` composes every kit
+  # capability; `tooling/startup/src/budget.ts` exports the base into a temporary directory, copies this
+  # tree's reference Worker over it, installs and builds it, then runs `wrangler check startup` on both sides
+  # here, interleaved, three rounds each, so the runner's speed cancels out. It fails when this tree's median is
+  # more than 15% over the base's. Cloudflare refuses a version whose startup runs over its CPU limit, so a
+  # regression fails here rather than at an adopter's deploy.
+  #
+  # A side whose reference Worker does not start fails the step, as does a base that cannot be fetched, exported,
+  # installed, built or measured. A scheduled or manual run has no pull request base: `BASE_SHA` is empty, and the
+  # step measures, reports a notice and gates nothing.
+  startup:
+    name: Startup CPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      # Node runs the check that each side's reference Worker starts, and strips its types itself.
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.18.0"
+
+      - name: Install
+        run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Startup CPU against the base
+        id: startup
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bun tooling/startup/src/budget.ts --base "$BASE_SHA"
+
+      - name: Keep the startup profile of a regression
+        if: failure() && steps.startup.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-startup-profile
+          path: tooling/startup/.wrangler/tmp/worker-startup.cpuprofile
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   # The one check the `main` ruleset requires, and the only one whose name is stable.
   #
   # Every other job here is named from the shard it drew — `Tests (payments, email, …)`,
@@ -754,7 +804,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room, auth-newest, windows, plugins, unity-client, workflows]
+    needs: [plan, verify, test, test-node, clean-room, auth-newest, windows, plugins, unity-client, workflows, startup]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

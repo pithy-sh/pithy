@@ -31,7 +31,7 @@ function app(seed: Seed) {
           ? ({ state: "deleted", purgeAfter: null } as const)
           : null;
     const refusal = standing ? lifecycleRefusal("u1", standing, null) : null;
-    if (refusal) noteRefusal(c, refusal, { userId: "u1", sessionId: "s1" });
+    if (refusal) noteRefusal(c.req.raw, refusal, { userId: "u1", sessionId: "s1" });
     await next();
   });
   hono.delete("/account", requireAccountHolder(), (c) => c.json(accountHolder(c)));

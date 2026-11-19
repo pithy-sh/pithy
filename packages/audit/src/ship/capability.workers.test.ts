@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { audit } from "../capability";
@@ -48,12 +49,12 @@ function emitting(action: string, actorId: string) {
   return defineCapability({
     name: "app",
     requiredBindings: [],
-    routes: (a) => {
+    routes: routesOf((a) => {
       a.post("/act", async (c) => {
         await c.var.emit({ action, outcome: "success", actorType: "user", actorId, ip: "203.0.113.4" });
         return c.json({ ok: true });
       });
-    },
+    }),
   });
 }
 

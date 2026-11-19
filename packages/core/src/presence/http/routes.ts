@@ -24,7 +24,7 @@ import {
 import { PRESENCE_ADMISSION_HEADER, type PresenceAdmission } from "../room";
 import { mintPresenceTicket, type PresenceTicketRequest, ticketFromOffer, verifyPresenceTicket } from "../ticket";
 import { requireAuth } from "./guard";
-import { type PresenceRoomDescriptor, PresenceTicket } from "./responses";
+import { PresenceTicket } from "./responses";
 import { PresenceRoomParams, PresenceSessionTicketRequest } from "./schemas";
 
 /**
@@ -60,18 +60,6 @@ export async function issuePresenceTicket(
     socketPath: presenceRoomPath(presence.basePath, claims.kind, claims.recordId),
     protocol: "pithy.presence.v1",
   };
-}
-
-/** The room kinds a declaration serves, as the manifest reports them. */
-export function describePresenceRooms(presence: PresenceDeclaration): PresenceRoomDescriptor[] {
-  return presence.rooms.map((room) => ({
-    kind: room.kind,
-    scope: room.scope,
-    activities: [...room.activities],
-    maxParticipants: participantCap(room),
-    sessionTicketPath: room.session ? presenceTicketPath(presence.basePath) : null,
-    socketPath: presenceSocketPath(presence.basePath),
-  }));
 }
 
 export function registerPresenceRoutes(app: Hono<PithyHonoEnv>, presence: PresenceDeclaration): void {

@@ -8,7 +8,7 @@ import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/contex
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { grantedEntitlementKeys } from "@pithy-sh/core/src/entitlement/entitlement";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { memoryJwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
+import { memoryJwksCache } from "@pithy-sh/core/src/http/jwksCache";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { resolveWorkflowBinding } from "@pithy-sh/core/src/workflow/dispatch";

@@ -37,7 +37,7 @@ export {
   SIMILAR_THRESHOLD,
 } from "./hash/duplicates";
 export { computeSha256 } from "./hash/sha256";
-export { MEDIA_MANAGE_POWER } from "./http/handlers";
+export { MEDIA_MANAGE_POWER } from "./http/routeTable";
 export { MEDIA_USAGE_READ_SCOPE } from "./http/scopes";
 export { type DedupScope, dedupScope, type HashStore } from "./record/hashStore";
 export type { MediaRecord, RecordStore } from "./record/store";

@@ -9,14 +9,13 @@ import { routeGroupsOf } from "@pithy-sh/core/src/openapi/routeGroups";
 import type { Hono } from "hono";
 import { z } from "zod";
 import { isAuthCapability } from "../capability";
-import { authPluginPlan } from "../migrations/pluginTables";
+import { pluginMigration } from "../migrations/pluginTables";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
-import { clientMetadataDiscovery } from "./clientMetadata";
 import { floorLine, isOpenToEverySignedInUser, McpFloor } from "./floor";
 import type { McpHost, McpWiring } from "./host";
-import { registerMcpRoutes } from "./http/routes";
+import { mcpRouteTable } from "./http/routeTable";
 import { MCP_CAPABILITY_NAME } from "./marker";
-import { mcpAuthorizationServer } from "./provider";
+import { PROVIDER_SCHEMA } from "./providerSchema";
 import { eraseMcpUser, exportMcpUser } from "./purge";
 
 /**
@@ -64,32 +63,14 @@ export interface McpCapability extends Capability {
   readonly mcpConfig: McpConfig;
   /** What auth composes into its instance. */
   readonly mcpWiring: McpWiring;
-  /** Every tool the composed app offers, before any caller's role filters it. Empty until the app is built. */
-  readonly tools: () => readonly AppTool[];
+  /** Every tool the composed app offers, before any caller's role filters it. Empty until the routes have loaded. */
+  readonly tools: () => Promise<readonly AppTool[]>;
   /** Whether the endpoint is open to every signed-in user, and the floor in one line. Read by `pithy doctor`. */
   readonly floorReport: { readonly open: boolean; readonly line: string };
 }
 
-/** The provider's tables, derived once from the plugin itself. Its options shape no column, so any resource does. */
-const providerPlan = authPluginPlan([
-  mcpAuthorizationServer({
-    resource: "https://schema.invalid/mcp",
-    consentPage: "/agent-consent",
-    clientDiscovery: clientMetadataDiscovery(),
-  })[0],
-]);
-
-/** The one migration that plan holds: the plugin's tables, under this capability's own namespace. */
-export const PROVIDER_MIGRATION = (() => {
-  const [migration] = Object.values(providerPlan.migrations);
-  if (migration === undefined) {
-    throw new ValidationError({
-      message: "The OAuth provider declared no tables.",
-      detail: "authPluginPlan derived no migration for the oauth-provider plugin",
-    });
-  }
-  return migration;
-})();
+/** The one migration the provider's tables take, under this capability's own namespace. */
+export const PROVIDER_MIGRATION = pluginMigration(PROVIDER_SCHEMA);
 
 /** Refuse a composition this capability cannot serve, naming what to change. */
 function hostFrom(capabilities: readonly Capability[], config: McpConfig): McpHost {
@@ -124,7 +105,6 @@ export function mcp(options: McpConfigInput): McpCapability {
   const wiring: McpWiring = {
     path: config.path,
     consentPage: config.consentPath,
-    clientDiscovery: clientMetadataDiscovery(),
   };
   let host: McpHost | undefined;
   let app: Hono<PithyHonoEnv> | undefined;
@@ -168,27 +148,36 @@ export function mcp(options: McpConfigInput): McpCapability {
     compose: ({ capabilities }) => {
       host = hostFrom(capabilities, config);
     },
-    routes: (router) => {
-      app = router as unknown as Hono<PithyHonoEnv>;
-      registerMcpRoutes(router as unknown as Hono<PithyHonoEnv>, {
-        path: config.path,
-        floor: config.floor,
-        host: () => ready(host, "auth host"),
-        app: () => ready(app, "router"),
-        tools: () => {
-          // Read once, after `createBackend` has recorded every capability's routes — the first request is the
-          // earliest moment the whole table exists, and it does not change afterwards.
-          tools ??= appTools(routeGroupsOf(ready(app, "router")) ?? []);
-          return tools;
-        },
-      });
+    routes: {
+      // Read when the Worker assembles: the authorization server's metadata path names the base path auth mounted at.
+      get declared() {
+        return mcpRouteTable(config.path, ready(host, "auth host").basePath);
+      },
+      load: async () => {
+        const { registerMcpRoutes } = await import("./http/routes");
+        return (router, { composed }) => {
+          app = composed;
+          registerMcpRoutes(router, {
+            path: config.path,
+            floor: config.floor,
+            host: () => ready(host, "auth host"),
+            app: () => ready(app, "router"),
+            tools: async () => {
+              // Read once: the first request is the earliest moment the whole table can exist, and it does not
+              // change afterwards.
+              tools ??= appTools((await routeGroupsOf(ready(app, "router"))) ?? []);
+              return tools;
+            },
+          });
+        };
+      },
     },
   });
 
   return Object.assign(capability, {
     mcpConfig: config,
     mcpWiring: wiring,
-    tools: () => tools ?? (app ? appTools(routeGroupsOf(app) ?? []) : []),
+    tools: async () => tools ?? (app ? appTools((await routeGroupsOf(app)) ?? []) : []),
     floorReport: { open: isOpenToEverySignedInUser(config.floor), line: floorLine(config.floor) },
   });
 }

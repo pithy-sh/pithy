@@ -13,8 +13,8 @@ import type { TerminalErrorConstructor, WorkflowStepLike } from "@pithy-sh/core/
 import type { EmailEnqueueEnv } from "@pithy-sh/email/src/capability";
 import { enqueueFromEnv } from "@pithy-sh/email/src/send/fromComposition";
 import { type AuthCapability, isAuthCapability } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
-import { resolveDb } from "../http/resolve";
 import { inactiveAccounts } from "../lifecycle/inactivity";
 import { deleteUser, type LifecycleDeps } from "../lifecycle/transitions";
 import {

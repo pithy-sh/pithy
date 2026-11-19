@@ -8,6 +8,7 @@ import type { AuditEventInput } from "../../audit/auditEvent";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { routesOf } from "../../http/lazyRoutes";
 import { type MintedKey, mintKey, signToken } from "../../test-utils/oidcFixtures";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection } from "../data/connection";
@@ -70,9 +71,9 @@ const inventory = defineCapability({
   adminRoutes: [
     { method: "GET", path: "/inventory/admin/things", scope: SCOPE, kind: "reads", summary: "Every pending thing." },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(SCOPE), (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 const backend = createBackend({ capabilities: [controlplane(), recorder, inventory] });

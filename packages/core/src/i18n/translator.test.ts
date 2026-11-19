@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
-import { bakedTranslator, createTranslator } from "./translator";
+import { describe, expect, test, vi } from "vitest";
+import { bakedTranslator, createTranslator, deferredTranslator } from "./translator";
 
 const EN = {
   "auth/sign_in.title": "Welcome.",
@@ -130,5 +130,20 @@ describe("Intl formatting", () => {
     expect(es.formatDate(day, { dateStyle: "long", timeZone: "UTC" })).toBe("1 de junio de 2026");
     expect(es.formatDate(new Date(day), { dateStyle: "long", timeZone: "UTC" })).toBe("1 de junio de 2026");
     expect(es.formatRelativeTime(-1, "day", { numeric: "auto" })).toBe("ayer");
+  });
+});
+
+describe("deferredTranslator", () => {
+  test("builds its catalog on the first message it renders, once", () => {
+    const build = vi.fn(() => bakedTranslator(EN));
+    const t = deferredTranslator("en", build);
+    expect(t.catalogLocale).toBe("en");
+    expect(t.direction).toBe("ltr");
+    expect(t.formatNumber(1234.5)).toBe("1,234.5");
+    expect(build).not.toHaveBeenCalled();
+    expect(t.t("auth/sign_in.title")).toBe("Welcome.");
+    expect(t.plural("auth/sign_in.tries", 2)).toBe("2 tries left.");
+    expect(t.maybe("auth/missing")).toBeNull();
+    expect(build).toHaveBeenCalledTimes(1);
   });
 });

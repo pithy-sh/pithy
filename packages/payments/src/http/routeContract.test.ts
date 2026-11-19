@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
@@ -358,18 +359,18 @@ describe("the admin surface payments advertises", () => {
   };
 
   /** The composed capability, so what is inspected is what an adopter actually gets. */
-  function composed(basePath?: string) {
+  async function composed(basePath?: string) {
     const capability = payments({ ...CATALOG, ...(basePath === undefined ? {} : { basePath }) });
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     return { capability, app };
   }
 
-  test("every advertised admin route is one payments actually mounts", () => {
+  test("every advertised admin route is one payments actually mounts", async () => {
     // `GET /control-plane/manifest` tells a management client these six routes exist and which scope
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
-    const { capability, app } = composed();
+    const { capability, app } = await composed();
     expect(capability.adminRoutes).toHaveLength(17);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
@@ -377,10 +378,10 @@ describe("the admin surface payments advertises", () => {
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("a moved base path moves the advertised routes too", () => {
+  test("a moved base path moves the advertised routes too", async () => {
     // The case that motivated describing routes at all. An adopter mounting payments at `/billing`
     // would 404 every management call from a client that assumed the `/payments` default.
-    const { capability, app } = composed("/billing");
+    const { capability, app } = await composed("/billing");
     expect(capability.adminRoutes?.map((route) => route.path)).toEqual([
       "/billing/admin/catalog",
       "/billing/admin/purchases",
@@ -403,10 +404,10 @@ describe("the admin surface payments advertises", () => {
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("each advertised route names the scope its guard actually requires", () => {
+  test("each advertised route names the scope its guard actually requires", async () => {
     // The scopes are the join key with what `pithy dashboard connect` offers an adopter to grant, so a
     // manifest naming a different string would tell a client to ask for a grant nothing checks.
-    const { capability } = composed();
+    const { capability } = await composed();
     expect(capability.adminRoutes?.map((route) => route.scope)).toEqual([
       PAYMENTS_CATALOG_READ_SCOPE,
       PAYMENTS_PURCHASES_READ_SCOPE,
@@ -431,12 +432,12 @@ describe("the admin surface payments advertises", () => {
     );
   });
 
-  test("only the control-plane routes are advertised — the player routes are not a management surface", () => {
+  test("only the control-plane routes are advertised — the player routes are not a management surface", async () => {
     // Declaring is opt-in and one-directional. Payments serves plenty of bearer routes on paths that look
     // like these — `GET /payments/entitlements` is the caller's own — and none of them belong in a
     // manifest a management client dispatches from. The `admin/` segment and the two write verbs are what
     // separate the two sets, so both shapes are named.
-    const { capability } = composed();
+    const { capability } = await composed();
     expect(
       capability.adminRoutes?.every(
         (route) => route.path.startsWith("/payments/admin/") || route.path.includes("/entitlements/"),
@@ -445,10 +446,10 @@ describe("the admin surface payments advertises", () => {
     expect(capability.adminRoutes?.map((route) => route.path)).not.toContain("/payments/entitlements");
   });
 
-  test("the reads are reads — every advertised GET is under admin/, and no read declares a body", () => {
+  test("the reads are reads — every advertised GET is under admin/, and no read declares a body", async () => {
     // A management read that could be reached by a POST would be a write nobody reviewed. Method and path
     // are asserted together because either alone permits the mistake.
-    const { capability } = composed();
+    const { capability } = await composed();
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
     expect(reads).toHaveLength(10);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);

@@ -5,6 +5,7 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
@@ -327,7 +328,7 @@ describe("the advertised admin surface matches what is mounted", () => {
 
   test("every advertised admin route is actually mounted", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     const drift = missingAdminRoutes(app as unknown as Hono<never>, [capability]);
     expect(
       drift,

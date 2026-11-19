@@ -6,15 +6,8 @@ import type { AccessCaller, PermissionHook } from "@pithy-sh/core/src/access/acc
 import type { RecordVisibility } from "@pithy-sh/core/src/access/visibility";
 import { beforeEach, describe, expect, test } from "vitest";
 import { caller, makeDeps, resetMediaTables } from "../test-utils/harness";
-import {
-  createMedia,
-  deleteMedia,
-  finalizeMedia,
-  getMedia,
-  listMedia,
-  MEDIA_MANAGE_POWER,
-  updateMedia,
-} from "./handlers";
+import { createMedia, deleteMedia, finalizeMedia, getMedia, listMedia, updateMedia } from "./handlers";
+import { MEDIA_MANAGE_POWER } from "./routeTable";
 import type { CreateMediaInput } from "./schemas";
 
 /**

@@ -18,6 +18,7 @@ import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
+import type { CapabilityRoutes } from "../http/lazyRoutes";
 import type { SameOriginGate } from "../http/sameOrigin";
 import type { SocketChannel } from "../http/socket";
 import type { LocaleCatalogs } from "../i18n/catalog";
@@ -578,8 +579,16 @@ export interface Capability<
    * composition — earlier is better, and a refusal the CLI can raise is a refusal an adopter sees sooner.
    */
   boot?: (context: CapabilityComposeContext) => void;
-  /** Mounts a Hono sub-router. */
-  routes?: (app: Hono<PithyHonoEnv>) => void;
+  /**
+   * This capability's routes: every method and path it serves, declared up front, and a loader for the module
+   * that mounts them — `{ declared, load: async () => (await import("./http/routes")).mount }`.
+   *
+   * `createBackend` registers the declared table at assembly and builds the module's routes, and every schema
+   * only they use, on the first request that reaches one of them, behind every middleware a route mounted
+   * eagerly would sit behind. A capability's own test holds the table to what the module mounts with
+   * `routeDrift` (`../http/lazyRoutes.ts`). A function in its place is refused at assembly.
+   */
+  routes?: CapabilityRoutes;
   /**
    * The WebSockets this capability serves, described for the AsyncAPI contract (`../http/socket.ts`). Built
    * from the resolved config, like `adminRoutes`: the paths it mounted, and the schemas its frames are

@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { adminRouteTable } from "@pithy-sh/core/src/http/lazyRoutes";
 import type { TurnstileClientProjection } from "./client/projection";
 import { TURNSTILE_LOGIN_ACTION, TurnstileConfig, type TurnstileConfigInput } from "./config/config";
-import { registerTurnstileRoutes } from "./http/routes";
 import { turnstileAdminRoutes } from "./http/scopes";
+import { TURNSTILE_WIDGET_PATH } from "./http/widgetPage";
 import { resolveSitekey } from "./provision/testKeys";
 import { TURNSTILE_RUNTIME_PERMISSIONS, turnstileCapabilitySecretsRegistry } from "./secret/registry";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -50,7 +51,10 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
     // `runtime` token the application holds. Nothing is added to `ci-system`.
     runtimePermissions: TURNSTILE_RUNTIME_PERMISSIONS,
     adminRoutes: turnstileAdminRoutes(),
-    routes: registerTurnstileRoutes({ config: resolved }),
+    routes: {
+      declared: [...adminRouteTable(turnstileAdminRoutes()), { method: "GET", path: TURNSTILE_WIDGET_PATH }],
+      load: async () => (await import("./http/routes")).registerTurnstileRoutes({ config: resolved }),
+    },
     /**
      * The client-safe projection — exactly what renders the login widget: the mode `protect.login`
      * names, that widget's **public** sitekey for the environment being built, the **action** the widget

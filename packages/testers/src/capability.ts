@@ -12,7 +12,7 @@ import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import { TestersConfig, type TestersConfigInput } from "./config/config";
 import { testersTables } from "./data/tables";
-import { registerTestersRoutes } from "./http/routes";
+import { testersRouteTable } from "./http/routeTable";
 import { testersAdminRoutes } from "./http/scopes";
 import { testers_0001_cohorts } from "./migrations/0001_cohorts";
 import type { EnqueueNudge } from "./nudge/send";
@@ -151,17 +151,21 @@ export function testers(options: TestersOptions = {}): TestersCapability {
     // Built from the resolved `basePath`, never the default: an adopter who mounts this at `/beta` gets
     // a manifest naming their paths, where a client assuming the default would 404.
     adminRoutes: testersAdminRoutes(resolved.basePath),
-    routes: registerTestersRoutes({
-      config: resolved,
-      auth: () => wiring.auth,
-      enqueue: (env) => {
-        const enqueue = wiring.enqueue;
-        if (!enqueue) return undefined;
-        // The email capability owns the `DB` and `EMAIL_SENDER` bindings and the from-identity; testers
-        // passes only the request env and the high-level input, and never names an email binding itself.
-        return ((input) => enqueue(env as never, input)) as EnqueueNudge;
-      },
-    }),
+    routes: {
+      declared: testersRouteTable(resolved.basePath),
+      load: async () =>
+        (await import("./http/routes")).registerTestersRoutes({
+          config: resolved,
+          auth: () => wiring.auth,
+          enqueue: (env) => {
+            const enqueue = wiring.enqueue;
+            if (!enqueue) return undefined;
+            // The email capability owns the `DB` and `EMAIL_SENDER` bindings and the from-identity; testers
+            // passes only the request env and the high-level input, and never names an email binding itself.
+            return ((input) => enqueue(env as never, input)) as EnqueueNudge;
+          },
+        }),
+    },
     seeds: [testersExampleSeed],
     // A person's cohort memberships, found by their address: exported on an access request and erased by their
     // purge, as its own step in the adopter's Worker (#814).

@@ -71,6 +71,16 @@ export const SECRETS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
 ];
 
 /**
+ * Where the secrets management surface mounts when an adopter names nothing.
+ *
+ * Exported because two places must agree on it: the router in `routes.ts`, and `secretsAdminRoutes`
+ * below. A default living only in the registrar would let the manifest advertise `/secrets/...`
+ * while the routes mounted somewhere else, and a management client composing its calls from the
+ * manifest would 404 with nothing to diagnose.
+ */
+export const SECRETS_DEFAULT_BASE_PATH = "/secrets";
+
+/**
  * The secrets capability's management surface, as `GET /control-plane/manifest` reports it.
  *
  * Declared beside the scope rather than in `routes.ts` so the scope a route demands and the scope a

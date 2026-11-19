@@ -14,7 +14,7 @@ import {
   type WorkflowStepLike,
 } from "@pithy-sh/core/src/workflow/faults";
 import { type AuditCapability, isAuditCapability } from "../capability";
-import { AUDIT_CHECKPOINT_BINDING } from "../chain/checkpoint";
+import { AUDIT_CHECKPOINT_BINDING } from "../chain/bucket";
 import {
   AUDIT_PRUNE_PAGE,
   type ChainPrunePage,

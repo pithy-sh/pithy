@@ -60,7 +60,7 @@ function sources(overrides: Partial<EvidenceSources> = {}): EvidenceSources {
       unrotatable: 0,
     }),
     retirement: async () => ({ blocked: false, reasons: [], liveVersions: 0 }),
-    routeGroups: () => undefined,
+    routeGroups: async () => undefined,
     database: () => controlPlaneDatabase(env.DB),
     now: () => NOW,
     ...overrides,

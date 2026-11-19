@@ -121,9 +121,9 @@ export interface ControlPlaneHandlerDeps {
   composition: () => readonly Capability[];
   /**
    * The route table `createBackend` recorded for the app these routes mounted on, or `undefined` for an app it did
-   * not assemble. Read per call, after every capability's routes have mounted, so the evidence pack sees them all.
+   * not assemble. Resolved per call, every capability's routes loaded, so the evidence pack sees them all.
    */
-  routeGroups: () => readonly RouteGroup[] | undefined;
+  routeGroups: () => Promise<readonly RouteGroup[] | undefined>;
   /**
    * The retention block as this Worker resolved it at assembly, or null when no backend recorded one. The
    * manifest reports it.
@@ -278,7 +278,7 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
     // In parallel: each producer is bounded by its own declaration, and a Worker composing several has
     // no reason to serialize numbers that do not depend on each other.
     const capabilities = await Promise.all(
-      withRouteInputs(deps.composedCapabilities(), inputsFor(deps.routeGroups())).map(async (declaration) => ({
+      withRouteInputs(deps.composedCapabilities(), inputsFor(await deps.routeGroups())).map(async (declaration) => ({
         ...declaration,
         // Spread, so the values and the failure flag are written together or not at all. A handler that
         // set one and forgot the other is the shape of defect the four-state value exists to prevent.

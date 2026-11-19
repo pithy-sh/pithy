@@ -14,6 +14,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { ForbiddenError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import type { SameOriginGate } from "@pithy-sh/core/src/http/sameOrigin";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
@@ -185,7 +186,9 @@ const verifier: ControlPlaneVerifier = async (_request, requirement) => {
 };
 
 /** The composed capability's routes, with the seams given, over a request context the test controls. */
-function buildApp(seams: Pick<OrganizationOptions<string, Role>, "onCreate" | "onJoin">): Hono<PithyHonoEnv> {
+async function buildApp(
+  seams: Pick<OrganizationOptions<string, Role>, "onCreate" | "onJoin">,
+): Promise<Hono<PithyHonoEnv>> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   app.use("*", async (c, next) => {
@@ -205,7 +208,7 @@ function buildApp(seams: Pick<OrganizationOptions<string, Role>, "onCreate" | "o
     ...seams,
     onMemberRoleChanged: (event) => void roleChanges.push(event),
   });
-  composed.routes?.(app);
+  await mountRoutes(composed.routes, app);
   return app;
 }
 
@@ -288,7 +291,7 @@ beforeEach(async () => {
 
 describe("founding", () => {
   test("writes onCreate's row and then onJoin's, founded, and records the founding as before", async () => {
-    const response = await call(buildApp(recording), "POST", BASE, { as: ADA, body: { name: "Acme Games" } });
+    const response = await call(await buildApp(recording), "POST", BASE, { as: ADA, body: { name: "Acme Games" } });
     expect(response.status).toBe(201);
     const body = (await response.json()) as { organization: { id: string } };
     const organizationId = body.organization.id;
@@ -310,7 +313,7 @@ describe("founding", () => {
   });
 
   test("**a failing statement answers with an error and leaves no organization, membership or row**", async () => {
-    const app = buildApp({
+    const app = await buildApp({
       onCreate: (d1, event) => [row(d1, "settings", event.organizationId, null), refused(d1)],
     });
     const response = await call(app, "POST", BASE, { as: ADA, body: { name: "Acme Games" } });
@@ -322,7 +325,7 @@ describe("founding", () => {
   });
 
   test("a caller the route refuses never reaches the builders", async () => {
-    const response = await call(buildApp(recording), "POST", BASE, { body: { name: "Acme Games" } });
+    const response = await call(await buildApp(recording), "POST", BASE, { body: { name: "Acme Games" } });
     expect(response.status).toBe(401);
     expect(created).toEqual([]);
     expect(joined).toEqual([]);
@@ -341,7 +344,7 @@ describe("accepting an invitation", () => {
       // The composed routes read the real clock.
       now: new Date(),
     });
-    const response = await call(buildApp(recording), "POST", `${BASE}/invitations/accept`, {
+    const response = await call(await buildApp(recording), "POST", `${BASE}/invitations/accept`, {
       as: BOB,
       body: { token: minted.token },
     });
@@ -375,7 +378,7 @@ describe("accepting an invitation", () => {
       // The composed routes read the real clock.
       now: new Date(),
     });
-    const response = await call(buildApp(promote), "POST", `${BASE}/invitations/accept`, {
+    const response = await call(await buildApp(promote), "POST", `${BASE}/invitations/accept`, {
       as: BOB,
       body: { token: minted.token },
     });
@@ -395,15 +398,20 @@ describe("accepting an invitation", () => {
       // The composed routes read the real clock.
       now: new Date(),
     });
-    const failing = await call(buildApp({ onJoin: (d1) => [refused(d1)] }), "POST", `${BASE}/invitations/accept`, {
-      as: BOB,
-      body: { token: minted.token },
-    });
+    const failing = await call(
+      await buildApp({ onJoin: (d1) => [refused(d1)] }),
+      "POST",
+      `${BASE}/invitations/accept`,
+      {
+        as: BOB,
+        body: { token: minted.token },
+      },
+    );
     expect(failing.status).toBe(500);
     expect(await count("pithy_organization_memberships")).toBe(1);
     expect(events).toEqual([]);
 
-    const retried = await call(buildApp(recording), "POST", `${BASE}/invitations/accept`, {
+    const retried = await call(await buildApp(recording), "POST", `${BASE}/invitations/accept`, {
       as: BOB,
       body: { token: minted.token },
     });
@@ -415,7 +423,7 @@ describe("accepting an invitation", () => {
 describe("an operator's add", () => {
   test("writes onJoin's row as the operator's, records the add as before, and a later role change still fires its hook", async () => {
     await acme();
-    const app = buildApp(recording);
+    const app = await buildApp(recording);
     const response = await call(app, "POST", `${BASE}/admin/organizations/${ACME}/members`, {
       body: { userId: CAI, role: "member", reason: REASON },
     });
@@ -446,7 +454,7 @@ describe("an operator's add", () => {
 
   test("**an onJoin that promotes the member is answered and audited at the committed role**", async () => {
     await acme();
-    const response = await call(buildApp(promote), "POST", `${BASE}/admin/organizations/${ACME}/members`, {
+    const response = await call(await buildApp(promote), "POST", `${BASE}/admin/organizations/${ACME}/members`, {
       body: { userId: CAI, role: "member", reason: REASON },
     });
     expect(response.status).toBe(201);
@@ -457,7 +465,7 @@ describe("an operator's add", () => {
   test("**a failing statement answers with an error and leaves no membership**", async () => {
     await acme();
     const response = await call(
-      buildApp({ onJoin: (d1) => [refused(d1)] }),
+      await buildApp({ onJoin: (d1) => [refused(d1)] }),
       "POST",
       `${BASE}/admin/organizations/${ACME}/members`,
       {
@@ -472,7 +480,7 @@ describe("an operator's add", () => {
   test("a caller without the roster scope never reaches the builder", async () => {
     await acme();
     granted = [];
-    const response = await call(buildApp(recording), "POST", `${BASE}/admin/organizations/${ACME}/members`, {
+    const response = await call(await buildApp(recording), "POST", `${BASE}/admin/organizations/${ACME}/members`, {
       body: { userId: CAI, role: "member", reason: REASON },
     });
     expect(response.status).toBe(403);

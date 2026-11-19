@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { kitErrorCodes } from "@pithy-sh/core/src/error/payloadSchemas";
 import type { LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { EMAIL_RETENTION_BASIS_KEY } from "../purge/contribution";
 import { EMAIL_MESSAGES, type EmailMessageLayers } from "../templates/messages";
@@ -54,13 +54,13 @@ const EMAIL_KEY_PREFIX = "email/";
  * already fills to 69%, so it is roughly 8% of the room a second locale would need. Read off
  * `KitErrorPayload` so a seventh `email/*` code drops out on its own.
  */
-const EMAIL_ERROR_CODES: ReadonlySet<string> = new Set(
-  KitErrorPayload.options.map((member) => member.shape.code.value).filter((code) => code.startsWith(EMAIL_KEY_PREFIX)),
-);
+function isEmailErrorCode(key: string): boolean {
+  return key.startsWith(EMAIL_KEY_PREFIX) && kitErrorCodes().has(key);
+}
 
 /** Whether a key is copy this host will actually render. The purge's retained basis is read by the export alone. */
 function rendersOnTheHost(key: string): boolean {
-  return key.startsWith(EMAIL_KEY_PREFIX) && !EMAIL_ERROR_CODES.has(key) && key !== EMAIL_RETENTION_BASIS_KEY;
+  return key.startsWith(EMAIL_KEY_PREFIX) && !isEmailErrorCode(key) && key !== EMAIL_RETENTION_BASIS_KEY;
 }
 
 /**

@@ -5,13 +5,13 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { email } from "../capability";
-import { CALLBACK_BASE } from "../templates/engine";
 import { createEmailHostApp } from "../workflows/hostApp";
 import { registerCallbacks } from "./callbacks";
 import {
@@ -24,6 +24,7 @@ import {
   emailAdminRoutes,
 } from "./guards";
 import { EMAIL_ADMIN_ROUTES, registerEmailAdminRoutes } from "./routes";
+import { CALLBACK_BASE } from "./routeTable";
 
 /**
  * Gate two of the route request contract, applied to `@pithy-sh/email`.
@@ -206,7 +207,7 @@ describe("the advertised admin surface", () => {
 
   test("every advertised admin route is actually mounted", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     const drift = missingAdminRoutes(app as unknown as Hono<never>, [capability]);
     expect(
       drift,
@@ -214,16 +215,16 @@ describe("the advertised admin surface", () => {
     ).toEqual([]);
   });
 
-  test("every mounted control-plane route is actually advertised", () => {
+  test("every mounted control-plane route is actually advertised", async () => {
     // The other direction, and since #468 it is not cosmetic. The CORS surface derives from
     // `adminRoutes`, so a guarded route nobody declared gets no preflight and no browser can reach it
     // — while every other test in this file stays green.
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
-  test("the advertised paths follow a moved basePath, and so does the router", () => {
+  test("the advertised paths follow a moved basePath, and so does the router", async () => {
     const moved = email({ ...CONFIG, basePath: "/mail" }) as unknown as Capability;
     expect(moved.adminRoutes ?? []).toHaveLength(EMAIL_ADMIN_ROUTES.length);
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/mail/")).toBe(true);
@@ -231,7 +232,7 @@ describe("the advertised admin surface", () => {
     // And the two halves read the same value: composing the moved capability must mount exactly what it
     // advertises, which is the failure a second default would cause and nothing else would catch.
     const app = new Hono<PithyHonoEnv>();
-    moved.routes?.(app);
+    await mountRoutes(moved.routes, app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [moved])).toEqual([]);
   });
 

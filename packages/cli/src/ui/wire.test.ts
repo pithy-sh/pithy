@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { UI_CORE_VERSION } from "@pithy-sh/ui-core/src/version";
 import { UI_REACT_VERSION } from "@pithy-sh/ui-react/src/version";
@@ -59,9 +60,9 @@ const CONFIG: WorkerConfig = {
     defineCapability({
       name: "auth",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.post("/auth/sign-in/magic-link", (c) => c.json({}));
-      },
+      }),
     }),
   ],
 };
@@ -140,9 +141,9 @@ describe("wire", () => {
             defineCapability({
               name: "ledger",
               requiredBindings: [],
-              routes: (app) => {
+              routes: routesOf((app) => {
                 app.get("/ledger/balance", (c) => c.json({}));
-              },
+              }),
             }),
           ],
         },

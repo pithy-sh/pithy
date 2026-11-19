@@ -6,7 +6,7 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import type { Migration } from "kysely/migration";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "./config/config";
 import { matchmakingTables } from "./data/tables";
-import { MATCHMAKING_DEFAULT_BASE_PATH, registerMatchmakingRoutes } from "./http/routes";
+import { MATCHMAKING_DEFAULT_BASE_PATH, matchmakingRouteTable } from "./http/routeTable";
 import { matchmakingAdminRoutes } from "./http/scopes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { MATCHMAKING_MIGRATIONS } from "./migrations/chain";
@@ -102,7 +102,15 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
     compose: ({ capabilities }) => {
       peers = matchmakingPeers(capabilities, resolved);
     },
-    routes: registerMatchmakingRoutes({ config: resolved, basePath: mountPath, peers: () => peers }),
+    routes: {
+      declared: matchmakingRouteTable(mountPath, resolved.friends),
+      load: async () =>
+        (await import("./http/routes")).registerMatchmakingRoutes({
+          config: resolved,
+          basePath: mountPath,
+          peers: () => peers,
+        }),
+    },
     // The control-plane surface, built from the mounted path: what the manifest advertises and what
     // `pithy dashboard connect` offers to grant. Always declared; with `controlplane()` uncomposed each route
     // refuses with `controlplane/not_connected`.

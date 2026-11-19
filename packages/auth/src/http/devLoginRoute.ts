@@ -3,8 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
-import { type AmbientEnv, ambientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
-import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
+import { type AmbientEnv, ambientEnv } from "@pithy-sh/core/src/env/ambient";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
@@ -15,10 +14,11 @@ import type { Context, Hono } from "hono";
 import { z } from "zod";
 import type { AuthWiring } from "../capability";
 import { Session } from "../data/betterAuth";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { resolveSessionSecret } from "../instance/secrets";
 import { DEV_SESSION_COOKIE_NAME, signCookieValue, verifyDevLoginClaim } from "../seeds/devSession";
-import { resolveDb } from "./resolve";
+import { devLoginMounts } from "./routeTable";
 
 /**
  * `GET /__pithy/dev-login` — the seeded session, as a redirect that signs the browser in.
@@ -61,10 +61,7 @@ export function registerDevLoginRoute(
   env: AmbientEnv = ambientEnv(),
 ): (app: Hono<PithyHonoEnv>) => void {
   return (app) => {
-    // Gate one: the composition's environment. `undefined` — nothing stamped `ENVIRONMENT` — is not `dev`.
-    if (compositionEnvironment(env) !== "dev") return;
-    // Gate two: continuous integration, independently. A `dev` composition in CI gets no route either.
-    if (isContinuousIntegration(env)) return;
+    if (!devLoginMounts(env)) return;
     // The claim is read here rather than inside the handler: `c.req.valid` is typed off the chain it was
     // declared on, and a handler taking a bare `Context` has no validator to read from.
     app.get(

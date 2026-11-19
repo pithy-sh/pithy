@@ -13,13 +13,14 @@ import type { Context } from "hono";
 import { correlation, emitHandoffExchanged, emitHandoffIssued } from "../audit/emit";
 import type { AuthWiring } from "../capability";
 import { Session } from "../data/betterAuth";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import type { AuthInstance } from "../instance/auth";
 import { isHandoffChallenge, issueHandoff, redeemHandoff } from "../token/handoff";
 import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
-import { getAuthInstance, resolveDb } from "./resolve";
+import { getAuthInstance } from "./resolve";
 import type { HandoffExchangeResponse } from "./responses";
 import type { HandoffExchangeBody, SocialSignInStartQuery } from "./schemas";
 

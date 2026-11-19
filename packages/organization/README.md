@@ -271,7 +271,7 @@ organization({
 
 `membershipId` names the membership that changed or ended, so a revocation keyed on it reaches exactly what that membership authorized. `actor` is `{ type: "member", userId }` or `{ type: "control-plane", connectionId }`. A hook that throws is logged and swallowed, and the change stands. A hook cannot undo the write it heard about. A row that must begin with a membership belongs in `onJoin`, below. They exist so a management client can re-check what a demoted member's agents were granted and revoke what a departed one authorized ([`docs/AGENT-ACCESS.md` §8](../../docs/AGENT-ACCESS.md)).
 
-**`ORGANIZATION_ROUTES` in `src/http/routes.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
+**`ORGANIZATION_ROUTES` in `src/http/routeTable.ts` is the registry this table mirrors**, and `routeContract.test.ts` compares that registry against what Hono actually mounted, in both directions, then calls every route with no credential and asserts which gate answered. A route added without an entry is a route whose verification nobody declared; an entry naming a route nobody mounts is a promise to a client that 404s.
 
 ## Your own rows, in the same write
 

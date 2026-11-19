@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { WorkerConfig } from "../project/config";
@@ -29,17 +30,17 @@ import { runUiAdd } from "./flow";
  * last was failing on the shortest path through the product.
  *
  * Checked the way the issue states it: **snapshot the tree, make the run fail, assert the tree is
- * byte-identical, then prove a later run still works.** A capability whose `routes` throws is the real
+ * byte-identical, then prove a later run still works.** A capability whose composition throws is the real
  * failure, reached through the real command — not a stub of the step.
  */
 
-/** A capability whose route registration throws — what composing a broken config does. */
+/** A capability whose composition throws — what composing a broken config does. */
 const EXPLODES: WorkerConfig = {
   capabilities: [
     defineCapability({
       name: "auth",
       requiredBindings: [],
-      routes: () => {
+      compose: () => {
         throw new PithyError({
           code: "core/internal",
           status: 500,
@@ -57,9 +58,9 @@ const COMPOSES: WorkerConfig = {
     defineCapability({
       name: "auth",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/auth", (c) => c.json({}));
-      },
+      }),
     }),
   ],
 };

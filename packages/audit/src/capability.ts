@@ -6,19 +6,19 @@ import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { adminRouteTable } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
-import { AUDIT_CHECKPOINT_BINDING } from "./chain/checkpoint";
+import { AUDIT_CHECKPOINT_BINDING } from "./chain/bucket";
 import { checkpointLockCheck } from "./chain/lockCheck";
 import { auditCitationsFor } from "./citations";
 import type { AuditDatabase } from "./data/tables";
 import { auditDatabase, auditTables } from "./data/tables";
 import { auditAdminRoutes } from "./http/guards";
-import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
 import { audit_0002_actor_kind } from "./migrations/0002_actor_kind";
 import { audit_0003_call_index } from "./migrations/0003_call_index";
@@ -218,17 +218,21 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
     },
     // The registry key is this package's own detail, so the routes are handed a resolver rather than
     // being made to know it — the same reason the middleware below resolves lazily.
-    routes: registerAuditRoutes({
-      basePath: resolved.basePath,
-      database: (c) => (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
-      adminRoutes: () => adminRoutes,
-      // Read off the env per request: a binding exists only on a request, and an unprovisioned Worker has none.
-      checkpoints: (c) => {
-        const bucket = (c.env as Record<string, unknown> | undefined)?.[AUDIT_CHECKPOINT_BINDING];
-        return typeof bucket === "object" && bucket !== null ? (bucket as R2Bucket) : null;
-      },
-      sinks,
-    }),
+    routes: {
+      declared: adminRouteTable(auditAdminRoutes(resolved.basePath)),
+      load: async () =>
+        (await import("./http/routes")).registerAuditRoutes({
+          basePath: resolved.basePath,
+          database: (c) => (c.var.db as Record<typeof AUDIT_DATABASE_NAME, AuditDatabase>)[AUDIT_DATABASE_NAME],
+          adminRoutes: () => adminRoutes,
+          // Read off the env per request: a binding exists only on a request, and an unprovisioned Worker has none.
+          checkpoints: (c) => {
+            const bucket = (c.env as Record<string, unknown> | undefined)?.[AUDIT_CHECKPOINT_BINDING];
+            return typeof bucket === "object" && bucket !== null ? (bucket as R2Bucket) : null;
+          },
+          sinks,
+        }),
+    },
     // Replace the no-op `emit` seam with a recorder over this request's audit database. The database
     // is resolved lazily inside the closure — only when a route actually emits — so a request that
     // never audits never triggers the lazy Kysely build. Runs after createBackend's default-setter

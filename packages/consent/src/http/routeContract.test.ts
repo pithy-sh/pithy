@@ -5,6 +5,7 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
@@ -20,7 +21,7 @@ import { CONSENT_CONTROL_PLANE_SCOPES, CONSENT_READ_SCOPE, consentAdminRoutes } 
  */
 
 /** The consent routes, composed the way `createBackend` composes them, with no control plane. */
-function served(): Hono<PithyHonoEnv> {
+async function served(): Promise<Hono<PithyHonoEnv>> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   app.use("*", async (c, next) => {
@@ -32,23 +33,19 @@ function served(): Hono<PithyHonoEnv> {
     c.set("sameOrigin", null);
     await next();
   });
-  consent().routes?.(app);
+  await mountRoutes(consent().routes, app);
   return app;
 }
 
 describe("consent route contract", () => {
   test("every param-bearing route validates its params", async () => {
-    const uncovered = await uncoveredParamRoutes(served() as unknown as Hono<never>);
+    const uncovered = await uncoveredParamRoutes((await served()) as unknown as Hono<never>);
     expect(uncovered).toEqual([]);
   });
 
-  test("the gate is not vacuous — it sees every param route consent ships", () => {
+  test("the gate is not vacuous — it sees every param route consent ships", async () => {
     const paths = [
-      ...new Set(
-        served()
-          .routes.filter((r) => pathParams(r.path).length > 0)
-          .map((r) => r.path),
-      ),
+      ...new Set((await served()).routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path)),
     ].sort();
     expect(paths).toEqual([
       "/consent/control-plane/documents/:hash",
@@ -58,8 +55,8 @@ describe("consent route contract", () => {
     ]);
   });
 
-  test("every route declares describeRoute, and every field is described", () => {
-    const groups = [{ tag: "consent", routes: served().routes }];
+  test("every route declares describeRoute, and every field is described", async () => {
+    const groups = [{ tag: "consent", routes: (await served()).routes }];
     expect(undescribedRoutes(groups)).toEqual([]);
     const document = openApiDocument({ title: "consent", version: "0" }, groups);
     expect(Object.keys(document.paths).length).toBeGreaterThan(0);
@@ -75,7 +72,7 @@ function concrete(path: string): string {
 describe("the management surface", () => {
   test("every management route refuses a caller with no control-plane connection", async () => {
     for (const route of consentAdminRoutes("/consent")) {
-      const response = await served().request(concrete(route.path), { method: route.method });
+      const response = await (await served()).request(concrete(route.path), { method: route.method });
       expect(response.status, route.path).toBe(403);
       const body = (await response.json()) as { error?: { code?: string } };
       expect(body.error?.code, route.path).toBe("controlplane/not_connected");
@@ -88,22 +85,22 @@ describe("the management surface", () => {
       "/consent/control-plane/documents/NOT_A_HASH",
       "/consent/control-plane/expiring?within=0",
     ]) {
-      expect((await served().request(path)).status, path).toBe(403);
+      expect((await (await served()).request(path)).status, path).toBe(403);
     }
   });
 
   test("both writes refuse with no same-origin policy composed, before reading the body", async () => {
     for (const path of ["/consent/grants", "/consent/withdrawals"]) {
-      const response = await served().request(path, { method: "POST", body: "not json" });
+      const response = await (await served()).request(path, { method: "POST", body: "not json" });
       expect(response.status, path).toBe(403);
     }
   });
 
-  test("every advertised admin route is mounted, and every mounted one is advertised, wherever it is mounted", () => {
+  test("every advertised admin route is mounted, and every mounted one is advertised, wherever it is mounted", async () => {
     for (const basePath of ["/consent", "/privacy/consent"]) {
       const capability = consent({ basePath }) as unknown as Capability;
       const app = new Hono<PithyHonoEnv>();
-      capability.routes?.(app);
+      await mountRoutes(capability.routes, app);
       expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
       expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     }

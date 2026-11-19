@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -21,9 +22,9 @@ function routed(name: string, base: string) {
   return defineCapability({
     name,
     requiredBindings: [],
-    routes: (app) => {
+    routes: routesOf((app) => {
       app.get(base, (c) => c.json({}));
-    },
+    }),
   });
 }
 
@@ -49,10 +50,10 @@ const DEV_ONLY: WorkerConfig = {
     defineCapability({
       name: "auth",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         if (compositionEnvironment() !== "dev") return;
         app.get(DEV_LOGIN_ROUTE, (c) => c.json({}));
-      },
+      }),
     }),
   ],
 };
@@ -447,9 +448,9 @@ describe("pithy ui", () => {
       app: defineCapability({
         name: "api",
         requiredBindings: [],
-        routes: (app) => {
+        routes: routesOf((app) => {
           app.get("/api/organizations", (c) => c.json({}));
-        },
+        }),
       }),
     };
     const report = await runUiSync({ projectDir, workerDir, config: grown, check: true });

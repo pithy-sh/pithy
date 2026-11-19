@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { BetterAuthOptions, BetterAuthPlugin } from "better-auth";
-import { getSchema } from "better-auth/db";
+import type { BetterAuthPlugin } from "better-auth";
 import type { Kysely } from "kysely";
 import type { Migration } from "kysely/migration";
-import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import { authTables } from "../data/tables";
-import { kitPlugins } from "../instance/plugins";
 
 /**
  * Deriving an adopter's Better Auth plugin tables, and creating them through `pithy migrate`.
@@ -31,40 +28,87 @@ import { kitPlugins } from "../instance/plugins";
  */
 
 /**
- * The Better Auth options that shape the schema, and only those. Model names, the session's extra
- * fields, and the rate-limit table are all read by `getSchema`, so the baseline it computes has to
- * carry the same ones `makeAuth` passes or the diff would report the kit's own tables as new.
- *
- * Kept beside `makeAuth` rather than inside it because the migration is built at `auth(config)` time,
- * where the request-scoped deps (database, secret, base URL) do not exist yet — and none of them
- * changes a column.
+ * Every table and column the kit's own composition has, by model name: what each adopter plugin's schema is
+ * subtracted from. `kitSchema.test.ts` holds it to `getSchema` over the kit's plugins.
  */
-export function authSchemaOptions(plugins: readonly BetterAuthPlugin[]): BetterAuthOptions {
-  return {
-    // The kit's own extra columns, from the one module that declares them. The baseline is what each
-    // plugin's schema is *subtracted from*, so a kit column missing here is reported as something the
-    // plugin brought — see `../data/kitFields.ts` for what that costs on a database with no
-    // transactional DDL.
-    user: { modelName: "pithyAuthUsers", additionalFields: KIT_USER_FIELDS },
-    session: { modelName: "pithyAuthSessions", additionalFields: KIT_SESSION_FIELDS },
-    account: { modelName: "pithyAuthAccounts" },
-    verification: { modelName: "pithyAuthVerifications" },
-    rateLimit: { enabled: true, storage: "database", modelName: "pithyAuthRateLimit" },
-    plugins: [
-      // The kit's own four, from the one definition the live instance also composes. The callbacks are
-      // never invoked here — a schema is a shape, and `getSchema` reads `plugin.schema`, not behavior.
-      ...kitPlugins({
-        verificationExpiresIn: 300,
-        otpLength: 6,
-        disableSignUp: false,
-        sendEmail: async () => ({ delivery: "queued" }),
-        // Never invoked here for the same reason `sendEmail` is not: a schema is a shape, and `getSchema`
-        // reads `plugin.schema` rather than behavior. The gate contributes no table at all.
-        emit: async () => undefined,
-      }),
-      ...plugins,
-    ],
-  };
+export const KIT_SCHEMA_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  pithyAuthUsers: [
+    "name",
+    "email",
+    "emailVerified",
+    "image",
+    "createdAt",
+    "updatedAt",
+    "locale",
+    "suspendedAt",
+    "suspendedUntil",
+    "deletedAt",
+    "purgeAfter",
+    "lastActiveAt",
+  ],
+  pithyAuthSessions: [
+    "expiresAt",
+    "token",
+    "createdAt",
+    "updatedAt",
+    "ipAddress",
+    "userAgent",
+    "userId",
+    "deviceId",
+    "familyId",
+    "authenticatedAt",
+  ],
+  pithyAuthAccounts: [
+    "accountId",
+    "providerId",
+    "userId",
+    "accessToken",
+    "refreshToken",
+    "idToken",
+    "accessTokenExpiresAt",
+    "refreshTokenExpiresAt",
+    "scope",
+    "password",
+    "createdAt",
+    "updatedAt",
+  ],
+  pithyAuthVerifications: ["identifier", "value", "expiresAt", "createdAt", "updatedAt"],
+  pithyAuthJwks: ["publicKey", "privateKey", "createdAt", "expiresAt", "alg", "crv"],
+  pithyAuthRateLimit: ["key", "count", "lastRequest"],
+};
+
+/** The model each of Better Auth's own tables is renamed to, by the key a plugin's schema extends it under. */
+const KIT_MODELS: Readonly<Record<string, string>> = {
+  user: "pithyAuthUsers",
+  session: "pithyAuthSessions",
+  account: "pithyAuthAccounts",
+  verification: "pithyAuthVerifications",
+};
+
+/** One table of a plugin's schema, as Better Auth's `BetterAuthPlugin["schema"]` declares it. */
+interface PluginSchemaTable {
+  modelName?: string;
+  fields?: Record<string, SchemaField & { fieldName?: string }>;
+}
+
+/**
+ * The tables and columns one plugin's schema names, by model, the way Better Auth's `getSchema` resolves them
+ * over the kit's options (`./kitSchema`): a table under one of Better Auth's own keys extends the kit's renamed table, any
+ * other is named by its `modelName` or its key, and a field by its `fieldName` or its key. A `rateLimit` table
+ * is dropped, because the kit's own replaces it whole. Read off the plugin rather than through `getSchema`, so
+ * deriving an adopter's tables evaluates no Better Auth; `pluginTables.test.ts` holds the two to one answer.
+ */
+function pluginSchema(plugin: BetterAuthPlugin): Record<string, Record<string, SchemaField>> {
+  const schema: Record<string, Record<string, SchemaField>> = {};
+  const tables = (plugin.schema ?? {}) as Record<string, PluginSchemaTable>;
+  for (const [key, table] of Object.entries(tables)) {
+    if (key === "rateLimit") continue;
+    const model = KIT_MODELS[key] ?? (table.modelName || key);
+    const fields = schema[model] ?? {};
+    for (const [name, field] of Object.entries(table.fields ?? {})) fields[field.fieldName || name] = field;
+    schema[model] = fields;
+  }
+  return schema;
 }
 
 /** SQLite storage for one Better Auth field type — the same two the kit's own tables use. */
@@ -149,15 +193,14 @@ const KIT_TABLE_NAMES: readonly string[] = Object.keys(authTables);
  * the plugin creates itself is `NOT NULL` normally — there are no rows to contradict it.
  */
 export function pluginSchemaDelta(plugin: BetterAuthPlugin): PluginSchemaDelta {
-  const baseline = getSchema(authSchemaOptions([]));
-  const extended = getSchema(authSchemaOptions([plugin]));
+  const extended = pluginSchema(plugin);
 
   const tables: PluginTable[] = [];
   const columns: PluginColumn[] = [];
 
   for (const [model, spec] of Object.entries(extended)) {
-    const before = baseline[model];
-    const fields = Object.entries(spec.fields as Record<string, SchemaField>);
+    const before = KIT_SCHEMA_FIELDS[model];
+    const fields = Object.entries(spec);
 
     if (!before) {
       tables.push({
@@ -178,7 +221,7 @@ export function pluginSchemaDelta(plugin: BetterAuthPlugin): PluginSchemaDelta {
     }
 
     for (const [name, field] of fields) {
-      if (before.fields[name]) continue;
+      if (before.includes(name)) continue;
       columns.push({
         table: model,
         name,

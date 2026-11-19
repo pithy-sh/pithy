@@ -8,6 +8,7 @@ import { z } from "zod";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { routesOf } from "../../http/lazyRoutes";
 import { describeRoute } from "../../http/routeSpec";
 import { MIGRATION_GROUP_TABLE, MIGRATION_TABLE } from "../../migrations/bookkeeping";
 import { controlplane } from "../capability";
@@ -67,7 +68,7 @@ const secretsLike = defineCapability({
     ],
     read: async () => ({ secretsDueForRotation: 2 }),
   }),
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get(
       "/secrets/admin/status",
       describeRoute({
@@ -79,7 +80,7 @@ const secretsLike = defineCapability({
       requireControlPlane(SECRETS_STATUS_SCOPE),
       (c) => c.json({}),
     );
-  },
+  }),
 });
 
 /**
@@ -110,9 +111,9 @@ function auditLike(binding: string, { emits = true }: { emits?: boolean } = {}) 
 const careless = defineCapability({
   name: "careless",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.post("/careless/thing", (c) => c.text("ok"));
-  },
+  }),
 });
 
 const bare = createBackend({ capabilities: [controlplane()] });

@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { main } from "../main";
 import type { WorkerConfig } from "../project/config";
@@ -54,9 +55,9 @@ const ROUTED: WorkerConfig = {
     defineCapability({
       name: "leaderboard",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/leaderboard", (c) => c.json({}));
-      },
+      }),
     }),
   ],
 };

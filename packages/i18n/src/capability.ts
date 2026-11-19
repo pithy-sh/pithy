@@ -3,7 +3,7 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
-import { composeMessages } from "@pithy-sh/core/src/i18n/registry";
+import { assertMessageDomains, composeMessages } from "@pithy-sh/core/src/i18n/registry";
 import { DEFAULT_LOCALE } from "@pithy-sh/core/src/i18n/translator";
 import { KIT_CATALOGS } from "./catalogs/kit";
 import type { I18nClientProjection } from "./client/projection";
@@ -61,18 +61,24 @@ export interface I18nCapability extends Capability {
  */
 export function i18n(config: I18nConfigInput = {}): I18nCapability {
   const resolved = I18nConfig.parse(config);
-  let composedMessages: LocaleCatalogs = {};
+  // Every composed capability, noted by `compose`, and their English merged from it on the first read.
+  let composition: readonly Capability[] = [];
+  let merged: LocaleCatalogs | undefined;
+  const composedMessages = (): LocaleCatalogs => {
+    merged ??= composeMessages(composition);
+    return merged;
+  };
 
   const layersFor = (locale: string): readonly (MessageCatalog | undefined)[] => [
     resolved.messages[locale],
     resolved.messages[resolved.defaultLocale],
     KIT_CATALOGS[locale],
-    composedMessages[locale],
-    composedMessages[resolved.defaultLocale],
+    composedMessages()[locale],
+    composedMessages()[resolved.defaultLocale],
     // **The source language, explicitly, and last.** A capability may contribute a non-`en` locale, so
     // the default's catalog is not English for a project whose `defaultLocale` is not `en`. English is
     // the language the kit is written in, so it is a layer of its own.
-    composedMessages[DEFAULT_LOCALE],
+    composedMessages()[DEFAULT_LOCALE],
   ];
 
   const capability = defineCapability({
@@ -85,7 +91,8 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
     package: PACKAGE_NAME,
     config: I18nConfig,
     /**
-     * Merge every composed capability's English once, at assembly.
+     * Refuse a key outside its capability's domain, and note every composed capability, so their English is
+     * merged once, on the first message rendered.
      *
      * Here rather than at construction because a capability sees only itself when it is built, and the
      * kit's English is contributed by the capabilities that own it — `@pithy-sh/email`'s template copy
@@ -93,7 +100,9 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
      * each may only write keys under its own domain.
      */
     compose: ({ capabilities }) => {
-      composedMessages = composeMessages(capabilities);
+      assertMessageDomains(capabilities);
+      composition = capabilities;
+      merged = undefined;
     },
     middleware: [i18nMiddleware(resolved, layersFor)],
     /**
@@ -120,7 +129,7 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
      * is exactly what the command would have been, at the cost of a new page in `docs/commands/`, a
      * row in five exact-count CLI gates, and a byte-pinned re-paste of `pithy --help`.
      */
-    settings: i18nSettings(resolved, () => composedMessages),
+    settings: i18nSettings(resolved, composedMessages),
     requiredBindings: [],
   });
 
@@ -130,7 +139,7 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
   // returned, so a `get composedMessages()` in that literal would be evaluated once — before `compose`
   // has run — and every reader would see the empty object it held at construction, permanently.
   // Defined here it stays an accessor over the live binding, which is what the interface promises.
-  Object.defineProperty(composed, "composedMessages", { get: () => composedMessages, enumerable: true });
+  Object.defineProperty(composed, "composedMessages", { get: composedMessages, enumerable: true });
   return composed as I18nCapability;
 }
 

@@ -13,6 +13,7 @@ import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/contr
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { createTranslator, DEFAULT_LOCALE } from "@pithy-sh/core/src/i18n/translator";
 import { ledger as ledgerCapability } from "@pithy-sh/ledger/src/capability";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
@@ -2732,7 +2733,7 @@ describe("a Worker composing payments() beside ledger()", () => {
   };
 
   /** The routes `payments()` mounts, after every composed capability's `compose` hook has run. */
-  function composedApp(peers: readonly Capability[]): Hono<PithyHonoEnv> {
+  async function composedApp(peers: readonly Capability[]): Promise<Hono<PithyHonoEnv>> {
     const capability = payments(COIN_SHOP);
     const capabilities = [capability, ...peers];
     for (const each of capabilities) each.compose?.({ capabilities });
@@ -2747,12 +2748,12 @@ describe("a Worker composing payments() beside ledger()", () => {
       });
       await next();
     });
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     return app;
   }
 
   test("a paid order credits the balance the catalog promised, through the ledger compose found", async () => {
-    const app = composedApp([ledgerCapability({ currencies: [{ code: "coins", name: "Coins" }] })]);
+    const app = await composedApp([ledgerCapability({ currencies: [{ code: "coins", name: "Coins" }] })]);
     const response = await lemonHook(app, await orderDelivery("order_created", {}, { deployment: "prod" }));
 
     expect(response.status).toBe(200);

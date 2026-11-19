@@ -38,6 +38,7 @@ import {
 import { type DeployPlanInput, deployPlan, deployPlanExit, readPendingForPlan } from "../project/deployPlan";
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from "../project/environment";
+import { assertRouteTablesDeployable } from "../project/routeTables";
 import { bindsKitWorker } from "../project/workerBind";
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
@@ -376,6 +377,10 @@ export default withContract(
           // And a production environment whose auth sets attestation to test. The Worker accepts the test assertion
           // only in dev, staging or feature; this refuses the configuration before it ships.
           if (gateApps && env) await assertAttestationDeployable(projectDir, env);
+          // And a route table the Worker itself would refuse once it reads it: a capability's routes load on first
+          // use, so a wrong MCP tool declaration is refused when the table is read, never at startup. Read here, for
+          // every deploy of `apps/`, so it refuses the deploy rather than every MCP request after it.
+          if (selection.apps) await assertRouteTablesDeployable(projectDir, env ?? LOCAL_ENVIRONMENT);
 
           const account = await projectCloudflareAccount(projectDir);
           // **The account is settled here, before anything best-effort runs.** `pendingFor` swallows

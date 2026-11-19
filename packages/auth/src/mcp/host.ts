@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { ClientDiscovery } from "@better-auth/oauth-provider";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { Context } from "hono";
 import type { AuthInstance } from "../instance/auth";
@@ -31,6 +30,4 @@ export interface McpWiring {
   readonly path: string;
   /** The scaffolded consent screen's path. */
   readonly consentPage: string;
-  /** How a client whose id is its metadata document's URL is resolved. One per composed `mcp()`, so its cache lasts. */
-  readonly clientDiscovery: ClientDiscovery;
 }

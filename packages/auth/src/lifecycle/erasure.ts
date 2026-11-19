@@ -4,9 +4,9 @@
 import type { ErasureHistoryReader, ErasureHistoryRow, ErasureRecords } from "@pithy-sh/core/src/capability/erasure";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { AuthAuditActions } from "../audit/actions";
+import { resolveDb } from "../data/binding";
 import { type AuthDatabase, authDatabase } from "../data/tables";
 import { UserLifecycleEvent } from "../data/userLifecycle";
-import { resolveDb } from "../http/resolve";
 
 /**
  * **A user's erasure record, read back for the control plane's attestation.**

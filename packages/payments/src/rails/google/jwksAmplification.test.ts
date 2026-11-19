@@ -3,7 +3,8 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
-import { memoryJwksCache, OIDC_JWKS_MIN_REFRESH_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
+import { memoryJwksCache } from "@pithy-sh/core/src/http/jwksCache";
+import { OIDC_JWKS_MIN_REFRESH_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { stubSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";

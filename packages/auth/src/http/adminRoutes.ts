@@ -27,6 +27,7 @@ import {
 import { AuthAuditActions } from "../audit/actions";
 import { correlation, emitControlPlaneAction } from "../audit/emit";
 import type { AuthWiring } from "../capability";
+import { resolveDb } from "../data/binding";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens } from "../device/registry";
 import { listVerificationOutcomes, resolveVerificationWindow, verificationCounts } from "../ledger/read";
@@ -56,7 +57,7 @@ import {
   AUTH_USERS_SUSPEND_SCOPE,
   AUTH_VERIFICATIONS_READ_SCOPE,
 } from "./guards";
-import { getAuthInstance, resolveDb } from "./resolve";
+import { getAuthInstance } from "./resolve";
 import {
   AdminDeviceRevokeResponse,
   AdminDevicesResponse,

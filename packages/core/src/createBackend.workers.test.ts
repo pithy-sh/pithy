@@ -5,9 +5,11 @@ import { env } from "cloudflare:test";
 import { describe, expect, test } from "vitest";
 import { defineCapability } from "./capability/capability";
 import { createBackend } from "./createBackend";
+import { routesOf } from "./http/lazyRoutes";
 import { describeRoute } from "./http/routeSpec";
 import { createLogger } from "./logger/logger";
 import type { LogRecord } from "./logger/record";
+import { routeGroupsOf } from "./openapi/routeGroups";
 
 describe("createBackend", () => {
   test('serves GET /health with 200 { status: "ok" }', async () => {
@@ -29,13 +31,13 @@ describe("createBackend", () => {
     const probe = defineCapability({
       name: "probe",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/emit", async (c) => {
           // With no audit capability composed, emit is the no-op: it resolves and records nothing.
           await c.var.emit({ action: "auth/login", outcome: "success", actorType: "user", actorId: "u1" });
           return c.json({ emitted: true });
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [probe] });
     const res = await app.request("/emit", {}, env);
@@ -47,9 +49,9 @@ describe("createBackend", () => {
     const ping = defineCapability({
       name: "ping",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/ping", (c) => c.text("pong"));
-      },
+      }),
     });
     const app = createBackend({ capabilities: [ping] });
     const res = await app.request("/ping", {}, env);
@@ -57,11 +59,11 @@ describe("createBackend", () => {
     expect(await res.text()).toBe("pong");
   });
 
-  test("refuses to boot a composition whose non-GET route opts in as a tool without an effect", () => {
+  test("refuses the route table of a composition whose non-GET route opts in as a tool without an effect", async () => {
     const loose = defineCapability({
       name: "notes",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post(
           "/notes",
           describeRoute({
@@ -73,9 +75,43 @@ describe("createBackend", () => {
           }),
           (c) => c.text("ok"),
         );
-      },
+      }),
     });
-    expect(() => createBackend({ capabilities: [loose] })).toThrow(/without an effect/);
+    await expect(routeGroupsOf(createBackend({ capabilities: [loose] }))).rejects.toThrow(/without an effect/);
+  });
+
+  test("refuses to boot a composition whose capability writes a message outside its own domain", () => {
+    const trespasser = defineCapability({
+      name: "board",
+      requiredBindings: [],
+      messages: { en: { "auth/sign_in.title": "Sign in" } },
+    });
+    expect(() => createBackend({ capabilities: [trespasser] })).toThrow(/under its own domain/);
+  });
+
+  test("a capability's app.use guard runs for the app's own route under its path, and can refuse it", async () => {
+    const guard = defineCapability({
+      name: "guard",
+      requiredBindings: [],
+      routes: routesOf((a) => {
+        a.use("/api/*", async (c, next) => {
+          if (c.req.header("x-key") !== "open") return c.text("refused", 403);
+          await next();
+        });
+        a.get("/api/ping", (c) => c.text("pong"));
+      }),
+    });
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      routes: routesOf((a) => {
+        a.get("/api/notes", (c) => c.text("notes"));
+      }),
+    });
+    const backend = createBackend({ capabilities: [guard], app });
+    expect((await backend.request("/api/notes", {}, env)).status).toBe(403);
+    const opened = await backend.request("/api/notes", { headers: { "x-key": "open" } }, env);
+    expect(await opened.text()).toBe("notes");
   });
 
   test("mounts the app capability's routes after capability routes", async () => {
@@ -83,22 +119,22 @@ describe("createBackend", () => {
     const cap = defineCapability({
       name: "cap",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.use("/order", async (_c, next) => {
           order.push("cap");
           await next();
         });
-      },
+      }),
     });
     const app = defineCapability({
       name: "app",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/order", (c) => {
           order.push("app");
           return c.json(order);
         });
-      },
+      }),
     });
     const backend = createBackend({ capabilities: [cap], app });
     const res = await backend.request("/order", {}, env);
@@ -121,12 +157,12 @@ describe("createBackend", () => {
     const library = defineCapability({
       name: "library",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/library/write", (c) => {
           reached.push("handler");
           return c.json({ ok: true });
         });
-      },
+      }),
     });
     const app = defineCapability({
       name: "app",
@@ -207,12 +243,12 @@ describe("createBackend", () => {
       name: "counter",
       // DB and SESSIONS are provided by the test env, so validation passes.
       requiredBindings: [{ type: "d1", name: "DB", optional: false }],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/count", (c) => {
           routeHits += 1;
           return c.text(String(routeHits));
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [cap] });
     expect((await app.request("/count", {}, env)).status).toBe(200);
@@ -232,9 +268,9 @@ describe("createBackend", () => {
           });
         },
       ],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/tagged", (c) => c.text("ok"));
-      },
+      }),
     });
     const app = createBackend({ capabilities: [tag] });
     const res = await app.request("/tagged", {}, env);
@@ -247,12 +283,12 @@ describe("createBackend", () => {
     const probe = defineCapability({
       name: "probe",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/log", (c) => {
           c.var.log.info("handled", { detail: "x" });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [probe], logger, env: "staging" });
     await app.request("/log", { method: "GET" }, env);
@@ -273,7 +309,7 @@ describe("createBackend", () => {
     const probe = defineCapability({
       name: "probe",
       requiredBindings: [],
-      routes: (a) => a.get("/e", (c) => c.json({ ok: c.var.log.info("hit") === undefined })),
+      routes: routesOf((a) => a.get("/e", (c) => c.json({ ok: c.var.log.info("hit") === undefined }))),
     });
     // options.env is only a fallback; the ENVIRONMENT var on the request env wins.
     const app = createBackend({ capabilities: [probe], logger, env: "unknown" });
@@ -288,7 +324,7 @@ describe("createBackend", () => {
     const probe = defineCapability({
       name: "probe",
       requiredBindings: [],
-      routes: (a) => a.get("/v", (c) => c.json({ ok: c.var.log.info("hit") === undefined })),
+      routes: routesOf((a) => a.get("/v", (c) => c.json({ ok: c.var.log.info("hit") === undefined }))),
     });
     const app = createBackend({ capabilities: [probe], logger });
     // The version-metadata binding is per-request env; inject it alongside the test bindings.
@@ -316,9 +352,9 @@ describe("createBackend", () => {
     const whoami = defineCapability({
       name: "whoami",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/whoami", (c) => c.json({ auth: c.get("auth"), db: c.get("db"), kv: c.get("kv") }));
-      },
+      }),
     });
     const app = createBackend({ capabilities: [whoami] });
     const res = await app.request("/whoami", {}, env);
@@ -329,9 +365,9 @@ describe("createBackend", () => {
     const acting = defineCapability({
       name: "acting",
       requiredBindings: [],
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.get("/acting", async (c) => c.json({ acting: await c.var.actingOrganization() }));
-      },
+      }),
     });
     const app = createBackend({ capabilities: [acting] });
     const res = await app.request("/acting", {}, env);

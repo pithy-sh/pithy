@@ -87,7 +87,7 @@ describe("leaderboard()", () => {
   });
 
   it("registers routes", () => {
-    expect(typeof leaderboard({ boards }).routes).toBe("function");
+    expect(typeof leaderboard({ boards }).routes?.load).toBe("function");
   });
 
   it("carries its config schema, so the CLI can document it", () => {

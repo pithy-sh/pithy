@@ -45,22 +45,17 @@ const app = defineCapability({
   // Bindings your own routes need beyond what capabilities declare. Validated
   // on the first request — a missing binding fails fast with the binding's name.
   requiredBindings: [],
-  // Mount your routes here. Every route declares how callers are verified —
+  // Your routes: every method and path, declared, and a loader for the module
+  // that mounts them. The Worker imports that module on the first request that
+  // reaches one, not at startup. Every route declares how callers are verified —
   // bearer, session, signed-webhook, or public — and what it returns, with
   // `describeRoute` from @pithy-sh/core/src/http/routeSpec. `pithy contract`
   // writes that into apps/api/openapi.json for every client to build against.
   // Read a request through `validate(target, Schema)` from
   // @pithy-sh/core/src/http/validation. `GET /health` is built in.
-  // routes: (a) => {
-  //   a.get(
-  //     "/hello",
-  //     describeRoute({
-  //       summary: "Say hi.",
-  //       verification: "public",
-  //       responses: { 200: { description: "A greeting.", contentType: "text/plain" } },
-  //     }),
-  //     (c) => c.text("Hi."),
-  //   );
+  // routes: {
+  //   declared: [{ method: "GET", path: "/hello" }],
+  //   load: async () => (await import("./src/routes")).mountRoutes,
   // },
 });
 

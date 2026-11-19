@@ -23,17 +23,16 @@ import { registerReadinessGuards } from "./controlPlane/http/readiness";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { ValidationError } from "./error/pithyError";
+import { type CapabilityRoutes, mountLazy } from "./http/lazyRoutes";
 import { describeRoute } from "./http/routeSpec";
-import { catalogFor, composeMessages } from "./i18n/registry";
-import { bakedTranslator, DEFAULT_LOCALE } from "./i18n/translator";
+import { assertMessageDomains, catalogFor, composeMessages } from "./i18n/registry";
+import { bakedTranslator, DEFAULT_LOCALE, deferredTranslator } from "./i18n/translator";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
-import { assertToolDeclarations } from "./mcp/tools";
-import type { RouteGroup } from "./openapi/document";
-import { recordRouteGroups } from "./openapi/routeGroups";
-import { registerPresenceRoutes } from "./presence/http/routes";
+import { type RecordedRouteGroup, recordRouteGroups } from "./openapi/routeGroups";
+import { type PresenceDeclaration, presenceSocketPath, presenceTicketPath } from "./presence/declaration";
 import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
 import { effectiveProcessing, recordProcessing } from "./processing/composed";
 import { effectiveRetention, recordRetention } from "./retention/composed";
@@ -140,6 +139,20 @@ export const HealthBody = z
   .describe("Liveness, and which build is answering.");
 export type HealthBody = z.infer<typeof HealthBody>;
 
+/** A capability's presence routes, loaded with the first request that reaches one. */
+function presenceRoutes(presence: PresenceDeclaration): CapabilityRoutes {
+  return {
+    declared: [
+      { method: "POST", path: presenceTicketPath(presence.basePath) },
+      { method: "GET", path: presenceSocketPath(presence.basePath) },
+    ],
+    load: async () => {
+      const { registerPresenceRoutes } = await import("./presence/http/routes");
+      return (app) => registerPresenceRoutes(app, presence);
+    },
+  };
+}
+
 /**
  * Assemble capabilities into a deployable Hono app — a valid Worker `fetch` handler.
  *
@@ -163,6 +176,19 @@ export function createBackend<
 >(options: CreateBackendOptions<Caps, App>): Hono<BackendEnv<readonly [...Caps, App]>> {
   // The app is just another capability, composed last so its routes mount after the libraries'.
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
+
+  // A capability that hands core a function for its routes predates the loader shape: refused by name, so the
+  // fix is in the message rather than in a stack trace from the first request.
+  for (const cap of all) {
+    if (typeof (cap.routes as unknown) === "function") {
+      throw new ValidationError({
+        message: `Capability "${cap.name}" hands core its routes as a function. Declare them and a loader instead.`,
+        action:
+          'Set `routes: { declared: [{ method, path }, …], load: async () => (await import("./http/routes")).mount }`. See the capability guide.',
+        detail: `capability ${cap.name} routes is a function; Capability.routes is { declared, load }`,
+      });
+    }
+  }
 
   // Fail fast on a missing peer capability: a capability that reads another's seam (e.g. turnstile
   // reading secrets) must be composed with it, or its requests would only fail one-by-one at runtime.
@@ -193,12 +219,16 @@ export function createBackend<
   recordProcessing(effectiveProcessing(options.processing, all));
 
   const databases = composeDatabases(all);
-  // Every composed capability's English, merged under the domain rule. Built once at assembly rather
-  // than per request: it is a pure function of the capability set, which cannot change between them.
-  const messages = composeMessages(all);
+  // A message key outside its capability's domain is refused here, at boot, so a Worker carrying one never
+  // starts and its deploy is refused. Only the keys are read; the merge waits for the first message.
+  assertMessageDomains(all);
   // The seam's behavior with no i18n capability composed — the baked English, no negotiation, no merge.
-  // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does.
-  const defaultTranslator = bakedTranslator(catalogFor(messages, DEFAULT_LOCALE));
+  // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does. Every composed
+  // capability's English is merged on the first message rendered, once: it is a pure function of the
+  // capability set, which cannot change between requests.
+  const defaultTranslator = deferredTranslator(DEFAULT_LOCALE, () =>
+    bakedTranslator(catalogFor(composeMessages(all), DEFAULT_LOCALE)),
+  );
   const namespaces = composeKv(all);
   // An encrypted field in a KV store is refused here, at boot: a KV envelope cannot be found by key version,
   // so it could never be rotated. The refusal names the store, the field and D1.
@@ -333,7 +363,7 @@ export function createBackend<
    * before `version_metadata` was declared reports "I cannot tell you", and `deploy` reports the check
    * as inconclusive instead of failing it.
    */
-  const groups: RouteGroup[] = [];
+  const groups: RecordedRouteGroup[] = [];
   const healthStart = app.routes.length;
   app.get(
     HEALTH_PATH,
@@ -358,19 +388,24 @@ export function createBackend<
     adminSurface,
     all.flatMap((cap) => cap.readiness ?? []),
   );
-  // Each hook's slice of the route table is noted as it mounts, so the OpenAPI contract can tag every
-  // operation with the capability that owns it (`openapi/routeGroups.ts`).
+  // Each capability's declared routes are registered here and built on the first request that reaches one
+  // (`http/lazyRoutes.ts`). Each capability's routes are noted as it mounts, so the OpenAPI contract can tag
+  // every operation with the capability that owns it (`openapi/routeGroups.ts`).
+  const host = { composed: app };
   for (const cap of all) {
-    const start = app.routes.length;
-    cap.routes?.(app);
     // A capability's presence routes are its own, tagged with it, under the base path it declared.
-    if (cap.presence && cap.presence.rooms.length > 0) registerPresenceRoutes(app, cap.presence);
-    groups.push({ tag: cap.name, routes: app.routes.slice(start) });
+    const lazy = [cap.routes, cap.presence && cap.presence.rooms.length > 0 ? presenceRoutes(cap.presence) : undefined]
+      .filter((routes) => routes !== undefined)
+      .map((routes) => mountLazy(app, routes, host));
+    groups.push({
+      tag: cap.name,
+      routes: [],
+      ...(lazy.length > 0
+        ? { loaded: async () => (await Promise.all(lazy.map((mount) => mount.routes()))).flat() }
+        : {}),
+    });
   }
   recordRouteGroups(app, groups);
-  // A route that opts in as an MCP tool says so on `describeRoute`, which cannot see its method — so a non-GET
-  // claiming to be a read, or two routes sharing an operation, is refused here, at boot (`mcp/tools.ts`).
-  assertToolDeclarations(groups);
 
   return app as unknown as Hono<BackendEnv<readonly [...Caps, App]>>;
 }

@@ -35,7 +35,7 @@ import { testers } from "@pithy-sh/testers/src/index";
 import { turnstile } from "@pithy-sh/turnstile/src/index";
 import { filterable, vector } from "@pithy-sh/vector/src/index";
 import { z } from "zod";
-import { composeForSync } from "../project/composeFor";
+import { composeFor, composeForSync } from "../project/composeFor";
 
 /**
  * **The kit's own OpenAPI document — every route every capability ships, in one file.**
@@ -53,8 +53,8 @@ import { composeForSync } from "../project/composeFor";
  *
  * **One environment, `prod`.** The route table is one per environment: `@pithy-sh/auth` mounts its dev
  * sign-in in `dev` and nowhere else, so the table a shipped client calls is the production one, and that
- * route is in no published contract. Composed under {@link composeForSync} for the reason every assembly
- * in this CLI is: a capability reads the environment while its routes register.
+ * route is in no published contract. Composed under {@link composeFor} for the reason every assembly
+ * in this CLI is: a capability reads the environment while it is defined.
  *
  * Undescribed routes are omitted rather than marked (`openApiDocument`'s default), because for the kit an
  * undescribed route is a bug: `undescribedRoutes` over {@link kitRouteGroups} is held to empty by the test.
@@ -77,7 +77,7 @@ const ORIGIN = "https://app.example.com";
  * three ownership-transfer routes only when the pair a transfer moves is named — so both are given, and
  * the catalog is the smallest one that has an owner to transfer.
  */
-const ORGANIZATION_ROLES = defineRoles({
+export const ORGANIZATION_ROLES = defineRoles({
   // The power the artifacts capability is configured to gate an organization's repositories on.
   powers: ["repos:manage"],
   roles: {
@@ -238,12 +238,20 @@ export function kitVersion(): string {
   return version;
 }
 
-/** The whole kit, assembled by `createBackend` for {@link KIT_CONTRACT_ENVIRONMENT}: its capabilities and route groups. */
-export function kitComposition(): { capabilities: readonly Capability[]; groups: readonly RouteGroup[] } {
-  return composeForSync(KIT_CONTRACT_ENVIRONMENT, () => {
+/** Every capability in the kit, each composed for {@link KIT_CONTRACT_ENVIRONMENT}. */
+export function kitCapabilities(): readonly Capability[] {
+  return composeForSync(KIT_CONTRACT_ENVIRONMENT, () => Object.values(KIT_COMPOSITION).map((compose) => compose()));
+}
+
+/**
+ * The whole kit, assembled by `createBackend` for {@link KIT_CONTRACT_ENVIRONMENT}: its capabilities and route groups,
+ * every capability's routes loaded.
+ */
+export function kitComposition(): Promise<{ capabilities: readonly Capability[]; groups: readonly RouteGroup[] }> {
+  return composeFor(KIT_CONTRACT_ENVIRONMENT, async () => {
     const capabilities = Object.values(KIT_COMPOSITION).map((compose) => compose());
     const app = createBackend({ capabilities });
-    const groups = routeGroupsOf(app);
+    const groups = await routeGroupsOf(app);
     if (groups === undefined) {
       throw new InternalError({ detail: "createBackend assembled an app without recording its route groups." });
     }
@@ -252,17 +260,17 @@ export function kitComposition(): { capabilities: readonly Capability[]; groups:
 }
 
 /** The whole kit's route groups. */
-export function kitRouteGroups(): readonly RouteGroup[] {
-  return kitComposition().groups;
+export async function kitRouteGroups(): Promise<readonly RouteGroup[]> {
+  return (await kitComposition()).groups;
 }
 
 /** Every socket the kit's capabilities declare, grouped by capability. */
-export function kitSocketGroups(capabilities: readonly Capability[] = kitComposition().capabilities): SocketGroup[] {
+export function kitSocketGroups(capabilities: readonly Capability[]): SocketGroup[] {
   return socketGroupsOf(capabilities);
 }
 
 /** The kit's AsyncAPI document: every socket a capability serves, and every frame on it. */
-export function kitSocketDocument(groups: readonly SocketGroup[] = kitSocketGroups()): AsyncApiDocument {
+export function kitSocketDocument(groups: readonly SocketGroup[]): AsyncApiDocument {
   return asyncApiDocument(
     {
       title: "Pithy",
@@ -274,7 +282,7 @@ export function kitSocketDocument(groups: readonly SocketGroup[] = kitSocketGrou
 }
 
 /** The kit's OpenAPI document, built from {@link kitRouteGroups}. */
-export function kitDocument(groups: readonly RouteGroup[] = kitRouteGroups()): OpenApiDocument {
+export function kitDocument(groups: readonly RouteGroup[]): OpenApiDocument {
   return openApiDocument(
     {
       title: "Pithy",

@@ -6,6 +6,7 @@ import type { AuthContext, BetterAuthPlugin, OAuthProvider } from "better-auth";
 import { APIError, getOAuthState } from "better-auth/api";
 import { correlation, emitDenied } from "../audit/emit";
 import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
+import { PROVIDER_SIGN_IN_GATE_ID } from "./pluginPolicy";
 
 /**
  * One answer for both provider sign-in refusals, decided before Better Auth branches (#625).
@@ -81,14 +82,6 @@ import { NEUTRAL_PROVIDER_REFUSAL } from "../http/providerRefusal";
  * unverified, and refuse a Facebook sign-in that works today. From in here the raw payload is not even in
  * scope to read by mistake.
  */
-
-/**
- * The plugin id, reserved in `./plugins.ts` like the four Better Auth ones.
- *
- * Prefixed because it is the kit's own rather than a dependency's, and an adopter shadowing it would
- * silently win the registration — which for this plugin means silently removing the gate.
- */
-export const PROVIDER_SIGN_IN_GATE_ID = "pithy-provider-sign-in-gate";
 
 /**
  * What the trail records, which is the half the browser does not get.

@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
@@ -83,36 +84,36 @@ describe("route contract: every route is described for the OpenAPI contract", ()
 
 describe("route contract: the manifest's admin routes are the mounted ones (#730)", () => {
   /** The real capability's routes on a bare app, at the default mount point and at a moved one. */
-  function composed(basePath?: string) {
+  async function composed(basePath?: string) {
     const capability = vector({
       indexes: { docs: { model: "current-model", dimensions: 3, metadata } },
       ...(basePath !== undefined ? { basePath } : {}),
     });
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     return { app: app as unknown as Hono<never>, capability };
   }
 
-  test("every declared admin route is mounted, and the declaration is not vacuous", () => {
-    const { app, capability } = composed();
+  test("every declared admin route is mounted, and the declaration is not vacuous", async () => {
+    const { app, capability } = await composed();
     expect(capability.adminRoutes?.length).toBeGreaterThan(0);
     expect(missingAdminRoutes(app, [capability])).toEqual([]);
   });
 
-  test("every mounted control-plane route is declared, so its CORS preflight is answered", () => {
-    const { app, capability } = composed();
+  test("every mounted control-plane route is declared, so its CORS preflight is answered", async () => {
+    const { app, capability } = await composed();
     expect(undeclaredAdminRoutes(app, [capability])).toEqual([]);
   });
 
-  test("a moved mount point moves the declaration with it", () => {
-    const { app, capability } = composed("/search");
+  test("a moved mount point moves the declaration with it", async () => {
+    const { app, capability } = await composed("/search");
     expect(capability.adminRoutes?.map((route) => route.path)).toEqual(["/search/indexes"]);
     expect(missingAdminRoutes(app, [capability])).toEqual([]);
     expect(undeclaredAdminRoutes(app, [capability])).toEqual([]);
   });
 
-  test("every route requiring vector:indexes:read is a GET, so a dashboard connection grants it by default", () => {
-    const { capability } = composed();
+  test("every route requiring vector:indexes:read is a GET, so a dashboard connection grants it by default", async () => {
+    const { capability } = await composed();
     const reads = (capability.adminRoutes ?? []).filter((route) => route.scope === "vector:indexes:read");
     expect(reads.length).toBeGreaterThan(0);
     for (const route of reads) expect(route.method).toBe("GET");

@@ -11,7 +11,7 @@ import { remedy } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { auditCheckpointBucketName } from "../provision/resolveAuditConfig";
-import { AUDIT_CHECKPOINT_BINDING, AUDIT_CHECKPOINT_LOCK_PREFIX } from "./checkpoint";
+import { AUDIT_CHECKPOINT_BINDING, AUDIT_CHECKPOINT_LOCK_PREFIX } from "./bucket";
 
 /**
  * **`pithy doctor`'s line on the checkpoint bucket's object lock.**

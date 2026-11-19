@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { consent } from "@pithy-sh/consent/src/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { appSchemeFor, buildGeneratedConfig, devOrigin, originsFor, universalLinkOriginFor } from "./nativeConfig";
@@ -162,17 +163,17 @@ describe("buildGeneratedConfig", () => {
     const organization = defineCapability({
       name: "organization",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/teams/:id", (c) => c.json({}));
         app.post("/teams", (c) => c.json({}));
-      },
+      }),
     });
     const consent = defineCapability({
       name: "consent",
       requiredBindings: [],
-      routes: (app) => {
+      routes: routesOf((app) => {
         app.get("/privacy/purposes", (c) => c.json({}));
-      },
+      }),
     });
     const config = buildGeneratedConfig({
       config: { capabilities: [organization, consent] },

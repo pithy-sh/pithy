@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { ErrorPayload } from "../error/payload";
+import { errorSchemas } from "../error/payloadSchemas";
 
 /**
  * The logger object model. A log call is a **record**, not a formatted line — `{ level, msg, ...fields }`
@@ -46,9 +46,11 @@ export const LogRecord = z
     time: z.number().int().describe("When the record was made, as a millisecond epoch."),
     name: z.string().nullish().describe("The emitting logger's namespace (from `child(name)`), if any."),
     fields: LogFields.nullish().describe("Structured fields carried on this record, if any were supplied."),
-    error: ErrorPayload.nullish().describe(
-      "The full error payload — `detail` included — when the call carried a PithyError. Internal only.",
-    ),
+    // Lazy, so a Worker builds the error taxonomy on its first error and not at startup.
+    error: z
+      .lazy(() => errorSchemas().ErrorPayload)
+      .nullish()
+      .describe("The full error payload — `detail` included — when the call carried a PithyError. Internal only."),
   })
   .describe("One structured log record: an adapter's sink serializes or renders exactly this shape.");
 export type LogRecord = z.output<typeof LogRecord>;

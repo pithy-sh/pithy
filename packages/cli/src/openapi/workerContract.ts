@@ -16,7 +16,7 @@ import {
 import { routeGroupsOf } from "@pithy-sh/core/src/openapi/routeGroups";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
-import { composeForSync, resolveWorkersFor } from "../project/composeFor";
+import { composeFor, resolveWorkersFor } from "../project/composeFor";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 import { readOptionalFile } from "../project/readOptionalFile";
 
@@ -89,16 +89,16 @@ export interface WorkerContractInput {
 }
 
 /** Assemble one Worker's app and read its document off it. Run inside a composition for the environment. */
-export function workerDocument(input: WorkerContractInput): {
+export async function workerDocument(input: WorkerContractInput): Promise<{
   document: OpenApiDocument;
   undescribed: UndescribedRoute[];
   sockets: AsyncApiDocument | null;
-} {
+}> {
   const app = createBackend({
     capabilities: input.config.capabilities,
     ...(input.config.app ? { app: input.config.app } : {}),
   });
-  const groups = routeGroupsOf(app);
+  const groups = await routeGroupsOf(app);
   if (groups === undefined) {
     throw new InternalError({ detail: "createBackend assembled an app without recording its route groups." });
   }
@@ -205,7 +205,7 @@ async function removeStaleSocketContract(path: string): Promise<null> {
 export async function writeContracts(options: WriteContractsOptions): Promise<WorkerContractReport[]> {
   const version = await projectVersion(options.projectDir);
   // Loaded for the environment, then assembled for it: a capability reads the environment both when its
-  // config is evaluated and when its routes register (`@pithy-sh/auth`'s dev sign-in is the second kind).
+  // config is evaluated and when it is composed (`@pithy-sh/auth`'s dev sign-in is the second kind).
   const workers = await resolveWorkersFor(options.environment, {
     projectDir: options.projectDir,
     ...(options.worker === undefined ? {} : { worker: options.worker }),
@@ -214,7 +214,7 @@ export async function writeContracts(options: WriteContractsOptions): Promise<Wo
   for (const worker of workers) {
     // The `apps/` directory, never the wrangler name: it is what `--worker` takes and what `--out` nests by.
     const name = basename(worker.dir);
-    const { document, undescribed, sockets } = composeForSync(options.environment, () =>
+    const { document, undescribed, sockets } = await composeFor(options.environment, () =>
       workerDocument({ worker: name, project: options.project, version, config: worker.config }),
     );
     const dir = options.outDir === undefined ? worker.dir : join(options.outDir, name);

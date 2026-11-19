@@ -4,6 +4,7 @@
 import type { R2Bucket } from "@cloudflare/workers-types";
 import { AUDIT_CHECKPOINT_FORMAT, AuditCheckpoint } from "@pithy-sh/core/src/audit/chain";
 import type { AuditDatabase } from "../data/tables";
+import { AUDIT_CHECKPOINT_LOCK_PREFIX } from "./bucket";
 import { readChainLink } from "./rows";
 
 /**
@@ -19,12 +20,6 @@ import { readChainLink } from "./rows";
  * checkpoints too. The lock is a bucket rule (`AUDIT_CHECKPOINT_LOCK_PREFIX`, indefinite retention) set on the
  * account, and `pithy doctor` says whether it is in force — the Worker cannot see it through its binding.
  */
-
-/** The binding the checkpoint bucket is bound as, in the app Worker and in the checkpoint host. */
-export const AUDIT_CHECKPOINT_BINDING = "AUDIT_CHECKPOINTS";
-
-/** Every checkpoint object lives under this prefix, and the lock rule names it. */
-export const AUDIT_CHECKPOINT_LOCK_PREFIX = "checkpoints/";
 
 /** The zero-padded width of a count in a key, so keys list in count order. */
 const COUNT_WIDTH = 15;

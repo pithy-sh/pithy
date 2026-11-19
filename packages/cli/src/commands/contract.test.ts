@@ -24,6 +24,7 @@ const CONFIG = `import { defineCapability } from "@pithy-sh/core/src/capability/
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import { z } from "zod";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 
 const Greeting = z.object({ text: z.string().describe("What to say.") }).describe("A greeting.");
 const Who = z.object({ name: z.string().describe("Who to greet.") }).describe("Who.");
@@ -31,7 +32,7 @@ const Who = z.object({ name: z.string().describe("Who to greet.") }).describe("W
 const app = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (a) => {
+  routes: routesOf((a) => {
     a.get(
       "/hello/:name",
       describeRoute({ summary: "Say hello.", verification: "public", responses: { 200: Greeting } }),
@@ -39,7 +40,7 @@ const app = defineCapability({
       (c) => c.json({ text: \`Hello, \${c.req.valid("param").name}.\` }),
     );
     a.post("/raw", (c) => c.text("raw"));
-  },
+  }),
   sockets: [
     {
       name: "appRoom",

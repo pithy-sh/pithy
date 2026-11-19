@@ -15,8 +15,7 @@ import type { z } from "zod";
 import { MediaConfig, type MediaConfigInput, refuseRemovedMediaOptions } from "./config/config";
 import { extendMediaAsset, extensionColumns } from "./data/extend";
 import { mediaTables } from "./data/tables";
-import { MEDIA_MANAGE_POWER } from "./http/handlers";
-import { registerMediaRoutes } from "./http/routes";
+import { MEDIA_MANAGE_POWER, mediaRouteTable } from "./http/routeTable";
 import { mediaAdminRoutes } from "./http/scopes";
 import { media_0001_init } from "./migrations/0001_init";
 import { media_0003_ownership } from "./migrations/0003_ownership";
@@ -174,12 +173,16 @@ export function media(options: MediaOptions = {}): MediaCapability {
       suppliedTokenCheck(),
       bundleTokenCheck({ secret: MEDIA_R2_SECRET, provision: "media provision" }),
     ),
-    routes: registerMediaRoutes({
-      config: resolved,
-      schema,
-      basePath: mountPath,
-      ...(permission ? { permission } : {}),
-    }),
+    routes: {
+      declared: mediaRouteTable(mountPath),
+      load: async () =>
+        (await import("./http/routes")).registerMediaRoutes({
+          config: resolved,
+          schema,
+          basePath: mountPath,
+          ...(permission ? { permission } : {}),
+        }),
+    },
   });
 
   return Object.assign(capability, { mediaConfig: resolved, schema });

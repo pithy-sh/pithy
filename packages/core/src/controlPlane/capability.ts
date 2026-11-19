@@ -7,11 +7,12 @@ import type { Migration } from "kysely/migration";
 import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
-import { memoryJwksCache } from "../http/oidcWebhook";
+import { memoryJwksCache } from "../http/jwksCache";
+import { adminRouteTable } from "../http/lazyRoutes";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
 import { routeGroupsOf } from "../openapi/routeGroups";
 import type { PresenceDeclaration } from "../presence/declaration";
-import { describePresenceRooms } from "../presence/http/routes";
+import { describePresenceRooms } from "../presence/declaration";
 import { readRetirement } from "../privacy/fieldRotation";
 import { lazyPrivacyInventory } from "../privacy/inventory";
 import { composedRetention } from "../retention/composed";
@@ -25,8 +26,8 @@ import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlan
 import { recordTrustFirstCall } from "./data/trustFirstCall";
 import type { CapabilityDeclaration } from "./discovery/adminRoute";
 import { type CapabilityHealthSource, capabilityHealthSources, defineCapabilityHealth } from "./discovery/health";
+import { controlPlaneRouteDescriptors } from "./http/descriptors";
 import { createControlPlaneVerifier } from "./http/guard";
-import { controlPlaneRouteDescriptors, registerControlPlaneRoutes } from "./http/routes";
 import { trustConnection } from "./http/verifyTrust";
 import {
   type ComposedMigrationDatabase,
@@ -180,7 +181,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // through `collectMigrationSets` — the function `pithy migrate` uses, so the route and `pithy doctor`
   // compose the same way. The inputs differ on a D1 two Workers share: the CLI merges every co-bound
   // Worker's sets and this Worker holds only its own, so `pending` and `undeclared` can differ there.
-  let migrationDatabases: readonly ComposedMigrationDatabase[] = [];
+  // Composed on the first read rather than at assembly, which no request needs.
+  let composedMigrationDatabases: readonly ComposedMigrationDatabase[] | undefined;
+  const migrationDatabases = (): readonly ComposedMigrationDatabase[] => {
+    composedMigrationDatabases ??= composeMigrationDatabases(composedCapabilities);
+    return composedMigrationDatabases;
+  };
 
   // Every capability this Worker composed. The privacy inventory walks their storage schemas on the first
   // control-plane read, once for the isolate. Capturing the list costs nothing, and a Worker whose control plane
@@ -235,7 +241,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
       read: async (c) => {
         const env = c.env as Record<string, unknown>;
         const [migrations, activeHolds] = await Promise.all([
-          readMigrationHealth(env, migrationDatabases),
+          readMigrationHealth(env, migrationDatabases()),
           standingHolds(env),
         ]);
         return { ...migrations, activeHolds };
@@ -271,7 +277,6 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         ),
       );
       health = capabilityHealthSources(capabilities);
-      migrationDatabases = composeMigrationDatabases(capabilities);
       composedCapabilities = [...capabilities];
     },
     middleware: [
@@ -345,24 +350,29 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         });
       },
     ],
-    routes: (app) => {
-      registerControlPlaneRoutes(app, config.basePath, {
-        config,
-        database,
-        composedCapabilities: () => composed,
-        composedHealth: () => health,
-        composedMigrations: () => migrationDatabases,
-        privacyInventory: privacy,
-        retirement: (env) => readRetirement(env, composedCapabilities),
-        composedPresence: () => presence,
-        composition: () => composedCapabilities,
-        // The app these routes mount on is the one `createBackend` records its route table against, once every
-        // capability has mounted — so the evidence pack, reading it per call, sees every route.
-        routeGroups: () => routeGroupsOf(app),
-        // The retention block as this Worker resolved it at assembly, for the manifest.
-        retention: composedRetention,
-        now,
-      });
+    routes: {
+      declared: adminRouteTable(controlPlaneRouteDescriptors(config.basePath)),
+      load: async () => {
+        const { registerControlPlaneRoutes } = await import("./http/routes");
+        return (app, host) =>
+          registerControlPlaneRoutes(app, config.basePath, {
+            config,
+            database,
+            composedCapabilities: () => composed,
+            composedHealth: () => health,
+            composedMigrations: migrationDatabases,
+            privacyInventory: privacy,
+            retirement: (env) => readRetirement(env, composedCapabilities),
+            composedPresence: () => presence,
+            composition: () => composedCapabilities,
+            // The Worker's composed app, whose route groups resolve once every capability's routes have loaded —
+            // so the evidence pack, reading them per call, sees every route.
+            routeGroups: () => routeGroupsOf(host.composed),
+            // The retention block as this Worker resolved it at assembly, for the manifest.
+            retention: composedRetention,
+            now,
+          });
+      },
     },
   });
 

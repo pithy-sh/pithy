@@ -9,6 +9,7 @@ import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { InternalError } from "../../error/pithyError";
+import { routesOf } from "../../http/lazyRoutes";
 import { MIGRATION_GROUP_TABLE, MIGRATION_TABLE } from "../../migrations/bookkeeping";
 import { recordMigrationGroup } from "../../migrations/groups";
 import { phi, pii, secret } from "../../privacy/classes";
@@ -138,9 +139,9 @@ const inventory = defineCapability({
       return { thingsPending: pending };
     },
   }),
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 /** The scope the sick fixture gates its own read, and its number, with. */
@@ -193,9 +194,9 @@ const vault = defineCapability({
       });
     },
   }),
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/vault/admin/secrets", requireControlPlane(VAULT_READ_SCOPE), (c) => c.json({ secrets: [] }));
-  },
+  }),
 });
 
 /** One composed backend, exactly as a Worker assembles it. Stateless — every request re-reads D1. */

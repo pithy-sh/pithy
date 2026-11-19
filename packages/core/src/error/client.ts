@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
-import type { ErrorPayload } from "./payload";
-import { PublicErrorPayload } from "./payload";
+import type { ErrorPayload, PublicErrorPayload } from "./payload";
+import { errorSchemas } from "./payloadSchemas";
 
 /**
  * **The one place an error becomes bytes for a client.** Whatever the transport.
@@ -39,5 +39,5 @@ export function clientError(payload: z.input<typeof ErrorPayload>): PublicErrorP
   // Removed by name first, then by schema. Doubled deliberately: the spread states the intent at the
   // one site that has it, and the parse is what an adopter's own code is held to.
   const { action: _action, detail: _detail, ...wire } = payload;
-  return PublicErrorPayload.parse(wire);
+  return errorSchemas().PublicErrorPayload.parse(wire);
 }

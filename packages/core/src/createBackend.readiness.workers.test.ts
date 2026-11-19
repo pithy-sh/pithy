@@ -20,6 +20,7 @@ import { CONTROL_PLANE_HEADER } from "./controlPlane/wire";
 import { createBackend } from "./createBackend";
 import { createDatabase } from "./data/db";
 import { InternalError, RateLimitError } from "./error/pithyError";
+import { routesOf } from "./http/lazyRoutes";
 
 /**
  * A Worker in a bad state still answers its control plane.
@@ -95,19 +96,19 @@ const inventory = defineCapability({
       });
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
     app.get("/inventory/things", (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 /** The adopter's own API. Not an admin surface, so the guard answers it. */
 const adopterApp = defineCapability({
   name: "app",
   requiredBindings: [],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/api/things", (c) => c.json({ things: [] }));
-  },
+  }),
 });
 
 const backend = createBackend({ capabilities: [drifted, controlplane(), recorder, inventory], app: adopterApp });

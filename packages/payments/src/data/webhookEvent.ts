@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
-import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { kitErrorCodes } from "@pithy-sh/core/src/error/payloadSchemas";
 import { z } from "zod";
 import { PaymentsRail } from "./rail";
 
@@ -246,11 +246,6 @@ export const WEBHOOK_EVENT_ORPHANED = "orphaned:";
  */
 export const WEBHOOK_EVENT_QUARANTINED = "quarantined";
 
-/** Every code the kit defines. A prefix is published only when it is one of these. */
-const KIT_ERROR_CODES: ReadonlySet<string> = new Set(
-  KitErrorPayload.options.map((member) => member.shape.code.value as string),
-);
-
 /**
  * What a management read may say about a stored `error`: **its code, never its sentence**. (#830)
  *
@@ -272,7 +267,7 @@ export function webhookEventErrorCode(error: string | null | undefined): string 
   if (error.startsWith(`${WEBHOOK_EVENT_QUARANTINED}:`)) return "quarantined";
   const colon = error.indexOf(":");
   const head = colon === -1 ? error : error.slice(0, colon);
-  return KIT_ERROR_CODES.has(head) ? head : "unclassified";
+  return kitErrorCodes().has(head) ? head : "unclassified";
 }
 
 /**

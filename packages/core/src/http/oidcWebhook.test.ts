@@ -8,8 +8,8 @@ import type { PithyHonoEnv } from "../capability/capability";
 import { pithyErrorHandler } from "../error/http";
 import { InternalError, PithyError, UpstreamError, WebhookUnverifiedError } from "../error/pithyError";
 import { base64Url, type MintedKey, mintKey, publishing, signToken } from "../test-utils/oidcFixtures";
+import { memoryJwksCache } from "./jwksCache";
 import {
-  memoryJwksCache,
   OIDC_JWKS_MIN_REFRESH_SECONDS,
   OIDC_JWKS_TTL_SECONDS,
   OIDC_MAX_CLOCK_SKEW_SECONDS,

@@ -9,7 +9,7 @@ import {
   type PurgeContext,
   purgeBinding,
 } from "@pithy-sh/core/src/capability/purge";
-import { deleteVectors, type VectorStore } from "@pithy-sh/vector/src/index/index";
+import type { VectorStore } from "@pithy-sh/vector/src/index/index";
 import { type Expression, type ExpressionBuilder, type Kysely, type SqlBool, sql } from "kysely";
 import { SupportAssignment } from "../data/assignment";
 import { SupportAttachment } from "../data/attachment";
@@ -216,6 +216,7 @@ export function supportUserPurge(database = "DB", options: SupportPurgeOptions =
           vectors ??= purgeBinding<VectorStore>(context.env, SUPPORT_VECTORIZE_BINDING, "support", "Vectorize index");
         }
         if (vectors) {
+          const { deleteVectors } = await import("@pithy-sh/vector/src/index/index");
           const vectorIds = messages.map((row) => row.id);
           for (let start = 0; start < vectorIds.length; start += VECTOR_DELETE_IDS) {
             await deleteVectors(vectors, vectorIds.slice(start, start + VECTOR_DELETE_IDS));

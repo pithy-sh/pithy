@@ -3,7 +3,7 @@
 
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { ConsentAuditActions } from "../audit/actions";
-import { type ConsentRoutesOptions, storeFor } from "./routes";
+import { type ConsentRoutesOptions, storeFor } from "./store";
 import { clearVisitor, readVisitor } from "./visitor";
 
 /**

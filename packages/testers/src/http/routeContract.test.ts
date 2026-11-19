@@ -5,6 +5,7 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
@@ -14,7 +15,8 @@ import { describe, expect, test } from "vitest";
 import { testers } from "../capability";
 import { TestersConfig } from "../config/config";
 import { generateOptInToken } from "../crypto/token";
-import { registerTestersRoutes, selectForNudge, TESTERS_ROUTES } from "./routes";
+import { registerTestersRoutes, selectForNudge } from "./routes";
+import { TESTERS_ROUTES } from "./routeTable";
 import { OptInTokenParam } from "./schemas";
 import {
   TESTERS_CONTROL_PLANE_SCOPES,
@@ -233,7 +235,7 @@ describe("the advertised admin surface", () => {
 
   test("every advertised admin route is actually mounted", async () => {
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     const drift = missingAdminRoutes(app as unknown as Hono<never>, [capability]);
     expect(
       drift,
@@ -241,11 +243,11 @@ describe("the advertised admin surface", () => {
     ).toEqual([]);
   });
 
-  test("every mounted control-plane route is advertised", () => {
+  test("every mounted control-plane route is advertised", async () => {
     // The other direction, and since #468 the one with teeth: the CORS surface derives from
     // `adminRoutes`, so a guarded route nobody declared gets no preflight and no browser reaches it.
     const app = new Hono<PithyHonoEnv>();
-    capability.routes?.(app);
+    await mountRoutes(capability.routes, app);
     const undeclared = undeclaredAdminRoutes(app as unknown as Hono<never>, [capability]);
     expect(
       undeclared,

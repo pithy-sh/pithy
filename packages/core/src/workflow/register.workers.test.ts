@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { defineCapability } from "../capability/capability";
 import { createBackend } from "../createBackend";
+import { routesOf } from "../http/lazyRoutes";
 import type { WorkflowDispatcher } from "./dispatch";
 
 /**
@@ -85,12 +86,12 @@ describe("workflow registration in createBackend", () => {
       workflows: {
         "image-to-text": { binding: "MEDIA_IMAGE_TO_TEXT", params: IdParams, className: "MediaImageToTextWorkflow" },
       },
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/enrich", async (c) => {
           await dispatcher(c).trigger("media/image-to-text", { id: "m1" });
           return c.json({ dispatched: true });
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [cap] });
     const res = await app.request("/enrich", { method: "POST" }, { ...env, MEDIA_IMAGE_TO_TEXT: binding });
@@ -106,12 +107,12 @@ describe("workflow registration in createBackend", () => {
       workflows: {
         "image-to-text": { binding: "MEDIA_IMAGE_TO_TEXT", params: IdParams, className: "MediaImageToTextWorkflow" },
       },
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/enrich", async (c) => {
           await dispatcher(c).trigger("media/image-to-text", { id: "" });
           return c.json({ dispatched: true });
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [cap] });
     const res = await app.request("/enrich", { method: "POST" }, { ...env, MEDIA_IMAGE_TO_TEXT: binding });
@@ -136,13 +137,13 @@ describe("workflow registration in createBackend", () => {
       name: "storage",
       requiredBindings: [],
       workflows: { sweep: { binding: "STORAGE_SWEEP", params: IdParams, className: "StorageSweepWorkflow" } },
-      routes: (a) => {
+      routes: routesOf((a) => {
         a.post("/both", async (c) => {
           await dispatcher(c).trigger("email/send", { id: "j1" });
           await dispatcher(c).trigger("storage/sweep", { id: "s1" });
           return c.json({ ok: true });
         });
-      },
+      }),
     });
     const app = createBackend({ capabilities: [email, storage] });
     const res = await app.request(

@@ -14,7 +14,6 @@ import { mintToken, type TokenClaims, tokenAudience } from "../crypto/token";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
-import { CALLBACK_BASE } from "../templates/engine";
 import {
   type CallbackRequest,
   handleClick,
@@ -24,6 +23,7 @@ import {
   registerCallbacks,
   type SigningKeys,
 } from "./callbacks";
+import { CALLBACK_BASE } from "./routeTable";
 
 /**
  * A token in the signed `<payload>.<signature>` format, built the way mail already in inboxes carries it.

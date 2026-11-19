@@ -15,7 +15,8 @@ import { OrganizationConfig } from "../config/config";
 import { INVITATIONS_ROUTE_SEGMENT } from "../mail/invitation";
 import type { OwnershipRoles } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
-import { ORGANIZATION_ROUTES, registerOrganizationRoutes } from "./routes";
+import { registerOrganizationRoutes } from "./routes";
+import { ORGANIZATION_ROUTES } from "./routeTable";
 import {
   ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
   ORGANIZATION_ACCOUNTS_READ_SCOPE,

@@ -1,11 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import {
-  memoryJwksCache,
-  OIDC_JWKS_MIN_REFRESH_SECONDS,
-  OIDC_MAX_CLOCK_SKEW_SECONDS,
-} from "@pithy-sh/core/src/http/oidcWebhook";
+import { memoryJwksCache } from "@pithy-sh/core/src/http/jwksCache";
+import { OIDC_JWKS_MIN_REFRESH_SECONDS, OIDC_MAX_CLOCK_SKEW_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
 import { beforeAll, describe, expect, test } from "vitest";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import { type MintedOidcKey, mintOidcKey, signOidcToken, tamperClaims } from "./fixtures/push";

@@ -77,7 +77,7 @@ export {
   requireOrganization,
   requirePower,
 } from "./http/guard";
-export { ORGANIZATION_ROUTES, type OrganizationRouteDeclaration } from "./http/routes";
+export { ORGANIZATION_ROUTES, type OrganizationRouteDeclaration } from "./http/routeTable";
 export {
   ORGANIZATION_ACCOUNTS_DELETE_SCOPE,
   ORGANIZATION_ACCOUNTS_READ_SCOPE,

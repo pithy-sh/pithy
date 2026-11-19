@@ -14,7 +14,7 @@ import { support as supportCapability } from "@pithy-sh/support/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
 import { describe, expect, test } from "vitest";
-import { kitComposition } from "../openapi/kitDocument";
+import { kitCapabilities } from "../openapi/kitDocument";
 import {
   decideGrant,
   defaultGrant,
@@ -358,11 +358,11 @@ describe("a read default never grants a write", () => {
  */
 describe("the kit's default grant", () => {
   test("is exactly the published set", () => {
-    expect(defaultGrant(kitComposition().capabilities)).toEqual(KIT_DEFAULT_GRANT);
+    expect(defaultGrant(kitCapabilities())).toEqual(KIT_DEFAULT_GRANT);
   });
 
   test("keeps every scope whose read now carries its input in a body", () => {
-    const grant = defaultGrant(kitComposition().capabilities);
+    const grant = defaultGrant(kitCapabilities());
     for (const scope of ["auth:users:read", "auth:users:export", "support:threads:read", "connections:read"]) {
       expect(grant).toContain(scope);
     }

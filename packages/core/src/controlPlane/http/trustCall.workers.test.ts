@@ -8,6 +8,7 @@ import type { AuditEventInput } from "../../audit/auditEvent";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { routesOf } from "../../http/lazyRoutes";
 import { type MintedKey, mintKey, signToken } from "../../test-utils/oidcFixtures";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection } from "../data/connection";
@@ -83,12 +84,12 @@ const inventory = defineCapability({
       summary: "A route whose handler refuses past the gate.",
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
     app.get("/inventory/admin/vault", requireControlPlane(INVENTORY_READ_SCOPE), () => {
       throw new ControlPlaneInsufficientScopeError();
     });
-  },
+  }),
 });
 
 const backend = createBackend({ capabilities: [controlplane(), recorder, inventory] });

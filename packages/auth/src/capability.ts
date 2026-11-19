@@ -6,7 +6,9 @@ import { composedAuditEmit } from "@pithy-sh/core/src/audit/composed";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { deferredMiddleware } from "@pithy-sh/core/src/capability/deferred";
 import { type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge";
+import { type AmbientEnv, ambientEnv } from "@pithy-sh/core/src/env/ambient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
@@ -26,14 +28,11 @@ import { authTables } from "./data/tables";
 import type { HookRuntime } from "./hooks/runtime";
 import { baseURLResolver } from "./http/baseUrl";
 import { publishSameOrigin } from "./http/csrf";
-import { registerDevLoginRoute } from "./http/devLoginRoute";
 import { authAdminRoutes } from "./http/guards";
-import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
-import { getAuthInstance } from "./http/resolve";
-import { createAuthRoutes } from "./http/routes";
+import { authRouteTable, devLoginMounts } from "./http/routeTable";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
-import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
+import { AuthPlugin, assertAdditivePlugins } from "./instance/pluginPolicy";
 import {
   authSecretsRegistryFor,
   inapplicablePlayIntegritySecret,
@@ -531,10 +530,21 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
   let composition: readonly Capability[] = [];
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.
+  // The session is resolved by a module holding the Better Auth instance, loaded on the first request.
+  const sessionMiddleware: PithyMiddleware = (app) => {
+    app.use(
+      "*",
+      deferredMiddleware(async () => (await import("./http/middleware")).sessionResolver(wiring)),
+    );
+  };
+
   const rateLimitMiddleware: PithyMiddleware = (app) => {
     app.use(`${resolved.basePath}/*`, createRateLimitMiddleware(resolved.rateLimiterBinding));
   };
 
+  // The composition's environment, read when the Worker assembles, so the declared table and the dev sign-in
+  // route it gates agree: the routes mount on the first request, after whatever composed the Worker has moved on.
+  let environment: AmbientEnv | undefined;
   const capability = defineCapability({
     name: "auth",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -683,15 +693,27 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
     // Order matters: the same-origin policy is published first, so it is on the request before any
     // route can gate on it; then the tier-1 edge rate limiter (before session resolution touches D1);
     // then the session-resolution middleware fills the AuthContext.
-    middleware: [publishSameOrigin(wiring), rateLimitMiddleware, createSessionMiddleware(wiring)],
+    middleware: [publishSameOrigin(wiring), rateLimitMiddleware, sessionMiddleware],
     // The dev-login redirect goes on **first**, and the reason is `basePath`: it defaults to `/auth`,
     // but an adopter may mount auth at the root, and Better Auth's catch-all (`${basePath}/*`) returns
     // a Response, which ends the chain. Registered after it, `/__pithy/dev-login` would be a route the
     // table shows and nothing ever reaches. It registers itself only in a `dev` composition that is not
     // CI — see `http/devLoginRoute.ts` for the two gates and why they are two.
-    routes: (app) => {
-      registerDevLoginRoute(wiring)(app);
-      createAuthRoutes(wiring)(app);
+    routes: {
+      get declared() {
+        environment = { ...ambientEnv() };
+        return authRouteTable(resolved, devLoginMounts(environment));
+      },
+      load: async () => {
+        const [{ registerDevLoginRoute }, { createAuthRoutes }] = await Promise.all([
+          import("./http/devLoginRoute"),
+          import("./http/routes"),
+        ]);
+        return (app) => {
+          registerDevLoginRoute(wiring, environment ?? ambientEnv())(app);
+          createAuthRoutes(wiring)(app);
+        };
+      },
     },
     // Built from the RESOLVED basePath, never the default: an adopter who mounts auth at `/identity`
     // must get a manifest naming `/identity/admin/users`, or a management client composing its calls
@@ -709,7 +731,7 @@ export function auth<Env = Record<string, unknown>>(options: AuthOptions<Env>): 
     purgeSteps: steps,
     auditFor: (env: Record<string, unknown>) => composedAuditEmit(composition, env),
     mcpHost: {
-      instance: (c) => getAuthInstance(c, wiring),
+      instance: async (c) => (await import("./http/resolve")).getAuthInstance(c, wiring),
       baseURL: (request) => baseURLResolver(resolved.baseURL)(request),
       basePath: resolved.basePath,
       database: resolved.database,

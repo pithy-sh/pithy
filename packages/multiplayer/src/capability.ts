@@ -4,10 +4,10 @@
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { Migration } from "kysely/migration";
+import { MULTIPLAYER_DEFAULT_BASE_PATH, multiplayerRouteTable } from "./http/routeTable";
 import "./game/builtins";
 import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from "./config/config";
 import { multiplayerTables } from "./data/tables";
-import { MULTIPLAYER_DEFAULT_BASE_PATH, registerMultiplayerRoutes } from "./http/routes";
 import { multiplayerAdminRoutes } from "./http/scopes";
 import { MULTIPLAYER_MIGRATIONS } from "./migrations/chain";
 import { multiplayerUserPurge } from "./purge/contribution";
@@ -100,7 +100,10 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
         migrations,
       },
     },
-    routes: registerMultiplayerRoutes({ games, basePath: mountPath }),
+    routes: {
+      declared: multiplayerRouteTable(mountPath),
+      load: async () => (await import("./http/routes")).registerMultiplayerRoutes({ games, basePath: mountPath }),
+    },
     // The control-plane surface, built from the mounted path: what the manifest advertises and what
     // `pithy dashboard connect` offers to grant. Always declared; with `controlplane()` uncomposed each route
     // refuses with `controlplane/not_connected` (#820).

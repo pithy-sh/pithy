@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { APIError } from "@better-auth/core/error";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
-import { APIError } from "better-auth/api";
 import { z } from "zod";
 import type { HandoffRefusal } from "../token/handoff";
 import { type AuthAuditAction, AuthAuditActions } from "./actions";

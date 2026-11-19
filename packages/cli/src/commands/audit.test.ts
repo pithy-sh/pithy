@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   AUDIT_CHECKPOINT_BINDING as AUDIT_BINDING,
   AUDIT_CHECKPOINT_LOCK_PREFIX,
-} from "@pithy-sh/audit/src/chain/checkpoint";
+} from "@pithy-sh/audit/src/chain/bucket";
 import { auditCheckpointBucketName } from "@pithy-sh/audit/src/provision/resolveAuditConfig";
 import {
   AUDIT_CHAIN_FORMAT,

@@ -6,6 +6,7 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -88,10 +89,10 @@ function appEnv(): Record<string, unknown> {
  * Compose the capability the way `createBackend` does — middleware in order, then routes — plus one
  * route of the adopter's own behind the zero-argument same-origin gate.
  */
-function compose(
+async function compose(
   environment: string | undefined,
   baseURL: () => string = () => PRODUCTION_BASE_URL,
-): Hono<PithyHonoEnv> {
+): Promise<Hono<PithyHonoEnv>> {
   if (environment === undefined) delete process.env.ENVIRONMENT;
   else process.env.ENVIRONMENT = environment;
 
@@ -109,7 +110,7 @@ function compose(
   });
   for (const middleware of capability.middleware ?? []) middleware(app);
   app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
-  capability.routes?.(app);
+  await mountRoutes(capability.routes, app);
   return app;
 }
 
@@ -178,7 +179,7 @@ afterEach(() => {
 
 test("a dev composition with an HTTPS baseURL reads the session the dev login minted", async () => {
   const login = await seedDevLogin();
-  const app = compose("dev");
+  const app = await compose("dev");
   const cookie = await signedInCookie(app, login);
 
   const response = await app.request("http://localhost:9339/auth/get-session", { headers: { cookie } }, appEnv());
@@ -190,7 +191,7 @@ test("a dev composition with an HTTPS baseURL reads the session the dev login mi
 
 test("the cookie follows the port, whichever one this run was assigned", async () => {
   const login = await seedDevLogin();
-  const app = compose("dev");
+  const app = await compose("dev");
   const cookie = await signedInCookie(app, login);
 
   for (const port of [9339, 41011, 8787]) {
@@ -201,7 +202,7 @@ test("the cookie follows the port, whichever one this run was assigned", async (
 });
 
 test("a mutating cookie route passes the same-origin gate in dev, with nothing in trustedOrigins", async () => {
-  const app = compose("dev");
+  const app = await compose("dev");
 
   const response = await app.request(
     "http://localhost:9339/organizations",
@@ -213,7 +214,7 @@ test("a mutating cookie route passes the same-origin gate in dev, with nothing i
 });
 
 test("a dev composition still refuses a foreign origin", async () => {
-  const app = compose("dev");
+  const app = await compose("dev");
 
   const response = await app.request(
     "http://localhost:9339/organizations",
@@ -225,7 +226,7 @@ test("a dev composition still refuses a foreign origin", async () => {
 });
 
 test("production is untouched: the configured origin passes and the local one does not", async () => {
-  const app = compose("prod");
+  const app = await compose("prod");
 
   const allowed = await app.request(
     "https://app.pithy.sh/organizations",
@@ -254,7 +255,7 @@ test("a feature composition's base URL is the workers.dev origin its provisionin
   const FEATURE_ORIGIN = "https://replay-f643-feature-address--board.acme.workers.dev";
   process.env.BASE_URL = FEATURE_ORIGIN;
   const DOMAINS = { prod: { pattern: "app.pithy.sh", zone: "pithy.sh" } };
-  const app = compose("feature", () => originFor(process.env.ENVIRONMENT, DOMAINS));
+  const app = await compose("feature", () => originFor(process.env.ENVIRONMENT, DOMAINS));
 
   const allowed = await app.request(
     `${FEATURE_ORIGIN}/organizations`,

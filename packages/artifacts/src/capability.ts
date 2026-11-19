@@ -7,7 +7,8 @@ import type { Migration } from "kysely/migration";
 import { ArtifactsConfig, type ArtifactsConfigInput, parseArtifactsConfig } from "./config/config";
 import { artifactsTables } from "./data/tables";
 import { ArtifactsInvalidConfigError } from "./error/errors";
-import { type RepoNameSeam, registerArtifactsRoutes } from "./http/routes";
+import type { RepoNameSeam } from "./http/routes";
+import { artifactsRouteTable } from "./http/routeTable";
 import { artifactsAdminRoutes } from "./http/scopes";
 import { artifacts_0001_init } from "./migrations/0001_init";
 import { artifacts_0002_tokens } from "./migrations/0002_tokens";
@@ -115,11 +116,18 @@ export function artifacts(options: ArtifactsOptions = {}): ArtifactsCapability {
     },
     // The management surface a manifest advertises, built from the resolved mount so it names where the routes are.
     adminRoutes: artifactsAdminRoutes(resolved.basePath),
-    routes: registerArtifactsRoutes({
-      config: resolved,
-      ...(repoName ? { repoName } : {}),
-      organization: () => wiring.organization,
-    }),
+    routes: {
+      // Read when the Worker assembles, after `compose` has found whether an organization is composed beside it.
+      get declared() {
+        return artifactsRouteTable(resolved.basePath, wiring.organization && resolved.managePower !== undefined);
+      },
+      load: async () =>
+        (await import("./http/routes")).registerArtifactsRoutes({
+          config: resolved,
+          ...(repoName ? { repoName } : {}),
+          organization: () => wiring.organization,
+        }),
+    },
     // A person's own repositories, the grants they hold and their token records: exported on an access request, and
     // erased or anonymized by their purge, as its own step in the adopter's Worker (#814).
     purge: [artifactsUserPurge(resolved.binding)],

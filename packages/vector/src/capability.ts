@@ -11,7 +11,7 @@ import { vectorHealth } from "./admin/health";
 import { VectorConfig, type VectorConfigInput } from "./config/config";
 import { vectorTables } from "./data/tables";
 import { provisionGuard } from "./http/provisionGuard";
-import { registerVectorRoutes } from "./http/routes";
+import { vectorRouteTable } from "./http/routeTable";
 import { DEFAULT_VECTOR_BASE_PATH, vectorAdminRoutes } from "./http/scopes";
 import { vector_0001_documents } from "./migrations/0001_documents";
 import { vectorExampleSeed } from "./seeds/example";
@@ -124,7 +124,10 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
     // Built from the same `basePath` the routes register under, so the manifest names the mounted path.
     adminRoutes: vectorAdminRoutes(basePath),
     health: vectorHealth(resolved),
-    routes: registerVectorRoutes({ config: resolved, basePath }),
+    routes: {
+      declared: vectorRouteTable(basePath),
+      load: async () => (await import("./http/routes")).registerVectorRoutes({ config: resolved, basePath }),
+    },
   });
 
   return Object.assign(capability, { vectorConfig: resolved });

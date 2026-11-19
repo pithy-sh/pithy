@@ -732,7 +732,10 @@ The `tag` the binding also carries stays off the wire. It is adopter-authored fr
 defineCapability({
   name: "support",
   adminRoutes: supportAdminRoutes(resolved.basePath),
-  routes: registerSupportRoutes({ config: resolved }),
+  routes: {
+    declared: supportRouteTable(resolved.basePath, resolved.submission.enabled),
+    load: async () => (await import("./http/routes")).registerSupportRoutes({ basePath: resolved.basePath }),
+  },
 });
 
 // supportAdminRoutes

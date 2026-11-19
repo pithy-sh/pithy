@@ -16,6 +16,7 @@
     "!dist/**/*.test.*"
   ],
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=22"
   },

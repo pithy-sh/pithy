@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { guaranteedErrorParams } from "@pithy-sh/core/src/error/messageParams";
-import { ErrorPayload, kitErrorStatus } from "@pithy-sh/core/src/error/payload";
+import { errorSchemas, kitErrorStatus } from "@pithy-sh/core/src/error/payloadSchemas";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 import {
@@ -302,7 +302,7 @@ export function terminalWorkflowError(args: {
     // kit member (`validation/invalid_input`) requires a field this boundary has no way to supply — so
     // a payload that would not validate must not be thrown from the error path. It falls through to
     // the general terminal code below, keeping the step's own sentence.
-    const parsed = ErrorPayload.safeParse(candidate);
+    const parsed = errorSchemas().ErrorPayload.safeParse(candidate);
     if (parsed.success) return new PithyError(parsed.data);
   }
 

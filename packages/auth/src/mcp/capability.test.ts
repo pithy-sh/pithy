@@ -6,7 +6,6 @@ import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { email } from "@pithy-sh/email/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
-import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { auth } from "../capability";
 import { SCOPED_ORIGIN, SCOPED_REGISTRY } from "../test-utils/scopedBackend";
@@ -73,7 +72,7 @@ describe("mcp() composition", () => {
 
   test("refuses to serve before createBackend has composed it", () => {
     const capability = mcp({ floor: "signed-in" });
-    const error = refusal(() => capability.routes?.(new Hono() as never));
+    const error = refusal(() => capability.routes?.declared);
     expect(error.message).toMatch(/not composed/);
   });
 });

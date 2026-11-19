@@ -37,7 +37,7 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   },
 };
 
-const tools = appTools(kitComposition().groups);
+const tools = appTools((await kitComposition()).groups);
 
 describe("the kit's app MCP tools", () => {
   test("every published operation names the route and effect it was published with", () => {

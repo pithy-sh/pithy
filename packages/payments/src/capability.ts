@@ -22,7 +22,7 @@ import type { PaymentsSubjectResolver, PaymentsSubjectSeam } from "./entitlement
 import { requireImplementedSubject } from "./entitlement/unimplementedSubject";
 import type { PaymentsLedgerPeer } from "./grants/ledgerSeam";
 import { paymentsManifestConfig } from "./http/manifestConfig";
-import { registerPaymentsRoutes } from "./http/routes";
+import { paymentsRouteTable } from "./http/routeTable";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
 import { payments_0002_allowances } from "./migrations/0002_allowances";
@@ -512,7 +512,15 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     manifestConfig: paymentsManifestConfig(resolved.billingSubject),
     // The routes ask the same question the gate does — a checkout, a restore and a portal all need a holder
     // to key a row to — so they are handed the same seam rather than building one from the config alone.
-    routes: registerPaymentsRoutes({ config: resolved, subject, ledger: () => peers.ledger }),
+    routes: {
+      declared: paymentsRouteTable(resolved.basePath),
+      load: async () =>
+        (await import("./http/routes")).registerPaymentsRoutes({
+          config: resolved,
+          subject,
+          ledger: () => peers.ledger,
+        }),
+    },
     seeds: [paymentsExampleSeed],
     // A person's purchases and what they granted are kept through their purge, for tax law, and exported on an access
     // request with the basis that keeps them.

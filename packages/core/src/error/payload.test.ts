@@ -3,14 +3,8 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import {
-  ErrorPayload,
-  KitErrorPayload,
-  KitPublicErrorPayload,
-  kitErrorStatus,
-  PublicErrorPayload,
-  ValidationIssue,
-} from "./payload";
+import { ErrorPayload, KitErrorPayload, KitPublicErrorPayload, PublicErrorPayload, ValidationIssue } from "./payload";
+import { kitErrorStatus } from "./payloadSchemas";
 import { PithyError } from "./pithyError";
 
 describe("ErrorPayload (the kit taxonomy)", () => {

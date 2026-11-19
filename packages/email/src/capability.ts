@@ -3,13 +3,13 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { deferred, deferredSettings } from "@pithy-sh/core/src/capability/deferred";
 import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { composedConsent } from "@pithy-sh/core/src/consent/reader";
 import { composedUsageMeter, type MeterCharge, type UsageMeter } from "@pithy-sh/core/src/entitlement/meter";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
-import { createBounceHandler } from "./bounce/handler";
 import { EMAIL_CONSENT_PURPOSES, emailConsentGranted, emailConsentWithdrawn } from "./consent/consent";
 import { emailSigningRegistry } from "./crypto/signingKey";
 import {
@@ -20,18 +20,16 @@ import {
   emailSuppressionTables,
   emailTables,
 } from "./data/tables";
-import { registerCallbacks } from "./http/callbacks";
 import { emailAdminRoutes } from "./http/guards";
-import { registerEmailAdminRoutes } from "./http/routes";
+import { emailRouteTable } from "./http/routeTable";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
 import { email_0002_job_filters } from "./migrations/0002_job_filters";
 import { EMAIL_PROCESSING } from "./processing/activities";
 import { DevMailDelivery } from "./provision/devDelivery";
 import { emailHostCatalogs } from "./provision/hostCatalogs";
-import { emailSettings } from "./provision/settingsCheck";
 import { emailUserPurge } from "./purge/contribution";
-import { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
+import type { EnqueueInput, EnqueueResult } from "./send/enqueue";
 import { type EmailSenderEnv, emailSenderBinding } from "./send/senderBinding";
 import { EMAIL_MESSAGES, type EmailMessageLayers, kitEmailLayers } from "./templates/messages";
 import { CustomTheme, type EmailTheme, resolveTheme } from "./templates/theme";
@@ -355,9 +353,18 @@ export function email(config: EmailConfigInput): EmailCapability {
      * are registered together here rather than being two capabilities, because they are one
      * capability's surface and `adminRoutes` below has to describe what this exact composition mounted.
      */
-    routes: (app) => {
-      registerCallbacks(app);
-      registerEmailAdminRoutes({ basePath: resolved.basePath })(app);
+    routes: {
+      declared: emailRouteTable(resolved.basePath),
+      load: async () => {
+        const [{ registerCallbacks }, { registerEmailAdminRoutes }] = await Promise.all([
+          import("./http/callbacks"),
+          import("./http/routes"),
+        ]);
+        return (app) => {
+          registerCallbacks(app);
+          registerEmailAdminRoutes({ basePath: resolved.basePath })(app);
+        };
+      },
     },
     /**
      * The management surface, advertised on `GET /control-plane/manifest`.
@@ -374,8 +381,17 @@ export function email(config: EmailConfigInput): EmailCapability {
      * import of this package by the CLI. The local half runs `workflows/hostEnv.ts` — the very declaration
      * the prebuilt host refuses to start without — so doctor and the host cannot come to two answers.
      */
-    settings: emailSettings({ fromAddress: resolved.fromAddress, baseUrl: resolved.baseUrl, theme }),
-    email: createBounceHandler(),
+    settings: deferredSettings(
+      async () =>
+        (await import("./provision/settingsCheck")).emailSettings({
+          fromAddress: resolved.fromAddress,
+          baseUrl: resolved.baseUrl,
+          theme,
+        }),
+      { account: true },
+    ),
+    // The bounce parser loads with the first inbound message, not with the Worker.
+    email: deferred(async () => (await import("./bounce/handler")).createBounceHandler()),
   });
   /**
    * The suppression list off an env, or a wiring fault naming the binding.
@@ -406,8 +422,10 @@ export function email(config: EmailConfigInput): EmailCapability {
   const enqueueAs = (claimed: readonly string[]) => {
     // Copied, so the list a capability bound at compose is the list every later call is held to.
     const claimedFrom = Object.freeze([...claimed]);
-    return (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
-      enqueueEmail(
+    return async (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> => {
+      // The template engine loads with the first enqueue, not with the Worker.
+      const { enqueueEmail } = await import("./send/enqueue");
+      return enqueueEmail(
         {
           db: emailDatabase(env.DB),
           fromAddress: resolved.fromAddress,
@@ -430,6 +448,7 @@ export function email(config: EmailConfigInput): EmailCapability {
         },
         input,
       );
+    };
   };
   const enqueue = enqueueAs([]);
   return Object.assign(capability, {

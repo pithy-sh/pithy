@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
+import { mountRoutes } from "@pithy-sh/core/src/http/lazyRoutes";
 import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { Hono } from "hono";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -73,13 +74,13 @@ describe("the CI gate", () => {
 
 describe("the composed capability", () => {
   /** What `auth()` itself mounts, read off a real Hono app rather than off the helper. */
-  function composedPaths(): string[] {
+  async function composedPaths(): Promise<string[]> {
     const app = new Hono<PithyHonoEnv>();
-    auth({ baseURL: "http://localhost:8787" }).routes?.(app);
+    await mountRoutes(auth({ baseURL: "http://localhost:8787" }).routes, app);
     return app.routes.map((route) => route.path);
   }
 
-  test("auth() mounts the route in a dev composition and omits it everywhere else", () => {
+  test("auth() mounts the route in a dev composition and omits it everywhere else", async () => {
     // The gate is at registration, so what a composition *mounts* is the whole assertion — a route that
     // existed and refused inside its handler would still pass a test written against a response.
     //
@@ -90,13 +91,13 @@ describe("the composed capability", () => {
     // cases below already rely on.
     vi.stubEnv("CI", "");
     vi.stubEnv("ENVIRONMENT", "dev");
-    expect(composedPaths()).toContain(DEV_LOGIN_ROUTE);
+    expect(await composedPaths()).toContain(DEV_LOGIN_ROUTE);
 
     vi.stubEnv("ENVIRONMENT", "prod");
-    expect(composedPaths()).not.toContain(DEV_LOGIN_ROUTE);
+    expect(await composedPaths()).not.toContain(DEV_LOGIN_ROUTE);
 
     vi.stubEnv("ENVIRONMENT", "dev");
     vi.stubEnv("CI", "true");
-    expect(composedPaths()).not.toContain(DEV_LOGIN_ROUTE);
+    expect(await composedPaths()).not.toContain(DEV_LOGIN_ROUTE);
   });
 });

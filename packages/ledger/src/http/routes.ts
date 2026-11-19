@@ -25,6 +25,7 @@ import {
   LedgerTransactionsResponse,
   LedgerUserAccountsResponse,
 } from "./responses";
+import { LEDGER_DEFAULT_BASE_PATH } from "./routeTable";
 import {
   AdminAccountParam,
   AdminAccountsQuery,
@@ -100,16 +101,6 @@ import { accountView, transactionView } from "./view";
  * handler, which is why a malformed request on an *unconfigured* currency answers 400 rather than 404 —
  * the request is rejected as unparseable before the currency is ever resolved.
  */
-
-/**
- * Where the ledger mounts when an adopter names nothing.
- *
- * Exported because two places must agree on it: the router below, and `ledgerAdminRoutes` in
- * `capability.ts`. A default living only in the registrar would let the manifest advertise `/ledger/...`
- * while the routes mounted somewhere else, and a management client composing its calls from the
- * manifest would 404 with nothing to diagnose.
- */
-export const LEDGER_DEFAULT_BASE_PATH = "/ledger";
 
 /**
  * What every route this capability mounts declares: its path, its verification strategy, and the

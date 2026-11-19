@@ -13,7 +13,7 @@ import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { type ActualColumn, schemaDrift } from "../test-utils/schemaDrift";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./0001_init";
 import { auth_0002_session_authenticated_at } from "./0002_session_authenticated_at";
-import { authSchemaOptions } from "./pluginTables";
+import { authSchemaOptions } from "./kitSchema";
 import { AUTH_MIGRATIONS } from "./set";
 
 /**

@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
+import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
 import { email } from "@pithy-sh/email/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -41,11 +42,11 @@ const appCapability = defineCapability({
       });
     },
   ],
-  routes: (app) => {
+  routes: routesOf((app) => {
     app.post("/things/secret", requireRecentSignIn({ maxAgeSeconds: 300, purpose: "things/secret_revealed" }), (c) =>
       c.json({ revealed: true }),
     );
-  },
+  }),
 });
 
 function buildApp() {
