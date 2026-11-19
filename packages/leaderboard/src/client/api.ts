@@ -286,6 +286,27 @@ function segment(value: string): string {
   );
 }
 
+/** A board key's shape, as `config/boardKey.ts` states it; spelled here so this module imports nothing. */
+export const CLIENT_BOARD_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/** An instance id's shape, as `config/boardKey.ts` states it; spelled here so this module imports nothing. */
+export const CLIENT_INSTANCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * A board key as path segments: one segment for a board, and two for an instance of a family, such as
+ * `level/abc`. Split only when both halves are the shapes a key and an id must take, which no `.` or `..`
+ * is, so a key can never climb out of the leaderboard's routes. Anything else is one encoded segment.
+ */
+function boardPath(board: string): string {
+  const slash = board.indexOf("/");
+  if (slash > 0) {
+    const prefix = board.slice(0, slash);
+    const id = board.slice(slash + 1);
+    if (CLIENT_BOARD_KEY_PATTERN.test(prefix) && CLIENT_INSTANCE_ID_PATTERN.test(id)) return `${prefix}/${id}`;
+  }
+  return segment(board);
+}
+
 /** A query string from the values that are set, or nothing when none is. */
 function query(values: Record<string, string | number | undefined>): string {
   const pairs = Object.entries(values).filter((pair): pair is [string, string | number] => pair[1] !== undefined);
@@ -432,7 +453,7 @@ export async function submitScore(
   score: number,
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<string>> {
-  const result = await read(`/${segment(board)}`, json("POST", { score }), options, isSubmitResult);
+  const result = await read(`/${boardPath(board)}`, json("POST", { score }), options, isSubmitResult);
   return result.ok ? { ok: true, value: result.value.window } : result;
 }
 
@@ -443,7 +464,7 @@ export function readTop(
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<BoardPage>> {
   const search = query({ window: page.window, limit: page.limit, offset: page.offset });
-  return read(`/${segment(board)}/top${search}`, { method: "GET" }, options, isBoardPage);
+  return read(`/${boardPath(board)}/top${search}`, { method: "GET" }, options, isBoardPage);
 }
 
 /** `board` ranked among a segment of players, such as a friends list. */
@@ -453,7 +474,7 @@ export function readSegment(
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<BoardPage>> {
   const body = { userIds: page.userIds, limit: page.limit, offset: page.offset, window: page.window };
-  return read(`/${segment(board)}/segment`, json("POST", body), options, isBoardPage);
+  return read(`/${boardPath(board)}/segment`, json("POST", body), options, isBoardPage);
 }
 
 /** The caller's own standing on `board`. */
@@ -462,7 +483,7 @@ export function readOwnRank(
   at: WindowOptions = {},
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<OwnRank>> {
-  return read(`/${segment(board)}/me${query({ window: at.window })}`, { method: "GET" }, options, isOwnRank);
+  return read(`/${boardPath(board)}/me${query({ window: at.window })}`, { method: "GET" }, options, isOwnRank);
 }
 
 /** The players ranked around the caller on `board`. */
@@ -472,7 +493,7 @@ export function readAround(
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<BoardPage>> {
   const search = query({ window: around.window, radius: around.radius });
-  return read(`/${segment(board)}/around${search}`, { method: "GET" }, options, isBoardPage);
+  return read(`/${boardPath(board)}/around${search}`, { method: "GET" }, options, isBoardPage);
 }
 
 /** Show or hide the caller's own entry on `board`. Answers the visibility as now stored. */
@@ -482,7 +503,7 @@ export async function setVisibility(
   at: WindowOptions = {},
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<boolean>> {
-  const path = `/${segment(board)}/me/visibility${query({ window: at.window })}`;
+  const path = `/${boardPath(board)}/me/visibility${query({ window: at.window })}`;
   const result = await read(path, json("PUT", { visible }), options, isVisibilityResult);
   return result.ok ? { ok: true, value: result.value.visible } : result;
 }
@@ -495,7 +516,7 @@ export async function hideEntry(
   at: WindowOptions = {},
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<boolean>> {
-  const path = `/${segment(board)}/entries/${segment(userId)}/hidden${query({ window: at.window })}`;
+  const path = `/${boardPath(board)}/entries/${segment(userId)}/hidden${query({ window: at.window })}`;
   const result = await read(path, json("PUT", { hidden }), options, isHideResult);
   return result.ok ? { ok: true, value: result.value.hidden } : result;
 }
@@ -507,7 +528,7 @@ export async function removeEntry(
   at: WindowOptions = {},
   options: LeaderboardClientOptions = {},
 ): Promise<LeaderboardResult<boolean>> {
-  const path = `/${segment(board)}/entries/${segment(userId)}${query({ window: at.window })}`;
+  const path = `/${boardPath(board)}/entries/${segment(userId)}${query({ window: at.window })}`;
   const result = await read(path, { method: "DELETE" }, options, isRemoveResult);
   return result.ok ? { ok: true, value: result.value.removed } : result;
 }

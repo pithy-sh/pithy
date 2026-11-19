@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 
 /**
  * Call `onActive` each time the app comes back to the foreground: after a checkout in the system browser, or a
@@ -10,10 +10,12 @@ export function useAppFocus(onActive: () => void): void {
   const latest = useRef(onActive);
   latest.current = onActive;
   useEffect(() => {
-    let previous: AppStateStatus = AppState.currentState;
+    // React Native can report no state yet, or one it does not name; either counts as not active.
+    let wasActive = AppState.currentState === "active";
     const subscription = AppState.addEventListener("change", (next) => {
-      if (previous !== "active" && next === "active") latest.current();
-      previous = next;
+      const active = next === "active";
+      if (active && !wasActive) latest.current();
+      wasActive = active;
     });
     return () => subscription.remove();
   }, []);

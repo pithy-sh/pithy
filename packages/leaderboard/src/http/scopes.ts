@@ -48,8 +48,10 @@ export const LEADERBOARD_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * `/ranks` gets a manifest naming `/ranks/admin/boards`, or a client composing its calls from it would 404.
  *
  * **Everything sits under an `admin/` segment, and its next segment is static.** The player surface owns
- * `${basePath}/:board` and `${basePath}/:board/<verb>`, so a board keyed `admin` still answers its player
- * routes: no management path is a player path with a board key in it.
+ * `${basePath}/:board`, `${basePath}/:board/<verb>` and the same under `${basePath}/:board/:instance`, so a
+ * board keyed `admin` still answers its player routes: no management path is a player path with a board key
+ * in it. An instance's management routes sit under `admin/boards/:board/:instance/`, one segment deeper
+ * than a board's, so neither shadows the other.
  */
 export function leaderboardAdminRoutes(basePath: string): AdminRouteDeclaration[] {
   return [
@@ -59,7 +61,8 @@ export function leaderboardAdminRoutes(basePath: string): AdminRouteDeclaration[
       path: `${basePath}/admin/boards`,
       scope: LEADERBOARD_ENTRIES_READ_SCOPE,
       kind: "reads",
-      summary: "Every configured board: its store, direction, aggregation, window, and the window open now.",
+      summary:
+        "Every configured board and board family: its store, direction, aggregation, window, and the window open now.",
     },
     {
       method: "GET",
@@ -100,6 +103,46 @@ export function leaderboardAdminRoutes(basePath: string): AdminRouteDeclaration[
       scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
       kind: "writes",
       summary: "Correct an entry's score, with a reason. The original is kept in its history.",
+    },
+    {
+      method: "GET",
+      operation: "instances.list",
+      path: `${basePath}/admin/families/:family/instances`,
+      scope: LEADERBOARD_ENTRIES_READ_SCOPE,
+      kind: "reads",
+      summary: "A board family's instances, paged by key: every one that has taken an entry, and when it did.",
+    },
+    {
+      method: "GET",
+      operation: "instances.entries.list",
+      path: `${basePath}/admin/boards/:board/:instance/entries`,
+      scope: LEADERBOARD_ENTRIES_READ_SCOPE,
+      kind: "reads",
+      summary: "A window of a family's instance, ranked and paged, hidden entries included, as a board's entries read.",
+    },
+    {
+      method: "POST",
+      operation: "instances.entries.hide",
+      path: `${basePath}/admin/boards/:board/:instance/entries/:userId/hide`,
+      scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
+      summary: "Hide an entry on a family's instance from every read, with a reason. The score is kept.",
+    },
+    {
+      method: "POST",
+      operation: "instances.entries.unhide",
+      path: `${basePath}/admin/boards/:board/:instance/entries/:userId/unhide`,
+      scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
+      summary: "Put a hidden entry on a family's instance back on the board, with a reason.",
+    },
+    {
+      method: "POST",
+      operation: "instances.entries.correct",
+      path: `${basePath}/admin/boards/:board/:instance/entries/:userId/correct`,
+      scope: LEADERBOARD_ENTRIES_MODERATE_SCOPE,
+      kind: "writes",
+      summary: "Correct an entry's score on a family's instance, with a reason. The original is kept in its history.",
     },
     {
       method: "POST",

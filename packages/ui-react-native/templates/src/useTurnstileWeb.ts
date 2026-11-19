@@ -1,5 +1,5 @@
 import { useRead } from "@pithy-sh/ui-core/src/read";
-import { type RefObject, useEffect } from "react";
+import { type ComponentRef, type RefObject, useEffect } from "react";
 import type { View } from "react-native";
 import { turnstileConfig } from "./pithy-config";
 
@@ -74,7 +74,7 @@ function loadScript(): Promise<void> {
  * waiting on a token says so.
  */
 export function useTurnstileWeb(
-  host: RefObject<View | null>,
+  host: RefObject<ComponentRef<typeof View> | null>,
   enabled: boolean,
   onToken: (value: string | null) => void,
 ): void {

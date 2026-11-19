@@ -120,6 +120,7 @@ const OPEN_SUBTREES = [
   "doctor: $.environmentInheritance|0.unrepeated[]",
   "doctor: $.environments|0",
   "doctor: $.environments|0.drift[]",
+  "doctor: $.expoReact|0",
   "doctor: $.extensions|0",
   "doctor: $.extensions|0.extensions[]",
   "doctor: $.featureRatelimitIds|0",

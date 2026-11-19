@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { Context } from "hono";
 import { z } from "zod";
 import { assertValidSchedule } from "../window/schedule";
-import { BOARD_KEY_PATTERN } from "./boardKey";
+import { BOARD_KEY_PATTERN, FAMILY_PATTERN, isInstanceId } from "./boardKey";
 
 /**
  * The leaderboard capability's config — the thin, user-owned surface in `pithy.config.ts`. Every field
@@ -52,122 +54,172 @@ export const LeaderboardTier = z
   .describe("One tier threshold — a named band of scores, classified on read.");
 export type LeaderboardTier = z.infer<typeof LeaderboardTier>;
 
+/** The fields a board and a family share: everything that decides how a board's scores are read. */
+const boardShape = {
+  store: LeaderboardStore.default("d1").describe("Which backing store ranks this board. Only `d1` today."),
+  direction: ScoreDirection.describe("Which way this board's scores sort. Required — there is no safe default."),
+  aggregation: ScoreAggregation.default("best").describe(
+    "How this board folds repeat submissions from the same player in the same window.",
+  ),
+  window: z
+    .string()
+    .optional()
+    .describe(
+      "A UTC CRON expression marking where each window opens; omit for one all-time board. `0 0 * * *` is daily, `0 0 * * 1` weekly, `0 0 1 * *` a calendar month, `0 0 1 1 *` a calendar year. CRON rather than a fixed enum is what makes calendar months and years expressible at all — Apple caps recurrence at 30 fixed days and Google offers no monthly.",
+    ),
+  retain: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      'How many closed windows to keep before the retention sweep deletes the rest — a *product* limit ("users can browse the last 12 weeks"). Omit to keep every window forever, which is the default: storage is never the cost driver here (see docs/costs.md), so nothing is deleted unless you ask. Ignored on an all-time board, which never closes a window. Set this OR `retainDays`, not both.',
+    ),
+  retainDays: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      'Delete windows whose data is older than this many days — a *compliance* limit ("nothing older than 90 days"), independent of window cadence. Omit to keep everything (the default). Ignored on an all-time board, whose single window has no age. Set this OR `retain`, not both.',
+    ),
+  min: z
+    .number()
+    .optional()
+    .describe(
+      "The lowest score this board will accept. Server-side bounds are the anti-cheat baseline: a client that posts outside them is rejected, not ranked.",
+    ),
+  max: z.number().optional().describe("The highest score this board will accept."),
+  tiers: z
+    .array(LeaderboardTier)
+    .optional()
+    .describe(
+      "Named score bands, listed worst to best. Classified on read from the score already stored — a tier costs nothing on write and no second board.",
+    ),
+  trackActivity: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Whether every submission is written, or only ones that change the ranked score. Default `false`: on a `best` board a submission that fails to beat the stored score writes *nothing* — zero rows billed — because the guard skips it. That is the single biggest cost lever this capability has, since submission writes dominate the bill and most submissions do not improve a player's best (see docs/costs.md). The cost is that `submittedAt` then advances only on an improving submission, so it stops being a record of *activity* and becomes a record of *progress*. Set `true` to write on every submission and keep `submittedAt` a true last-seen timestamp — at full write cost. Ignored on `sum` and `latest` boards, where every submission changes the score and therefore always writes.",
+    ),
+};
+
+/** What {@link checkBoardShape} reads: the shared fields, after parsing. */
+type BoardShapeValue = z.output<z.ZodObject<typeof boardShape>>;
+
+/**
+ * The rules a board and a family are both held to, reported against `label` — `Board "weekly"` or
+ * `Family "level/:levelId"` — so a message names the entry the adopter wrote.
+ */
+function checkBoardShape(label: string, value: BoardShapeValue, issues: z.core.$ZodRawIssue[]): void {
+  const { min, max, window, tiers, direction, retain, retainDays } = value;
+  if (min !== undefined && max !== undefined && min > max) {
+    issues.push({
+      code: "custom",
+      input: value,
+      path: ["min"],
+      message: `${label} sets min ${min} above max ${max}, so every score would be rejected.`,
+    });
+  }
+  if (retain !== undefined && retainDays !== undefined) {
+    // Both would need a union-or-intersection rule that the product ("keep N windows") and the
+    // compliance ("delete after N days") intents pull in opposite directions on. Forcing one keeps
+    // the meaning unambiguous.
+    issues.push({
+      code: "custom",
+      input: value,
+      path: ["retainDays"],
+      message: `${label} sets both retain and retainDays. Set one: retain for a window-count limit, retainDays for an age limit.`,
+    });
+  }
+  if ((retain !== undefined || retainDays !== undefined) && window === undefined) {
+    // An all-time board has one never-closing window; there is nothing for a window-based limit to
+    // prune, and age-based deletion of live entries is out of scope for v1.
+    issues.push({
+      code: "custom",
+      input: value,
+      path: [retainDays !== undefined ? "retainDays" : "retain"],
+      message: `${label} is all-time (no window), so retention does not apply. Remove retain/retainDays or give the board a window.`,
+    });
+  }
+  if (window !== undefined) {
+    try {
+      assertValidSchedule(window);
+    } catch (error) {
+      issues.push({
+        code: "custom",
+        input: value,
+        path: ["window"],
+        message: `${label} has an invalid window schedule: ${(error as Error).message}`,
+      });
+    }
+  }
+  if (tiers) {
+    // Worst-to-best in the board's direction: ascending thresholds on `desc`, descending on `asc`.
+    // An out-of-order tier is unreachable, and silently unreachable is worse than rejected.
+    for (let i = 1; i < tiers.length; i++) {
+      const previous = tiers[i - 1] as LeaderboardTier;
+      const current = tiers[i] as LeaderboardTier;
+      const improves = direction === "desc" ? current.from > previous.from : current.from < previous.from;
+      if (!improves) {
+        issues.push({
+          code: "custom",
+          input: value,
+          path: ["tiers", i, "from"],
+          message: `${label} lists tier "${current.key}" after "${previous.key}", but its threshold does not improve on a ${direction} board. List tiers worst to best.`,
+        });
+      }
+    }
+  }
+}
+
 export const LeaderboardBoard = z
   .object({
     key: z
       .string()
       .regex(BOARD_KEY_PATTERN, "A board key is lowercase, digits, and dashes — it is a URL path segment.")
       .describe("The board's stable id, unique across the app. It is a URL path segment and an entry key."),
-    store: LeaderboardStore.default("d1").describe("Which backing store ranks this board. Only `d1` today."),
-    direction: ScoreDirection.describe("Which way this board's scores sort. Required — there is no safe default."),
-    aggregation: ScoreAggregation.default("best").describe(
-      "How this board folds repeat submissions from the same player in the same window.",
-    ),
-    window: z
-      .string()
-      .optional()
-      .describe(
-        "A UTC CRON expression marking where each window opens; omit for one all-time board. `0 0 * * *` is daily, `0 0 * * 1` weekly, `0 0 1 * *` a calendar month, `0 0 1 1 *` a calendar year. CRON rather than a fixed enum is what makes calendar months and years expressible at all — Apple caps recurrence at 30 fixed days and Google offers no monthly.",
-      ),
-    retain: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe(
-        'How many closed windows to keep before the retention sweep deletes the rest — a *product* limit ("users can browse the last 12 weeks"). Omit to keep every window forever, which is the default: storage is never the cost driver here (see docs/costs.md), so nothing is deleted unless you ask. Ignored on an all-time board, which never closes a window. Set this OR `retainDays`, not both.',
-      ),
-    retainDays: z
-      .number()
-      .int()
-      .min(1)
-      .optional()
-      .describe(
-        'Delete windows whose data is older than this many days — a *compliance* limit ("nothing older than 90 days"), independent of window cadence. Omit to keep everything (the default). Ignored on an all-time board, whose single window has no age. Set this OR `retain`, not both.',
-      ),
-    min: z
-      .number()
-      .optional()
-      .describe(
-        "The lowest score this board will accept. Server-side bounds are the anti-cheat baseline: a client that posts outside them is rejected, not ranked.",
-      ),
-    max: z.number().optional().describe("The highest score this board will accept."),
-    tiers: z
-      .array(LeaderboardTier)
-      .optional()
-      .describe(
-        "Named score bands, listed worst to best. Classified on read from the score already stored — a tier costs nothing on write and no second board.",
-      ),
-    trackActivity: z
-      .boolean()
-      .default(false)
-      .describe(
-        "Whether every submission is written, or only ones that change the ranked score. Default `false`: on a `best` board a submission that fails to beat the stored score writes *nothing* — zero rows billed — because the guard skips it. That is the single biggest cost lever this capability has, since submission writes dominate the bill and most submissions do not improve a player's best (see docs/costs.md). The cost is that `submittedAt` then advances only on an improving submission, so it stops being a record of *activity* and becomes a record of *progress*. Set `true` to write on every submission and keep `submittedAt` a true last-seen timestamp — at full write cost. Ignored on `sum` and `latest` boards, where every submission changes the score and therefore always writes.",
-      ),
+    ...boardShape,
   })
   .describe("One board definition — the unit of leaderboard config.")
-  .check((ctx) => {
-    const { min, max, window, tiers, direction, retain, retainDays } = ctx.value;
-    if (min !== undefined && max !== undefined && min > max) {
-      ctx.issues.push({
-        code: "custom",
-        input: ctx.value,
-        path: ["min"],
-        message: `Board "${ctx.value.key}" sets min ${min} above max ${max}, so every score would be rejected.`,
-      });
-    }
-    if (retain !== undefined && retainDays !== undefined) {
-      // Both would need a union-or-intersection rule that the product ("keep N windows") and the
-      // compliance ("delete after N days") intents pull in opposite directions on. Forcing one keeps
-      // the meaning unambiguous.
-      ctx.issues.push({
-        code: "custom",
-        input: ctx.value,
-        path: ["retainDays"],
-        message: `Board "${ctx.value.key}" sets both retain and retainDays. Set one: retain for a window-count limit, retainDays for an age limit.`,
-      });
-    }
-    if ((retain !== undefined || retainDays !== undefined) && window === undefined) {
-      // An all-time board has one never-closing window; there is nothing for a window-based limit to
-      // prune, and age-based deletion of live entries is out of scope for v1.
-      ctx.issues.push({
-        code: "custom",
-        input: ctx.value,
-        path: [retainDays !== undefined ? "retainDays" : "retain"],
-        message: `Board "${ctx.value.key}" is all-time (no window), so retention does not apply. Remove retain/retainDays or give the board a window.`,
-      });
-    }
-    if (window !== undefined) {
-      try {
-        assertValidSchedule(window);
-      } catch (error) {
-        ctx.issues.push({
-          code: "custom",
-          input: ctx.value,
-          path: ["window"],
-          message: `Board "${ctx.value.key}" has an invalid window schedule: ${(error as Error).message}`,
-        });
-      }
-    }
-    if (tiers) {
-      // Worst-to-best in the board's direction: ascending thresholds on `desc`, descending on `asc`.
-      // An out-of-order tier is unreachable, and silently unreachable is worse than rejected.
-      for (let i = 1; i < tiers.length; i++) {
-        const previous = tiers[i - 1] as LeaderboardTier;
-        const current = tiers[i] as LeaderboardTier;
-        const improves = direction === "desc" ? current.from > previous.from : current.from < previous.from;
-        if (!improves) {
-          ctx.issues.push({
-            code: "custom",
-            input: ctx.value,
-            path: ["tiers", i, "from"],
-            message: `Board "${ctx.value.key}" lists tier "${current.key}" after "${previous.key}", but its threshold does not improve on a ${direction} board. List tiers worst to best.`,
-          });
-        }
-      }
-    }
-  });
+  .check((ctx) => checkBoardShape(`Board "${ctx.value.key}"`, ctx.value, ctx.issues));
 export type LeaderboardBoard = z.output<typeof LeaderboardBoard>;
+
+/**
+ * A family's allow hook: whether the Worker knows the instance `key` names, such as `level/abc`. Runs on a
+ * submission, before anything is written; `false` refuses it as a board that does not exist.
+ */
+export type LeaderboardAllow = (key: string, c: Context<PithyHonoEnv>) => boolean | Promise<boolean>;
+
+export const LeaderboardFamily = z
+  .object({
+    pattern: z
+      .string()
+      .regex(
+        FAMILY_PATTERN,
+        "A family pattern is one board-key segment, a slash, and one named id, such as `level/:levelId`.",
+      )
+      .describe(
+        "The key every board in this family follows: a static prefix shaped like a board key, a slash, and one named id — `level/:levelId`. `POST /leaderboard/level/abc` and every read under it address the instance `level/abc`, which is created by its first accepted score. An id is letters, digits, dashes and underscores, up to 64 characters, and cannot be `segment`.",
+      ),
+    ...boardShape,
+    allow: z
+      .custom<LeaderboardAllow>((value) => typeof value === "function", "A family's allow hook is a function.")
+      .optional()
+      .describe(
+        "Refuse an id the Worker does not know. Called as `allow(key, c)` with the instance key and the request context before a submission writes anything; return `false` and the submission is refused as a board that does not exist. Omit it and every id that fits the pattern is allowed.",
+      ),
+  })
+  .describe(
+    "A board family — one board shape for many boards, keyed by a pattern, such as one board per level. Each instance ranks, windows, moderates and purges exactly as a configured board does.",
+  )
+  .check((ctx) => checkBoardShape(`Family "${ctx.value.pattern}"`, ctx.value, ctx.issues));
+export type LeaderboardFamily = z.output<typeof LeaderboardFamily>;
+
+/** The static prefix of a family's pattern: `level` for `level/:levelId`. */
+export function familyPrefix(family: Pick<LeaderboardFamily, "pattern">): string {
+  return family.pattern.slice(0, family.pattern.indexOf("/"));
+}
 
 export const LeaderboardRank = z
   .union([
@@ -193,8 +245,13 @@ export const LeaderboardConfig = z
   .object({
     boards: z
       .array(LeaderboardBoard)
-      .min(1, "A leaderboard capability with no boards does nothing — configure at least one.")
-      .describe("Every board this app ranks. The board set is config, not database rows."),
+      .describe("Every board this app ranks by a fixed key. The board set is config, not database rows."),
+    families: z
+      .array(LeaderboardFamily)
+      .default([])
+      .describe(
+        "Board families: one shape and a key pattern, with a board made for each id on its first score — one per level, per player-made level, or per variation. Omit when every board is known at deploy time.",
+      ),
     rank: LeaderboardRank.prefault("live").describe("How rank is computed across every board."),
     serverAuthoritative: z
       .boolean()
@@ -225,6 +282,14 @@ export const LeaderboardConfig = z
   })
   .describe("Configuration for the leaderboard capability — the board set, how rank is computed, and who may write.")
   .check((ctx) => {
+    if (ctx.value.boards.length === 0 && ctx.value.families.length === 0) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["boards"],
+        message: "A leaderboard capability with no boards does nothing — configure at least one board or family.",
+      });
+    }
     const keys = ctx.value.boards.map((b) => b.key);
     const duplicates = [...new Set(keys.filter((key, i) => keys.indexOf(key) !== i))];
     if (duplicates.length > 0) {
@@ -233,6 +298,16 @@ export const LeaderboardConfig = z
         input: ctx.value,
         path: ["boards"],
         message: `Duplicate board keys: ${duplicates.join(", ")}. Two boards sharing a key would merge their entries.`,
+      });
+    }
+    const prefixes = ctx.value.families.map(familyPrefix);
+    const taken = [...new Set(prefixes.filter((prefix, i) => prefixes.indexOf(prefix) !== i || keys.includes(prefix)))];
+    if (taken.length > 0) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["families"],
+        message: `Family prefixes already in use: ${taken.join(", ")}. Each family needs a prefix no other family or board key has.`,
       });
     }
     const rank = ctx.value.rank;
@@ -252,9 +327,24 @@ export const LeaderboardConfig = z
 export type LeaderboardConfig = z.output<typeof LeaderboardConfig>;
 export type LeaderboardConfigInput = z.input<typeof LeaderboardConfig>;
 
-/** The board with this key, or undefined. Board keys come from config, so an unknown key is a 404. */
-export function resolveBoard(config: LeaderboardConfig, key: string): LeaderboardBoard | undefined {
-  return config.boards.find((board) => board.key === key);
+/** A board a key resolves to: a configured board, or an instance of a family, which names its family. */
+export type ResolvedBoard = LeaderboardBoard & { family?: LeaderboardFamily };
+
+/**
+ * The board with this key, or undefined. A configured board matches by key; `<prefix>/<id>` matches the
+ * family with that prefix and resolves to its instance, a board keyed `<prefix>/<id>` with the family's
+ * shape, whether or not it has an entry yet. Anything else is a 404.
+ */
+export function resolveBoard(config: LeaderboardConfig, key: string): ResolvedBoard | undefined {
+  const board = config.boards.find((b) => b.key === key);
+  if (board) return board;
+  const slash = key.indexOf("/");
+  if (slash < 0) return undefined;
+  const prefix = key.slice(0, slash);
+  const family = config.families.find((f) => familyPrefix(f) === prefix);
+  if (!family || !isInstanceId(key.slice(slash + 1))) return undefined;
+  const { pattern: _pattern, allow: _allow, ...shape } = family;
+  return { ...shape, key, family };
 }
 
 /** The rank refresh CRON, or undefined when rank is live and no refresh worker is needed. */

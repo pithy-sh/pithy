@@ -21,7 +21,7 @@ import {
 } from "./scopes";
 
 /**
- * The path-param half of the route request contract (issue #74). Query and body are covered by the
+ * The path-param half of the route request contract. Query and body are covered by the
  * `no-raw-request-input` Biome plugin — `c.req.query()` and `c.req.json()` are banned, so a handler can
  * only read them through a validator it declared. A path param has no such chokepoint: `c.req.param()`
  * hands one over whether or not a schema exists. This gate is the positive check that replaces the ban.
@@ -44,6 +44,14 @@ function makeApp() {
 /** The `:segment`-bearing paths the leaderboard registers. Every route below `/leaderboard/:board`. */
 const EXPECTED_PARAM_PATHS = [
   "/leaderboard/:board",
+  "/leaderboard/:board/:instance",
+  "/leaderboard/:board/:instance/around",
+  "/leaderboard/:board/:instance/entries/:userId",
+  "/leaderboard/:board/:instance/entries/:userId/hidden",
+  "/leaderboard/:board/:instance/me",
+  "/leaderboard/:board/:instance/me/visibility",
+  "/leaderboard/:board/:instance/segment",
+  "/leaderboard/:board/:instance/top",
   "/leaderboard/:board/around",
   "/leaderboard/:board/entries/:userId",
   "/leaderboard/:board/entries/:userId/hidden",
@@ -51,10 +59,15 @@ const EXPECTED_PARAM_PATHS = [
   "/leaderboard/:board/me/visibility",
   "/leaderboard/:board/segment",
   "/leaderboard/:board/top",
+  "/leaderboard/admin/boards/:board/:instance/entries",
+  "/leaderboard/admin/boards/:board/:instance/entries/:userId/correct",
+  "/leaderboard/admin/boards/:board/:instance/entries/:userId/hide",
+  "/leaderboard/admin/boards/:board/:instance/entries/:userId/unhide",
   "/leaderboard/admin/boards/:board/entries",
   "/leaderboard/admin/boards/:board/entries/:userId/correct",
   "/leaderboard/admin/boards/:board/entries/:userId/hide",
   "/leaderboard/admin/boards/:board/entries/:userId/unhide",
+  "/leaderboard/admin/families/:family/instances",
   "/leaderboard/admin/locks/:name/clear",
 ];
 
@@ -78,6 +91,38 @@ describe("route contract: every path param is validated", () => {
   });
 });
 
+describe("route contract: an instance's key segments are validated", () => {
+  /** The player routes, with an identity, so a 400 is the param validator and not the auth gate. */
+  function playerApp() {
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("auth", { userId: "u1", sessionId: "s1", scopes: [] });
+      await next();
+    });
+    registerLeaderboardRoutes({
+      config: LeaderboardConfig.parse({ boards: [], families: [{ pattern: "level/:levelId", direction: "asc" }] }),
+    })(app);
+    return app;
+  }
+
+  test.each([
+    ["an id with a space", "/leaderboard/level/a%20b/top"],
+    ["an id with a dot", "/leaderboard/level/a.b/top"],
+    ["an id too long to be one", `/leaderboard/level/${"a".repeat(65)}/top`],
+    ["the reserved id", "/leaderboard/level/segment/top"],
+    ["a family prefix that is not a key", "/leaderboard/Level/abc/top"],
+  ])("refuses %s with a 400 before any lookup", async (_name, path) => {
+    const response = await playerApp().request(path);
+    expect(response.status, path).toBe(400);
+  });
+
+  test("lets a well-formed id through, mixed case and underscores included", async () => {
+    // Past the validator, this app has no D1 to answer from; what matters is that it was not a 400.
+    expect((await playerApp().request("/leaderboard/level/V1St_GX-8/top")).status).not.toBe(400);
+  });
+});
+
 describe("route contract: every route is described for the OpenAPI contract", () => {
   const groups = () => [{ tag: "leaderboard", routes: makeApp().routes }];
 
@@ -93,7 +138,7 @@ describe("route contract: every route is described for the OpenAPI contract", ()
 });
 
 /**
- * The management surface's own gates (#817). The app is composed the way `createBackend` composes it —
+ * The management surface's own gates. The app is composed the way `createBackend` composes it —
  * the error handler installed and the request variables seeded — with `controlPlaneVerifier` null, the
  * state of a Worker that never composed `controlplane()`, which is exactly the state the seam must deny in.
  */
@@ -114,7 +159,12 @@ function composedApp(basePath?: string) {
 
 /** An advertised path with real values in its segments, so it can actually be requested. */
 function concrete(path: string): string {
-  return path.replace(":board", "b1").replace(":userId", "u1").replace(":name", "rank-refresh");
+  return path
+    .replace(":board", "b1")
+    .replace(":instance", "abc")
+    .replace(":family", "level")
+    .replace(":userId", "u1")
+    .replace(":name", "rank-refresh");
 }
 
 describe("the management surface", () => {
@@ -138,6 +188,8 @@ describe("the management surface", () => {
       ["POST", "/leaderboard/admin/boards/b1/entries/u1/hide"],
       ["POST", "/leaderboard/admin/boards/b1/entries/u1/correct"],
       ["POST", "/leaderboard/admin/locks/NOT A NAME/clear"],
+      ["GET", "/leaderboard/admin/boards/level/not%20an%20id/entries"],
+      ["GET", "/leaderboard/admin/families/NOT_A_KEY/instances"],
     ];
     for (const [method, path] of malformed) {
       const response = await composedApp().request(path, method === "GET" ? { method } : { method, body: "{not json" });
@@ -202,7 +254,7 @@ describe("the advertised admin surface", () => {
     const app = new Hono<PithyHonoEnv>();
     moved.routes?.(app);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [moved as unknown as Capability])).toEqual([]);
-    expect(moved.adminRoutes?.length).toBe(7);
+    expect(moved.adminRoutes?.length).toBe(12);
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/ranks/admin/")).toBe(true);
   });
 });

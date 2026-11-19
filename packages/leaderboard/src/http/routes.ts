@@ -27,8 +27,11 @@ import { BoardList, BoardPage, HideResult, OwnRank, RemoveResult, SubmitResult, 
 import {
   AroundQuery,
   BoardParam,
+  boardKeyOf,
   EntryParam,
   HideBody,
+  InstanceEntryParam,
+  InstanceParam,
   SegmentBody,
   SubmitScoreBody,
   TopQuery,
@@ -56,6 +59,11 @@ import {
  *                                                  param EntryParam, query WindowQuery, json HideBody
  *   DELETE /leaderboard/:board/entries/:userId   → remove entry   (bearer | session + admin scope)
  *                                                  param EntryParam, query WindowQuery
+ *
+ * Every `:board` route is registered again at `/leaderboard/:board/:instance` for an instance of a board
+ * family (`POST /leaderboard/level/abc`), taking `InstanceParam` or `InstanceEntryParam` for its params
+ * and answering through the same handler. Submit is registered last of all, so `POST :board/:instance`
+ * never takes a `POST :board/segment`.
  *
  * Every route is gated by {@link requireAuth} — there is no public leaderboard surface, because an entry
  * with no authenticated player has nothing to key on. Submit additionally requires the board's submit
@@ -104,6 +112,7 @@ function defaultResolveDeps(config: LeaderboardConfig) {
       d1: session.d1,
       userId: auth.userId,
       now: () => new Date(),
+      context: c,
       bookmark: session.bookmark,
     };
   };
@@ -135,7 +144,7 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
   });
 
   return (app) => {
-    // The management surface (#817), behind the control plane. Every path sits under a static `admin/`
+    // The management surface, behind the control plane. Every path sits under a static `admin/`
     // segment, so it is disjoint from the player routes by construction and its order here is presentation.
     admin(app);
 
@@ -152,131 +161,146 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
       (c) => respond(c, false, (deps) => listBoards(deps)),
     );
 
-    // Static segments are registered before `:board`-rooted reads so they cannot be shadowed.
-    app.post(
-      `${base}/:board/segment`,
-      describeRoute({
-        summary: "Rank a segment of players, such as a friends list.",
-        verification: ["bearer", "session"],
-        responses: { 200: BoardPage },
-      }),
-      requireAuth(),
-      validate("param", BoardParam),
-      validate("json", SegmentBody),
-      (c) => respond(c, false, (deps) => readSegment(deps, c.req.valid("param").board, c.req.valid("json"))),
-    );
+    // Every board-addressed route twice: at `:board` for a configured board, and at `:board/:instance` for
+    // an instance of a family. One handler serves both, keyed by the board key the params spell.
+    const roots = [
+      { path: `${base}/:board`, board: BoardParam, entry: EntryParam, operation: "" },
+      { path: `${base}/:board/:instance`, board: InstanceParam, entry: InstanceEntryParam, operation: "instances." },
+    ] as const;
 
-    app.get(
-      `${base}/:board/top`,
-      describeRoute({
-        summary: "Read the top of a board.",
-        operation: "top.read",
-        tool: true,
-        verification: ["bearer", "session"],
-        responses: { 200: BoardPage },
-      }),
-      requireAuth(),
-      validate("param", BoardParam),
-      validate("query", TopQuery),
-      (c) => respond(c, false, (deps) => readTop(deps, c.req.valid("param").board, c.req.valid("query"))),
-    );
+    for (const root of roots) {
+      // Static segments are registered before `:board`-rooted reads so they cannot be shadowed.
+      app.post(
+        `${root.path}/segment`,
+        describeRoute({
+          summary: "Rank a segment of players, such as a friends list.",
+          verification: ["bearer", "session"],
+          responses: { 200: BoardPage },
+        }),
+        requireAuth(),
+        validate("param", root.board),
+        validate("json", SegmentBody),
+        (c) => respond(c, false, (deps) => readSegment(deps, boardKeyOf(c.req.valid("param")), c.req.valid("json"))),
+      );
 
-    app.get(
-      `${base}/:board/me`,
-      describeRoute({
-        summary: "Read the caller's own rank.",
-        operation: "rank.read",
-        tool: true,
-        verification: ["bearer", "session"],
-        responses: { 200: OwnRank },
-      }),
-      requireAuth(),
-      validate("param", BoardParam),
-      validate("query", WindowQuery),
-      (c) => respond(c, false, (deps) => readOwnRank(deps, c.req.valid("param").board, c.req.valid("query"))),
-    );
+      app.get(
+        `${root.path}/top`,
+        describeRoute({
+          summary: "Read the top of a board.",
+          operation: `${root.operation}top.read`,
+          tool: true,
+          verification: ["bearer", "session"],
+          responses: { 200: BoardPage },
+        }),
+        requireAuth(),
+        validate("param", root.board),
+        validate("query", TopQuery),
+        (c) => respond(c, false, (deps) => readTop(deps, boardKeyOf(c.req.valid("param")), c.req.valid("query"))),
+      );
 
-    app.get(
-      `${base}/:board/around`,
-      describeRoute({
-        summary: "Read the players ranked around the caller.",
-        verification: ["bearer", "session"],
-        responses: { 200: BoardPage },
-      }),
-      requireAuth(),
-      validate("param", BoardParam),
-      validate("query", AroundQuery),
-      (c) => respond(c, false, (deps) => readAround(deps, c.req.valid("param").board, c.req.valid("query"))),
-    );
+      app.get(
+        `${root.path}/me`,
+        describeRoute({
+          summary: "Read the caller's own rank.",
+          operation: `${root.operation}rank.read`,
+          tool: true,
+          verification: ["bearer", "session"],
+          responses: { 200: OwnRank },
+        }),
+        requireAuth(),
+        validate("param", root.board),
+        validate("query", WindowQuery),
+        (c) => respond(c, false, (deps) => readOwnRank(deps, boardKeyOf(c.req.valid("param")), c.req.valid("query"))),
+      );
 
-    app.put(
-      `${base}/:board/me/visibility`,
-      describeRoute({
-        summary: "Show or hide the caller's own entry.",
-        verification: ["bearer", "session"],
-        responses: { 200: VisibilityResult },
-      }),
-      requireAuth(),
-      validate("param", BoardParam),
-      validate("query", WindowQuery),
-      validate("json", VisibilityBody),
-      (c) =>
-        respond(c, true, (deps) =>
-          setOwnVisibility(deps, c.req.valid("param").board, c.req.valid("query"), c.req.valid("json")),
-        ),
-    );
+      app.get(
+        `${root.path}/around`,
+        describeRoute({
+          summary: "Read the players ranked around the caller.",
+          verification: ["bearer", "session"],
+          responses: { 200: BoardPage },
+        }),
+        requireAuth(),
+        validate("param", root.board),
+        validate("query", AroundQuery),
+        (c) => respond(c, false, (deps) => readAround(deps, boardKeyOf(c.req.valid("param")), c.req.valid("query"))),
+      );
 
-    app.put(
-      `${base}/:board/entries/:userId/hidden`,
-      describeRoute({
-        summary: "Hide or restore another player's entry.",
-        verification: ["bearer", "session"],
-        scopes: [adminScope],
-        responses: { 200: HideResult },
-      }),
-      requireAuth(),
-      requireAdminScope(adminScope),
-      validate("param", EntryParam),
-      validate("query", WindowQuery),
-      validate("json", HideBody),
-      (c) => {
-        const { board, userId } = c.req.valid("param");
-        return respond(c, true, (deps) => hideEntry(deps, board, userId, c.req.valid("query"), c.req.valid("json")));
-      },
-    );
+      app.put(
+        `${root.path}/me/visibility`,
+        describeRoute({
+          summary: "Show or hide the caller's own entry.",
+          verification: ["bearer", "session"],
+          responses: { 200: VisibilityResult },
+        }),
+        requireAuth(),
+        validate("param", root.board),
+        validate("query", WindowQuery),
+        validate("json", VisibilityBody),
+        (c) =>
+          respond(c, true, (deps) =>
+            setOwnVisibility(deps, boardKeyOf(c.req.valid("param")), c.req.valid("query"), c.req.valid("json")),
+          ),
+      );
 
-    app.delete(
-      `${base}/:board/entries/:userId`,
-      describeRoute({
-        summary: "Remove another player's entry.",
-        verification: ["bearer", "session"],
-        scopes: [adminScope],
-        responses: { 200: RemoveResult },
-      }),
-      requireAuth(),
-      requireAdminScope(adminScope),
-      validate("param", EntryParam),
-      validate("query", WindowQuery),
-      (c) => {
-        const { board, userId } = c.req.valid("param");
-        return respond(c, true, (deps) => removeEntry(deps, board, userId, c.req.valid("query")));
-      },
-    );
+      app.put(
+        `${root.path}/entries/:userId/hidden`,
+        describeRoute({
+          summary: "Hide or restore another player's entry.",
+          verification: ["bearer", "session"],
+          scopes: [adminScope],
+          responses: { 200: HideResult },
+        }),
+        requireAuth(),
+        requireAdminScope(adminScope),
+        validate("param", root.entry),
+        validate("query", WindowQuery),
+        validate("json", HideBody),
+        (c) => {
+          const param = c.req.valid("param");
+          return respond(c, true, (deps) =>
+            hideEntry(deps, boardKeyOf(param), param.userId, c.req.valid("query"), c.req.valid("json")),
+          );
+        },
+      );
 
-    app.post(
-      `${base}/:board`,
-      describeRoute({
-        summary: "Submit a score.",
-        description: "Requires the submit scope while `serverAuthoritative` is on, which is the default.",
-        verification: ["bearer", "session"],
-        scopes: serverAuthoritative ? [submitScope] : [],
-        responses: { 201: SubmitResult },
-      }),
-      requireAuth(),
-      requireSubmitScope(serverAuthoritative, submitScope),
-      validate("param", BoardParam),
-      validate("json", SubmitScoreBody),
-      (c) => respond(c, true, (deps) => submitScore(deps, c.req.valid("param").board, c.req.valid("json")), 201),
-    );
+      app.delete(
+        `${root.path}/entries/:userId`,
+        describeRoute({
+          summary: "Remove another player's entry.",
+          verification: ["bearer", "session"],
+          scopes: [adminScope],
+          responses: { 200: RemoveResult },
+        }),
+        requireAuth(),
+        requireAdminScope(adminScope),
+        validate("param", root.entry),
+        validate("query", WindowQuery),
+        (c) => {
+          const param = c.req.valid("param");
+          return respond(c, true, (deps) => removeEntry(deps, boardKeyOf(param), param.userId, c.req.valid("query")));
+        },
+      );
+    }
+
+    // Submit last: `POST :board/:instance` would otherwise take `POST :board/segment`.
+    for (const root of roots) {
+      app.post(
+        root.path,
+        describeRoute({
+          summary: "Submit a score.",
+          description: "Requires the submit scope while `serverAuthoritative` is on, which is the default.",
+          verification: ["bearer", "session"],
+          scopes: serverAuthoritative ? [submitScope] : [],
+          responses: { 201: SubmitResult },
+        }),
+        requireAuth(),
+        requireSubmitScope(serverAuthoritative, submitScope),
+        validate("param", root.board),
+        validate("json", SubmitScoreBody),
+        (c) =>
+          respond(c, true, (deps) => submitScore(deps, boardKeyOf(c.req.valid("param")), c.req.valid("json")), 201),
+      );
+    }
   };
 }

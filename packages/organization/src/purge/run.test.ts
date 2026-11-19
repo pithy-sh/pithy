@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PurgeContext, PurgeDeletion, PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type PurgeContext, type PurgeDeletion, type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge";
 import type { WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import { describe, expect, test } from "vitest";
 import {
@@ -53,6 +54,7 @@ function contribution(name: string, log: string[], failures = 0): PurgeStep & { 
   let erases = 0;
   return {
     step: name,
+    capability: name,
     erases: () => erases,
     contribution: {
       subject: "organization",
@@ -97,6 +99,7 @@ describe("purgeOrganization", () => {
     const seen: (PurgeContext["deletion"] | "none")[] = [];
     const watching = (name: string): PurgeStep => ({
       step: name,
+      capability: name,
       contribution: {
         subject: "organization",
         summary: `Erases ${name}'s rows.`,
@@ -118,6 +121,7 @@ describe("purgeOrganization", () => {
     const own = contribution("organization", log);
     const ledgerKept: PurgeStep = {
       step: "books",
+      capability: "books",
       contribution: {
         subject: "organization",
         summary: "Keeps the organization's invoices.",
@@ -184,6 +188,38 @@ describe("purgeOrganization", () => {
     expect([media.erases(), app.erases(), own.erases()]).toEqual([1, 3, 1]);
     expect(ran.filter((name) => name === "erase app")).toHaveLength(3);
     expect(ran.filter((name) => name === "erase media")).toHaveLength(1);
+  });
+
+  test("a capability's named steps run as their own steps, and a failure in one retries only that one", async () => {
+    const log: string[] = [];
+    let runsErases = 0;
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      purge: [
+        { subject: "organization", step: "scores", summary: "Deletes the scores.", erase: async () => {} },
+        {
+          subject: "organization",
+          step: "runs",
+          summary: "Deletes the runs.",
+          erase: async () => {
+            runsErases += 1;
+            if (runsErases <= 2) throw new Error("runs is down");
+          },
+        },
+      ],
+    });
+    const { step, ran } = workflow(5);
+    const outcome = await purgeOrganization(
+      { steps: [contribution("organization", log), ...purgeSteps([app], "organization")], env: {}, ops: ops(log) },
+      step,
+      Terminal,
+      { organizationId: ACME },
+    );
+    expect(outcome.erased).toEqual(["app/scores", "app/runs", "organization"]);
+    expect(ran.filter((name) => name === "erase app/scores")).toHaveLength(1);
+    expect(ran.filter((name) => name === "erase app/runs")).toHaveLength(3);
+    expect(log).toContain(`record app/runs ${ACME}: Deletes the runs.`);
   });
 
   test("an instance that failed on one contribution, replayed, re-runs that one and none that finished", async () => {
@@ -275,6 +311,7 @@ describe("purgeOrganization under a legal hold", () => {
     let released = false;
     const media = {
       step: "media",
+      capability: "media",
       contribution: {
         subject: "organization" as const,
         summary: "Deletes media.",
