@@ -13,10 +13,13 @@ import { UNIT_BUDGETS, WORKERS_ENV_SETUP } from "../../vitest.shared";
 export default defineConfig({
   plugins: [
     cloudflareTest({
+      // Registers the rank refresh Workflow behind `RANK_REFRESH`. Its fetch is inert.
+      main: "./src/rank/rankWorker.fixture.test.ts",
       miniflare: {
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB"],
+        workflows: { RANK_REFRESH: { name: "rank-refresh", className: "TestRankRefreshWorkflow" } },
       },
     }),
   ],

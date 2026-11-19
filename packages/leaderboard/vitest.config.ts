@@ -12,8 +12,14 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
-          exclude: ["src/**/*.workers.test.ts", "src/**/*.integration.test.ts", "node_modules/**"],
-          // No ambient account, no real config directory. #198, #200 — see `vitest.shared.ts`.
+          exclude: [
+            "src/**/*.workers.test.ts",
+            "src/**/*.fixture.test.ts",
+            "src/**/*.integration.test.ts",
+            "node_modules/**",
+          ],
+          // No ambient account, no real config directory; `vitest.shared.ts` says why. A `*.fixture.test.ts` is a
+          // module only the workers project loads, such as its Miniflare `main`.
           env: { ...NO_ACCOUNT },
           setupFiles: [CONFIG_DIR_SETUP],
         },

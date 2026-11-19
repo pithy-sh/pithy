@@ -5,7 +5,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
-import { instancePage } from "../board/instances";
+import { INSTANCE_PAGE_SIZE, instancePage } from "../board/instances";
 import { LeaderboardConfig, resolveBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { pruneBoards } from "../retention/prune";
@@ -60,6 +60,9 @@ interface RankWorkerEnv {
 }
 
 export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unknown> {
+  /** How many instances one run walks before it hands the pass on. A subclass may lower it to test the handoff. */
+  protected readonly instancePageSize: number = INSTANCE_PAGE_SIZE;
+
   override async run(event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
     // Every step below runs under `leaderboardWorkflowRetry`. Its record is empty and that is the whole
     // statement: this refresh talks to D1 and to nothing else, core answers for D1's transient
@@ -105,7 +108,7 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
       // This run's page of instances is read once, in a step, so a replay walks the boards the first
       // attempt walked. The configured boards belong to the run that starts the pass.
       const page: { keys: string[]; next: string | null } = await steps.do("instances", async () => {
-        const read = await instancePage(db, config, continuation?.after ?? null);
+        const read = await instancePage(db, config, continuation?.after ?? null, this.instancePageSize);
         return { keys: read.boards.map((board) => board.key), next: read.next };
       });
       const boards = [
