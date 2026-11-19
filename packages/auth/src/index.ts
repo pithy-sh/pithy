@@ -14,7 +14,7 @@ export { type AuthCapability, AuthConfig, type AuthConfigInput, auth, isAuthCapa
 export { type Device, DevicePlatform } from "./data/device";
 export { type AuthDatabase, authDatabase } from "./data/tables";
 export { DEVICE_HEADERS, type DeviceMeta } from "./device/registry";
-export { requireAuth } from "./http/middleware";
+export { requireAuth, type SignedInEnv } from "./http/middleware";
 export { RecentSignInOptions, requireRecentSignIn } from "./http/recentSignIn";
 export {
   AppleOAuthCredentials,

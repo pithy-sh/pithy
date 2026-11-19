@@ -7,7 +7,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { emitRecentSignInRefused } from "../audit/emit";
-import { requireAuth } from "./middleware";
+import { requireAuthUnnarrowed } from "./middleware";
 
 /**
  * Whether `authenticatedAt` falls within the last `maxAgeSeconds` of `now`, boundary included.
@@ -95,10 +95,10 @@ export function requireRecentSignIn(
   now: () => Date = () => new Date(),
 ): MiddlewareHandler<PithyHonoEnv> {
   const { maxAgeSeconds, purpose } = RecentSignInOptions.parse(options);
-  const authenticated = requireAuth();
+  const authenticated = requireAuthUnnarrowed();
   return (c, next) =>
     authenticated(c, async () => {
-      // `requireAuth()` has already refused a request with no `AuthContext`.
+      // The gate has already refused a request with no `AuthContext`.
       const auth = c.var.auth;
       if (auth && authenticatedWithin(auth.authenticatedAt, now(), maxAgeSeconds)) return next();
       if (auth) {

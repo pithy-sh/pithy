@@ -725,7 +725,7 @@ export const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
 const config = { domains: DOMAINS, capabilities: [ … ], app };
 ```
 
-**The CLI evaluates the config for the environment a command is about.** `pithy migrate`, `pithy upgrade`, `pithy provision` and `pithy deploy`'s pending count take an environment, and while each composes a Worker `compositionEnvironment()` answers it; `pithy dev` answers `dev`. A command that spans every environment — `pithy doctor`, `pithy secrets`, a capability's own `provision` — reads the config once, where it answers `undefined`, and `pithy doctor`'s secret and migration checks compose `dev` and each declared environment in turn, so each environment's line is that environment's answer.
+**The CLI evaluates the config for the environment a command is about.** `pithy migrate`, `pithy upgrade`, `pithy provision` and `pithy deploy`'s pending count take an environment, and while each composes a Worker `compositionEnvironment()` answers it; `pithy dev` answers `dev`. `pithy ui add` and `pithy ui sync` compose the Worker once per environment for an Expo app's generated config, and `@pithy-sh/vite` evaluates it for the bundle's environment, so each client projection is that environment's. A command that spans every environment — `pithy doctor`, `pithy secrets`, a capability's own `provision` — reads the config once, where it answers `undefined`, and `pithy doctor`'s secret and migration checks compose `dev` and each declared environment in turn, so each environment's line is that environment's answer.
 
 `originFor(environment, domains)` from `@pithy-sh/core/src/naming/domains` is the one answer to "where is this Worker reachable", and it is the same call `pithy` itself makes to generate `vars.BASE_URL` — so the Worker's runtime origin and the origins its capabilities were configured with cannot disagree. The declaration is **hoisted** because the origin has to exist before the capabilities that take it are constructed, and `domains: DOMAINS` beside them is the same object: one declaration, two readers. The prompt fills the const; it never writes a second `domains` key.
 
@@ -759,6 +759,31 @@ The other kinds name something you stand up yourself, once, at the account: `hyp
 Deleting the declaration is how you decline one of your own bindings. `declinedBindings` is about what a capability declares.
 
 **A wrangler key Pithy does not model is yours to write by hand.** Put it in `wrangler.jsonc` at the top level. Most such keys, like `placement` or `limits`, are inherited by every environment, so once is enough: no stanza needs a copy, Pithy writes none, and `pithy doctor` asks for none. The rest are keys wrangler does not inherit, such as `tail_consumers`, `containers` or `vpc_services`. Repeat each of those in every `env.<name>` stanza; `pithy doctor` reports a stanza that does not. A stanza Pithy creates copies them from the top level by the value's shape. A flat value comes down whole. A list starts empty, and so does every list one level inside an object, so `"unsafe": {"bindings": [ … ]}` arrives as `{"bindings": []}`. A feature loses those lists; repeat them under `env.feature` if your features need them.
+
+#### Limiting a route
+
+A route says how often each caller may reach it on its `describeRoute`, and declaring it installs the gate, the way `power` does. Past the limit the request answers `rate_limit/exceeded` (429).
+
+```ts
+app.post(
+  "/ingest",
+  describeRoute({
+    summary: "Record an event.",
+    verification: ["bearer", "session"],
+    responses: { 204: { description: "Recorded." } },
+    rateLimit: { key: "user", limit: 20, period: 60 },
+  }),
+  requireAuth(),
+  validate("json", Event),
+  handler,
+);
+```
+
+`key: "user"` counts each signed-in user, and `key: "ip"` counts each client address. `period` is 10 or 60 seconds, the only two Workers Rate Limiting accepts. The gate runs after the power gate, so a caller whose role is refused spends nothing. A `user` limit on a route whose `verification` admits anyone but a `bearer` or `session` caller is refused when the Worker composes, naming the route. The OpenAPI document states each limit as `x-pithy-rate-limit` on its operation.
+
+Each limit is enforced by a Workers Rate Limiting binding, and you never write it. `pithy worker sync` writes one per policy into every stanza (§6.5), named for it: `ROUTE_RATE_LIMIT_20_PER_60S`. Routes declaring the same policy share the binding and keep their own budgets, because each counts under a key naming its method and path. `createBackend` requires every one, so a Worker missing one fails its first request naming it, and never serves the route unlimited.
+
+An oversized request body is `core/payload_too_large` (413), thrown as `PayloadTooLargeError`. Hono's own body limit answers the same code through `pithyErrorHandler`.
 
 #### Declining an optional binding
 
@@ -1355,6 +1380,8 @@ Three rules govern what it writes:
 **It writes every var the Worker declares** with `defineVars`, its own and each composed capability's (§3.6, "Declaring a Worker's vars"), into the top-level `vars` and every `env.<name>.vars`, at that environment's value or else the default. A stanza that already holds a value that parses under the var's schema keeps it: that value is yours. One that does not parse is reported, by name, value and reason, and left as it is. A var nobody declared is never written or deleted. The one value it rewrites is a copy of the top level's in an environment the declaration gives a value of its own: every command that creates an `env.<name>` stanza seeds its `vars` from the top level, so a new `env.prod` starts at dev's value. `vars` in `--json` says what each stanza got.
 
 **It writes every D1, KV, R2 and queue binding the Worker composes**, the app's own `requiredBindings` and every library capability's, after the Worker's honored declines: the set `pithy provision` creates a resource for. Each entry is written into every stanza that lacks it, through the one writer `pithy add` and `pithy provision` use, so the entry is the one they would write: a D1 entry with the `database_name` provisioning will create, a queue's producer and, for a consuming queue, its `queues.consumers` entry. A binding a stanza already declares is left as written. Those names come from the `name` in the root `pithy.config.ts`. Without one, a Worker with an app capability or an `ownBindings` list is refused before anything is written (`core/precondition_failed`). A Worker with neither, one that composes only library capabilities, is still synced: a queue's entry is skipped and reported, a D1 entry is written with no `database_name`, and the rest are written as usual. A `declinedBindings` block that cannot be read is refused before anything is written, as `pithy upgrade` refuses it. `bindings` in `--json` says what each stanza got.
+
+**It writes the rate limiters the Worker's routes declare** with `describeRoute({ rateLimit })` (§3.6, "Limiting a route"). It assembles the app the Worker composes and writes one binding per policy into every stanza, with that policy as its `simple` block and a `namespace_id` derived from its name, and takes out a `ROUTE_RATE_LIMIT_…` entry no route declares any more. Every other limiter is left alone. The project's `vitest.workers.config.ts` gets each one it lacks. `rateLimits` in `--json` says what each stanza got and lost.
 
 Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change reports that nothing moved, and a stanza wrangler would reject aborts the run rather than leaving half a config behind.
 

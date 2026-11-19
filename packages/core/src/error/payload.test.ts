@@ -91,6 +91,7 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["media/analytics_forbidden", 409],
       ["core/upstream_failed", 502],
       ["core/upstream_timeout", 504],
+      ["core/payload_too_large", 413],
       ["core/webhook_unverified", 401],
     ];
     for (const [code, status] of taxonomy) {
@@ -282,7 +283,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 172;
+const KIT_ERROR_CODE_COUNT = 173;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

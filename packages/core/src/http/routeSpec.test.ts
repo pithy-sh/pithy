@@ -97,3 +97,49 @@ describe("describeRoute with a power", () => {
     expect((await app.request("/")).status).toBe(200);
   });
 });
+
+describe("describeRoute with a power and a rate limit", () => {
+  /** A route declaring both, a caller whose role holds `held`, and a limiter recording every key it counts. */
+  function bothApp(held: readonly string[]) {
+    const counted: string[] = [];
+    const limiter = {
+      async limit({ key }: { key: string }) {
+        counted.push(key);
+        return { success: true };
+      },
+    };
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("auth", { userId: "u1", sessionId: "s1", scopes: [] });
+      c.set("actingOrganization", async () => ({
+        organizationId: "o1",
+        roleAllows: (power: string) => held.includes(power),
+      }));
+      await next();
+    });
+    app.get(
+      "/",
+      describeRoute({
+        ...spec,
+        verification: ["bearer", "session"],
+        power: "notes:read",
+        rateLimit: { key: "user", limit: 5, period: 60 },
+      }),
+      (c) => c.json({ ok: true }),
+    );
+    return { app, counted, env: { ROUTE_RATE_LIMIT_5_PER_60S: limiter } };
+  }
+
+  test("a caller whose role is refused gets 403 and spends nothing", async () => {
+    const { app, counted, env } = bothApp(["notes:write"]);
+    expect((await app.request("/", {}, env)).status).toBe(403);
+    expect(counted).toEqual([]);
+  });
+
+  test("a caller whose role holds the power is counted", async () => {
+    const { app, counted, env } = bothApp(["notes:read"]);
+    expect((await app.request("/", {}, env)).status).toBe(200);
+    expect(counted).toEqual(["GET / user:u1"]);
+  });
+});
