@@ -8,7 +8,7 @@ import { z } from "zod";
 import { defineErrorPayload } from "./extend";
 import { HttpError, pithyErrorHandler } from "./http";
 import { ErrorPayload, PublicErrorPayload } from "./payload";
-import { ForbiddenError, PithyError, UpstreamError, UpstreamTimeoutError } from "./pithyError";
+import { ForbiddenError, PayloadTooLargeError, PithyError, UpstreamError, UpstreamTimeoutError } from "./pithyError";
 
 describe("HttpError codec", () => {
   test("encode strips the operator's fields — neither remedy nor context reaches the wire", () => {
@@ -120,6 +120,32 @@ describe("the boundary holds for an adopter-defined error", () => {
     const body = (await res.json()) as { error: Record<string, unknown> };
     expect(body.error.code).toBe("core/upstream_timeout");
     expect(JSON.stringify(body)).not.toContain("customer.example");
+  });
+
+  test("an oversized body answers 413 all the way to the Response, with no operator field on the wire", async () => {
+    const app = new Hono();
+    app.onError(pithyErrorHandler);
+    app.post("/", () => {
+      throw new PayloadTooLargeError({ action: "Send at most 1 MB.", detail: "body was 4194304 bytes" });
+    });
+
+    const res = await app.request("/", { method: "POST", body: "x" });
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error).toEqual({ code: "core/payload_too_large", status: 413, message: "That request is too large." });
+  });
+
+  test("Hono's own 413, from its body limit, answers core/payload_too_large rather than a 500", async () => {
+    const app = new Hono();
+    app.onError(pithyErrorHandler);
+    app.post("/", () => {
+      throw new HTTPException(413, { message: "Payload Too Large" });
+    });
+
+    const res = await app.request("/", { method: "POST", body: "x" });
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error.code).toBe("core/payload_too_large");
   });
 });
 

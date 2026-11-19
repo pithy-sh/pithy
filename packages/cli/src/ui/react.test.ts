@@ -521,22 +521,26 @@ describe("the React 19 stub", () => {
     expect(signIn).toContain("Check your inbox.");
     expect(signIn).toContain("If that address can sign in");
     const sendLink = signIn.slice(signIn.indexOf("async function sendLink"), signIn.indexOf("async function social"));
-    expect(sendLink).toContain("if (refused === null) setSent(true);");
+    expect(sendLink).toContain("if (refused !== null) return;");
+    expect(sendLink).toContain("setSent(true);");
     expect(sendLink.match(/\.ok\b/g) ?? []).toHaveLength(1);
     expect(sendLink).toContain("!result.ok && isGateRefusal(result.failure)");
     expect(sendLink).not.toMatch(/response|result\.failure\.code/);
   });
 
-  test("one way in — the magic link, and nothing beside it", () => {
+  test("one way in — the email way the Worker composed, and nothing beside it", () => {
     // Two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
-    // and two inboxes' worth of mail for one intent. The OTP screen stays in the tree; nothing on the
-    // sign-in screen sends anybody to it.
+    // and two inboxes' worth of mail for one intent. `emailWay` picks one from the composed methods:
+    // the link where it is composed, a code where only that is, no form with neither.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    // The route path lives in `@pithy-sh/auth` with the request, so the screen names the
-    // intent. One intent is the assertion.
+    expect(signIn).toContain("const way = emailWay(auth.methods);");
+    // The route paths live in `@pithy-sh/auth` with the request, so the screen names the intent.
     expect(signIn).toContain("sendMagicLink(");
     expect(signIn).not.toContain("email-otp");
-    expect(signIn).not.toContain("sendOtp");
+    // A code is sent only on the branch where it is the one way.
+    expect(signIn.match(/sendOtp\(/g) ?? []).toHaveLength(1);
+    expect(signIn).toContain('way === "code"\n        ? await sendOtp(');
+    // The address goes to the code screen in memory, never in the URL.
     expect(signIn).not.toContain("/otp?");
     // The one submit is the form's. A second `type="submit"` is a second intent on one screen.
     expect(signIn.match(/type="submit"/g) ?? []).toHaveLength(1);

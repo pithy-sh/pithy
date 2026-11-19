@@ -23,6 +23,7 @@ import { registerReadinessGuards } from "./controlPlane/http/readiness";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { ValidationError } from "./error/pithyError";
+import { assertRateLimitDeclarations, routeRateLimitBindings } from "./http/rateLimitDeclarations";
 import { describeRoute } from "./http/routeSpec";
 import { catalogFor, composeMessages } from "./i18n/registry";
 import { bakedTranslator, DEFAULT_LOCALE } from "./i18n/translator";
@@ -371,6 +372,12 @@ export function createBackend<
   // A route that opts in as an MCP tool says so on `describeRoute`, which cannot see its method — so a non-GET
   // claiming to be a read, or two routes sharing an operation, is refused here, at boot (`mcp/tools.ts`).
   assertToolDeclarations(groups);
+  // A declared rate limit is refused here when it counts users the route cannot name, and its binding joins the
+  // ones the first request checks, so a Worker missing it fails naming it rather than serving the route unlimited.
+  assertRateLimitDeclarations(groups);
+  for (const binding of routeRateLimitBindings(groups)) {
+    required.push(BindingSpec.parse({ type: "ratelimit", name: binding.name }));
+  }
 
   return app as unknown as Hono<BackendEnv<readonly [...Caps, App]>>;
 }

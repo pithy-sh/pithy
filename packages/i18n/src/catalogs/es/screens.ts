@@ -36,6 +36,8 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.provider.label": "Continuar con {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} no está configurado aquí. Usa el enlace.",
   "auth/sign_in.provider_silent": "{provider} no respondió. Usa el enlace.",
+  "auth/sign_in.provider_unconfigured_alone": "{provider} no está configurado aquí.",
+  "auth/sign_in.provider_silent_alone": "{provider} no respondió. Inténtalo de nuevo.",
   // Ni una palabra sobre si la cuenta existe. El servidor manda un solo código para "tienes
   // cuenta y este proveedor no está conectado a ella" y para "no tienes ninguna", así que una frase que
   // eligiera una de las dos devolvería, escrita, el oráculo que el Worker acaba de cerrar en la cabecera.

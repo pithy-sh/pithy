@@ -34,7 +34,7 @@ Every route the kit provides is described. Your own routes are described as far 
 
 **One environment per document**, because the route table is one per environment: `@pithy-sh/auth` mounts its dev sign-in in `dev` and nowhere else. `prod` is the default because it is the table a shipped client calls.
 
-The document states OpenAPI 3.1. Its `info.version` is your root `package.json` version, or `0.0.0` without one. Each operation carries `x-pithy-verification`, the route's verification strategies, and `x-pithy-scopes` when it needs a scope beyond being verified.
+The document states OpenAPI 3.1. Its `info.version` is your root `package.json` version, or `0.0.0` without one. Each operation carries `x-pithy-verification`, the route's verification strategies, `x-pithy-scopes` when it needs a scope beyond being verified, and `x-pithy-rate-limit`, the `{ key, limit, period }` its gate enforces, when it declares `describeRoute({ rateLimit })`.
 
 It writes only when the bytes changed, so a second run is a no-op and the file is safe to commit and to check in CI.
 

@@ -16,12 +16,13 @@ import type { VerificationLedger } from "../ledger/record";
 import type { AuthEmailMessage, SendAuthEmail } from "./auth";
 import { PROVIDER_SIGN_IN_GATE_ID, providerSignInGate } from "./providerSignInGate";
 import { refusalTransportVerdict } from "./refusalTransport";
+import { ALL_SIGN_IN_METHODS, type SignInMethods } from "./signInMethods";
 
 /**
  * The Better Auth plugins the kit composes for itself, and the reason they are fixed.
  *
- * `magic-link` and `email-otp` **are** the sign-in this product promises — passwordless, no
- * `emailAndPassword` anywhere. `jwt` mints the JWKS the control-plane seam verifies against and
+ * `magic-link` and `email-otp` are the passwordless email sign-in — no `emailAndPassword` anywhere — and
+ * `methods` may leave either out, but never hands its id to an adopter's plugin. `jwt` mints the JWKS the control-plane seam verifies against and
  * `bearer` is how a mobile client presents its credential. `i18n` puts the dependency's own refusals in
  * the reader's language, and {@link PROVIDER_SIGN_IN_GATE_ID} is the kit's own: it decides a refused
  * provider sign-in before Better Auth branches, so the account-enumeration pair is never produced
@@ -34,6 +35,11 @@ export const KIT_PLUGIN_IDS = ["i18n", "bearer", "jwt", "magic-link", "email-otp
 
 /** What the kit's own plugins need to be constructed. The subset of `AuthInstanceDeps` they read. */
 export interface KitPluginDeps {
+  /**
+   * Which email sign-in methods to compose. Absent means both, which is what the schema baseline and an instance
+   * built outside a config get.
+   */
+  methods?: SignInMethods;
   /** Magic-link / OTP token lifetime in seconds. */
   verificationExpiresIn: number;
   /** OTP length (digits). */
@@ -103,7 +109,8 @@ export type KitPlugins = [
  * baseline would claim a table the instance never created, or miss one it did.
  */
 export function kitPlugins(deps: KitPluginDeps): KitPlugins {
-  return [
+  const methods = deps.methods ?? ALL_SIGN_IN_METHODS;
+  const composed: KitPlugins = [
     /**
      * Better Auth's own refusals, in the reader's language (#452).
      *
@@ -168,6 +175,14 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
      */
     providerSignInGate({ emit: deps.emit, headers: deps.requestHeaders }),
   ];
+  const absent = new Set<string>([
+    ...(methods.magicLink ? [] : ["magic-link"]),
+    ...(methods.emailOtp ? [] : ["email-otp"]),
+  ]);
+  if (absent.size === 0) return composed;
+  // The tuple type stays the full set, so a composed instance's type surface still names an email method it left
+  // out; the routes are what answer 404.
+  return composed.filter((plugin) => !absent.has(plugin.id)) as unknown as KitPlugins;
 }
 
 /**
@@ -275,7 +290,7 @@ export function assertAdditivePlugins(plugins: readonly BetterAuthPlugin[]): voi
     if (reserved.includes(plugin.id)) {
       throw new ValidationError({
         message: `The auth capability already composes the Better Auth "${plugin.id}" plugin.`,
-        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). The four the kit composes (${KIT_PLUGIN_IDS.join(", ")}) are the sign-in this product promises and what the control-plane seam verifies against; your list adds to them.`,
+        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). The ones the kit composes (${KIT_PLUGIN_IDS.join(", ")}) are reserved even when \`methods\` leaves one out; your list adds to them.`,
         detail: `reserved plugin id "${plugin.id}" supplied through AuthConfig.plugins`,
       });
     }

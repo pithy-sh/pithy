@@ -42,6 +42,21 @@ describe("kitPlugins()", () => {
     expect(kitPlugins(deps).map((plugin) => plugin.id)).toEqual([...KIT_PLUGIN_IDS]);
   });
 
+  test("no methods is both email methods, so a deps object without the key composes as before", () => {
+    expect(kitPlugins({ ...deps, methods: { magicLink: true, emailOtp: true } }).map((plugin) => plugin.id)).toEqual(
+      kitPlugins(deps).map((plugin) => plugin.id),
+    );
+  });
+
+  test.each([
+    [{ magicLink: false, emailOtp: true }, ["magic-link"]],
+    [{ magicLink: true, emailOtp: false }, ["email-otp"]],
+    [{ magicLink: false, emailOtp: false }, ["magic-link", "email-otp"]],
+  ])("methods %o leaves out %o and nothing else", (methods, absent) => {
+    const ids = kitPlugins({ ...deps, methods }).map((plugin) => plugin.id);
+    expect(ids).toEqual(KIT_PLUGIN_IDS.filter((id) => !absent.includes(id)));
+  });
+
   test("jwt keeps the pithy-prefixed jwks model — a plugin list must not rename the kit's own table", () => {
     const jwtPlugin = kitPlugins(deps).find((plugin) => plugin.id === "jwt") as
       | { schema?: Record<string, { modelName?: string }> }

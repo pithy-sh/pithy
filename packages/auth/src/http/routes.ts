@@ -24,6 +24,7 @@ import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitToken
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
+import type { SignInMethods } from "../instance/signInMethods";
 import { noticedRefusal } from "../lifecycle/enforce";
 import { lifecycleDeps } from "../lifecycle/request";
 import { isLifecycleRefusal } from "../lifecycle/state";
@@ -75,8 +76,68 @@ const BETTER_AUTH_ANSWER: RouteResponse = {
   contentType: "application/json",
 };
 
-/** The routes that send a sign-in email, under `basePath`: the ones Turnstile and attestation gate. */
-export const SEND_ROUTES = ["/sign-in/magic-link", "/email-otp/send-verification-otp"] as const;
+/** The routes that send a sign-in email, under `basePath`, for the methods composed: the ones Turnstile and attestation gate. */
+export function sendRoutesFor(methods: SignInMethods): string[] {
+  return [
+    ...(methods.magicLink ? ["/sign-in/magic-link"] : []),
+    ...(methods.emailOtp ? ["/email-otp/send-verification-otp"] : []),
+  ];
+}
+
+/** One of Better Auth's email sign-in endpoints, mounted ahead of the catch-all so the contract names it. */
+interface EmailSignInRoute {
+  method: "get" | "post";
+  path: string;
+  summary: string;
+  description: string;
+  responses: Record<number, RouteResponse>;
+}
+
+/** Better Auth's email sign-in endpoints for the methods composed. A method left out has none, and its paths answer 404. */
+export function emailSignInRoutes(methods: SignInMethods): EmailSignInRoute[] {
+  const routes: EmailSignInRoute[] = [];
+  if (methods.magicLink) {
+    routes.push(
+      {
+        method: "post",
+        path: "/sign-in/magic-link",
+        summary: "Mail a link that signs this address in.",
+        description:
+          "Better Auth's endpoint. It answers the same whether or not the address has an account, so the answer never says which. Gated by Turnstile when it is composed, and by native app attestation in an environment with an attestation block.",
+        responses: { 200: BETTER_AUTH_ANSWER },
+      },
+      {
+        method: "get",
+        path: "/magic-link/verify",
+        summary: "Open a mailed link and sign its address in.",
+        description:
+          "Better Auth's endpoint, reached from the mail. It redirects to the link's `callbackURL` with the session, or to its `errorCallbackURL` with the refusal.",
+        responses: { 302: { description: "A redirect to the screen the link named." } },
+      },
+    );
+  }
+  if (methods.emailOtp) {
+    routes.push(
+      {
+        method: "post",
+        path: "/email-otp/send-verification-otp",
+        summary: "Mail a one-time code that signs this address in.",
+        description:
+          'Better Auth\'s endpoint. Only `type: "sign-in"` sends a mail. It answers the same whether or not the address has an account, so the answer never says which. Gated by Turnstile when it is composed, and by native app attestation in an environment with an attestation block.',
+        responses: { 200: BETTER_AUTH_ANSWER },
+      },
+      {
+        method: "post",
+        path: "/sign-in/email-otp",
+        summary: "Trade a mailed one-time code for a session.",
+        description:
+          "Better Auth's endpoint. A wrong or expired code is refused with its own `INVALID_OTP` or `OTP_EXPIRED`.",
+        responses: { 200: BETTER_AUTH_ANSWER },
+      },
+    );
+  }
+  return routes;
+}
 
 function db(c: Ctx, wiring: AuthWiring) {
   return authDatabase(resolveDb(c.env, wiring.config.database));
@@ -85,7 +146,7 @@ function db(c: Ctx, wiring: AuthWiring) {
 /**
  * Register the auth routes onto the backend's Hono app.
  *
- * Order matters: Turnstile and attestation gate the send routes ({@link SEND_ROUTES}), Pithy's own
+ * Order matters: Turnstile and attestation gate the send routes ({@link sendRoutesFor}), Pithy's own
  * routes are registered before the catch-all so they win, and Better Auth owns everything else under
  * `basePath`. A handler that returns a Response ends the chain, so the specific routes never fall
  * through to the catch-all. (The tier-1 edge rate limiter is contributed as capability *middleware*, so
@@ -146,7 +207,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
         })
       : humanity;
     if (guard) {
-      for (const path of SEND_ROUTES) app.use(`${base}${path}`, guard);
+      for (const path of sendRoutesFor(wiring.config.methods)) app.use(`${base}${path}`, guard);
     }
     if (attestationIsConfigured(attestation)) {
       app.post(
@@ -306,6 +367,20 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
       requireAuth(),
       (c) => serveMyImage(c, wiring),
     );
+
+    // The email sign-in endpoints this composition offers, so the contract names each one. Better Auth answers them.
+    for (const route of emailSignInRoutes(wiring.config.methods)) {
+      app[route.method](
+        `${base}${route.path}`,
+        describeRoute({
+          summary: route.summary,
+          description: route.description,
+          verification: ["public"],
+          responses: route.responses,
+        }),
+        (c) => handleBetterAuth(c, wiring),
+      );
+    }
 
     // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
     registerAuthAdminRoutes(wiring)(app);
