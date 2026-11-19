@@ -1,5 +1,5 @@
 import { TURNSTILE_SCRIPT_ORIGIN, TURNSTILE_WIDGET_PATH } from "@pithy-sh/turnstile/src/http/widgetPage";
-import { type ReactNode, useRef } from "react";
+import { type ComponentRef, type ReactNode, useRef } from "react";
 import { View } from "react-native";
 import { WebView } from "react-native-webview";
 import { origin, turnstileConfig } from "./pithy-config";
@@ -105,7 +105,7 @@ function DeviceTurnstile(props: { onToken: (value: string | null) => void }): Re
 
 /** The widget rendered into the page, on the web. */
 function WebTurnstile(props: { onToken: (value: string | null) => void }): ReactNode {
-  const host = useRef<View>(null);
+  const host = useRef<ComponentRef<typeof View>>(null);
   useTurnstileWeb(host, turnstileConfig.enabled, props.onToken);
   return <View ref={host} testID="turnstile" style={{ width: "100%" }} />;
 }

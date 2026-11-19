@@ -482,7 +482,11 @@ export type ErasureCitation = z.output<typeof ErasureCitation>;
 /** One purge step: whose rows, what happened to them, and the event that records it. */
 export const ErasureStepView = z
   .object({
-    capability: z.string().describe("The capability whose rows this step answered for."),
+    capability: z
+      .string()
+      .describe(
+        "The step: the capability whose rows it answered for, or `<capability>/<step>` for one of a capability's named steps.",
+      ),
     disposition: z
       .enum(["erased", "retained"])
       .describe(

@@ -17,13 +17,16 @@ export {
   needsRankWorker,
 } from "./capability";
 export {
+  type LeaderboardAllow,
   LeaderboardBoard,
   LeaderboardConfig,
   type LeaderboardConfigInput,
+  LeaderboardFamily,
   LeaderboardRank,
   LeaderboardStore,
   LeaderboardTier,
   materializeSchedule,
+  type ResolvedBoard,
   resolveBoard,
   ScoreAggregation,
   ScoreDirection,

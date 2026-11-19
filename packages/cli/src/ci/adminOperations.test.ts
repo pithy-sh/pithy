@@ -94,6 +94,11 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "entries.unhide": "POST /leaderboard/admin/boards/:board/entries/:userId/unhide",
     "entries.correct": "POST /leaderboard/admin/boards/:board/entries/:userId/correct",
     "locks.clear": "POST /leaderboard/admin/locks/:name/clear",
+    "instances.list": "GET /leaderboard/admin/families/:family/instances",
+    "instances.entries.list": "GET /leaderboard/admin/boards/:board/:instance/entries",
+    "instances.entries.hide": "POST /leaderboard/admin/boards/:board/:instance/entries/:userId/hide",
+    "instances.entries.unhide": "POST /leaderboard/admin/boards/:board/:instance/entries/:userId/unhide",
+    "instances.entries.correct": "POST /leaderboard/admin/boards/:board/:instance/entries/:userId/correct",
   },
   multiplayer: {
     "sessions.list": "GET /multiplayer/admin/sessions",

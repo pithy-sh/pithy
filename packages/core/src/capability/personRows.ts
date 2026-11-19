@@ -53,6 +53,11 @@ export interface PersonRowsPurgeInput {
   readonly capability: string;
   /** The one sentence the purge records with this step. */
   readonly summary: string;
+  /**
+   * The step's own name, for one of several contributions a capability declares for a user — one per feature
+   * that keeps a person's rows. See `PurgeContribution.step`.
+   */
+  readonly step?: string;
   /** The D1 binding the tables live in. */
   readonly database?: string;
   /** The tables, in the order a purge deletes from them — children before the rows they reference. */
@@ -111,6 +116,7 @@ export function personRowsPurge(input: PersonRowsPurgeInput): ErasingPurgeContri
   };
   return {
     subject: "user",
+    ...(input.step === undefined ? {} : { step: input.step }),
     summary: input.summary,
     erase: async ({ subject, env }) => {
       const { d1, db } = open(env);

@@ -24,7 +24,7 @@ describe("leaderboard()", () => {
     expect(leaderboard({ boards }).requiredBindings).toEqual([{ type: "d1", name: "DB", optional: false }]);
   });
 
-  it("carries its peer surface, the one way multiplayer publishes to it (#645)", () => {
+  it("carries its peer surface, the one way multiplayer publishes to it", () => {
     // Multiplayer no longer imports this package, so what its `compose` hook finds here is the contract: the
     // board schema and the entry store a result is submitted through, the same ones the routes use.
     const { leaderboardPeer } = leaderboard({ boards });
@@ -32,22 +32,30 @@ describe("leaderboard()", () => {
     expect(typeof leaderboardPeer.entryStore).toBe("function");
   });
 
-  it("declares its scope gates, so `pithy doctor` can name what denies without a resolver (#560)", () => {
+  it("declares its scope gates, so `pithy doctor` can name what denies without a resolver", () => {
     expect(leaderboard({ boards }).scopeGates).toEqual([
       { scope: "leaderboard:admin", route: "PUT /leaderboard/:board/entries/:userId/hidden" },
       { scope: "leaderboard:admin", route: "DELETE /leaderboard/:board/entries/:userId" },
+      { scope: "leaderboard:admin", route: "PUT /leaderboard/:board/:instance/entries/:userId/hidden" },
+      { scope: "leaderboard:admin", route: "DELETE /leaderboard/:board/:instance/entries/:userId" },
       { scope: "leaderboard:submit", route: "POST /leaderboard/:board" },
+      { scope: "leaderboard:submit", route: "POST /leaderboard/:board/:instance" },
     ]);
   });
 
   it("declares no submit gate once `serverAuthoritative` is off — the config removed it", () => {
     const gates = leaderboard({ boards, serverAuthoritative: false }).scopeGates ?? [];
-    expect(gates.map((gate) => gate.scope)).toEqual(["leaderboard:admin", "leaderboard:admin"]);
+    expect(gates.map((gate) => gate.scope)).toEqual([
+      "leaderboard:admin",
+      "leaderboard:admin",
+      "leaderboard:admin",
+      "leaderboard:admin",
+    ]);
   });
 
   it("names its gates under the mount it was given", () => {
     const gates = leaderboard({ boards, basePath: "/scores" }).scopeGates ?? [];
-    expect(gates).toHaveLength(3);
+    expect(gates).toHaveLength(6);
     expect(gates.every((gate) => gate.route.includes(" /scores/"))).toBe(true);
   });
 
@@ -140,19 +148,21 @@ describe("needsRankWorker", () => {
   it("is true when rank is materialized", () => {
     expect(needsRankWorker(parse({ boards, rank: { materialize: "0 * * * *" } }))).toBe(true);
   });
+
+  it("is true when a family configures retention, which every instance of it then prunes by", () => {
+    const families = [{ pattern: "level/:levelId", direction: "asc" as const, window: "0 0 * * *", retain: 4 }];
+    expect(needsRankWorker(parse({ boards, families }))).toBe(true);
+    expect(needsRankWorker(parse({ boards, families: [{ ...families[0], retain: undefined }] }))).toBe(false);
+  });
 });
 
 /**
  * What `pithy add leaderboard` writes, checked against what `leaderboard()` accepts.
  *
- * Two defects, one of them hiding the other. `serverAuthoritative` was defaulted to the **string**
- * `"true"` against a boolean field, and that error is reported first — so the missing `boards` only
- * appeared once the typo was fixed (#168).
- *
- * `boards: []` would have been the cheap fix for the second, and it is the wrong one: `boards` carries
- * `.min(1)` with a message saying why, so an empty seed compiles and then throws `too_small` on the
- * first config load. Both halves are asserted here: `seeded` is type-annotated, so a shape
- * `leaderboard()` would reject fails the compile, and the factory call proves it survives the refusal.
+ * The seed carries a board because a config with neither a board nor a family is refused: an empty
+ * `boards` compiles, and then the first config load throws with a message saying why. Both halves are
+ * asserted here: `seeded` is type-annotated, so a shape `leaderboard()` would reject fails the compile,
+ * and the factory call proves it survives the refusal.
  */
 describe("pithy.manifest.json", () => {
   const manifest = CapabilityManifest.parse(

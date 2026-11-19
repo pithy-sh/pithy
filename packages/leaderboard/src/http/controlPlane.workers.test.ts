@@ -17,8 +17,9 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { assertBoardDefinition } from "../board/registry";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
-import { LeaderboardBoard, LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
+import { LeaderboardBoard, LeaderboardConfig, type LeaderboardConfigInput, resolveBoard } from "../config/config";
 import { LeaderboardModeration } from "../data/moderation";
 import { LEADERBOARD_LOCKS_TABLE, LEADERBOARD_MODERATIONS_TABLE, leaderboardDatabase } from "../data/tables";
 import { submitResult } from "../entry/result";
@@ -28,6 +29,7 @@ import { acquireRefreshLock } from "../rank/lock";
 import {
   AdminBoardList,
   AdminEntriesPage,
+  AdminInstancesPage,
   AdminLockClearResult,
   AdminLockList,
   AdminModerationResult,
@@ -36,7 +38,7 @@ import { registerLeaderboardRoutes } from "./routes";
 import { LEADERBOARD_ENTRIES_MODERATE_SCOPE, LEADERBOARD_ENTRIES_READ_SCOPE } from "./scopes";
 
 /**
- * The management surface (#817), actually executed through a verified control-plane token.
+ * The management surface, actually executed through a verified control-plane token.
  *
  * `routeContract.test.ts` proves each guard runs and nothing else; every handler body is unreached there.
  * What survives only here: the reads' projections and keyset paging, the acts' idempotency, the reason
@@ -700,5 +702,117 @@ describe("POST /leaderboard/admin/locks/:name/clear", () => {
       { holder: "instance-7" },
     ]);
     expect(await history()).toEqual([]);
+  });
+});
+
+describe("board families on the management surface", () => {
+  const FAMILIES: LeaderboardConfigInput = {
+    ...CONFIG,
+    families: [{ pattern: "level/:levelId", direction: "asc", max: 600, window: "0 0 * * *" }],
+  };
+  const parsed = LeaderboardConfig.parse(FAMILIES);
+  const instance = (key: string) => {
+    const found = resolveBoard(parsed, key);
+    if (!found) throw new Error(`expected ${key} to resolve`);
+    return found;
+  };
+  const open = "2026-06-10T00:00:00.000Z";
+  /** An instance's first entry, recorded the way an accepted submission records it. */
+  async function seed(key: string, userId: string, score: number, ms = 1): Promise<void> {
+    await assertBoardDefinition(db(), instance(key), NOW);
+    await store().submit(instance(key), open, userId, score, at(ms), true);
+  }
+
+  test("lists the families beside the boards", async () => {
+    const body = AdminBoardList.parse(await (await read(makeApp(BOTH, FAMILIES), "/leaderboard/admin/boards")).json());
+    expect(body.families).toEqual([
+      {
+        key: "level",
+        pattern: "level/:levelId",
+        store: "d1",
+        direction: "asc",
+        aggregation: "best",
+        window: "0 0 * * *",
+        currentWindow: open,
+        min: null,
+        max: 600,
+        rank: "live",
+      },
+    ]);
+  });
+
+  test("lists a family's instances, paged by key", async () => {
+    for (const key of ["level/c", "level/a", "level/b"]) await seed(key, "ann", 10);
+    const app = makeApp(BOTH, FAMILIES);
+    const first = AdminInstancesPage.parse(
+      await (await read(app, "/leaderboard/admin/families/level/instances?limit=2")).json(),
+    );
+    expect(first.family).toBe("level");
+    expect(first.instances).toEqual([
+      { key: "level/a", createdAt: NOW.toISOString() },
+      { key: "level/b", createdAt: NOW.toISOString() },
+    ]);
+    expect(first.nextCursor).not.toBeNull();
+    const second = AdminInstancesPage.parse(
+      await (await read(app, `/leaderboard/admin/families/level/instances?limit=2&cursor=${first.nextCursor}`)).json(),
+    );
+    expect(second.instances.map((i) => i.key)).toEqual(["level/c"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("an unconfigured family is the capability's own 404", async () => {
+    const response = await read(makeApp(BOTH, FAMILIES), "/leaderboard/admin/families/high/instances");
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("leaderboard/board_not_found");
+  });
+
+  test("reads an instance's window as it reads a board's", async () => {
+    await seed("level/abc", "ann", 50, 1);
+    await seed("level/abc", "bob", 40, 2);
+    const response = await read(makeApp(BOTH, FAMILIES), "/leaderboard/admin/boards/level/abc/entries");
+    expect(response.status).toBe(200);
+    const page = AdminEntriesPage.parse(await response.json());
+    expect(page.board).toBe("level/abc");
+    expect(page.window).toBe(open);
+    expect(page.entries.map((e) => [e.userId, e.rank])).toEqual([
+      ["bob", 1],
+      ["ann", 2],
+    ]);
+  });
+
+  test("hides, unhides and corrects an instance's entry, each audited against the instance key", async () => {
+    await seed("level/abc", "ann", 50);
+    const app = makeApp(BOTH, FAMILIES);
+    const base = "/leaderboard/admin/boards/level/abc/entries/ann";
+    const hidden = AdminModerationResult.parse(
+      await (await act(app, `${base}/hide`, { idempotencyKey: "k1", reason: "Wall clip." })).json(),
+    );
+    expect(hidden).toMatchObject({ act: "hide", board: "level/abc", window: open, changed: true });
+    expect((await store().get("level/abc", open, "ann"))?.hidden).toBe(true);
+    await act(app, `${base}/unhide`, { idempotencyKey: "k2", reason: "Clip was legal." });
+    expect((await store().get("level/abc", open, "ann"))?.hidden).toBe(false);
+    const corrected = await act(app, `${base}/correct`, { idempotencyKey: "k3", score: 70, reason: "Timer fix." });
+    expect(AdminModerationResult.parse(await corrected.json()).after.score).toBe(70);
+    expect(acts().map((event) => [event.action, event.resourceId])).toEqual([
+      ["leaderboard/entry_hidden", `level/abc:${open}:ann`],
+      ["leaderboard/entry_unhidden", `level/abc:${open}:ann`],
+      ["leaderboard/entry_corrected", `level/abc:${open}:ann`],
+    ]);
+  });
+
+  test("holds a correction on an instance to the family's bounds", async () => {
+    await seed("level/abc", "ann", 50);
+    const response = await act(makeApp(BOTH, FAMILIES), "/leaderboard/admin/boards/level/abc/entries/ann/correct", {
+      idempotencyKey: "k1",
+      score: 601,
+      reason: "Too high.",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  test("an instance key that fits no family is the capability's own 404", async () => {
+    const response = await read(makeApp(BOTH, FAMILIES), "/leaderboard/admin/boards/high/abc/entries");
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("leaderboard/board_not_found");
   });
 });
