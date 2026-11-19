@@ -4,7 +4,8 @@
 import type { MiddlewareHandler } from "hono";
 import type { z } from "zod";
 import type { PithyHonoEnv } from "../capability/capability";
-import { ForbiddenError, UnauthorizedError } from "../error/pithyError";
+import { ForbiddenError, fromZodError, UnauthorizedError } from "../error/pithyError";
+import { enforceRouteRateLimit, RouteRateLimit } from "./routeRateLimit";
 import type { VerificationStrategy } from "./verification";
 
 /**
@@ -104,44 +105,68 @@ export interface RouteSpec {
    * The route's opt-in to the app's MCP endpoint. Absent, the route is not a tool. See {@link RouteTool}.
    */
   readonly tool?: RouteTool;
+  /**
+   * How often each caller may reach this route. **Declaring it installs the gate**, after the power gate: past the
+   * limit a request answers `rate_limit/exceeded` (429). `key: "user"` counts each signed-in user and is refused at
+   * composition on a route that admits anyone else; `key: "ip"` counts each client address. `pithy worker sync`
+   * writes the binding that enforces it. See {@link RouteRateLimit}.
+   */
+  readonly rateLimit?: RouteRateLimit;
 }
 
 /**
  * Declare what a route is for, how its caller is verified, and what it returns. See {@link RouteSpec}.
  *
- * With a {@link RouteSpec.power} it is also the route's power gate, read off the acting-organization seam the way
+ * With a {@link RouteSpec.rateLimit} it is also the route's rate limit, counted after any power gate. With a
+ * {@link RouteSpec.power} it is also the route's power gate, read off the acting-organization seam the way
  * every capability outside tenancy asks it. It sits first on the route line, so it answers an anonymous caller
  * itself rather than assuming a guard below it will: a 401, because signing in might help, where a role that does
  * not hold the power is a 403.
  */
 export function describeRoute(spec: RouteSpec): MiddlewareHandler {
   const { power } = spec;
+  const rateLimit = spec.rateLimit === undefined ? undefined : parseRateLimit(spec.rateLimit);
   const middleware: MiddlewareHandler<PithyHonoEnv> =
-    power === undefined
+    power === undefined && rateLimit === undefined
       ? async (_c, next) => {
           await next();
         }
       : async (c, next) => {
-          if (!c.var.auth) {
-            throw new UnauthorizedError({
-              message: "Authentication required.",
-              action: "Sign in and retry with a valid session or bearer token.",
-              detail: `describeRoute(power: ${power}) ran with no signed-in caller`,
-            });
+          if (power !== undefined) {
+            if (!c.var.auth) {
+              throw new UnauthorizedError({
+                message: "Authentication required.",
+                action: "Sign in and retry with a valid session or bearer token.",
+                detail: `describeRoute(power: ${power}) ran with no signed-in caller`,
+              });
+            }
+            const acting = await c.var.actingOrganization();
+            if (acting === null || !acting.roleAllows(power)) {
+              throw new ForbiddenError({
+                message: `Your role does not allow \`${power}\`.`,
+                detail:
+                  acting === null
+                    ? `no organization is in force for user ${c.var.auth.userId}, so ${power} is not held`
+                    : `the role in organization ${acting.organizationId} does not hold ${power}`,
+              });
+            }
           }
-          const acting = await c.var.actingOrganization();
-          if (acting === null || !acting.roleAllows(power)) {
-            throw new ForbiddenError({
-              message: `Your role does not allow \`${power}\`.`,
-              detail:
-                acting === null
-                  ? `no organization is in force for user ${c.var.auth.userId}, so ${power} is not held`
-                  : `the role in organization ${acting.organizationId} does not hold ${power}`,
-            });
-          }
+          if (rateLimit !== undefined) await enforceRouteRateLimit(c, rateLimit);
           await next();
         };
   return Object.assign(middleware as MiddlewareHandler, { [ROUTE_SPEC]: spec });
+}
+
+/** A declared limit, held to what Workers Rate Limiting accepts, so a wrong one fails at the route line. */
+function parseRateLimit(declared: RouteRateLimit): RouteRateLimit {
+  const parsed = RouteRateLimit.safeParse(declared);
+  if (!parsed.success) {
+    throw fromZodError(parsed.error, {
+      message: "A route declares a rate limit Workers Rate Limiting cannot enforce.",
+      action: "Give `rateLimit` a key of `user` or `ip`, a whole limit of 1 or more, and a period of 10 or 60.",
+    });
+  }
+  return parsed.data;
 }
 
 /** The spec a {@link describeRoute} middleware carries, or `undefined` for any other handler. */

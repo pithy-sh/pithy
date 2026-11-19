@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { clientError } from "./client";
 import { defineErrorPayload } from "./extend";
 import { ErrorPayload, KitErrorPayload } from "./payload";
-import { NotFoundError } from "./pithyError";
+import { NotFoundError, PayloadTooLargeError } from "./pithyError";
 
 /**
  * `clientError` is the projection every client transport goes through. #344 classified `action` as the
@@ -113,3 +113,14 @@ describe("clientError — the one projection toward a client", () => {
  * `packages/multiplayer/src/session/websocket.workers.test.ts`. The next transport needs its own, for the
  * same reason.
  */
+
+describe("clientError — an oversized body", () => {
+  test("keeps the 413 and its code, and drops the operator's fields", () => {
+    const err = new PayloadTooLargeError({ action: "Raise the route's byte limit.", detail: "body was 4194304 bytes" });
+    expect(clientError(err.payload)).toEqual({
+      code: "core/payload_too_large",
+      status: 413,
+      message: "That request is too large.",
+    });
+  });
+});

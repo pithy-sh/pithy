@@ -255,6 +255,8 @@ function operationOf(tag: string, method: string, operation: Operation, spec: Ro
     ...(spec.power === undefined ? {} : { "x-pithy-power": spec.power }),
     ...(spec.operation === undefined ? {} : { "x-pithy-operation": spec.operation }),
     ...(spec.tool === undefined ? {} : { "x-pithy-tool": spec.tool === true ? { effect: null } : spec.tool }),
+    // The limit the route's gate enforces: who is counted, how many requests, over how many seconds.
+    ...(spec.rateLimit === undefined ? {} : { "x-pithy-rate-limit": spec.rateLimit }),
   };
 }
 
