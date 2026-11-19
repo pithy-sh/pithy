@@ -5,7 +5,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 import type { PithyHonoEnv } from "../capability/capability";
 import { commandName } from "../cli/command";
-import { InternalError, RateLimitError, UnauthorizedError } from "../error/pithyError";
+import { InternalError, RateLimitError } from "../error/pithyError";
 
 /**
  * **A route's own rate limit, declared on its `describeRoute` and enforced by the gate that declaration installs.**
@@ -64,20 +64,15 @@ function isLimiter(value: unknown): value is Limiter {
 /**
  * Count this request against the route's limit, and refuse it with `rate_limit/exceeded` (429) past the limit.
  *
- * A `user` limit with nobody signed in answers 401 and counts nothing: the composition refuses a `user` limit on a
- * route that admits an anonymous caller, so a request reaching here unsigned is one a guard below would refuse too.
+ * A `user` limit with nobody signed in counts nothing and lets the request on: the composition refuses a `user` limit
+ * on a route that admits anyone but a `bearer` or `session` caller, so the guard below refuses it, and with the
+ * answer auth chose, such as `auth/account_suspended` for a suspended account rather than a bare 401.
  */
 export async function enforceRouteRateLimit(c: Context<PithyHonoEnv>, rateLimit: RouteRateLimit): Promise<void> {
   const binding = routeRateLimitBinding(rateLimit);
   let caller: string;
   if (rateLimit.key === "user") {
-    if (!c.var.auth) {
-      throw new UnauthorizedError({
-        message: "Authentication required.",
-        action: "Sign in and retry with a valid session or bearer token.",
-        detail: `describeRoute(rateLimit: user) ran with no signed-in caller on ${c.req.method} ${c.req.routePath}`,
-      });
-    }
+    if (!c.var.auth) return;
     caller = `user:${c.var.auth.userId}`;
   } else {
     caller = `ip:${c.req.header("cf-connecting-ip") ?? "anonymous"}`;

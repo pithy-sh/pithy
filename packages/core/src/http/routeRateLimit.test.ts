@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { PithyHonoEnv } from "../capability/capability";
 import { pithyErrorHandler } from "../error/http";
-import { ValidationError } from "../error/pithyError";
+import { ForbiddenError, ValidationError } from "../error/pithyError";
 import { isRouteRateLimitBinding, RouteRateLimit, routeRateLimitBinding } from "./routeRateLimit";
 import { describeRoute, type RouteSpec } from "./routeSpec";
 
@@ -138,11 +138,24 @@ describe("the gate describeRoute installs", () => {
     expect([...limiter.keys.keys()]).toEqual(["GET /runs user:ada"]);
   });
 
-  test("a user limit answers a caller nobody signed in with 401, before counting anything", async () => {
+  test("a user limit lets an unsigned caller on to the guard below, counting nothing, so the guard's answer stands", async () => {
     const limiter = fakeLimiter(5);
-    const app = limitedApp({ key: "user", limit: 5, period: 60 });
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("auth", null);
+      await next();
+    });
+    // Stands in for a guard that answers a suspended account with its own 403 rather than a bare 401.
+    const guard: MiddlewareHandler<PithyHonoEnv> = async () => {
+      throw new ForbiddenError({ message: "This account is suspended." });
+    };
+    app.post("/runs", describeRoute({ ...signedIn, rateLimit: { key: "user", limit: 5, period: 60 } }), guard, (c) =>
+      c.json({ ok: true }),
+    );
     const res = await send(app, { ROUTE_RATE_LIMIT_5_PER_60S: limiter }, {});
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe("This account is suspended.");
     expect(limiter.keys.size).toBe(0);
   });
 

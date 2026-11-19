@@ -1,15 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { rateLimitNamespaceId } from "./bindingEntries";
-import { addRouteRateLimits, composedRouteRateLimits, reconcileRouteRateLimits } from "./routeRateLimits";
+import {
+  addRouteRateLimits,
+  composedRouteRateLimits,
+  reconcileRouteRateLimits,
+  writeRouteRateLimitTestBindings,
+} from "./routeRateLimits";
+import { WORKERS_TEST_CONFIG } from "./workersTestConfig";
+
+const TEST_CONFIG = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../../../templates/starter", WORKERS_TEST_CONFIG),
+  "utf8",
+);
+const LIMITER_LINE = `ROUTE_RATE_LIMIT_20_PER_60S: { namespace_id: "${rateLimitNamespaceId("ROUTE_RATE_LIMIT_20_PER_60S")}", simple: { limit: 20, period: 60 } }`;
 
 interface Entry {
   name: string;
@@ -152,6 +166,28 @@ describe("composedRouteRateLimits", () => {
   });
 });
 
+describe("writeRouteRateLimitTestBindings", () => {
+  test("gives the Workers test config a limiter for each policy, with its limit and its period", async () => {
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), TEST_CONFIG);
+    const notes = await writeRouteRateLimitTestBindings(dir, "replay-board", [
+      { name: "ROUTE_RATE_LIMIT_20_PER_60S", limit: 20, period: 60 },
+      { name: "ROUTE_RATE_LIMIT_5_PER_10S", limit: 5, period: 10 },
+    ]);
+    const written = await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8");
+    expect(written).toContain(LIMITER_LINE);
+    expect(written).toContain(
+      `ROUTE_RATE_LIMIT_5_PER_10S: { namespace_id: "${rateLimitNamespaceId("ROUTE_RATE_LIMIT_5_PER_10S")}", simple: { limit: 5, period: 10 } }`,
+    );
+    expect(notes).toEqual([]);
+  });
+
+  test("no policy leaves the Workers test config byte for byte", async () => {
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), TEST_CONFIG);
+    expect(await writeRouteRateLimitTestBindings(dir, "replay-board", [])).toEqual([]);
+    expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toBe(TEST_CONFIG);
+  });
+});
+
 describe("addRouteRateLimits", () => {
   const limitedApp = defineCapability({
     name: "app",
@@ -179,6 +215,17 @@ describe("addRouteRateLimits", () => {
     });
     expect(names(await read())).toEqual(["ROUTE_RATE_LIMIT_20_PER_60S"]);
     expect(notes).toEqual(["Rate limiters written for the routes that declare them: ROUTE_RATE_LIMIT_20_PER_60S."]);
+  });
+
+  test("gives the Workers test config the limiter it writes into wrangler.jsonc", async () => {
+    await writeFile(join(dir, "wrangler.jsonc"), `{\n  "name": "replay-board"\n}\n`);
+    await writeFile(join(dir, WORKERS_TEST_CONFIG), TEST_CONFIG);
+    await addRouteRateLimits({
+      projectDir: dir,
+      workerDir: dir,
+      config: async () => ({ capabilities: [], app: limitedApp }),
+    });
+    expect(await readFile(join(dir, WORKERS_TEST_CONFIG), "utf8")).toContain(LIMITER_LINE);
   });
 
   test("a Worker that does not compose yet is left alone, for pithy worker sync to finish", async () => {
