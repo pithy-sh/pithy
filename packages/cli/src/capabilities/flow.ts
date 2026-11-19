@@ -17,6 +17,7 @@ import { allCapabilities } from "../project/config";
 import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
 import type { LockfileSync } from "../project/rootConfigImports";
+import { addRouteRateLimits } from "../project/routeRateLimits";
 import { type WorkerIdentity, workerDirName, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
 import { type AddBootstrapOptions, bootstrapAdd } from "./addBootstrap";
@@ -686,6 +687,12 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
           (capability) => capability.name === manifest.name,
         ),
     });
+    // The routes the Worker now composes may declare rate limits, the new capability's among them.
+    const limited = await addRouteRateLimits({
+      projectDir,
+      workerDir,
+      config: () => composeFor(LOCAL_ENVIRONMENT, (load) => load(workerDir, { fresh: true })),
+    });
 
     // Eject before migrating: eject repoints the config import to the local copy and promotes the
     // capability's deps, so the migrate step loads the ejected config with everything it imports present.
@@ -753,6 +760,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
         ...prerequisites.notes,
         ...wired,
         ...tested,
+        ...limited,
         ...bootstrapped,
         ...(manifest.name === MCP_CAPABILITY ? mcpNotes() : []),
       ],

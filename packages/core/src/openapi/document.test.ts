@@ -201,6 +201,27 @@ describe("openApiDocument", () => {
     expect(operation(document, "/games/{board}/top", "get")["x-pithy-tool"]).toBeUndefined();
   });
 
+  test("each declared rate limit is stated on its operation, and an unlimited route states none", () => {
+    const limited = group("games", (app) => {
+      app.post(
+        "/runs",
+        describeRoute({
+          summary: "Submit a run.",
+          verification: "bearer",
+          responses: { 200: Entry },
+          rateLimit: { key: "user", limit: 20, period: 60 },
+        }),
+        (c) => c.json({ rank: 1 }),
+      );
+      app.get("/runs", describeRoute({ summary: "List.", verification: "bearer", responses: { 200: Entry } }), (c) =>
+        c.json({ rank: 1 }),
+      );
+    });
+    const written = openApiDocument({ title: "T", version: "1" }, [limited]);
+    expect(operation(written, "/runs", "post")["x-pithy-rate-limit"]).toEqual({ key: "user", limit: 20, period: 60 });
+    expect(operation(written, "/runs", "get")["x-pithy-rate-limit"]).toBeUndefined();
+  });
+
   test("a public route is open, and a signed webhook has no scheme to require", () => {
     const hooks = group("hooks", (app) => {
       app.get("/open", describeRoute({ summary: "Open.", verification: "public", responses: { 200: Entry } }), (c) =>

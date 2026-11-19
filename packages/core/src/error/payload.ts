@@ -295,6 +295,18 @@ const ConflictPublic = z
   })
   .describe("The request conflicts with current state (409).");
 
+const PayloadTooLargePublic = z
+  .object({
+    code: z
+      .literal("core/payload_too_large")
+      .describe(
+        "The request body is larger than this route accepts. Distinct from `validation/invalid_input`: nothing in the body was wrong but its size, so a smaller body is the fix, not a different one.",
+      ),
+    status: z.literal(413).describe("Content Too Large."),
+    ...publicFields,
+  })
+  .describe("The request body is larger than this route accepts (413).");
+
 const RateLimitPublic = z
   .object({
     code: z.literal("rate_limit/exceeded").describe("The caller has sent too many requests."),
@@ -2099,6 +2111,7 @@ export const KitPublicErrorPayload = z
     AuthAttestationConfigPublic,
     NotFoundPublic,
     ConflictPublic,
+    PayloadTooLargePublic,
     RateLimitPublic,
     InternalPublic,
     UpstreamFailedPublic,
@@ -2296,6 +2309,7 @@ const AuthAttestationConfig = AuthAttestationConfigPublic.extend(internalFields)
 );
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
+const PayloadTooLarge = PayloadTooLargePublic.extend(internalFields).describe(PayloadTooLargePublic.description ?? "");
 const RateLimit = RateLimitPublic.extend(internalFields).describe(RateLimitPublic.description ?? "");
 const Internal = InternalPublic.extend(internalFields).describe(InternalPublic.description ?? "");
 const UpstreamFailed = UpstreamFailedPublic.extend(internalFields).describe(UpstreamFailedPublic.description ?? "");
@@ -2760,6 +2774,7 @@ export const KitErrorPayload = z
     AuthAttestationConfig,
     NotFound,
     Conflict,
+    PayloadTooLarge,
     RateLimit,
     Internal,
     UpstreamFailed,

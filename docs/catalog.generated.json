@@ -1707,6 +1707,14 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "core/payload_too_large",
+      "status": 413,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
       "code": "core/person_required",
       "status": 403,
       "exitClass": "person",
