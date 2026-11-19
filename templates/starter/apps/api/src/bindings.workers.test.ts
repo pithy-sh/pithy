@@ -16,3 +16,11 @@ test("and a real KV namespace", async () => {
   await env.SESSIONS.put("hello", "there");
   expect(await env.SESSIONS.get("hello")).toBe("there");
 });
+
+// A route behind requireAuth() is tested signed in, never stubbed: once auth is composed,
+// signInTestUser from auth's src/test-utils/signIn signs a user in with a real session and hands
+// back the headers to send.
+//
+//   const ada = await signInTestUser(env.DB, { email: "ada@example.com", secret: SESSION_SECRET });
+//   const res = await app.request("/me", { headers: ada.headers }, env);
+//   expect(res.status).toBe(200);

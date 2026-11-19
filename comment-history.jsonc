@@ -102,8 +102,6 @@
     "packages/auth/src/http/errorCallbackUrl.ts": 2,
     "packages/auth/src/http/errors.ts": 1,
     "packages/auth/src/http/lifecycleGate.ts": 1,
-    "packages/auth/src/http/middleware.test.ts": 1,
-    "packages/auth/src/http/middleware.ts": 5,
     "packages/auth/src/http/providerRefusal.test.ts": 2,
     "packages/auth/src/http/providerRefusal.ts": 2,
     "packages/auth/src/http/scopeGates.workers.test.ts": 3,
