@@ -31,6 +31,7 @@ import {
   unavailableProviderFor,
 } from "./providers";
 import { betterAuthSecrets, type SessionSecretVersions } from "./sessionSecrets";
+import { ALL_SIGN_IN_METHODS, emailSignInComposed, type SignInMethods } from "./signInMethods";
 
 /**
  * Build the `socialProviders` block from whichever provider credentials were resolved. Exported so the
@@ -306,6 +307,8 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   otpLength: number;
   /** When true, sign-in never provisions a new user (existing accounts only). Magic link and OTP. */
   disableSignUp: boolean;
+  /** Which email sign-in methods to compose. Absent means both, as an instance built outside a config gets. */
+  methods?: SignInMethods;
   /**
    * Whether each social provider may create an account, from that provider's `allowSignUp` toggle.
    *
@@ -757,9 +760,9 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
          * **A provider is never the last way in, which is also what makes an orphaned link recoverable.**
          *
          * Better Auth refuses to unlink somebody's only account, on the reasonable fear of locking them
-         * out. That fear does not apply here: magic link is unconditional in this kit, so every user can
-         * always reach their own address, and the "last account" it is protecting is a provider link
-         * rather than a credential.
+         * out. That fear does not apply while an email method is composed: every user can always reach
+         * their own address, and the "last account" it is protecting is a provider link rather than a
+         * credential. With no email method, a provider is the only way in, so Better Auth's refusal stands.
          *
          * It also settles #554's orphan without a merge rule. A GitHub sign-in that minted an empty user
          * holds the provider identity, so linking it to the real account collides. With this, the owner
@@ -768,7 +771,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
          * identity from another; one gives it up, authenticated as itself. A claim-from-an-empty-account
          * rule is where takeover bugs live, and this needs none.
          */
-        allowUnlinkingAll: true,
+        allowUnlinkingAll: emailSignInComposed(deps.methods ?? ALL_SIGN_IN_METHODS),
       },
     },
     verification: { modelName: "pithyAuthVerifications" },

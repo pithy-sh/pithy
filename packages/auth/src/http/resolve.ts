@@ -171,6 +171,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     verificationExpiresIn: cfg.verificationExpiresIn,
     otpLength: cfg.otpLength,
     disableSignUp: cfg.disableSignUp,
+    methods: cfg.methods,
     // Per provider, and separate from the line above: `disableSignUp` governs magic link and OTP, this
     // governs one OAuth provider, so a project can take email sign-up and refuse GitHub sign-up.
     providerSignUp: {

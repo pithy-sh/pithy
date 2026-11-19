@@ -4,12 +4,13 @@
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { AuthConfig, type AuthWiring, auth, type TurnstileLoginGate } from "../capability";
 import { registerDevLoginRoute } from "./devLoginRoute";
 import {
@@ -354,8 +355,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: twenty-four routes carry a method — the thirteen
-    // admin ones and the eleven a person or an app calls. A twenty-fifth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: twenty-eight routes carry a method — the thirteen
+    // admin ones and the fifteen a person or an app calls. A twenty-ninth is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -370,6 +371,9 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/admin/users/:userId",
       "GET /auth/admin/verifications",
       "GET /auth/devices",
+      // Better Auth's email sign-in endpoints, mounted ahead of the catch-all so the contract names each method
+      // composed. Both methods are on here.
+      "GET /auth/magic-link/verify",
       // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
       "GET /auth/profile/image",
       // The address a native app opens in the system browser to start a redirect sign-in there.
@@ -387,12 +391,15 @@ describe("the advertised admin surface matches what is mounted", () => {
       "POST /auth/attestation/challenge",
       "POST /auth/attestation/ios/keys",
       "POST /auth/devices/revoke",
+      "POST /auth/email-otp/send-verification-otp",
       // A native app trading the one-time code a redirect sign-in left on its deep link. Public: the code is the credential.
       "POST /auth/handoff",
       // Better Auth's own endpoint, mounted explicitly ahead of the catch-all so the link-freshness gate
       // can sit in front of it. It takes no kit validator for the catch-all's own reason: the body is
       // Better Auth's, and reading it here would consume the stream `handleBetterAuth` forwards.
       "POST /auth/link-social",
+      "POST /auth/sign-in/email-otp",
+      "POST /auth/sign-in/magic-link",
       "POST /auth/token/rotate",
       // Better Auth's own, mounted ahead of the catch-all for the same reason `link-social` is: its own
       // guard reads `session.createdAt`, which a rotation resets. See `http/providerFreshness.ts`.
@@ -459,5 +466,60 @@ describe("route contract: every route is described for the OpenAPI contract", ()
       "errorCallbackURL",
       "provider",
     ]);
+  });
+});
+
+describe("route contract: the email sign-in routes follow the methods composed", () => {
+  const MAGIC_LINK = ["/auth/sign-in/magic-link", "/auth/magic-link/verify"];
+  const OTP = ["/auth/email-otp/send-verification-otp", "/auth/sign-in/email-otp"];
+
+  /** The paths the OpenAPI document names for one `auth()`, composed the way `createBackend` mounts it. */
+  function documentedPaths(capability: Capability): string[] {
+    const app = new Hono<PithyHonoEnv>();
+    capability.routes?.(app);
+    return Object.keys(openApiDocument({ title: "auth", version: "0" }, [{ tag: "auth", routes: app.routes }]).paths);
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("without methods, every email sign-in route is in the document", () => {
+    const paths = documentedPaths(auth({ baseURL: "http://localhost" }));
+    for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).toContain(path);
+  });
+
+  test("magicLink: false drops the magic-link routes and keeps OTP's", () => {
+    const paths = documentedPaths(auth({ baseURL: "http://localhost", methods: { magicLink: false } }));
+    for (const path of MAGIC_LINK) expect(paths).not.toContain(path);
+    for (const path of OTP) expect(paths).toContain(path);
+  });
+
+  test("emailOtp: false drops the OTP routes and keeps the magic link's", () => {
+    const paths = documentedPaths(auth({ baseURL: "http://localhost", methods: { emailOtp: false } }));
+    for (const path of OTP) expect(paths).not.toContain(path);
+    for (const path of MAGIC_LINK) expect(paths).toContain(path);
+  });
+
+  /** A config that offers email in `dev` only, as an adopter writes it in `pithy.config.ts`. */
+  function devOnlyEmail(): Capability {
+    const dev = compositionEnvironment() === "dev";
+    return auth({ baseURL: "http://localhost", methods: { magicLink: dev, emailOtp: dev } });
+  }
+
+  test("a config branching on compositionEnvironment() composes email in dev", () => {
+    vi.stubEnv("ENVIRONMENT", "dev");
+    const capability = devOnlyEmail();
+    expect((capability as ReturnType<typeof auth>).authConfig.methods).toEqual({ magicLink: true, emailOtp: true });
+    const paths = documentedPaths(capability);
+    for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).toContain(path);
+  });
+
+  test("and not in prod", () => {
+    vi.stubEnv("ENVIRONMENT", "prod");
+    const capability = devOnlyEmail();
+    expect((capability as ReturnType<typeof auth>).authConfig.methods).toEqual({ magicLink: false, emailOtp: false });
+    const paths = documentedPaths(capability);
+    for (const path of [...MAGIC_LINK, ...OTP]) expect(paths).not.toContain(path);
   });
 });

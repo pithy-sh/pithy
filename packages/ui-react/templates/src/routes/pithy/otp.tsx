@@ -20,11 +20,11 @@ export const path = "/otp";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
 //
-// **Nothing sends anyone here by default.** The sign-in screen offers one way in — the magic link —
-// because two passwordless paths on one screen is two things to explain, two surfaces to rate-limit,
-// and two inboxes' worth of mail for one intent. This screen stays because the server route behind it
-// does: if you would rather have a code, send one from your own screen, hand this screen the address and go
-// here: `holdOtpAddress(email); navigate("/otp")`.
+// **The sign-in screen sends people here only when the Worker composed a code and no magic link.** It offers
+// one way in, because two passwordless paths on one screen is two things to explain, two surfaces to
+// rate-limit, and two inboxes' worth of mail for one intent. With both composed that way is the link. To offer
+// a code anyway, send one from your own screen, hand this screen the address and go here:
+// `holdOtpAddress(email); navigate("/otp")`.
 //
 // **The address is never in the URL.** A path or a query string is written to every access log, proxy and
 // referrer between the browser and the worker, so `holdOtpAddress` keeps it in memory and in this tab's session

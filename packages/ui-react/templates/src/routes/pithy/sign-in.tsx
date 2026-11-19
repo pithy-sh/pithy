@@ -1,5 +1,6 @@
 import type { AuthFailure, AuthFetch } from "@pithy-sh/auth/src/client/api";
-import { isGateRefusal, sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+import { isGateRefusal, sendMagicLink, sendOtp, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+import { type EmailMethods, type EmailWay, emailWay } from "@pithy-sh/auth/src/client/emailWay";
 // The one code a refused provider sign-in comes back with. Imported rather than spelled: a literal here and a
 // literal there is a pair that can drift, and the drift would show as this block silently never rendering again.
 import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusal";
@@ -8,13 +9,14 @@ import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { Redirect, useSearchParam } from "../../router";
-import { refusedAccountScreen, resumeQuery } from "../../session";
+import { navigate, Redirect, useSearchParam } from "../../router";
+import { holdOtpAddress, refusedAccountScreen, resumeQuery } from "../../session";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 // The magic link's callback URL is built from this, never from a literal of the same shape: renaming
 // `callback.tsx`'s path is an edit that typechecks, builds, and would break the one round trip nobody signed in
 // can test.
 import { path as callbackPath } from "./callback";
+import { path as otpPath } from "./otp";
 import "../../pithy-screens.css";
 
 export const path = "/sign-in";
@@ -75,6 +77,9 @@ const EN = {
   "auth/sign_in.provider.label": "Continue with {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} is not configured here. Use the link instead.",
   "auth/sign_in.provider_silent": "{provider} didn't answer. Use the link instead.",
+  // Said where the screen offers no email at all, so there is nothing else to point at.
+  "auth/sign_in.provider_unconfigured_alone": "{provider} is not configured here.",
+  "auth/sign_in.provider_silent_alone": "{provider} didn't answer. Try again.",
   // The three-point refusal, and the order is the point. This failure is counter-intuitive: the address
   // genuinely *is* on the user's GitHub, so a bare "that didn't work" sends them to check something
   // already correct, and they conclude the product is broken. Say what the provider told us, say that a
@@ -107,6 +112,12 @@ const EN = {
     "Emailing you a link creates one. The buttons above sign in existing accounts only.",
   "auth/sign_in.sent.title": "Check your inbox.",
   "auth/sign_in.sent.body": "If that address can sign in, a link is on its way. The link expires shortly.",
+  // Where the Worker composed a code and no link, the copy that names the link names the code instead.
+  "auth/otp.ask.submit": "Email me a code",
+  "auth/otp.ask.provider_unconfigured": "{provider} is not configured here. Use a code instead.",
+  "auth/otp.ask.provider_silent": "{provider} didn't answer. Use a code instead.",
+  "auth/otp.ask.signup_email_only":
+    "Emailing you a code creates one. The buttons above sign in existing accounts only.",
 } satisfies MessageCatalog;
 
 /** The auth capability's client-safe projection — the half of it this screen reads. */
@@ -124,6 +135,11 @@ export interface AuthProjection {
   readonly providerSignUp?: Readonly<Record<string, boolean>>;
   /** Whether signing in may provision a new account. Drives one sentence of copy. */
   readonly signUpEnabled: boolean;
+  /**
+   * Which email sign-in methods the Worker composed. The form mails a link where one is, a code where only that
+   * is, and is not shown with neither. Absent reads as both.
+   */
+  readonly methods?: EmailMethods;
 }
 
 /** The humanity check, injected so this module never has to know whether one is composed. */
@@ -165,6 +181,8 @@ export interface SignInScreenProps {
   readonly origin?: string;
   /** How the browser leaves for a provider. Injected so a test never navigates. */
   readonly redirect?: (url: string) => void;
+  /** How the screen moves on to the code screen once a code is mailed. Injected so a test never navigates. */
+  readonly go?: (to: string) => void;
 }
 
 /*
@@ -356,8 +374,21 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
  */
 type Refusal = { provider: string; reason: "unconfigured" | "silent" | "refused" } | null;
 
-function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
-  const key = refusal.reason === "unconfigured" ? "auth/sign_in.provider_unconfigured" : "auth/sign_in.provider_silent";
+/** The sentence for a provider that did not sign you in, pointing at the email way this screen offers, if any. */
+function refusalText(t: Translator, refusal: NonNullable<Refusal>, way: EmailWay): string {
+  const unconfigured = refusal.reason === "unconfigured";
+  const key =
+    way === "link"
+      ? unconfigured
+        ? "auth/sign_in.provider_unconfigured"
+        : "auth/sign_in.provider_silent"
+      : way === "code"
+        ? unconfigured
+          ? "auth/otp.ask.provider_unconfigured"
+          : "auth/otp.ask.provider_silent"
+        : unconfigured
+          ? "auth/sign_in.provider_unconfigured_alone"
+          : "auth/sign_in.provider_silent_alone";
   return t.t(key, { provider: refusal.provider });
 }
 
@@ -414,8 +445,9 @@ function Frame(props: { brand: ReactNode; mark: ReactNode; children: ReactNode }
 /**
  * The screen, with every seam as a prop.
  *
- * **One passwordless path: the magic link.** Two on one screen is two things to explain and two surfaces
- * to rate-limit for one intent. `routes/pithy/otp.tsx` is there if you would rather have a code.
+ * **One passwordless path.** Two on one screen is two things to explain and two surfaces to rate-limit for
+ * one intent. It is the magic link where the Worker composed one, a code on `routes/pithy/otp.tsx` where it
+ * composed only that, and no email form where it composed neither.
  *
  * **Social is never gated by the humanity check.** An OAuth redirect carries no token and the provider
  * runs its own bot defense, so the check disables the submit and nothing else — which is what
@@ -460,21 +492,33 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   // what that button will refuse — after a full round trip to the provider and back. An absent
   // `providerSignUp` reads as "no provider refuses".
   const providerRefuses = offered.some((provider) => auth.providerSignUp?.[provider.id] === false);
+  const way = emailWay(auth.methods);
+  const go = props.go ?? navigate;
 
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
-    const result = await sendMagicLink(
-      { email, callbackURL: `${origin}${callbackPath}${resumeQuery()}` },
-      { ...client, gate: check.attach },
-    );
+    const result =
+      way === "code"
+        ? await sendOtp({ email, type: "sign-in" }, { ...client, gate: check.attach })
+        : await sendMagicLink(
+            { email, callbackURL: `${origin}${callbackPath}${resumeQuery()}` },
+            { ...client, gate: check.attach },
+          );
     setBusy(false);
     // The gate refuses before the address is read, so its refusal is shown with its code and the form stays.
     // Every other answer is the same one, whether or not the address is registered: telling the two apart is
     // an enumeration oracle, so neither the copy nor the timing of it confirms either way.
     const refused = !result.ok && isGateRefusal(result.failure) ? result.failure : null;
     setGateRefusal(refused);
-    if (refused === null) setSent(true);
+    if (refused !== null) return;
+    if (way === "code") {
+      // The address is held in memory and this tab's storage, never put in the URL.
+      holdOtpAddress(email);
+      go(`${otpPath}${resumeQuery()}`);
+      return;
+    }
+    setSent(true);
   }
 
   async function social(provider: { id: string; label: string }): Promise<void> {
@@ -550,57 +594,69 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
               <p>{t.t("auth/sign_in.refused.remedy", { provider: returned.provider })}</p>
             </div>
           ) : (
-            refusal && <p className="auth__failed">{refusalText(t, refusal)}</p>
+            refusal && <p className="auth__failed">{refusalText(t, refusal, way)}</p>
           )}
-          <div className="divider">{t.t("auth/sign_in.divider")}</div>
+          {way !== null && <div className="divider">{t.t("auth/sign_in.divider")}</div>}
         </>
       )}
 
-      <form className="stack" onSubmit={(event) => void sendLink(event)}>
-        <div>
-          <label htmlFor="email">{t.t("auth/sign_in.email.label")}</label>
-          <input
-            id="email"
-            type="email"
-            name="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </div>
+      {way !== null && (
+        <>
+          <form className="stack" onSubmit={(event) => void sendLink(event)}>
+            <div>
+              <label htmlFor="email">{t.t("auth/sign_in.email.label")}</label>
+              <input
+                id="email"
+                type="email"
+                name="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </div>
 
-        {/* The host that gives the widget the column's width to fill. See `.auth__check`, and note that
+            {/* The host that gives the widget the column's width to fill. See `.auth__check`, and note that
             the host is only half of it — `turnstile.tsx` asks for the `flexible` size. */}
-        <div className="auth__check">{check.widget}</div>
+            <div className="auth__check">{check.widget}</div>
 
-        <button type="submit" disabled={busy || !email || check.pending}>
-          {t.t("auth/sign_in.submit")}
-        </button>
-        {gateRefusal && (
-          <div className="auth__failed" data-testid="gate-refusal" role="alert">
-            <p>{t.maybe(gateRefusal.code) ?? t.t("auth/sign_in.gate_refused")}</p>
-            <p className="muted">
-              <code>{gateRefusal.code}</code>
-            </p>
-          </div>
-        )}
-      </form>
+            <button type="submit" disabled={busy || !email || check.pending}>
+              {t.t(way === "code" ? "auth/otp.ask.submit" : "auth/sign_in.submit")}
+            </button>
+            {gateRefusal && (
+              <div className="auth__failed" data-testid="gate-refusal" role="alert">
+                <p>{t.maybe(gateRefusal.code) ?? t.t("auth/sign_in.gate_refused")}</p>
+                <p className="muted">
+                  <code>{gateRefusal.code}</code>
+                </p>
+              </div>
+            )}
+          </form>
 
-      {/* Reassurance, not navigation. Passwordless has no sign-up screen to point at — sign-up *is*
+          {/* Reassurance, not navigation. Passwordless has no sign-up screen to point at — sign-up *is*
           signing in when the capability allows it — so an anchor here would be a 404 dressed as an
           affordance. `<strong>` rather than a class: the answer is the half that carries weight, and
           emphasis is what the element means. */}
-      <p className="auth__signup">
-        {auth.signUpEnabled ? (
-          <>
-            {t.t("auth/sign_in.signup.prompt")}{" "}
-            <strong>{t.t(providerRefuses ? "auth/sign_in.signup.email_only" : "auth/sign_in.signup.answer")}</strong>
-          </>
-        ) : (
-          t.t("auth/sign_in.signup.closed")
-        )}
-      </p>
+          <p className="auth__signup">
+            {auth.signUpEnabled ? (
+              <>
+                {t.t("auth/sign_in.signup.prompt")}{" "}
+                <strong>
+                  {t.t(
+                    providerRefuses
+                      ? way === "code"
+                        ? "auth/otp.ask.signup_email_only"
+                        : "auth/sign_in.signup.email_only"
+                      : "auth/sign_in.signup.answer",
+                  )}
+                </strong>
+              </>
+            ) : (
+              t.t("auth/sign_in.signup.closed")
+            )}
+          </p>
+        </>
+      )}
     </Frame>
   );
 }

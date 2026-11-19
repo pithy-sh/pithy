@@ -105,20 +105,46 @@ export async function originsFor(input: {
   return origins;
 }
 
+/** Every environment a generated config carries a projection for: dev, and each one `origins` names, `null` included. */
+export function projectedEnvironments(origins: Origins): string[] {
+  return [LOCAL_ENVIRONMENT, ...DEPLOYED.filter((environment) => environment in origins)];
+}
+
+/**
+ * The Worker's config as evaluated for each of `environments`, by `composedFor`. A config may compute a value from
+ * `compositionEnvironment()` — auth's `methods: { magicLink: dev }` — and an evaluation answers for one environment
+ * only, so each environment's projection is taken from its own.
+ */
+export async function compositionsFor(
+  environments: readonly string[],
+  composedFor: (environment: string) => Promise<WorkerConfig>,
+): Promise<Record<string, WorkerConfig>> {
+  const compositions: Record<string, WorkerConfig> = {};
+  // One at a time: each composition stamps `ENVIRONMENT` for the whole process.
+  for (const environment of environments) compositions[environment] = await composedFor(environment);
+  return compositions;
+}
+
 /** The whole config for an app scaffolded against `config`, before any adopter edit. */
 export function buildGeneratedConfig(input: {
   config: WorkerConfig;
+  /**
+   * The config as evaluated for each environment, from {@link compositionsFor}. An environment it leaves out is
+   * projected from `config`, which is right only for a config that reads no environment while it is evaluated.
+   */
+  compositions?: Readonly<Partial<Record<string, WorkerConfig>>>;
   app: string;
   origins: Origins;
   rails: PlatformRails;
 }): GeneratedConfig {
-  const capabilities = allCapabilities(input.config);
-  // Every environment the file carries an origin for, `null` included: a build for it still needs its projection.
-  const environments = [LOCAL_ENVIRONMENT, ...DEPLOYED.filter((environment) => environment in input.origins)];
+  const environments = projectedEnvironments(input.origins);
   const projections = (name: (typeof PROJECTED)[number]) => {
-    const capability = capabilities.find((composed) => composed.name === name);
     return Object.fromEntries(
-      environments.map((environment) => [environment, resolveClientProjection(capability, { environment })]),
+      environments.map((environment) => {
+        const capabilities = allCapabilities(input.compositions?.[environment] ?? input.config);
+        const capability = capabilities.find((composed) => composed.name === name);
+        return [environment, resolveClientProjection(capability, { environment })];
+      }),
     );
   };
   const parsed = GeneratedConfig.safeParse({

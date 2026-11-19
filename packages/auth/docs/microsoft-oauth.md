@@ -86,7 +86,7 @@ Or in **Manage → Manifest**, add it to the ID token's optional claims:
 
 That is the whole of it. `xms_edov` is only issued alongside an `email` claim, and Pithy requests the `email` scope, which supplies one. No claims-mapping policy is involved, so `acceptMappedClaims` stays as it is. Adding the `email` optional claim as well is harmless.
 
-**Skip it, and here is what you get.** Every work and school address is unverified. A first Microsoft sign-in at an address that already has an account here is refused, and so is one at an address that has none — the same neutral answer either way, so nobody learns which addresses exist. The person signs in with a magic link to that address, then connects Microsoft from their account. From then on Microsoft signs them straight in. Personal accounts are unaffected, and so is anyone already connected. The cost is one magic link, once, per person.
+**Skip it, and here is what you get.** Every work and school address is unverified. A first Microsoft sign-in at an address that already has an account here is refused, and so is one at an address that has none — the same neutral answer either way, so nobody learns which addresses exist. The person signs in with a magic link to that address, then connects Microsoft from their account. From then on Microsoft signs them straight in. Personal accounts are unaffected, and so is anyone already connected. The cost is one magic link, once, per person. With `methods: { magicLink: false }` there is no magic link to pay it with, so such an address cannot link: add the claim.
 
 Even with the claim on, a guest from another tenant, or an address whose domain the user's tenant has not verified, carries `xms_edov: false` and takes the same route.
 
