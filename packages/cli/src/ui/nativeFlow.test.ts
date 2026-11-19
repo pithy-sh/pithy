@@ -161,6 +161,30 @@ describe("pithy ui add react-native", () => {
     expect(await readFile(join(appDir, "app.config.ts"), "utf8")).toContain('name: "app"');
   });
 
+  test("the project root's bunfig.toml installs with the hoisted linker, where bun install reads it", async () => {
+    await runUiAdd(options(BARE));
+    expect(await readFile(join(projectDir, "bunfig.toml"), "utf8")).toBe('[install]\nlinker = "hoisted"\n');
+  });
+
+  test("a project's own bunfig.toml keeps every line, and the linker joins its [install] table", async () => {
+    await writeFile(join(projectDir, "bunfig.toml"), "# the adopter's\n[install]\nexact = true\n");
+    await runUiAdd(options(BARE));
+    expect(await readFile(join(projectDir, "bunfig.toml"), "utf8")).toBe(
+      '# the adopter\'s\n[install]\nlinker = "hoisted"\nexact = true\n',
+    );
+  });
+
+  test("a linker the project already chose is left as it is", async () => {
+    await writeFile(join(projectDir, "bunfig.toml"), '[install]\nlinker = "isolated"\n');
+    await runUiAdd(options(BARE));
+    expect(await readFile(join(projectDir, "bunfig.toml"), "utf8")).toBe('[install]\nlinker = "isolated"\n');
+  });
+
+  test("whichever package manager the project names, the bunfig.toml is written", async () => {
+    await runUiAdd({ ...options(BARE), packageManager: "npm" });
+    expect(await readFile(join(projectDir, "bunfig.toml"), "utf8")).toContain('linker = "hoisted"');
+  });
+
   test("its pithy.worker.jsonc runs expo start on the pinned port and names the worker it calls", async () => {
     await runUiAdd(options(BARE));
     const manifest = parse(await readFile(join(appDir, "pithy.worker.jsonc"), "utf8")) as unknown as {
@@ -524,6 +548,7 @@ describe("pithy ui add react-native", () => {
         "apps/app/package.json",
         "apps/app/pithy.worker.jsonc",
         "apps/app/src/pithy-config.generated.ts",
+        "bunfig.toml",
       ]),
     );
   });

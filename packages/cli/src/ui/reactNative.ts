@@ -52,6 +52,16 @@ export const SCREEN_TESTS = {
   script: "test",
 } as const;
 
+/**
+ * React, React DOM and their types for the Expo app. React Native starts only on the React its renderer was built
+ * from, so React and React DOM are that version exactly, and `@types/react` is the range `expo-doctor` checks.
+ */
+export const REACT_NATIVE_REACT = {
+  react: "19.2.3",
+  "react-dom": "19.2.3",
+  "@types/react": "~19.2.4",
+} as const;
+
 /** Expo SDK 57 on React Native 0.86, each native module at the version that SDK bundles. */
 export const reactNativeStub: UiStub = {
   id: "react-native",
@@ -82,8 +92,8 @@ export const reactNativeStub: UiStub = {
     "expo-router": "~57.0.29",
     "expo-secure-store": "~57.0.4",
     "expo-web-browser": "~57.0.3",
-    react: "^19.2.8",
-    "react-dom": "^19.2.8",
+    react: REACT_NATIVE_REACT.react,
+    "react-dom": REACT_NATIVE_REACT["react-dom"],
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
@@ -95,7 +105,7 @@ export const reactNativeStub: UiStub = {
   devDependencies: {
     "@pithy-sh/ui-react-native": kitRange(UI_REACT_NATIVE_VERSION),
     "@testing-library/react": "16.3.3",
-    "@types/react": "^19.2.18",
+    "@types/react": REACT_NATIVE_REACT["@types/react"],
     "happy-dom": "^21.0.4",
     vitest: "^4.1.0",
   },
