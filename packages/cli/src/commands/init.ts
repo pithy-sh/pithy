@@ -31,6 +31,15 @@ import {
 import { askDomains, writeDomains } from "../project/askDomains";
 import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
+import {
+  askBillingSubject,
+  composeInitPayments,
+  type InitPayments,
+  initBackendRails,
+  parseBillingSubject,
+  parseInitRails,
+  soldRails,
+} from "../project/initPayments";
 import { DEFAULT_LINTER, Linter, parseLinter } from "../project/lint";
 import { packageManagerFromUserAgent } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
@@ -41,7 +50,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 import { dim } from "../terminal/style";
 import { runUiAdd } from "../ui/flow";
 import { defaultAppFor, requireAppName } from "../ui/nativeFlow";
-import { backendRails, RAIL_PLATFORMS, type RailPlatform, resolveRails } from "../ui/rails";
+import { RAIL_PLATFORMS, type RailPlatform, resolveRails } from "../ui/rails";
 import { installAlias } from "./alias";
 import { installCompletion } from "./completion";
 import { offerDocs } from "./docs";
@@ -56,6 +65,11 @@ export interface ShellOffers {
   installCompletion?: (options: { silent: boolean }) => Promise<void>;
   /** The streams a prompt needs a terminal on. */
   streams?: PromptStreams;
+}
+
+/** `names`, as a sentence's list: `a, b and c`. */
+function andList(names: readonly string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 /** A yes, as opposed to a no or a cancel. */
@@ -618,10 +632,25 @@ const InitPayload = z
             android: z.string().describe("The rail the Android app sells through."),
             web: z.string().describe("The rail the web build sells through."),
           })
-          .describe("The rail each platform sells through. `none` until the backend enables one."),
+          .describe("The rail each platform sells through. `none` where no rail flag named one."),
       })
       .nullable()
       .describe("The React Native app scaffolded beside the first Worker, or `null` when none was added."),
+    selling: z
+      .object({
+        billingSubject: z.string().describe("Who holds a subscription: `user` or `organization`."),
+        rails: z
+          .array(z.string().describe("A rail: `apple`, `google`, `stripe` or `lemonSqueezy`."))
+          .describe("The rails the first Worker's payments config turns on, in payments' order."),
+        prerequisites: z
+          .array(z.string().describe("A capability name."))
+          .describe("The capabilities composed on the way to payments, deepest first."),
+        notes: z
+          .array(z.string().describe("One note."))
+          .describe("What the add finished off-config, and what only a provision command can supply."),
+      })
+      .nullable()
+      .describe("Payments, composed on the first Worker because a rail flag named a rail, or `null` when none did."),
     domains: WorkerDomains.nullable().describe("Where the first Worker answers, or `null` when none was declared."),
     agents: InstructionsFile.describe("`AGENTS.md`, and what happened to the Pithy block in it."),
     claude: InstructionsFile.describe("`CLAUDE.md`, and whether it now points at `AGENTS.md`."),
@@ -653,15 +682,22 @@ export default withContract(
       app: { type: "string", description: 'The React Native app\'s directory, apps/<name>. Defaults to "app"' },
       "ios-rail": {
         type: "string",
-        description: "The rail the iOS app sells through: apple, stripe, lemonSqueezy, paddle or none",
+        description:
+          "The rail the iOS app sells through: apple, stripe, lemonSqueezy or none. Any but none composes payments",
       },
       "android-rail": {
         type: "string",
-        description: "The rail the Android app sells through: google, stripe, lemonSqueezy, paddle or none",
+        description:
+          "The rail the Android app sells through: google, stripe, lemonSqueezy or none. Any but none composes payments",
       },
       "web-rail": {
         type: "string",
-        description: "The rail the web build sells through: stripe, lemonSqueezy, paddle or none",
+        description:
+          "The rail the web build sells through: stripe, lemonSqueezy or none. Any but none composes payments",
+      },
+      "billing-subject": {
+        type: "string",
+        description: "With a rail, who holds a subscription: user or organization. Asked when a human is there",
       },
       dir: {
         type: "string",
@@ -682,6 +718,18 @@ export default withContract(
         const flaggedLint = args.lint === undefined ? undefined : parseLinter(args.lint);
         await ensureScaffoldable(targetDir, args.worker, flaggedLint);
         const flaggedTarget = args.target === undefined ? undefined : parseTarget(args.target);
+        // The rail flags and --billing-subject, refused before any question for the same reason.
+        const railFlags: Partial<Record<RailPlatform, string>> = {};
+        for (const platform of RAIL_PLATFORMS) {
+          const value = args[`${platform}-rail`];
+          if (value !== undefined) railFlags[platform] = value;
+        }
+        const sold = soldRails(parseInitRails(railFlags));
+        const flaggedSubject =
+          args["billing-subject"] === undefined ? undefined : parseBillingSubject(args["billing-subject"]);
+        if (sold.length === 0 && flaggedSubject !== undefined) {
+          await askBillingSubject({ flag: flaggedSubject, sold });
+        }
 
         // Said before the question, not after it. The name leads every Cloudflare resource this project
         // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
@@ -715,11 +763,6 @@ export default withContract(
             : { value: flaggedLint, prompted: false };
 
         // `--app` or a rail flag asks for the app as plainly as `--react-native` does.
-        const railFlags: Partial<Record<RailPlatform, string>> = {};
-        for (const platform of RAIL_PLATFORMS) {
-          const value = args[`${platform}-rail`];
-          if (value !== undefined) railFlags[platform] = value;
-        }
         const wantsApp = args.app !== undefined || Object.keys(railFlags).length > 0;
         const reactNative = await askReactNative({
           target: target.value,
@@ -731,13 +774,25 @@ export default withContract(
           interactive: mayPrompt(args.json),
         });
         const workerDir = join(targetDir, "apps", worker.value);
-        // Checked before the scaffold: the app's name, and each rail against the Worker it is about to write, which
-        // composes nothing. A refusal here leaves no project behind.
+        if (!reactNative.value && sold.length > 0) {
+          throw new ValidationError({
+            message: "The rail flags set the React Native app's rails, and --no-react-native leaves it out.",
+            action: "Drop --no-react-native, or leave out the rail flags and --billing-subject.",
+          });
+        }
+        // Decided before the scaffold, so a refusal leaves no project behind: the app's name, who holds a
+        // subscription, and each rail against the Worker init is about to write, which composes payments with
+        // exactly the named rails on, or nothing.
+        const billingSubject = await askBillingSubject({
+          ...(flaggedSubject === undefined ? {} : { flag: flaggedSubject }),
+          sold,
+          ...(mayPrompt(args.json) ? { prompt: await clackPrompt() } : {}),
+        });
         if (reactNative.value) {
           requireAppName(args.app ?? defaultAppFor(worker.value), worker.value);
           await resolveRails({
             flags: railFlags,
-            backend: backendRails({ capabilities: [] }),
+            backend: initBackendRails(sold),
             scope: { projectDir: targetDir, workerDir, worker: worker.value },
           });
         }
@@ -756,35 +811,60 @@ export default withContract(
         // with. `pithy upgrade` runs the same merge on the block.
         const agents = await syncAgentsBlock(targetDir, { dryRun: false });
         const claude = await syncClaudePointer(targetDir);
-        // The front end, after the agent instructions so a failure here never leaves a project without them,
-        // and with no screens: a new project composes nothing yet, so there is nothing to sign in to or pay
-        // for. Re-running `pithy ui add react` adds the screens once their capabilities are composed; files
-        // already there are left as they are. `{ capabilities: [] }` is the Worker config the scaffold just
-        // wrote, stated rather than imported, because importing it needs the kit installed and nothing is yet.
+        // Asked before payments is composed, because `pithy add secrets` records the store id of the account this
+        // project names. The block goes into the config the scaffold just wrote, so `loadProject` reads it on the
+        // very next command. A config it could not be placed in is printed rather than dropped.
+        const account = await askCloudflareAccount({ interactive: mayPrompt(args.json) });
+        const credentials = [...account.notes];
+        const declared = account.block ? await writeCloudflareBlock(targetDir, account.block) : null;
+        // Nothing is installed yet, so no lockfile says which package manager this project uses. The runner that
+        // launched `pithy` is the best evidence: payments' installs run through it, and the front ends' dev commands
+        // are wired to it. Without one the lockfile rule applies.
         const launchedBy = packageManagerFromUserAgent();
+        // Payments, when a rail sells something: the same composition `pithy add payments --with-prerequisites`
+        // runs, then exactly the named rails turned on. The front ends below are written against the result.
+        const payments: InitPayments | null =
+          billingSubject.value === null
+            ? null
+            : await composeInitPayments({
+                projectDir: targetDir,
+                workerDir,
+                worker: worker.value,
+                project: name.value,
+                account: account.block,
+                billingSubject: billingSubject.value,
+                rails: sold,
+                ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
+                json: args.json,
+              });
+        const composed = payments?.config ?? { capabilities: [] };
+        // The front end, after the agent instructions so a failure here never leaves a project without them,
+        // and with no screens: a new project composes no auth, so there is nothing to sign in to. Re-running
+        // `pithy ui add react` adds the screens once their capabilities are composed; files already there are left
+        // as they are. Without payments, `{ capabilities: [] }` is the Worker config the scaffold just wrote, stated
+        // rather than imported, because importing it needs the kit installed and nothing is yet.
         const frontEnd = servesWeb(target.value)
           ? await runUiAdd({
               projectDir: targetDir,
               workerDir,
-              config: { capabilities: [] },
+              config: composed,
               framework: "react",
               auth: false,
               payments: false,
               organization: false,
-              // Nothing is installed yet, so no lockfile says which package manager the front end's dev
-              // command should run through. The runner that launched `pithy` is the best evidence; without
-              // one the lockfile rule applies, and re-running `pithy ui add react` after the install rewires it.
+              // Re-running `pithy ui add react` after the install rewires the dev command against the lockfile.
               ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
             })
           : null;
         // The Expo app, in an `apps/<name>/` of its own and calling the first Worker. Like the web front end it
-        // starts with no screens and every rail `none`: the Worker composes nothing yet. `pithy ui add react-native`
-        // adds the screens once their capabilities are composed, and `pithy ui sync --app` rewrites the config.
+        // starts with no screens, and each platform sells through the rail its flag named, `none` otherwise.
+        // `pithy ui add react-native` adds the screens once their capabilities are composed, and `pithy ui sync --app`
+        // rewrites the config.
         const nativeApp = reactNative.value
           ? await runUiAdd({
               projectDir: targetDir,
               workerDir,
-              config: { capabilities: [] },
+              config: composed,
               framework: "react-native",
               auth: false,
               payments: false,
@@ -796,14 +876,6 @@ export default withContract(
               ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
             })
           : null;
-
-        // Asked before the zones are, because listing them needs the token — and the same token answers
-        // which account this project is for, so the two questions collapse into one.
-        const account = await askCloudflareAccount({ interactive: mayPrompt(args.json) });
-        const credentials = [...account.notes];
-        // The block goes into the config the scaffold just wrote, so `loadProject` reads it on the very
-        // next command. A config it could not be placed in is printed rather than dropped.
-        const declared = account.block ? await writeCloudflareBlock(targetDir, account.block) : null;
 
         // Where the Worker answers, asked against the account's real zones. Skippable — a project without
         // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
@@ -827,21 +899,42 @@ export default withContract(
           target.prompted ||
           lint.prompted ||
           reactNative.prompted ||
+          billingSubject.prompted ||
           asked.prompted ||
           account.prompted;
 
         const frontEndReport = frontEnd === null ? null : { framework: frontEnd.framework, created: frontEnd.created };
+        const paymentsReport =
+          payments === null || billingSubject.value === null
+            ? null
+            : {
+                billingSubject: billingSubject.value,
+                rails: sold,
+                prerequisites: payments.prerequisites,
+                notes: payments.notes,
+              };
         const nativeReport =
           nativeApp?.app === undefined || nativeApp.rails === undefined
             ? null
             : { app: nativeApp.app, created: nativeApp.created, rails: nativeApp.rails };
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, lint: lint.value, frontEnd: frontEndReport, reactNative: nativeReport, domains: asked.domains ?? null, agents, claude })}\n`,
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, lint: lint.value, frontEnd: frontEndReport, reactNative: nativeReport, selling: paymentsReport, domains: asked.domains ?? null, agents, claude })}\n`,
           );
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
+        if (paymentsReport) {
+          if (paymentsReport.prerequisites.length > 0) {
+            process.stdout.write(
+              `Composed ${paymentsReport.prerequisites.join(", ")} into ${worker.value} first — payments requires ${paymentsReport.prerequisites.length === 1 ? "it" : "them"}.\n`,
+            );
+          }
+          process.stdout.write(
+            `Wired payments into ${worker.value}. It sells through ${andList(paymentsReport.rails)}.\n`,
+          );
+          for (const note of paymentsReport.notes) process.stdout.write(`${note}\n`);
+        }
         // The two commands every checkout starts with, this one included: setup installs and makes it
         // ready, and `dev` runs the front end with the Worker that serves it.
         if (frontEnd) process.stdout.write(`A React front end is in apps/${worker.value}/.\n`);

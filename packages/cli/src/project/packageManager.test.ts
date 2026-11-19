@@ -299,6 +299,22 @@ describe("installPackage", () => {
     expect(calls).toEqual([{ command: "pnpm", args: ["add", "@pithy-sh/auth"], cwd: dir }]);
   });
 
+  test("installs with the manager it is handed, over a project with no lockfile to say otherwise", async () => {
+    const calls: { command: string; args: string[] }[] = [];
+
+    const result = await installPackage({
+      projectDir: dir,
+      pkg: "@pithy-sh/payments",
+      packageManager: "bun",
+      run: async (command, args) => {
+        calls.push({ command, args });
+      },
+    });
+
+    expect(result.packageManager).toBe("bun");
+    expect(calls).toEqual([{ command: "bun", args: ["add", "@pithy-sh/payments"] }]);
+  });
+
   test("runs in the Worker when it is a workspace member, never at the root", async () => {
     await writeFile(join(dir, "bun.lock"), "");
     await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", workspaces: ["apps/*"] }));

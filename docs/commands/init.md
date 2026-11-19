@@ -7,7 +7,7 @@ Scaffold a new Pithy project — the root config, the gates CI needs, and its fi
 ## Synopsis
 
 ```
-pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--lint <biome|oxlint>] [--react-native | --no-react-native] [--app <name>] [--ios-rail <rail>] [--android-rail <rail>] [--web-rail <rail>] [--dir <path>] [--json]
+pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--lint <biome|oxlint>] [--react-native | --no-react-native] [--app <name>] [--ios-rail <rail>] [--android-rail <rail>] [--web-rail <rail>] [--billing-subject <user|organization>] [--dir <path>] [--json]
 ```
 
 ## Flags
@@ -20,9 +20,10 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--lin
 | `--lint <biome\|oxlint>` | string | `biome` | Which linter runs the kit's lint safeguards. `oxlint` keeps Biome as the formatter |
 | `--react-native` / `--no-react-native` | boolean | asked; no when nobody may be asked | Add an Expo app for iOS, Android and the web in its own `apps/<name>`, calling the first Worker. `mobile` and `both` targets only |
 | `--app <name>` | string | `app` (`mobile` when the Worker is `app`) | The Expo app's directory. Passing it asks for the app |
-| `--ios-rail <rail>` | string | `none` | The rail the iOS app sells through: `apple`, `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
-| `--android-rail <rail>` | string | `none` | The rail the Android app sells through: `google`, `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
-| `--web-rail <rail>` | string | `none` | The rail the web build sells through: `stripe`, `lemonSqueezy`, `paddle` or `none`. Passing it asks for the app |
+| `--ios-rail <rail>` | string | `none` | The rail the iOS app sells through: `apple`, `stripe`, `lemonSqueezy` or `none`. Passing it asks for the app; any rail but `none` composes payments |
+| `--android-rail <rail>` | string | `none` | The rail the Android app sells through: `google`, `stripe`, `lemonSqueezy` or `none`. Passing it asks for the app; any rail but `none` composes payments |
+| `--web-rail <rail>` | string | `none` | The rail the web build sells through: `stripe`, `lemonSqueezy` or `none`. Passing it asks for the app; any rail but `none` composes payments |
+| `--billing-subject <user\|organization>` | string | asked; refused when nobody may be asked | With a rail, who holds a subscription. Refused without one |
 | `--dir <path>` | string | `.` | Target directory. Created if missing; must not already hold the files `init` writes |
 | `--json` | boolean | `false` | Machine-readable output. Also suppresses every prompt |
 
@@ -40,7 +41,9 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--lin
 
 **The rules are written at `init` and nowhere else.** `pithy upgrade` and `pithy ui add` write no lint rules, so a project scaffolded before a rule shipped, or one switching linters, copies the files by hand: the `.grit` files and their `plugins` entries from the starter's `plugins/` and `biome.template.jsonc` in `@pithy-sh/cli`'s `templates/starter`, or `plugins/pithy.oxlint.js` and `oxlintrc.template.json`, saved as `.oxlintrc.json`.
 
-**Offer a React Native app**, to a `mobile` or `both` target: `Add a React Native app for iOS, Android and the web?`, defaulting to no. A yes writes an Expo app into `apps/app/` exactly as `pithy ui add react-native` would, calling the first Worker, with no screens and every rail `none`, because the new Worker composes nothing yet. The app runs its own screen tests with Vitest: `apps/app/vitest.config.ts` on `nativeTestProject` from `@pithy-sh/ui-react-native/testing/vitest`, a `test` script (`vitest run`), and one test, `src/routes/app/home.test.tsx`, which checks the home screen asks the Worker's health route on the web and on iOS. The root `vitest.config.ts` leaves the app to that config. `mobile` still means an API-only Worker unless someone says yes, and a run that may not ask adds no app. `--react-native` says yes without the question, and so does `--app` or any rail flag; `--no-react-native` says no. Asking for the app on a `web` target is refused. A rail flag is held to the new Worker before anything is written, and that Worker enables no rail, so only `none` passes: enable a rail in the Worker's `pithy.config.ts`, then set it with `pithy ui sync --app app --ios-rail apple`. `docs/commands/ui.md` has the rest.
+**Offer a React Native app**, to a `mobile` or `both` target: `Add a React Native app for iOS, Android and the web?`, defaulting to no. A yes writes an Expo app into `apps/app/` exactly as `pithy ui add react-native` would, calling the first Worker, with no screens, and every rail `none` unless a rail flag names one. The app runs its own screen tests with Vitest: `apps/app/vitest.config.ts` on `nativeTestProject` from `@pithy-sh/ui-react-native/testing/vitest`, a `test` script (`vitest run`), and one test, `src/routes/app/home.test.tsx`, which checks the home screen asks the Worker's health route on the web and on iOS. The root `vitest.config.ts` leaves the app to that config. `mobile` still means an API-only Worker unless someone says yes, and a run that may not ask adds no app. `--react-native` says yes without the question, and so does `--app` or any rail flag; `--no-react-native` says no. Asking for the app on a `web` target is refused, and so is a rail flag beside `--no-react-native`. `docs/commands/ui.md` has the rest.
+
+**Compose payments when a rail flag names a rail.** Any rail but `none` on `--ios-rail`, `--android-rail` or `--web-rail` composes payments on the first Worker, through the same flow `pithy add payments --with-prerequisites` runs: the package installed, `secrets` composed first because payments reads every rail's credentials through it, the bindings wired, the dev migrations run. Then it turns on exactly the rails named in the Worker's `payments({ … })` block — `rails: { apple: true, google: true }` for `--ios-rail apple --android-rail google` — and the Expo app sells through them from its first commit. A hosted rail gets the block it refuses to boot without, built on `PUBLIC_ORIGIN` so each environment returns to itself: `stripe` its `successUrl`, `cancelUrl` and `portalReturnUrl`, `lemonSqueezy` its `successUrl`. Point those at your own pages before you sell. `paddle` is refused here: its block needs your Paddle client token, which init has no way to know, so turn it on in the Worker's config after init. Payments needs a billing subject, and states no default for it, because it keys the entitlement column and its UNIQUE index. `--billing-subject user` or `organization` answers it. Without the flag a human is asked, with nothing preselected, and a run that may not ask is refused before anything is written, naming the flag. `--billing-subject` with no rail, or with every rail `none`, is refused too. `organization` scaffolds `src/billing/subject.ts` unimplemented, as `pithy add payments` does, and the Worker refuses to boot until you answer it. Every rail `none`, or no rail flag, composes nothing. The Cloudflare account question below is asked first, so `secrets` records the store id of the account this project names. `docs/commands/payments.md` has the rest of the payments config: products, entitlements, and each rail's credentials.
 
 **Write the scaffold.** The root `pithy.config.ts`, the root `package.json`, `biome.jsonc`, `.gitignore`, the `.dev.vars.example` and `.dev.secrets.example.jsonc` templates, the lint safeguards for the linter chosen above, and the configs CI gates on — `tsconfig.json` (a solution file), `tsconfig.tools.json`, `vitest.config.ts`, and `vitest.workers.config.ts`. Then `apps/<worker>/` with its own `pithy.config.ts`, `wrangler.jsonc`, `pithy.worker.jsonc`, `tsconfig.json`, `package.json`, `src/index.ts`, `src/cloudflare-test.d.ts`, and a `src/bindings.workers.test.ts` that runs against real D1 and KV through Miniflare.
 
@@ -54,7 +57,7 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--lin
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the linter, not the React Native app, not the credentials, not the domains, not the alias, not completion. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise and `biome` unless `--lint` does, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). The billing subject is the one exception: a rail flag with no `--billing-subject` is refused, because payments states no default to take. Not the names, not the environments, not the target, not the linter, not the React Native app, not the credentials, not the domains, not the alias, not completion. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise and `biome` unless `--lint` does, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 
@@ -64,7 +67,7 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","lint":"biome","frontEnd":null,"reactNative":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","lint":"biome","frontEnd":null,"reactNative":null,"selling":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 | key | type | meaning |
@@ -83,7 +86,12 @@ $ pithy init --name replay --worker board --json
 | `reactNative` | object or `null` | The Expo app scaffolded beside the first Worker, or `null` when none was added. **`null` under `--json` unless `--react-native`, `--app` or a rail flag asks for it**, because the offer is a prompt |
 | `reactNative.app` | string | The app's `apps/` directory |
 | `reactNative.created` | string[] | The app-relative files it created, sorted |
-| `reactNative.rails` | object | `{ ios, android, web }`: the rail each platform sells through. `none` everywhere, since the new Worker enables no rail |
+| `reactNative.rails` | object | `{ ios, android, web }`: the rail each platform sells through. `none` where no rail flag named one |
+| `selling` | object or `null` | Payments, composed on the first Worker because a rail flag named a rail, or `null` when none did |
+| `selling.billingSubject` | string | Who holds a subscription: `user` or `organization` |
+| `selling.rails` | string[] | The rails the Worker's payments config turns on, in payments' order |
+| `selling.prerequisites` | string[] | The capabilities composed on the way to payments, deepest first. `["secrets"]` on a new Worker |
+| `selling.notes` | string[] | What the add finished off-config, and what only a provision command can supply |
 | `domains` | object or `null` | Where that Worker answers, per environment, or `null` when none was declared. **Always `null` under `--json`**, because declaring a domain is a prompt and `--json` never prompts |
 | `domains.staging` | object | Where the Worker answers in `staging`, if it has a domain yet |
 | `domains.staging.pattern` | string | The hostname, e.g. `api.example.com`. A bare hostname, not a URL — that is what wrangler's route matcher takes |
@@ -144,13 +152,18 @@ Pass --target mobile, web or both.
 
 **An `--app` name the app cannot take.** Exit 2, `validation/invalid_input`, before anything is written: a name that is not kebab-case, or the first Worker's own name.
 
-**A rail the new Worker does not enable.** Exit 3, `core/precondition_failed`, before anything is written. The new Worker composes no payments, so the action is the `pithy add payments` fix. A value no platform takes is exit 2, listing the ones it does.
+**A rail with no billing subject.** Exit 2, `input/required`, before anything is written, when nobody may be asked. `flag` is `--billing-subject`, and `choices` lists its two values.
 
 ```
-$ pithy init --ios-rail apple
-The apple rail needs the payments capability, and api doesn't compose it.
-Run `pithy add payments --worker api --with-prerequisites --set billingSubject=user` or `pithy add payments --worker api --with-prerequisites --set billingSubject=organization` and enable rails.apple, or pass --ios-rail none.
+$ pithy init --ios-rail apple --json
+{"error":{"code":"input/required","status":400,"flag":"--billing-subject","choices":["user","organization"],"message":"A rail sells through payments, and payments needs a billing subject. Nothing in this run names one.","action":"Pass --billing-subject user or --billing-subject organization.","exit":2,"retryable":false}}
 ```
+
+**A billing subject with no rail.** Exit 2, before anything is written: `--billing-subject only applies with a rail, and no rail flag names one.` A value other than `user` or `organization` is exit 2 too.
+
+**A rail no platform takes, or one init cannot turn on.** Exit 2, before the first question. A store rail on the wrong platform lists the rails that platform takes. `paddle` is refused on every platform: `init can't turn on the paddle rail. It needs your Paddle client token.`
+
+**A rail flag beside `--no-react-native`.** Exit 2, before anything is written: the rails are the app's, and there is no app.
 
 **A symlink or a non-directory in the way.** Refused at every segment of the path, rather than left to die on a raw `ENOTDIR` with the run half-written.
 
@@ -206,6 +219,18 @@ Scaffold for phones, with an Expo app beside the API.
 ```
 $ pithy init --name replay --react-native
 …
+An Expo app is in apps/app/. It calls api.
+Run pithy setup, then pithy dev.
+…
+```
+
+Scaffold for phones that sell through the App Store and Google Play. Payments is composed with both rails on.
+
+```
+$ pithy init --name replay --ios-rail apple --android-rail google --billing-subject user
+…
+Composed secrets into api first — payments requires it.
+Wired payments into api. It sells through apple and google.
 An Expo app is in apps/app/. It calls api.
 Run pithy setup, then pithy dev.
 …
