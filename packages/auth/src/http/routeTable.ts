@@ -7,6 +7,7 @@ import { adminRouteTable, type DeclaredRoute, declareRoutes } from "@pithy-sh/co
 import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { attestationIsConfigured } from "../attestation/config";
 import type { AuthConfig } from "../capability";
+import type { SignInMethods } from "../instance/signInMethods";
 import { authAdminRoutes } from "./guards";
 
 /**
@@ -17,10 +18,28 @@ export function devLoginMounts(env: AmbientEnv): boolean {
   return compositionEnvironment(env) === "dev" && !isContinuousIntegration(env);
 }
 
+/** Better Auth's email sign-in endpoints for the methods composed. A method left out has none. */
+function emailSignInTable(methods: SignInMethods): (readonly ["GET" | "POST", string])[] {
+  return [
+    ...(methods.magicLink
+      ? ([
+          ["POST", "/sign-in/magic-link"],
+          ["GET", "/magic-link/verify"],
+        ] as const)
+      : []),
+    ...(methods.emailOtp
+      ? ([
+          ["POST", "/email-otp/send-verification-otp"],
+          ["POST", "/sign-in/email-otp"],
+        ] as const)
+      : []),
+  ];
+}
+
 /**
  * Every route the auth capability mounts, in the order it mounts them: the dev sign-in when it mounts, the
  * attestation routes once any environment has an attestation block, the session and account routes, the
- * management surface, and Better Auth's catch-all last.
+ * email sign-in endpoints `methods` leaves on, the management surface, and Better Auth's catch-all last.
  */
 export function authRouteTable(config: AuthConfig, devLogin: boolean): DeclaredRoute[] {
   const base = config.basePath;
@@ -42,6 +61,7 @@ export function authRouteTable(config: AuthConfig, devLogin: boolean): DeclaredR
       ["POST", "/link-social"],
       ["POST", "/unlink-account"],
       ["GET", "/profile/image"],
+      ...emailSignInTable(config.methods),
     ]),
     ...adminRouteTable(authAdminRoutes(base)),
     { method: "ALL", path: `${base}/*` },

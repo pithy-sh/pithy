@@ -7,7 +7,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { leaderboard } from "../capability";
-import { LeaderboardConfig } from "../config/config";
+import { LeaderboardConfig, resolveBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
 import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
@@ -155,5 +155,40 @@ describe("the leaderboard user purge", () => {
       expect(await ranks()).toEqual({ bob: 1, cy: 2 });
       expect(result.refreshed.map((r) => r.window)).toContain(closed);
     });
+  });
+});
+
+describe("the leaderboard user purge over a family's instances", () => {
+  const c = LeaderboardConfig.parse({
+    boards: [{ key: "alltime", direction: "desc" }],
+    families: [{ pattern: "level/:levelId", direction: "asc" }],
+  });
+  const instance = (key: string) => {
+    const found = resolveBoard(c, key);
+    if (!found) throw new Error(`expected ${key} to resolve`);
+    return found;
+  };
+
+  beforeEach(async () => {
+    const store = entryStore(leaderboardDatabase(env.DB));
+    await store.submit(instance("level/abc"), "all", "ada", 31, new Date(1_700_000_000_000), true);
+    await store.submit(instance("level/def"), "all", "ada", 44, new Date(1_700_000_000_000), true);
+    await store.submit(instance("level/abc"), "all", "bob", 29, new Date(1_700_000_000_000), true);
+  });
+
+  test("exports the person's entries on every instance", async () => {
+    const entries = (await exportOf(context("ada"))).entries as Array<{ boardId: string; score: number }>;
+    expect(entries.filter((e) => e.boardId.startsWith("level/")).map((e) => [e.boardId, e.score])).toEqual([
+      ["level/abc", 31],
+      ["level/def", 44],
+    ]);
+  });
+
+  test("erases them from every instance, and leaves everyone else's", async () => {
+    await purge.erase(context("ada"));
+    const { results } = await env.DB.prepare(
+      "SELECT board_id, user_id FROM pithy_leaderboard_entries WHERE board_id LIKE 'level/%' ORDER BY board_id",
+    ).all();
+    expect(results).toEqual([{ board_id: "level/abc", user_id: "bob" }]);
   });
 });

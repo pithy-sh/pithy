@@ -57,6 +57,7 @@ export const esErrors: MessageCatalog = {
   "auth/attestation_config": "La verificación de la app no está disponible ahora.",
   "core/not_found": "No existe el recurso solicitado.",
   "core/conflict": "La solicitud entra en conflicto con el estado actual.",
+  "core/payload_too_large": "Esa solicitud es demasiado grande.",
   "rate_limit/exceeded": "Demasiadas solicitudes. Inténtalo más tarde.",
   "core/internal": "Se ha producido un error inesperado.",
   "core/upstream_failed": "Un servicio externo ha fallado. Inténtalo de nuevo.",

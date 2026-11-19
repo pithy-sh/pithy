@@ -5,12 +5,22 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { auth } from "@pithy-sh/auth/src/capability";
 import { consent } from "@pithy-sh/consent/src/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { routesOf } from "@pithy-sh/core/src/http/lazyRoutes";
+import { email } from "@pithy-sh/email/src/capability";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { appSchemeFor, buildGeneratedConfig, devOrigin, originsFor, universalLinkOriginFor } from "./nativeConfig";
+import {
+  appSchemeFor,
+  buildGeneratedConfig,
+  compositionsFor,
+  devOrigin,
+  originsFor,
+  universalLinkOriginFor,
+} from "./nativeConfig";
 
 let projectDir: string;
 
@@ -143,6 +153,42 @@ describe("buildGeneratedConfig", () => {
     expect(config.turnstile.prod).toMatchObject({ enabled: true, sitekey: "prod-key" });
     // The project does not deploy to staging, so the file carries no projection for it.
     expect(Object.keys(config.turnstile)).toEqual(["dev", "prod"]);
+  });
+
+  test("each environment is projected from its own composition, so dev-only email is offered in dev alone", () => {
+    const evaluated = (dev: boolean) => ({
+      capabilities: [
+        secrets({ registry: {} }),
+        email({ fromAddress: "no@reply.test", fromName: "Acme", baseUrl: "https://api.acme.dev" }),
+        auth({ baseURL: "https://api.acme.dev", methods: { magicLink: dev, emailOtp: dev } }),
+      ],
+    });
+    const config = buildGeneratedConfig({
+      // What the command loaded for dev, which a prod projection must not be taken from.
+      config: evaluated(true),
+      compositions: { dev: evaluated(true), prod: evaluated(false) },
+      app: "app",
+      origins: { dev: "http://localhost:8787", prod: "https://api.acme.dev" },
+      rails: { ios: "none", android: "none", web: "none" },
+    });
+    expect(config.auth.dev).toMatchObject({ enabled: true, methods: { magicLink: true, emailOtp: true } });
+    expect(config.auth.prod).toMatchObject({ enabled: true, methods: { magicLink: false, emailOtp: false } });
+  });
+
+  test("compositionsFor evaluates each environment in turn, never two at once", async () => {
+    let running = 0;
+    const order: string[] = [];
+    const compositions = await compositionsFor(["dev", "staging", "prod"], async (environment) => {
+      running += 1;
+      expect(running).toBe(1);
+      await new Promise((settle) => setTimeout(settle, 1));
+      order.push(environment);
+      running -= 1;
+      return { capabilities: [defineCapability({ name: environment, requiredBindings: [] })] };
+    });
+    expect(order).toEqual(["dev", "staging", "prod"]);
+    expect(Object.keys(compositions)).toEqual(["dev", "staging", "prod"]);
+    expect(compositions.prod?.capabilities[0]?.name).toBe("prod");
   });
 
   test("an environment whose origin Pithy could not find still gets its projection", () => {

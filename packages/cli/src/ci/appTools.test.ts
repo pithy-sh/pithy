@@ -22,6 +22,8 @@ const PUBLISHED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "boards.list": "GET /leaderboard read",
     "top.read": "GET /leaderboard/:board/top read",
     "rank.read": "GET /leaderboard/:board/me read",
+    "instances.top.read": "GET /leaderboard/:board/:instance/top read",
+    "instances.rank.read": "GET /leaderboard/:board/:instance/me read",
   },
   rating: {
     "standing.read": "GET /rating/games/:game/me read",

@@ -169,6 +169,12 @@ function groupApp(mount: RouteMount, host: RouteHost): Hono<PithyHonoEnv> {
   return app;
 }
 
+/**
+ * What core checks of a capability's routes once they load: it may refuse them, and may return a check of the
+ * Worker's `env` that every request to them runs first.
+ */
+export type LoadedRoutesGate = (table: readonly RouterRoute[]) => ((env: unknown) => void) | undefined;
+
 /** A capability's routes as mounted on the Worker's app: the routes the loaded module registered, on demand. */
 export interface LazyMount {
   /** Loads the module if no request has yet, and resolves to the routes its mount registered. */
@@ -182,11 +188,23 @@ export interface LazyMount {
  * again on the next request. A request the loaded routes do not answer goes on to the next handler on
  * `app`, so a declared route the module does not mount answers as an undeclared one would.
  */
-export function mountLazy(app: Hono<PithyHonoEnv>, routes: CapabilityRoutes, host: RouteHost): LazyMount {
-  let loading: Promise<Hono<PithyHonoEnv>> | undefined;
-  const loaded = (): Promise<Hono<PithyHonoEnv>> => {
+export function mountLazy(
+  app: Hono<PithyHonoEnv>,
+  routes: CapabilityRoutes,
+  host: RouteHost,
+  gate?: LoadedRoutesGate,
+): LazyMount {
+  interface Loaded {
+    readonly group: Hono<PithyHonoEnv>;
+    readonly check: ((env: unknown) => void) | undefined;
+  }
+  let loading: Promise<Loaded> | undefined;
+  const loaded = (): Promise<Loaded> => {
     loading ??= routes.load().then(
-      (mount) => groupApp(mount, host),
+      (mount) => {
+        const group = groupApp(mount, host);
+        return { group, check: gate?.(group.routes.slice(CROSSING_ROUTES)) };
+      },
       (err: unknown) => {
         loading = undefined;
         throw err;
@@ -202,7 +220,8 @@ export function mountLazy(app: Hono<PithyHonoEnv>, routes: CapabilityRoutes, hos
       return undefined;
     }
     dispatched.add(c.req.raw);
-    const group = await loaded();
+    const { group, check } = await loaded();
+    check?.(c.env);
     const crossing: Crossing = { outer: c, unmatched: false };
     crossings.set(c.req.raw, crossing);
     try {
@@ -219,7 +238,7 @@ export function mountLazy(app: Hono<PithyHonoEnv>, routes: CapabilityRoutes, hos
   };
 
   for (const route of routes.declared) app.on(route.method, route.path, handler);
-  return { routes: async () => (await loaded()).routes.slice(CROSSING_ROUTES) };
+  return { routes: async () => (await loaded()).group.routes.slice(CROSSING_ROUTES) };
 }
 
 /** Whether a route-table entry is `app.use` middleware: Hono records it as `ALL` with no `describeRoute`. */

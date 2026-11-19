@@ -13,9 +13,15 @@ import { authErrorTranslations } from "../i18n/errorCopy";
 import type { VerificationLedger } from "../ledger/record";
 import type { AuthEmailMessage, SendAuthEmail } from "./auth";
 import { providerSignInGate } from "./providerSignInGate";
+import { ALL_SIGN_IN_METHODS, type SignInMethods } from "./signInMethods";
 
 /** What the kit's own plugins need to be constructed. The subset of `AuthInstanceDeps` they read. */
 export interface KitPluginDeps {
+  /**
+   * Which email sign-in methods to compose. Absent means both, which is what the schema baseline and an instance
+   * built outside a config get.
+   */
+  methods?: SignInMethods;
   /** Magic-link / OTP token lifetime in seconds. */
   verificationExpiresIn: number;
   /** OTP length (digits). */
@@ -85,7 +91,8 @@ export type KitPlugins = [
  * baseline would claim a table the instance never created, or miss one it did.
  */
 export function kitPlugins(deps: KitPluginDeps): KitPlugins {
-  return [
+  const methods = deps.methods ?? ALL_SIGN_IN_METHODS;
+  const composed: KitPlugins = [
     /**
      * Better Auth's own refusals, in the reader's language (#452).
      *
@@ -150,6 +157,14 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
      */
     providerSignInGate({ emit: deps.emit, headers: deps.requestHeaders }),
   ];
+  const absent = new Set<string>([
+    ...(methods.magicLink ? [] : ["magic-link"]),
+    ...(methods.emailOtp ? [] : ["email-otp"]),
+  ]);
+  if (absent.size === 0) return composed;
+  // The tuple type stays the full set, so a composed instance's type surface still names an email method it left
+  // out; the routes are what answer 404.
+  return composed.filter((plugin) => !absent.has(plugin.id)) as unknown as KitPlugins;
 }
 
 /**

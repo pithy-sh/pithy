@@ -21,8 +21,8 @@ export const PROVIDER_SIGN_IN_GATE_ID = "pithy-provider-sign-in-gate";
 /**
  * The Better Auth plugins the kit composes for itself, and the reason they are fixed.
  *
- * `magic-link` and `email-otp` **are** the sign-in this product promises — passwordless, no
- * `emailAndPassword` anywhere. `jwt` mints the JWKS the control-plane seam verifies against and
+ * `magic-link` and `email-otp` are the passwordless email sign-in — no `emailAndPassword` anywhere — and
+ * `methods` may leave either out, but never hands its id to an adopter's plugin. `jwt` mints the JWKS the control-plane seam verifies against and
  * `bearer` is how a mobile client presents its credential. `i18n` puts the dependency's own refusals in
  * the reader's language, and {@link PROVIDER_SIGN_IN_GATE_ID} is the kit's own: it decides a refused
  * provider sign-in before Better Auth branches, so the account-enumeration pair is never produced
@@ -96,7 +96,7 @@ export function assertAdditivePlugins(plugins: readonly BetterAuthPlugin[]): voi
     if (reserved.includes(plugin.id)) {
       throw new ValidationError({
         message: `The auth capability already composes the Better Auth "${plugin.id}" plugin.`,
-        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). The four the kit composes (${KIT_PLUGIN_IDS.join(", ")}) are the sign-in this product promises and what the control-plane seam verifies against; your list adds to them.`,
+        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). The ones the kit composes (${KIT_PLUGIN_IDS.join(", ")}) are reserved even when \`methods\` leaves one out; your list adds to them.`,
         detail: `reserved plugin id "${plugin.id}" supplied through AuthConfig.plugins`,
       });
     }

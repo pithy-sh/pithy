@@ -24,6 +24,12 @@ import { declaredBindingSpecs, reconcileDeclaredBindings } from "../project/decl
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { reconcileOwnedDatabases, refuseOwnedGlobals } from "../project/ownedStanzas";
+import {
+  composedRouteRateLimits,
+  type RouteRateLimitRun,
+  reconcileRouteRateLimits,
+  writeRouteRateLimitTestBindings,
+} from "../project/routeRateLimits";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { reconcileServiceStanzas, type ServiceWorkerNames, serviceScripts } from "../project/serviceStanzas";
 import { bindableFrom, bindWorker, readServiceProject, unbindWorker } from "../project/workerBind";
@@ -286,6 +292,21 @@ const WorkerSyncPayload = z
           .describe("One environment's declared vars."),
       )
       .describe("What the Worker's declared vars wrote, per environment."),
+    rateLimits: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment written — `dev` for the top-level stanza."),
+            written: z
+              .array(z.string().describe("A `ROUTE_RATE_LIMIT_<limit>_PER_<period>S` binding."))
+              .describe("The rate limiters this stanza lacked and now has."),
+            removed: z
+              .array(z.string().describe("A `ROUTE_RATE_LIMIT_<limit>_PER_<period>S` binding."))
+              .describe("The rate limiters taken out, because no route declares them any more."),
+          })
+          .describe("One environment's route rate limiters."),
+      )
+      .describe("The rate limiters the Worker's routes declare with `describeRoute({ rateLimit })`, per environment."),
     exports: z
       .discriminatedUnion("state", [
         z
@@ -759,6 +780,12 @@ interface WorkerSyncReport {
   owned: number;
   /** Whether main exports each Workflow class the app declares for the environments reconciled. */
   exports: WorkflowExports;
+  /** The rate limiters the Worker's routes declare, written and taken out per stanza. */
+  rateLimits: RouteRateLimitRun[];
+  /** How many rate limiters the Worker's routes declare. */
+  limited: number;
+  /** What the Workers test config could not be given. */
+  testNotes: string[];
 }
 
 /** Reconcile one Worker's `wrangler.jsonc` in `projectDir` with what its `pithy.config.ts` declares. */
@@ -831,6 +858,9 @@ async function syncWorker(options: {
 
   // Before any write: a `vars` defineVars did not build, or a name declared twice, leaves wrangler.jsonc untouched.
   const declaredVars = declaredWorkerVars(target.config, target.capabilities);
+  // Before any write too: the routes are read off the composed app, and a composition the Worker would refuse to
+  // boot, such as a per-user limit on an open route, is refused here with wrangler.jsonc untouched.
+  const routeLimits = await composedRouteRateLimits(env ?? LOCAL_ENVIRONMENT, target.config);
 
   // The route and BASE_URL, written apart from the app capability: `domains` says where this Worker answers,
   // and a Worker with no `app` block still answers somewhere.
@@ -851,10 +881,18 @@ async function syncWorker(options: {
   const ownedBindings = owning
     ? await reconcileOwnedDatabases({ ...owning, ...(env === undefined ? {} : { env }) })
     : [];
+  const rateLimits = await reconcileRouteRateLimits({
+    workerDir: target.dir,
+    limits: routeLimits,
+    ...(env === undefined ? {} : { env }),
+  });
+  const testNotes = await writeRouteRateLimitTestBindings(projectDir, target.name, routeLimits);
   if (
     !app &&
     domains === undefined &&
     !composesResources &&
+    routeLimits.length === 0 &&
+    rateLimits.every((run) => run.removed.length === 0) &&
     ownBindings.length === 0 &&
     ownedBindings.length === 0 &&
     declaredVars.size === 0
@@ -912,7 +950,20 @@ async function syncWorker(options: {
         runs.map((run) => run.env),
       )
     : { state: "exported" };
-  return { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned: ownBindings.length, exports };
+  return {
+    target,
+    routes,
+    bindings,
+    runs,
+    serviceRuns,
+    ownedBindings,
+    vars,
+    owned: ownBindings.length,
+    exports,
+    rateLimits,
+    limited: routeLimits.length,
+    testNotes,
+  };
 }
 
 /**
@@ -956,6 +1007,11 @@ function syncChanges(report: WorkerSyncReport): string[] {
       );
     }
   }
+  for (const run of report.rateLimits) {
+    if (run.written.length > 0) lines.push(`${run.env}: ${run.written.join(", ")} written.`);
+    if (run.removed.length > 0) lines.push(`${run.env}: ${run.removed.join(", ")} removed.`);
+  }
+  lines.push(...report.testNotes);
   for (const change of report.ownedBindings) {
     lines.push(
       change.to === undefined
@@ -1035,10 +1091,10 @@ const sync = withContract(
         const { report, plan } = dryRun
           ? await planWorkerSync(projectDir, options)
           : { report: await syncWorker({ ...options, projectDir }), plan: undefined };
-        const { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned, exports } = report;
+        const { target, routes, bindings, runs, serviceRuns, ownedBindings, vars, owned, exports, rateLimits } = report;
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, vars, exports, plan })}\n`,
+            `${formatJsonLine({ command: "worker.sync", dryRun, ...workerIdentity(target), routes, bindings, runs, serviceRuns, ownedBindings, vars, rateLimits, exports, plan })}\n`,
           );
           return;
         }
@@ -1055,7 +1111,9 @@ const sync = withContract(
           runs.every((run) => !run.changed) &&
           serviceRuns.every((run) => !run.changed) &&
           ownedBindings.length === 0 &&
-          vars.every((run) => run.written.length === 0 && run.invalid.length === 0)
+          vars.every((run) => run.written.length === 0 && run.invalid.length === 0) &&
+          rateLimits.every((run) => run.written.length === 0 && run.removed.length === 0) &&
+          report.testNotes.length === 0
         ) {
           // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
           // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
@@ -1066,6 +1124,7 @@ const sync = withContract(
             owned === 0 &&
             serviceRuns.length === 0 &&
             vars.length === 0 &&
+            report.limited === 0 &&
             runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
           process.stdout.write(
             nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,

@@ -1409,6 +1409,7 @@ describe("an owner's DELETE /current", () => {
     const handed: (PurgeDeletion | undefined)[] = [];
     const files: PurgeStep = {
       step: "files",
+      capability: "files",
       contribution: {
         subject: "organization",
         summary: "Deletes the organization's stored files.",
@@ -1420,6 +1421,7 @@ describe("an owner's DELETE /current", () => {
     };
     const own: PurgeStep = {
       step: "organization",
+      capability: "organization",
       contribution: organizationPurgeContribution("DB", (d1, organizationId) => {
         order.push("organization");
         return [

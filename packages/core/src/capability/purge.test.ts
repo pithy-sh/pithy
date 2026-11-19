@@ -46,12 +46,77 @@ describe("the purge contribution on the Capability contract", () => {
     expect(() => defineCapability({ name: "media", requiredBindings: [], purge: [unknown] })).toThrow(/"users"/);
   });
 
-  test("two for the same subject from one capability are refused — one capability is one step", () => {
-    // The Workflow runs a step per capability so a failure retries one capability alone. Two
-    // contributions for one subject would have to share that step, and a retry would re-run both.
+  test("two unnamed for the same subject from one capability are refused — each needs its own step name", () => {
+    // The Workflow runs a step per contribution so a failure retries one alone. Two unnamed contributions for one
+    // subject would both take the capability's name, and the second would be served the first one's journal.
     expect(() =>
       defineCapability({ name: "media", requiredBindings: [], purge: [recording([]), recording([])] }),
-    ).toThrow(/media.*user/);
+    ).toThrow(
+      "The media capability declares 2 purge contributions for user (unnamed, unnamed), and 2 have no step name.",
+    );
+  });
+
+  test("several for one subject with distinct step names are accepted, one step each, named <capability>/<step>", () => {
+    const capability = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      purge: [
+        { ...recording([], "Deletes the scores."), step: "scores" },
+        { ...recording([], "Deletes the runs."), step: "runs" },
+      ],
+    });
+    expect(purgeSteps([capability], "user").map(({ step, capability }) => ({ step, capability }))).toEqual([
+      { step: "app/scores", capability: "app" },
+      { step: "app/runs", capability: "app" },
+    ]);
+  });
+
+  test("several for one subject where one has no step name are refused, naming the subject and the count", () => {
+    const purge = [{ ...recording([]), step: "scores" }, recording([])];
+    expect(() => defineCapability({ name: "app", requiredBindings: [], purge })).toThrow(PithyError);
+    expect(() => defineCapability({ name: "app", requiredBindings: [], purge })).toThrow(
+      'The app capability declares 2 purge contributions for user ("scores", unnamed), and 1 has no step name.',
+    );
+  });
+
+  test("two for one subject sharing a step name are refused, naming the name", () => {
+    const purge = [
+      { ...recording([]), step: "scores" },
+      { ...recording([]), step: "scores" },
+    ];
+    expect(() => defineCapability({ name: "app", requiredBindings: [], purge })).toThrow(
+      /app capability declares two user purge contributions with the step name "scores"/,
+    );
+  });
+
+  test("a step name that is not a lowercase slug is refused, because it becomes part of a Workflow step's name", () => {
+    for (const step of ["", "Scores", "app/scores", "high scores"]) {
+      expect(() =>
+        defineCapability({ name: "app", requiredBindings: [], purge: [{ ...recording([]), step }] }),
+      ).toThrow(/step name/);
+    }
+  });
+
+  test("a named step's other refusals name the step, so the one to fix is plain among several", () => {
+    const purge = [
+      { ...recording([]), step: "scores" },
+      { ...recording([], ""), step: "runs" },
+    ];
+    expect(() => defineCapability({ name: "app", requiredBindings: [], purge })).toThrow(
+      'The app capability\'s user purge step "runs" has no summary.',
+    );
+  });
+
+  test("the same step name under two subjects is two steps in two purges, so it is accepted", () => {
+    const capability = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      purge: [
+        { ...recording([]), step: "scores" },
+        { ...recording([]), subject: "organization", step: "scores" },
+      ],
+    });
+    expect(purgeSteps([capability], "organization").map((each) => each.step)).toEqual(["app/scores"]);
   });
 
   test("a contribution with no summary is refused, because the summary is what the step records", () => {
@@ -111,6 +176,7 @@ describe("purgeSteps", () => {
     ];
     const steps = purgeSteps(capabilities, "user");
     expect(steps.map((step) => step.step)).toEqual(["auth", "media", "app"]);
+    expect(steps.map((step) => step.capability)).toEqual(["auth", "media", "app"]);
     for (const step of steps) await step.contribution.erase?.({ subject: { type: "user", id: "u1" }, env: {} });
     expect(seen).toEqual(["u1", "u1", "u1"]);
   });
@@ -155,6 +221,31 @@ describe("purgeExports", () => {
       },
       { capability: "media", summary: "Deletes the uploads.", disposition: "erase", state: "not_exported" },
       { capability: "app", summary: "Erases the drafts.", disposition: "erase", state: "unavailable" },
+    ]);
+  });
+
+  test("a capability's named steps each answer their own part, filed under the capability with the step named", async () => {
+    const capabilities: Capability[] = [
+      defineCapability({
+        name: "app",
+        requiredBindings: [],
+        purge: [
+          { ...recording([], "Deletes the scores."), step: "scores", export: async () => ({ scores: [1] }) },
+          { ...recording([], "Deletes the runs."), step: "runs" },
+        ],
+      }),
+    ];
+    const entries = await purgeExports(purgeSteps(capabilities, "user"), { subject: SUBJECT, env: {} });
+    expect(entries).toEqual([
+      {
+        capability: "app",
+        step: "scores",
+        summary: "Deletes the scores.",
+        disposition: "erase",
+        state: "exported",
+        data: { scores: [1] },
+      },
+      { capability: "app", step: "runs", summary: "Deletes the runs.", disposition: "erase", state: "not_exported" },
     ]);
   });
 

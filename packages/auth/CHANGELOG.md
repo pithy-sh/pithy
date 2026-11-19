@@ -1,5 +1,23 @@
 # @pithy-sh/auth
 
+## 0.18.0
+
+### Minor Changes
+
+- [#1075](https://github.com/pithy-sh/pithy/pull/1075) [`391b42a`](https://github.com/pithy-sh/pithy/commit/391b42a3cc2793dd9366b58ad50c105af96a0a72) Thanks [@kingmesal](https://github.com/kingmesal)! - `auth({ methods: { magicLink, emailOtp } })` turns email sign-in off, routes and all, or on in one environment only.
+
+- [#1072](https://github.com/pithy-sh/pithy/pull/1072) [`74567f8`](https://github.com/pithy-sh/pithy/commit/74567f80ddd562412af53ec1910deb9200f06235) Thanks [@kingmesal](https://github.com/kingmesal)! - A capability may split one subject's purge into named steps, so the purge retries each feature's erase on its own.
+
+- [#1076](https://github.com/pithy-sh/pithy/pull/1076) [`18e5615`](https://github.com/pithy-sh/pithy/commit/18e5615165b188a0171f381279e31f58a6414510) Thanks [@kingmesal](https://github.com/kingmesal)! - `requireAuth()` narrows `c.var.auth` for your own routes, and `@pithy-sh/auth` ships a helper that signs a seeded user in inside the Workers test pool.
+
+### Patch Changes
+
+- Updated dependencies [[`eb4e770`](https://github.com/pithy-sh/pithy/commit/eb4e770abd44b560388981e025e773b840597e7b), [`74567f8`](https://github.com/pithy-sh/pithy/commit/74567f80ddd562412af53ec1910deb9200f06235), [`29cccdf`](https://github.com/pithy-sh/pithy/commit/29cccdfa2f85a55d6216616c548069e1fb5bf708), [`d6293f6`](https://github.com/pithy-sh/pithy/commit/d6293f63802dc0414abcde48bff62bc36f41bc7c)]:
+  - @pithy-sh/core@0.27.0
+  - @pithy-sh/email@0.11.2
+  - @pithy-sh/secrets@0.6.15
+  - @pithy-sh/turnstile@0.9.3
+
 ## 0.17.1
 
 ### Patch Changes

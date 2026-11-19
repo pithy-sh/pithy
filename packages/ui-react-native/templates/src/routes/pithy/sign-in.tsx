@@ -8,6 +8,7 @@ import {
   startSocialSignIn,
 } from "@pithy-sh/auth/src/client/api";
 import { ATTESTATION_UNAVAILABLE } from "@pithy-sh/auth/src/client/attestation";
+import { type EmailMethods, type EmailWay, emailWay } from "@pithy-sh/auth/src/client/emailWay";
 import { handoffCode, nativeSignInStartURL } from "@pithy-sh/auth/src/client/handoff";
 // The one code a refused provider sign-in comes back with. Imported rather than spelled: a literal here and a
 // literal there is a pair that can drift, and the drift would show as this block silently never rendering again.
@@ -106,6 +107,9 @@ const EN = {
   "auth/sign_in.provider.label": "Continue with {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} is not configured here. Use the link instead.",
   "auth/sign_in.provider_silent": "{provider} didn't answer. Use the link instead.",
+  // Said where the screen offers no email at all, so there is nothing else to point at.
+  "auth/sign_in.provider_unconfigured_alone": "{provider} is not configured here.",
+  "auth/sign_in.provider_silent_alone": "{provider} didn't answer. Try again.",
   // The three-point refusal, and the order is the point: say what the provider told us, say that a secondary
   // address is refused on purpose, then say the remedy. Not one word about whether the account exists: the
   // Worker sends one code for "no account" and "not attached", and every sentence below is true of both.
@@ -146,6 +150,11 @@ export interface AuthProjection {
   readonly providerSignUp?: Readonly<Record<string, boolean>>;
   /** Whether signing in may provision a new account. Drives one sentence of copy. */
   readonly signUpEnabled: boolean;
+  /**
+   * Which email sign-in methods the Worker composed. The form mails a link where one is and can come back, a code
+   * where only that is or the link cannot come back, and is not shown otherwise. Absent reads as both.
+   */
+  readonly methods?: EmailMethods;
 }
 
 /** The humanity check, injected so this module never has to know whether one is composed. */
@@ -210,27 +219,32 @@ const SOCIAL: readonly { id: string; label: string }[] = [
  */
 type Refusal = { provider: string; reason: "unconfigured" | "silent" | "refused" } | null;
 
-function refusalText(t: Translator, refusal: NonNullable<Refusal>, byCode: boolean): string {
+/** The sentence for a provider that did not sign you in, pointing at the email way this screen offers, if any. */
+function refusalText(t: Translator, refusal: NonNullable<Refusal>, way: EmailWay): string {
+  const unconfigured = refusal.reason === "unconfigured";
   const key =
-    refusal.reason === "unconfigured"
-      ? byCode
-        ? "auth/otp.ask.provider_unconfigured"
-        : "auth/sign_in.provider_unconfigured"
-      : byCode
-        ? "auth/otp.ask.provider_silent"
-        : "auth/sign_in.provider_silent";
+    way === "link"
+      ? unconfigured
+        ? "auth/sign_in.provider_unconfigured"
+        : "auth/sign_in.provider_silent"
+      : way === "code"
+        ? unconfigured
+          ? "auth/otp.ask.provider_unconfigured"
+          : "auth/otp.ask.provider_silent"
+        : unconfigured
+          ? "auth/sign_in.provider_unconfigured_alone"
+          : "auth/sign_in.provider_silent_alone";
   return t.t(key, { provider: refusal.provider });
 }
 
 /**
- * Whether email signs in with a one-time code rather than a magic link: on a phone with no universal link. A magic
- * link returns to the link it was asked for, and whoever asks for it is not who opens it. A custom scheme is one
- * any app can claim, so the Worker hands a magic link off only to an https universal link (iOS) or app link
- * (Android), which the system opens only in the app that owns the domain. Set `universalLinkOrigin` and the link is
- * back.
+ * Whether a magic link can come back here: on the web, or on a phone with a universal link. A magic link returns to
+ * the link it was asked for, and whoever asks for it is not who opens it. A custom scheme is one any app can claim,
+ * so the Worker hands a magic link off only to an https universal link (iOS) or app link (Android), which the
+ * system opens only in the app that owns the domain. Set `universalLinkOrigin` and the link is back.
  */
-function emailByCode(): boolean {
-  return onDevice() && universalLinkOrigin === null;
+function linkReturns(): boolean {
+  return !onDevice() || universalLinkOrigin !== null;
 }
 
 /**
@@ -392,8 +406,9 @@ function Frame(props: { brand: ReactNode; mark: ReactNode; theme: Theme; childre
 /**
  * The screen, with every seam as a prop.
  *
- * **One passwordless path: the magic link.** On a phone with no universal link it is a one-time code instead, on
- * `routes/pithy/otp.tsx`, because the Worker refuses a magic link to a scheme any app can claim.
+ * **One passwordless path, from the methods the Worker composed.** The magic link where it is composed and can come
+ * back; otherwise a one-time code on `routes/pithy/otp.tsx`, where that is composed; otherwise no email form. A
+ * phone with no universal link never gets the link, because the Worker refuses one to a scheme any app can claim.
  *
  * **On a phone nothing comes back as a cookie.** The magic link and every redirect sign-in return to this app's
  * own link with a one-time code, which `callback.tsx` or this screen trades for the session; Apple on iOS and
@@ -432,7 +447,8 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   // Where a sign-in returns: this app's link on a phone, carrying a verifier's challenge; this origin on the web.
   const callbackTo = `${callbackPath}${resumeQuery(search)}`;
 
-  const byCode = emailByCode();
+  const way = emailWay(auth.methods, linkReturns());
+  const byCode = way === "code";
   const gated = {
     ...transport.auth,
     gate: check.attach,
@@ -623,71 +639,75 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
               <Text style={muted}>{t.t("auth/sign_in.refused.remedy", { provider: shown.provider })}</Text>
             </View>
           ) : (
-            shown && (
-              <Text style={[theme.type.body, { color: theme.colors.danger }]}>{refusalText(t, shown, byCode)}</Text>
-            )
+            shown && <Text style={[theme.type.body, { color: theme.colors.danger }]}>{refusalText(t, shown, way)}</Text>
           )}
-          <Text style={[theme.type.caption, { color: theme.colors.muted, textAlign: "center" }]}>
-            {t.t("auth/sign_in.divider")}
-          </Text>
+          {way !== null && (
+            <Text style={[theme.type.caption, { color: theme.colors.muted, textAlign: "center" }]}>
+              {t.t("auth/sign_in.divider")}
+            </Text>
+          )}
         </>
       )}
 
-      <View style={{ gap: theme.spacing.sm }}>
-        <Text style={[theme.type.caption, { color: theme.colors.muted }]}>{t.t("auth/sign_in.email.label")}</Text>
-        <TextInput
-          aria-label={t.t("auth/sign_in.email.label")}
-          value={email}
-          onChangeText={setEmail}
-          inputMode="email"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoComplete="email"
-          textContentType="emailAddress"
-          style={[
-            theme.type.body,
-            {
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              borderRadius: theme.radius,
-              backgroundColor: theme.colors.surface,
-              color: theme.colors.text,
-              paddingVertical: theme.spacing.sm,
-              paddingHorizontal: theme.spacing.md,
-            },
-          ]}
-        />
-        {check.attestation ? null : check.widget}
-        <Button
-          label={t.t(byCode ? "auth/otp.ask.submit" : "auth/sign_in.submit")}
-          primary
-          disabled={busy || !email || (!check.attestation && check.pending)}
-          onPress={() => void sendLink()}
-          theme={theme}
-        />
-        {gateRefusal ? <GateRefusal failure={gateRefusal} t={t} theme={theme} /> : null}
-      </View>
+      {way !== null && (
+        <>
+          <View style={{ gap: theme.spacing.sm }}>
+            <Text style={[theme.type.caption, { color: theme.colors.muted }]}>{t.t("auth/sign_in.email.label")}</Text>
+            <TextInput
+              aria-label={t.t("auth/sign_in.email.label")}
+              value={email}
+              onChangeText={setEmail}
+              inputMode="email"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              textContentType="emailAddress"
+              style={[
+                theme.type.body,
+                {
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  borderRadius: theme.radius,
+                  backgroundColor: theme.colors.surface,
+                  color: theme.colors.text,
+                  paddingVertical: theme.spacing.sm,
+                  paddingHorizontal: theme.spacing.md,
+                },
+              ]}
+            />
+            {check.attestation ? null : check.widget}
+            <Button
+              label={t.t(byCode ? "auth/otp.ask.submit" : "auth/sign_in.submit")}
+              primary
+              disabled={busy || !email || (!check.attestation && check.pending)}
+              onPress={() => void sendLink()}
+              theme={theme}
+            />
+            {gateRefusal ? <GateRefusal failure={gateRefusal} t={t} theme={theme} /> : null}
+          </View>
 
-      {/* Reassurance, not navigation: signing up is signing in, so there is no other screen to point at. */}
-      <Text style={muted}>
-        {auth.signUpEnabled ? (
-          <>
-            {t.t("auth/sign_in.signup.prompt")}{" "}
-            <Text style={{ fontWeight: "700", color: theme.colors.text }}>
-              {t.t(
-                providerRefuses
-                  ? byCode
-                    ? "auth/otp.ask.signup_email_only"
-                    : "auth/sign_in.signup.email_only"
-                  : "auth/sign_in.signup.answer",
-              )}
-            </Text>
-          </>
-        ) : (
-          t.t("auth/sign_in.signup.closed")
-        )}
-      </Text>
+          {/* Reassurance, not navigation: signing up is signing in, so there is no other screen to point at. */}
+          <Text style={muted}>
+            {auth.signUpEnabled ? (
+              <>
+                {t.t("auth/sign_in.signup.prompt")}{" "}
+                <Text style={{ fontWeight: "700", color: theme.colors.text }}>
+                  {t.t(
+                    providerRefuses
+                      ? byCode
+                        ? "auth/otp.ask.signup_email_only"
+                        : "auth/sign_in.signup.email_only"
+                      : "auth/sign_in.signup.answer",
+                  )}
+                </Text>
+              </>
+            ) : (
+              t.t("auth/sign_in.signup.closed")
+            )}
+          </Text>
+        </>
+      )}
     </Frame>
   );
 }

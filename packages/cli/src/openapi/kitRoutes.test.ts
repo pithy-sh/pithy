@@ -66,6 +66,16 @@ function composedFor(entry: Composition): Capability {
  */
 const ROUTE_VARIANTS: readonly Composition[] = [
   { name: "auth in dev, with its dev sign-in", environment: "dev", compose: () => auth({ baseURL: ORIGIN }) },
+  {
+    name: "auth with no magic link",
+    environment: "prod",
+    compose: () => auth({ baseURL: ORIGIN, methods: { magicLink: false } }),
+  },
+  {
+    name: "auth with no email code",
+    environment: "prod",
+    compose: () => auth({ baseURL: ORIGIN, methods: { emailOtp: false } }),
+  },
   { name: "auth at another base path", environment: "prod", compose: () => auth({ baseURL: ORIGIN, basePath: "/id" }) },
   { name: "storage moved", environment: "prod", compose: () => storage({ basePath: "/files", sharePath: "/share" }) },
   {

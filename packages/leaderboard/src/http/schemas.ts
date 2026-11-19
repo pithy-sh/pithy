@@ -3,7 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
-import { BOARD_KEY_PATTERN } from "../config/boardKey";
+import { BOARD_KEY_PATTERN, INSTANCE_ID_PATTERN, isInstanceId, MAX_INSTANCE_ID_LENGTH } from "../config/boardKey";
 import { MAX_SEGMENT_SIZE } from "../rank/segment";
 
 /**
@@ -45,6 +45,42 @@ export const EntryParam = BoardParam.extend({
     ),
 }).describe("The board and player a moderation route addresses.");
 export type EntryParam = z.infer<typeof EntryParam>;
+
+/**
+ * The id segment of an instance route. `isInstanceId` decides, as it does for config; the length and pattern
+ * are stated beside it so the OpenAPI document carries them. The refine runs only once those pass, so an id
+ * that is too long or badly shaped is told that alone, and the reserved-word issue names only `segment`.
+ */
+const InstanceId = z
+  .string()
+  .min(1)
+  .max(MAX_INSTANCE_ID_LENGTH)
+  .regex(INSTANCE_ID_PATTERN, "An instance id is letters, digits, dashes and underscores.")
+  .refine(isInstanceId, {
+    message: "`segment` cannot name an instance.",
+    when: (payload) => payload.issues.length === 0,
+  })
+  .describe(
+    "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+  );
+
+export const InstanceParam = BoardParam.extend({
+  board: BoardParam.shape.board.describe(
+    "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+  ),
+  instance: InstanceId,
+}).describe("The family and id a `/leaderboard/:board/:instance` route addresses — the instance `<board>/<instance>`.");
+export type InstanceParam = z.infer<typeof InstanceParam>;
+
+export const InstanceEntryParam = InstanceParam.extend({
+  userId: EntryParam.shape.userId,
+}).describe("The instance and player a moderation route addresses.");
+export type InstanceEntryParam = z.infer<typeof InstanceEntryParam>;
+
+/** The board key a route's params spell: the board, or `<board>/<instance>` for an instance of a family. */
+export function boardKeyOf(param: { board: string; instance?: string }): string {
+  return param.instance === undefined ? param.board : `${param.board}/${param.instance}`;
+}
 
 export const SubmitScoreBody = z
   .object({
@@ -126,7 +162,7 @@ export const HideBody = z
   .describe("A moderator's hide toggle. Separate from player consent so a player cannot undo it.");
 export type HideBody = z.infer<typeof HideBody>;
 
-// --- The management surface (#817) -------------------------------------------------------------------
+// --- The management surface -------------------------------------------------------------------------
 
 /** How long a reason may be. Long enough to explain a ban; short enough that it is not a document. */
 export const MAX_REASON_LENGTH = 1000;
@@ -156,6 +192,40 @@ export const AdminEntryParam = AdminBoardParam.extend({
   userId: EntryParam.shape.userId.describe("The player whose entry the act addresses."),
 }).describe("The board and player a management act addresses.");
 export type AdminEntryParam = z.infer<typeof AdminEntryParam>;
+
+export const AdminInstanceParam = AdminBoardParam.extend({
+  board: InstanceParam.shape.board,
+  instance: InstanceId,
+}).describe("The `:board/:instance` segments of a management route — the instance `<board>/<instance>`.");
+export type AdminInstanceParam = z.infer<typeof AdminInstanceParam>;
+
+export const AdminInstanceEntryParam = AdminInstanceParam.extend({
+  userId: AdminEntryParam.shape.userId,
+}).describe("The instance and player a management act addresses.");
+export type AdminInstanceEntryParam = z.infer<typeof AdminInstanceEntryParam>;
+
+export const AdminFamilyParam = z
+  .object({
+    family: BoardParam.shape.board.describe(
+      "The prefix of the family to list, such as `level` for the pattern `level/:levelId`. A shape check only; whether it is configured is the handler's 404.",
+    ),
+  })
+  .describe("The `:family` segment of the instance listing.");
+export type AdminFamilyParam = z.infer<typeof AdminFamilyParam>;
+
+export const AdminInstancesQuery = z
+  .object({
+    cursor: z
+      .string()
+      .max(512)
+      .optional()
+      .describe("Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page."),
+    limit: AdminLimit.describe(
+      `How many instances to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to a page a dashboard can render.`,
+    ),
+  })
+  .describe("Where to resume a family's instance listing, and how much of it to read.");
+export type AdminInstancesQuery = z.infer<typeof AdminInstancesQuery>;
 
 export const AdminEntriesQuery = z
   .object({

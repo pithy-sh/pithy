@@ -1,5 +1,17 @@
 # @pithy-sh/ui-react-native
 
+## 0.4.0
+
+### Minor Changes
+
+- [#1075](https://github.com/pithy-sh/pithy/pull/1075) [`391b42a`](https://github.com/pithy-sh/pithy/commit/391b42a3cc2793dd9366b58ad50c105af96a0a72) Thanks [@kingmesal](https://github.com/kingmesal)! - `auth({ methods: { magicLink, emailOtp } })` turns email sign-in off, routes and all, or on in one environment only.
+
+### Patch Changes
+
+- [#1065](https://github.com/pithy-sh/pithy/pull/1065) [`1f8a951`](https://github.com/pithy-sh/pithy/commit/1f8a9517f64052d304288aac0bc9fec7dd42651d) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy init --react-native` and `pithy ui add react-native` pin React to the version React Native's renderer requires, so a new Expo app launches and passes `expo-doctor`. An app scaffolded on 0.29.0 or earlier is fixed by `bunx expo install react@19.2.3 react-dom@19.2.3 @types/react@~19.2.4`, and `pithy doctor` now says so.
+
+- [#1070](https://github.com/pithy-sh/pithy/pull/1070) [`01a4d7c`](https://github.com/pithy-sh/pithy/commit/01a4d7c802aa5084ba6788b5446922836504f59d) Thanks [@kingmesal](https://github.com/kingmesal)! - The React Native screens `pithy ui add react-native` writes typecheck on Expo 58 and React Native 0.88 as well as 57 and 0.86.
+
 ## 0.3.0
 
 ### Minor Changes

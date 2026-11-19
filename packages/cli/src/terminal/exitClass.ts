@@ -90,6 +90,7 @@ export const EXIT_CLASS_BY_CODE = {
   "consent/unknown_purpose": "usage",
   "consent/withdrawal_below_grant": "usage",
   "core/invalid_workflow_params": "usage",
+  "core/payload_too_large": "usage",
   "email/invalid_payload": "usage",
   "email/invalid_token": "usage",
   "input/required": "usage",

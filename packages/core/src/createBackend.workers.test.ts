@@ -114,6 +114,80 @@ describe("createBackend", () => {
     expect(await opened.text()).toBe("notes");
   });
 
+  test("refuses the route table, and the routes, of a composition whose open route declares a per-user limit", async () => {
+    const games = defineCapability({
+      name: "games",
+      requiredBindings: [],
+      routes: routesOf((a) => {
+        a.post(
+          "/games/runs",
+          describeRoute({
+            summary: "Submit a run.",
+            verification: "public",
+            responses: { 200: { description: "Recorded." } },
+            rateLimit: { key: "user", limit: 5, period: 60 },
+          }),
+          (c) => c.text("ok"),
+        );
+      }),
+    });
+    await expect(routeGroupsOf(createBackend({ capabilities: [games] }))).rejects.toThrow(
+      /POST \/games\/runs limits each user/,
+    );
+    const res = await createBackend({ capabilities: [games] }).request("/games/runs", { method: "POST" }, env);
+    expect(res.status).not.toBe(200);
+    expect(await res.text()).toMatch(/POST \/games\/runs limits each user/);
+  });
+
+  test("a declared limit's binding is required by its routes, so a Worker without it fails naming it", async () => {
+    const games = defineCapability({
+      name: "games",
+      requiredBindings: [],
+      routes: routesOf((a) => {
+        a.post(
+          "/games/runs",
+          describeRoute({
+            summary: "Submit a run.",
+            verification: "public",
+            responses: { 200: { description: "Recorded." } },
+            rateLimit: { key: "ip", limit: 5, period: 60 },
+          }),
+          (c) => c.text("ok"),
+        );
+      }),
+    });
+    const app = createBackend({ capabilities: [games] });
+    const res = await app.request("/games/runs", { method: "POST" }, env);
+    expect(res.status).toBe(500);
+    expect(await res.text()).toMatch(/Missing required bindings: ratelimit:ROUTE_RATE_LIMIT_5_PER_60S/);
+  });
+
+  test("a declared limit refuses past it with 429 through the composed app", async () => {
+    let calls = 0;
+    const limiter = { limit: async () => ({ success: ++calls <= 1 }) };
+    const games = defineCapability({
+      name: "games",
+      requiredBindings: [],
+      routes: routesOf((a) => {
+        a.post(
+          "/games/runs",
+          describeRoute({
+            summary: "Submit a run.",
+            verification: "public",
+            responses: { 200: { description: "Recorded." } },
+            rateLimit: { key: "ip", limit: 1, period: 10 },
+          }),
+          (c) => c.text("ok"),
+        );
+      }),
+    });
+    const app = createBackend({ capabilities: [games] });
+    const bound = { ...env, ROUTE_RATE_LIMIT_1_PER_10S: limiter };
+    expect((await app.request("/games/runs", { method: "POST" }, bound)).status).toBe(200);
+    const refused = await app.request("/games/runs", { method: "POST" }, bound);
+    expect(refused.status).toBe(429);
+  });
+
   test("mounts the app capability's routes after capability routes", async () => {
     const order: string[] = [];
     const cap = defineCapability({

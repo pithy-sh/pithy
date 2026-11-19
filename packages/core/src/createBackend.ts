@@ -24,6 +24,7 @@ import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/datab
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { ValidationError } from "./error/pithyError";
 import { type CapabilityRoutes, mountLazy } from "./http/lazyRoutes";
+import { rateLimitGate } from "./http/rateLimitDeclarations";
 import { describeRoute } from "./http/routeSpec";
 import { assertMessageDomains, catalogFor, composeMessages } from "./i18n/registry";
 import { bakedTranslator, DEFAULT_LOCALE, deferredTranslator } from "./i18n/translator";
@@ -31,6 +32,8 @@ import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { type ModerationConfig, resolveModeration } from "./moderation/config";
+import { guardModerator } from "./moderation/moderator";
 import { type RecordedRouteGroup, recordRouteGroups } from "./openapi/routeGroups";
 import { type PresenceDeclaration, presenceSocketPath, presenceTicketPath } from "./presence/declaration";
 import { refuseEncryptedKvStores } from "./privacy/encryptedColumns";
@@ -78,6 +81,12 @@ export interface CreateBackendOptions<Caps extends readonly Capability[], App ex
    * parse, or overrides an activity nothing declares, refuses to deploy. See `processing/activity.ts`.
    */
   processing?: unknown;
+  /**
+   * How this Worker checks text one person writes and others see — the `moderation` block of the Worker's
+   * `pithy.config.ts`, read through `c.var.moderator`. Absent, the seam checks the blocklist the kit ships. Parsed
+   * here, at assembly, so a block that does not parse refuses to deploy. See `moderation/config.ts`.
+   */
+  moderation?: ModerationConfig;
 }
 
 /** The Hono env `createBackend` returns — `db`/`kv`/`workflows` typed precisely from the merged capabilities. */
@@ -229,6 +238,8 @@ export function createBackend<
   const defaultTranslator = deferredTranslator(DEFAULT_LOCALE, () =>
     bakedTranslator(catalogFor(composeMessages(all), DEFAULT_LOCALE)),
   );
+  // The moderator before its guard. The guard is bound per request, so a failure logs with that request.
+  const moderation = resolveModeration(options.moderation);
   const namespaces = composeKv(all);
   // An encrypted field in a KV store is refused here, at boot: a KV envelope cannot be found by key version,
   // so it could never be rotated. The refusal names the store, the field and D1.
@@ -329,6 +340,10 @@ export function createBackend<
         }),
       );
     }
+    // Zero-config like `t`: a real moderator is always present, so no caller null-checks one.
+    if (c.get("moderator") === undefined) {
+      c.set("moderator", guardModerator(moderation.moderator, { timeoutMs: moderation.timeoutMs, log: c.var.log }));
+    }
     if (c.get("db") === undefined) c.set("db", buildDbRegistry(env, databases));
     if (c.get("kv") === undefined) c.set("kv", buildKvRegistry(env, namespaces, c.var.log));
     if (c.get("workflows") === undefined) c.set("workflows", buildWorkflowDispatcher(env, workflows, c.var.log));
@@ -396,7 +411,7 @@ export function createBackend<
     // A capability's presence routes are its own, tagged with it, under the base path it declared.
     const lazy = [cap.routes, cap.presence && cap.presence.rooms.length > 0 ? presenceRoutes(cap.presence) : undefined]
       .filter((routes) => routes !== undefined)
-      .map((routes) => mountLazy(app, routes, host));
+      .map((routes) => mountLazy(app, routes, host, rateLimitGate));
     groups.push({
       tag: cap.name,
       routes: [],

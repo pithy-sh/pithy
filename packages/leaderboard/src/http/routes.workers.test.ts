@@ -216,6 +216,7 @@ describe("reads", () => {
     const res = await req(makeApp(CONFIG), "GET", "/leaderboard", { user: "u1" });
     expect(await conforming(res, BoardList)).toEqual({
       boards: [{ key: "b1", store: "d1", direction: "desc", aggregation: "best", window: null, tiers: [] }],
+      families: [],
     });
   });
 
@@ -502,5 +503,190 @@ describe("declared input runs after the guards and before the handler", () => {
     });
     expect(res.status).toBe(400);
     expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+});
+
+describe("board families", () => {
+  const FAMILY: LeaderboardConfigInput = {
+    boards: [{ key: "b1", direction: "desc" }],
+    families: [{ pattern: "level/:levelId", direction: "asc", max: 600 }],
+  };
+  const submitTo = (app: Hono<PithyHonoEnv>, path: string, user: string, score: number) =>
+    req(app, "POST", path, { user, scopes: SUBMIT, body: { score } });
+  const count = async (table: string) => {
+    const { results } = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).all<{ n: number }>();
+    return results[0]?.n;
+  };
+
+  test("resolves a submission and every read for any key matching the pattern", async () => {
+    const app = makeApp(FAMILY);
+    expect((await submitTo(app, "/leaderboard/level/abc", "u1", 42)).status).toBe(201);
+    expect((await submitTo(app, "/leaderboard/level/abc", "u2", 30)).status).toBe(201);
+    const top = await page(await req(app, "GET", "/leaderboard/level/abc/top", { user: "u3" }));
+    expect(top.board).toBe("level/abc");
+    // The family's direction: lowest wins.
+    expect(top.entries.map((e) => [e.userId, e.rank])).toEqual([
+      ["u2", 1],
+      ["u1", 2],
+    ]);
+    const own = await conforming(await req(app, "GET", "/leaderboard/level/abc/me", { user: "u1" }), OwnRank);
+    expect(own).toMatchObject({ board: "level/abc", score: 42, rank: 2 });
+    const around = await page(await req(app, "GET", "/leaderboard/level/abc/around", { user: "u1" }));
+    expect(around.entries).toHaveLength(2);
+    const segment = await page(
+      await req(app, "POST", "/leaderboard/level/abc/segment", { user: "u1", body: { userIds: ["u1"] } }),
+    );
+    expect(segment.entries.map((e) => e.userId)).toEqual(["u1"]);
+  });
+
+  test("keeps each instance's entries apart", async () => {
+    const app = makeApp(FAMILY);
+    await submitTo(app, "/leaderboard/level/abc", "u1", 42);
+    await submitTo(app, "/leaderboard/level/def", "u2", 10);
+    const abc = await page(await req(app, "GET", "/leaderboard/level/abc/top", { user: "u3" }));
+    expect(abc.entries.map((e) => e.userId)).toEqual(["u1"]);
+  });
+
+  test("holds an instance to the family's bounds", async () => {
+    const res = await submitTo(makeApp(FAMILY), "/leaderboard/level/abc", "u1", 601);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "leaderboard/score_rejected" } });
+  });
+
+  test("still 404s a key that matches neither a board nor a family", async () => {
+    const app = makeApp(FAMILY);
+    for (const [method, path] of [
+      ["POST", "/leaderboard/levels/abc"],
+      ["GET", "/leaderboard/levels/abc/top"],
+      ["GET", "/leaderboard/b1/abc/top"],
+      ["POST", "/leaderboard/level"],
+      ["GET", "/leaderboard/level/top"],
+    ] as const) {
+      const res = await req(app, method, path, { user: "u1", scopes: SUBMIT, body: { score: 1 } });
+      expect([res.status, path]).toEqual([404, path]);
+      expect(await res.json()).toMatchObject({ error: { code: "leaderboard/board_not_found" } });
+    }
+  });
+
+  test("answers an empty board for an instance read before its first score, and writes nothing", async () => {
+    const res = await req(makeApp(FAMILY), "GET", "/leaderboard/level/fresh/top", { user: "u1" });
+    expect(res.status).toBe(200);
+    expect(await page(res)).toEqual({ board: "level/fresh", window: "all", entries: [] });
+    expect(await count("pithy_leaderboard_boards")).toBe(0);
+  });
+
+  test("creates the instance on its first accepted submission", async () => {
+    const app = makeApp(FAMILY);
+    await submitTo(app, "/leaderboard/level/abc", "u1", 601);
+    expect(await count("pithy_leaderboard_boards")).toBe(0);
+    await submitTo(app, "/leaderboard/level/abc", "u1", 42);
+    const { results } = await env.DB.prepare("SELECT board_key, direction FROM pithy_leaderboard_boards").all();
+    expect(results).toEqual([{ board_key: "level/abc", direction: "asc" }]);
+  });
+
+  test("requires the submit scope on an instance, as on a board", async () => {
+    const res = await req(makeApp(FAMILY), "POST", "/leaderboard/level/abc", { user: "u1", body: { score: 10 } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: { code: "leaderboard/submit_forbidden" } });
+  });
+
+  test("denies every instance route without an identity", async () => {
+    const app = makeApp(FAMILY);
+    for (const [method, path] of [
+      ["POST", "/leaderboard/level/abc"],
+      ["GET", "/leaderboard/level/abc/top"],
+      ["GET", "/leaderboard/level/abc/me"],
+      ["GET", "/leaderboard/level/abc/around"],
+      ["POST", "/leaderboard/level/abc/segment"],
+      ["PUT", "/leaderboard/level/abc/me/visibility"],
+      ["PUT", "/leaderboard/level/abc/entries/u1/hidden"],
+      ["DELETE", "/leaderboard/level/abc/entries/u1"],
+    ] as const) {
+      expect([(await req(app, method, path, { body: {} })).status, path]).toEqual([401, path]);
+    }
+  });
+
+  test("lets a player take themselves off an instance", async () => {
+    const app = makeApp(FAMILY);
+    await submitTo(app, "/leaderboard/level/abc", "u1", 42);
+    const res = await req(app, "PUT", "/leaderboard/level/abc/me/visibility", { user: "u1", body: { visible: false } });
+    expect(res.status).toBe(200);
+    expect((await page(await req(app, "GET", "/leaderboard/level/abc/top", { user: "u2" }))).entries).toEqual([]);
+  });
+
+  test("hides and removes an instance's entry with the admin scope, and refuses both without it", async () => {
+    const app = makeApp(FAMILY);
+    await submitTo(app, "/leaderboard/level/abc", "u1", 42);
+    await submitTo(app, "/leaderboard/level/abc", "u2", 50);
+    const hidePath = "/leaderboard/level/abc/entries/u1/hidden";
+    expect((await req(app, "PUT", hidePath, { user: "u9", body: { hidden: true } })).status).toBe(403);
+    expect((await req(app, "PUT", hidePath, { user: "mod", scopes: ADMIN, body: { hidden: true } })).status).toBe(200);
+    const top = await page(await req(app, "GET", "/leaderboard/level/abc/top", { user: "u3" }));
+    expect(top.entries.map((e) => e.userId)).toEqual(["u2"]);
+    const removePath = "/leaderboard/level/abc/entries/u2";
+    expect((await req(app, "DELETE", removePath, { user: "u9" })).status).toBe(403);
+    expect((await req(app, "DELETE", removePath, { user: "mod", scopes: ADMIN })).status).toBe(200);
+    expect((await page(await req(app, "GET", "/leaderboard/level/abc/top", { user: "u3" }))).entries).toEqual([]);
+  });
+
+  test("refuses a submission once the family's shape changed under an instance with entries", async () => {
+    await submitTo(makeApp(FAMILY), "/leaderboard/level/abc", "u1", 42);
+    const flipped = makeApp({ ...FAMILY, families: [{ pattern: "level/:levelId", direction: "desc" }] });
+    const res = await submitTo(flipped, "/leaderboard/level/abc", "u2", 5);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: "leaderboard/board_immutable" } });
+    // An instance with no entries yet takes the new shape: nothing stored is reinterpreted.
+    expect((await submitTo(flipped, "/leaderboard/level/new", "u2", 5)).status).toBe(201);
+  });
+
+  test("lists the families beside the boards", async () => {
+    const list = await conforming(await req(makeApp(FAMILY), "GET", "/leaderboard", { user: "u1" }), BoardList);
+    expect(list.families).toEqual([
+      {
+        key: "level",
+        pattern: "level/:levelId",
+        store: "d1",
+        direction: "asc",
+        aggregation: "best",
+        window: null,
+        tiers: [],
+      },
+    ]);
+  });
+
+  describe("the allow hook", () => {
+    const withAllow = (allow: (key: string, c: unknown) => boolean | Promise<boolean>) =>
+      makeApp({ ...FAMILY, families: [{ pattern: "level/:levelId", direction: "asc", allow }] });
+
+    test("refuses an id it does not know with a leaderboard error, and writes nothing", async () => {
+      const app = withAllow(async (key) => key === "level/known");
+      const res = await submitTo(app, "/leaderboard/level/unknown", "u1", 10);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ error: { code: "leaderboard/board_not_found" } });
+      expect(await count("pithy_leaderboard_boards")).toBe(0);
+      expect(await count("pithy_leaderboard_entries")).toBe(0);
+      expect((await submitTo(app, "/leaderboard/level/known", "u1", 10)).status).toBe(201);
+    });
+
+    test("is handed the instance key and the request", async () => {
+      const seen: Array<[string, string | undefined]> = [];
+      const app = withAllow((key, c) => {
+        seen.push([key, (c as { req: { header(name: string): string | undefined } }).req.header("x-user")]);
+        return true;
+      });
+      await submitTo(app, "/leaderboard/level/abc", "u1", 10);
+      expect(seen).toEqual([["level/abc", "u1"]]);
+    });
+
+    test("is not asked on a read, which writes nothing", async () => {
+      const app = withAllow(() => {
+        throw new Error("a read must not ask");
+      });
+      expect((await req(app, "GET", "/leaderboard/level/abc/top", { user: "u1" })).status).toBe(200);
+    });
+
+    test("allows every matching key when a family sets none", async () => {
+      expect((await submitTo(makeApp(FAMILY), "/leaderboard/level/anything-at-all", "u1", 10)).status).toBe(201);
+    });
   });
 });

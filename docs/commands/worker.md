@@ -64,6 +64,8 @@ The fifth half is the Worker's D1 entries against its `ownBindings`. A binding l
 
 The sixth half is the vars the Worker declares with `defineVars`, in its `pithy.config.ts` or on a capability it composes ([`docs/CLI.md`](../CLI.md) §3.6, "Declaring a Worker's vars"). Each is written into the top-level `vars` and every `env.<name>.vars` that lacks it, at that environment's value, else the default, after every other half, so a stanza another half has just created gets it too. A value a stanza already holds that parses under the var's schema is yours and stays. One that does not is reported — `prod: READY_AFTER_MINUTES is "soon", which its declaration refuses: … Kept.` — and left as it is. A var nobody declared is never written or deleted. The one value rewritten is a copy of the top level's in an environment the declaration gives its own value: every command that creates an `env.<name>` stanza seeds its `vars` from the top level, so a new `env.prod` starts at dev's. `pithy doctor` names any stanza that drops a declared var, holds one at the top level's value, or holds one its schema refuses, and names this command for the first two. A refused value is yours to fix by hand. A second run writes nothing.
 
+The seventh half is the rate limiters the Worker's routes declare with `describeRoute({ rateLimit })` ([`docs/CLI.md`](../CLI.md) §3.6, "Limiting a route"). `sync` assembles the app the Worker composes, its own routes and every library capability's, reads each declared limit, and writes one Workers Rate Limiting binding per policy into every stanza: `ROUTE_RATE_LIMIT_20_PER_60S` for 20 requests per 60 seconds, with that policy as its `simple` block and a `namespace_id` derived from its name. Routes declaring the same policy share the binding and keep their own budgets, because each counts under a key naming its method and path. A `ROUTE_RATE_LIMIT_…` entry no route declares any more is taken out, so changing a limit swaps the binding. Every other limiter, `AUTH_RATE_LIMITER` included, is left alone. The project's `vitest.workers.config.ts` gets each limiter it lacks, so a Workers test reaches the route; nothing is taken out of it, because it is the whole project's. A composition the Worker would refuse to boot, such as a per-user limit on an open route, is refused here before anything is written. `pithy add` runs the same half after it wires a capability. A second run writes nothing.
+
 **`pithy doctor` and `pithy deploy --env <name>` read the Workflow half back.** A declared job that was never synced used to deploy clean and never run, with nothing anywhere saying so; both now report a stanza that does not bind what the app declares, and both name this command. Which is why an app capability declaring **no** Workflows is reconciled too rather than skipped: dropping the last job has to take its binding and its cron out, or the fault would name a command that could not fix it. Nothing is invented for a project that never had either — no empty `workflows` key, no `triggers` block.
 
 **`sync --dry-run` runs the real reconcile in a private copy of the project and plans the difference**, the way `pithy add` plans (`docs/CLI.md` §1.2): the plan's one file is the Worker's `wrangler.jsonc`, its diff is the bytes the real run writes, and its `changes` are the sentences the real run prints. A run that would write no file but skip a binding — a queue in a project whose root `pithy.config.ts` names no project — puts those sentences in the plan's `notes` instead. The line naming a Workflow class main does not export, or saying main could not be checked, goes in `notes` too. It is how to check, before writing anything, that a sync keeps what provisioning wrote — a D1 `database_id`, an R2 `bucket_name`, a Secrets Store entry — since an entry a stanza already has is left as written and so appears in no diff. Every refusal the real run makes is made first. Nothing is written in the project, and the copy is gone before the command exits.
@@ -196,7 +198,7 @@ $ pithy worker rename --from api --to board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"bindings":[{"env":"dev","written":[{"binding":"DB","type":"d1"}],"skipped":[]}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[],"vars":[{"env":"dev","written":[{"name":"READY_AFTER_MINUTES","value":15}],"invalid":[]}],"exports":{"state":"exported"}}
+{"command":"worker.sync","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"bindings":[{"env":"dev","written":[{"binding":"DB","type":"d1"}],"skipped":[]}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}],"serviceRuns":[{"env":"dev","services":[{"binding":"APP_B","service":"acme-app-b"}],"changed":true}],"ownedBindings":[],"vars":[{"env":"dev","written":[{"name":"READY_AFTER_MINUTES","value":15}],"invalid":[]}],"rateLimits":[{"env":"dev","written":["ROUTE_RATE_LIMIT_20_PER_60S"],"removed":[]}],"exports":{"state":"exported"}}
 ```
 
 | key | type | meaning |
@@ -239,6 +241,10 @@ $ pithy worker sync --worker api --json
 | `vars[].env` | `string` | The environment written. `dev` names the top-level stanza |
 | `vars[].written` | `object[]` | The vars written into that stanza, each `{ name, value }`: the environment's own value, else the default. Each one it lacked, and each it held at the top level's value where the declaration gives the environment its own. Empty on a re-run |
 | `vars[].invalid` | `object[]` | The vars that stanza holds a value for that the declaration refuses, each `{ name, value, problem }`. The value is kept as it is |
+| `rateLimits` | `object[]` | One entry per environment reconciled, for the rate limiters the Worker's routes declare with `describeRoute({ rateLimit })` |
+| `rateLimits[].env` | `string` | The environment written. `dev` names the top-level stanza |
+| `rateLimits[].written` | `string[]` | The `ROUTE_RATE_LIMIT_<limit>_PER_<period>S` bindings that stanza lacked and now has. Empty on a re-run |
+| `rateLimits[].removed` | `string[]` | The `ROUTE_RATE_LIMIT_…` bindings taken out of that stanza, because no route declares them any more |
 | `exports` | `object` | Whether the Worker's main module exports each Workflow class the app declares for the environments reconciled. `state` is `"exported"` when it exports them all or none is declared, `"missing"` with `main` (the module, relative to the Worker) and `missing` (each class it does not export, in declaration order), or `"unreadable"` with `reason` |
 | `plan` | `object` | Present only under `--dry-run`: the Worker's `wrangler.jsonc` edit with its diff and one sentence per change, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). `files` is empty when the run would change nothing |
 
@@ -300,7 +306,7 @@ Could not read api's wrangler.jsonc.
 Fix the file, then run the rename again — this command edits it.
 ```
 
-**Nothing to sync.** `sync` writes what `domains`, an `app` capability, `ownBindings`, `vars` and the D1, KV, R2 and queue bindings it composes declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write. A Worker that composes only a library capability's resources, or declares only vars, is synced, not refused.
+**Nothing to sync.** `sync` writes what `domains`, an `app` capability, `ownBindings`, `vars`, the routes' rate limits and the D1, KV, R2 and queue bindings it composes declare, and a Worker with none of them, and no D1 entry left naming its own database, has nothing to write. A Worker that composes only a library capability's resources, or declares only vars, is synced, not refused.
 
 ```
 api declares neither domains nor an app capability, and no vars.
@@ -312,6 +318,13 @@ Declare `domains`, `vars` or `app` in the worker's pithy.config.ts. This writes 
 ```
 The var READY_AFTER_MINUTES is declared twice: by pithy.config.ts and by stats-feed.
 Declare each var once. Rename one, or take it out of the Worker's own vars.
+```
+
+**A per-user limit on an open route.** Refused before anything is written, naming the route: a `user` limit counts signed-in users, and a route whose verification admits anyone else has callers it cannot name.
+
+```
+POST /games/:id/runs limits each user, and lets in callers who are not signed in.
+Declare `rateLimit: { key: "ip", … }` on that route, or verify it with `bearer` or `session` alone.
 ```
 
 **A `domains` block that is not valid.** Refused with the field named, rather than written into a `routes` entry Cloudflare rejects at deploy.

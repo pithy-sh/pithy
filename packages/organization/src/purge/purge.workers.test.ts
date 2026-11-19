@@ -166,6 +166,7 @@ describe("the organization purge", () => {
     const handed: unknown[] = [];
     const media: PurgeStep = {
       step: "media",
+      capability: "media",
       contribution: {
         subject: "organization",
         summary: "Deletes the organization's uploads.",
@@ -176,7 +177,11 @@ describe("the organization purge", () => {
         },
       },
     };
-    const own: PurgeStep = { step: "organization", contribution: organizationPurgeContribution("DB", sweep) };
+    const own: PurgeStep = {
+      step: "organization",
+      capability: "organization",
+      contribution: organizationPurgeContribution("DB", sweep),
+    };
     const { step, ran } = workflow();
     const outcome = await purgeOrganization(
       { steps: [own, media], env: { DB: env.DB }, ops: organizationPurgeOps(deps()) },
@@ -239,7 +244,11 @@ describe("the organization purge", () => {
       actor: counsel,
       at: NOW,
     });
-    const own: PurgeStep = { step: "organization", contribution: organizationPurgeContribution("DB", sweep) };
+    const own: PurgeStep = {
+      step: "organization",
+      capability: "organization",
+      contribution: organizationPurgeContribution("DB", sweep),
+    };
     const run = { steps: [own], env: { DB: env.DB }, ops: organizationPurgeOps(deps()) };
     const first = await purgeOrganization(run, workflow().step, Terminal, { organizationId: ACME });
     expect(first).toMatchObject({ state: "held", erased: [] });
@@ -257,7 +266,11 @@ describe("the organization purge", () => {
   });
 
   test("a purge run again finds nothing to do, and an organization inside its window erases nothing", async () => {
-    const own: PurgeStep = { step: "organization", contribution: organizationPurgeContribution("DB") };
+    const own: PurgeStep = {
+      step: "organization",
+      capability: "organization",
+      contribution: organizationPurgeContribution("DB"),
+    };
     const run = { steps: [own], env: { DB: env.DB }, ops: organizationPurgeOps(deps()) };
     expect((await purgeOrganization(run, workflow().step, Terminal, { organizationId: BETA })).state).toBe("not_due");
     await removeOrganization(deps(), {

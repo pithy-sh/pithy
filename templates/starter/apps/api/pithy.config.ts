@@ -54,7 +54,14 @@ const app = defineCapability({
   // Read a request through `validate(target, Schema)` from
   // @pithy-sh/core/src/http/validation. `GET /health` is built in.
   // routes: {
-  //   declared: [{ method: "GET", path: "/hello" }],
+  //   declared: [
+  //     { method: "GET", path: "/hello" },
+  //     // With auth composed (`pithy add auth`), the module mounts this one behind
+  //     // requireAuth() from auth's src/http/middleware, which admits a signed-in
+  //     // caller and answers 401 otherwise. The handler after it reads
+  //     // c.var.auth with no null check.
+  //     { method: "GET", path: "/me" },
+  //   ],
   //   load: async () => (await import("./src/routes")).mountRoutes,
   // },
 });

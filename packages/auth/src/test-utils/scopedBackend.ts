@@ -10,13 +10,11 @@ import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import type { Migration } from "kysely/migration";
-import { authDatabase } from "../data/tables";
-import { makeAuth } from "../instance/auth";
-import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
 import { dropOrder } from "./dropOrder";
+import { signInTestUser } from "./signIn";
 
 /**
  * The fixtures a workers suite needs to put a **real** `auth()` in front of a request.
@@ -127,49 +125,11 @@ export function scopedWorkerEnv(env: Record<string, unknown>, db: unknown = env.
   };
 }
 
-/**
- * Sign a user in by OTP against the same database the composed backend reads, and return a bearer token and
- * the session cookie the same sign-in sets, as a `cookie` header value.
- *
- * Directly through Better Auth rather than over HTTP: the sign-in flow is not what these suites are about,
- * and the session row it writes is exactly the one a request presenting the token resolves.
- */
+/** Sign a user in against the same database the composed backend reads, with the secret it signs with. */
 export async function signInScoped(
   db: D1Database,
   address = "player@test.com",
 ): Promise<{ token: string; userId: string; cookie: string }> {
-  const mailbox: { template: string; code?: string }[] = [];
-  const instance = makeAuth({
-    db: authDatabase(db),
-    secret: SCOPED_SESSION_SECRET,
-    baseURL: SCOPED_ORIGIN,
-    basePath: "/auth",
-    trustedOrigins: [SCOPED_ORIGIN],
-    ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async (m) => {
-      mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
-      return { delivery: "queued" };
-    },
-    sessionExpiresIn: 604800,
-    sessionUpdateAge: 86400,
-    verificationExpiresIn: 300,
-    otpLength: 6,
-    disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true, microsoft: true },
-    emit: async () => {},
-    plugins: [],
-  });
-  await instance.api.sendVerificationOTP({ body: { email: address, type: "sign-in" }, headers: new Headers() });
-  const otp = mailbox.find((m) => m.template === "otp");
-  if (!otp?.code) throw new Error("no OTP was mailed");
-  const { headers, response } = await instance.api.signInEmailOTP({
-    body: { email: address, otp: otp.code },
-    headers: new Headers(),
-    returnHeaders: true,
-  });
-  const cookie = headers
-    .getSetCookie()
-    .map((line) => line.split(";")[0])
-    .join("; ");
-  return { token: response.token, userId: response.user.id, cookie };
+  const { token, userId, cookie } = await signInTestUser(db, { email: address, secret: SCOPED_SESSION_SECRET });
+  return { token, userId, cookie };
 }

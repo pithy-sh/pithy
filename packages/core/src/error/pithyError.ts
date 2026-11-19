@@ -288,6 +288,28 @@ export class ConflictError extends PithyError {
   }
 }
 
+/**
+ * The request body is larger than the route accepts. Throw it where the size is the only thing wrong, so a
+ * client knows a smaller body is the fix: a 400 says the body was malformed, and this one was not.
+ */
+export class PayloadTooLargeError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "core/payload_too_large" }>;
+
+  constructor(args: ErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "core/payload_too_large",
+        status: 413,
+        message: args.message ?? "That request is too large.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
 export class RateLimitError extends PithyError {
   declare readonly payload: Extract<ErrorPayload, { code: "rate_limit/exceeded" }>;
 

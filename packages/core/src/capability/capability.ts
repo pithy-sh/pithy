@@ -27,6 +27,7 @@ import type { Translator } from "../i18n/translator";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import { declareRetained } from "../migrations/retainedDeclaration";
+import type { TextModerator } from "../moderation/moderator";
 import { presenceRoomsSocket } from "../presence/channel";
 import {
   assertPresenceDeclaration,
@@ -86,6 +87,14 @@ export interface PithyVars {
    * byte for byte as it did before.
    */
   t: Translator;
+  /**
+   * The text-moderation seam (`c.var.moderator`) — check text one person writes and others see before showing it.
+   *
+   * **Zero-config, so nothing null-checks it**, like {@link PithyVars.t}. With no `moderation` config it checks
+   * the folded blocklist the kit ships; config extends the list or replaces the moderator. It answers `allow`,
+   * `reject` or `review`, and a moderator that throws or runs out of time is `review`, never `allow`.
+   */
+  moderator: TextModerator;
   /**
    * The verified control-plane caller (`c.var.controlPlane`), populated only by the `control-plane`
    * middleware; `null` on every other request. Read through `requireControlPlane(scope)`.
@@ -786,10 +795,11 @@ export interface Capability<
    * when this capability holds nothing keyed to a person, which is the ordinary case.
    *
    * **The purge Workflow runs each composed contribution as its own step**, named for this capability, so a
-   * failure retries this capability alone and the steps that finished are not re-run. That is why there is
-   * at most one per subject here, and why `erase` must succeed when there is nothing left to erase.
-   * `defineCapability` refuses a contribution for a subject the kit does not know. An adopter declares one
-   * on their own `app` capability for their own tables, with the same types.
+   * failure retries that step alone and the steps that finished are not re-run. That is why `erase` must succeed
+   * when there is nothing left to erase. Several for one subject each take their own `step` name and run as
+   * `<capability>/<step>`. `defineCapability` refuses a contribution for a subject the kit does not know, and
+   * several for one subject without distinct step names. An adopter declares one on their own `app` capability
+   * for their own tables, with the same types — or one per feature, each named.
    */
   purge?: readonly PurgeContribution[];
   /**
@@ -870,7 +880,7 @@ export function defineCapability<
   for (const spec of Object.values(input.databases ?? {})) {
     if (spec.migrations && spec.retained) declareRetained(spec.migrations, spec.retained);
   }
-  // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
+  // A purge contribution no purge could run — a subject the kit does not know, or two sharing a step — is refused
   // where it is written, naming the capability, rather than on the day somebody is erased.
   if (input.purge) assertPurgeContributions(input.name, input.purge);
   // An index no reprocess could re-embed is refused the same way, naming the capability.

@@ -24,7 +24,7 @@ import type { Context, Hono, MiddlewareHandler } from "hono";
 import { AuthAuditActions } from "../../audit/actions";
 import { resolveDb } from "../../data/binding";
 import { authDatabase } from "../../data/tables";
-import { requireAuth } from "../../http/middleware";
+import { requireAuthUnnarrowed } from "../../http/middleware";
 import type { AuthInstance } from "../../instance/auth";
 import { lifecycleRefusalFor } from "../../lifecycle/enforce";
 import { PACKAGE_VERSION } from "../../version.generated";
@@ -493,7 +493,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       verification: ["bearer", "session"],
       responses: { 200: ConsentView },
     }),
-    requireAuth(),
+    requireAuthUnnarrowed(),
     validate("query", ConsentQuery),
     async (c) => {
       const instance = await deps.host().instance(c);
@@ -534,7 +534,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       verification: ["bearer", "session"],
       responses: { 200: ConsentDecision },
     }),
-    requireAuth(),
+    requireAuthUnnarrowed(),
     csrf,
     validate("json", ConsentBody),
     async (c) => {
@@ -563,7 +563,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       verification: ["bearer", "session"],
       responses: { 200: ConnectedApplications },
     }),
-    requireAuth(),
+    requireAuthUnnarrowed(),
     async (c) => {
       const userId = c.var.auth?.userId ?? "";
       const adapter = await adapterOf(await deps.host().instance(c));
@@ -604,7 +604,7 @@ export function registerMcpRoutes(app: Hono<PithyHonoEnv>, deps: McpRouteDeps): 
       verification: ["bearer", "session"],
       responses: { 200: RevokedApplication },
     }),
-    requireAuth(),
+    requireAuthUnnarrowed(),
     csrf,
     validate("param", ConnectionParam),
     async (c) => {
