@@ -65,6 +65,15 @@ describe("acquireRefreshLock", () => {
     expect(await acquireRefreshLock(db(), "A", later(1000))).toBe(true);
   });
 
+  test("a holder re-acquiring renews its lock, so a pass handed across runs is not reclaimed mid-walk", async () => {
+    expect(await acquireRefreshLock(db(), "A", NOW)).toBe(true);
+    expect(await acquireRefreshLock(db(), "A", later(DEFAULT_LOCK_STALE_MS - 1))).toBe(true);
+    // Past the first horizon but inside the renewed one: still A's.
+    expect(await acquireRefreshLock(db(), "B", later(DEFAULT_LOCK_STALE_MS + 1))).toBe(false);
+    // A renewed lock still ages out once its holder stops renewing it.
+    expect(await acquireRefreshLock(db(), "B", later(2 * DEFAULT_LOCK_STALE_MS))).toBe(true);
+  });
+
   test("reclaims a lock older than the stale horizon — a crashed instance does not wedge it forever", async () => {
     expect(await acquireRefreshLock(db(), "A", NOW)).toBe(true);
     // Just under the horizon: still A's.

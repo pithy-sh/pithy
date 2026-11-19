@@ -110,13 +110,29 @@ export const BoardSummary = z
   .describe("One configured board.");
 export type BoardSummary = z.infer<typeof BoardSummary>;
 
-/** Every configured board. */
+/** One configured board family, as a board picker needs it. */
+export const FamilySummary = BoardSummary.extend({
+  key: z
+    .string()
+    .describe("The family's prefix. An instance is the board `<key>/<id>`, addressed at `/leaderboard/<key>/<id>`."),
+  pattern: z.string().describe("The family's key pattern, such as `level/:levelId`."),
+}).describe("One configured board family: the shape every board in it shares.");
+export type FamilySummary = z.infer<typeof FamilySummary>;
+
+/** Every configured board and family. */
 export const BoardList = z
-  .object({ boards: z.array(BoardSummary).describe("Every board this Worker serves.") })
-  .describe("The configured boards.");
+  .object({
+    boards: z.array(BoardSummary).describe("Every board this Worker serves by a fixed key."),
+    families: z
+      .array(FamilySummary)
+      .nullable()
+      .optional()
+      .describe("Every board family this Worker serves. Absent from a Worker on a release before families."),
+  })
+  .describe("The configured boards and families.");
 export type BoardList = z.infer<typeof BoardList>;
 
-// --- The management surface (#817) -------------------------------------------------------------------
+// --- The management surface -------------------------------------------------------------------------
 //
 // Read by a management client across a version boundary, so a field added to any of these later is
 // `.optional()` as well as `.nullable()` (CLAUDE.md §HTTP).
@@ -144,9 +160,29 @@ export const AdminBoardView = z
   .describe("One configured board, with the window open now.");
 export type AdminBoardView = z.infer<typeof AdminBoardView>;
 
+/** One configured family, as a management pane needs it. */
+export const AdminFamilyView = AdminBoardView.extend({
+  key: z
+    .string()
+    .describe(
+      "The family's prefix. The instance listing takes it as `:family`, and an instance is addressed as `:board/:instance`.",
+    ),
+  pattern: z.string().describe("The family's key pattern, such as `level/:levelId`."),
+}).describe("One configured board family, with the window open now on each of its instances.");
+export type AdminFamilyView = z.infer<typeof AdminFamilyView>;
+
 export const AdminBoardList = z
-  .object({ boards: z.array(AdminBoardView).describe("Every board this Worker serves, in config order.") })
-  .describe("The configured boards.");
+  .object({
+    boards: z.array(AdminBoardView).describe("Every board this Worker serves by a fixed key, in config order."),
+    families: z
+      .array(AdminFamilyView)
+      .nullable()
+      .optional()
+      .describe(
+        "Every board family this Worker serves, in config order. Absent from a Worker on a release before families.",
+      ),
+  })
+  .describe("The configured boards and families.");
 export type AdminBoardList = z.infer<typeof AdminBoardList>;
 
 /** One entry, with everything a moderator needs to decide about it. */
@@ -185,6 +221,29 @@ export const AdminEntriesPage = z
   })
   .describe("A page of one window of a board.");
 export type AdminEntriesPage = z.infer<typeof AdminEntriesPage>;
+
+/** One instance of a family. */
+export const AdminInstanceView = z
+  .object({
+    key: z
+      .string()
+      .describe("The instance's board key, `<family>/<id>`. What the entry routes take as `:board/:instance`."),
+    createdAt: z.iso.datetime().describe("When the instance took its first entry, ISO-8601."),
+  })
+  .describe("One instance of a board family.");
+export type AdminInstanceView = z.infer<typeof AdminInstanceView>;
+
+export const AdminInstancesPage = z
+  .object({
+    family: z.string().describe("The family's prefix."),
+    instances: z.array(AdminInstanceView).describe("The family's instances, by key."),
+    nextCursor: z
+      .string()
+      .nullable()
+      .describe("Where the next page resumes, or null at the last instance. Opaque; hand it back verbatim."),
+  })
+  .describe("A page of one family's instances: every one that has taken an entry.");
+export type AdminInstancesPage = z.infer<typeof AdminInstancesPage>;
 
 /** A held lock. */
 export const AdminLockView = z
