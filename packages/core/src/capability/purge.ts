@@ -16,13 +16,16 @@ import { MessageKey, messageDomain } from "../i18n/catalog";
  * or anonymized because a ledger must still add up — is the capability that owns them. It says so here,
  * the way it states its migrations and its seeds, and the purge runs what was composed.
  *
- * ## One capability, one step
+ * ## One contribution, one step
  *
- * The purge Workflow runs every composed contribution as **its own step**, named for the
- * capability. A step that fails retries alone, and the ones that finished are not re-run — which is why a
- * capability may declare at most one contribution per subject, and why every `erase` must be idempotent:
- * a step is retried after a failure that may have come after its rows were already gone, and erasing
- * nothing must then succeed.
+ * The purge Workflow runs every composed contribution as **its own step**. A step that fails retries alone, and
+ * the ones that finished are not re-run — which is why every `erase` must be idempotent: a step is retried after a
+ * failure that may have come after its rows were already gone, and erasing nothing must then succeed.
+ *
+ * A capability's one contribution for a subject is named for the capability. An `app` that composes several
+ * features, each keeping a person's rows, declares one contribution per feature for that subject instead, each with
+ * its own `step` name, and each runs as `<capability>/<step>` — so one failing table retries that feature's erase
+ * and no other. Two for one subject without distinct step names are refused, because they would share a step.
  *
  * ## The same contribution answers an export
  *
@@ -101,6 +104,13 @@ interface PurgeContributionBase {
   /** The kind of subject this erases. */
   readonly subject: PurgeSubject;
   /**
+   * This contribution's own step name, when a capability splits one subject's purge into several — `scores`,
+   * `runs`. The step runs, records and exports as `<capability>/<step>`. Optional on a capability's only contribution
+   * for a subject, which is named for the capability alone; required on each of several, and distinct among them.
+   * A lowercase slug: letters, digits and hyphens, starting with a letter.
+   */
+  readonly step?: string;
+  /**
    * One sentence on what is erased, anonymized or kept — `Deletes the user's uploads and their stored bytes.`
    * Recorded with the step that ran it, so the trail says what a purge did and not only that it ran.
    */
@@ -159,19 +169,27 @@ export function isRetained(contribution: PurgeContribution): contribution is Ret
 
 /** One step of a purge: which capability it runs, and the contribution that capability declared. */
 export interface PurgeStep {
-  /** The step's name — the capability's, so a retried step names who failed. */
+  /**
+   * The step's name — the capability's, or `<capability>/<step>` for a named contribution — so a retried step names
+   * who failed. The Workflow step, the purge record and the audit event all carry it.
+   */
   readonly step: string;
+  /** The capability that declared the contribution. */
+  readonly capability: string;
   /** The contribution this step runs. */
   readonly contribution: PurgeContribution;
 }
 
+/** A step name: a lowercase slug, so `<capability>/<step>` reads as one name and splits at one place. */
+const STEP_NAME = /^[a-z][a-z0-9-]*$/;
+
 /**
  * Refuse a capability's purge contributions that no purge could run as declared: an unknown subject, two for
- * one subject, or one with nothing to record. Called by `defineCapability`, so the refusal names the capability
- * where it is written rather than surfacing in a Workflow on the day somebody is deleted.
+ * one subject that would share a step, or one with nothing to record. Called by `defineCapability`, so the refusal
+ * names the capability where it is written rather than surfacing in a Workflow on the day somebody is deleted.
  */
 export function assertPurgeContributions(capability: string, contributions: readonly PurgeContribution[]): void {
-  const seen = new Set<string>();
+  const bySubject = new Map<PurgeSubject, PurgeContribution[]>();
   for (const contribution of contributions) {
     const subject = PurgeSubject.safeParse(contribution.subject);
     if (!subject.success) {
@@ -180,62 +198,107 @@ export function assertPurgeContributions(capability: string, contributions: read
         action: `Declare it for one of: ${PurgeSubject.options.join(", ")}.`,
       });
     }
-    if (seen.has(subject.data)) {
+    bySubject.set(subject.data, [...(bySubject.get(subject.data) ?? []), contribution]);
+  }
+  for (const [subject, declared] of bySubject) assertStepNames(capability, subject, declared);
+  for (const contribution of contributions) assertContribution(capability, contribution);
+}
+
+/**
+ * Refuse step names that would not give every contribution for one subject a step of its own: a name that is not a
+ * slug, an unnamed one beside others, or two sharing a name.
+ */
+function assertStepNames(capability: string, subject: PurgeSubject, declared: readonly PurgeContribution[]): void {
+  for (const { step } of declared) {
+    if (step !== undefined && (typeof step !== "string" || !STEP_NAME.test(step))) {
       throw new ValidationError({
-        message: `The ${capability} capability declares two purge contributions for ${subject.data}.`,
-        action: "Fold them into one: each capability is one step of the purge, and a retried step re-runs all of it.",
-      });
-    }
-    seen.add(subject.data);
-    if (contribution.summary.trim() === "") {
-      throw new ValidationError({
-        message: `The ${capability} capability's ${subject.data} purge has no summary.`,
-        action: "Say in one sentence what it erases. The purge records it with the step.",
-      });
-    }
-    if (contribution.export !== undefined && typeof contribution.export !== "function") {
-      throw new ValidationError({
-        message: `The ${capability} capability's ${subject.data} purge has an export that is not a function.`,
-        action: "Give it an `export` that answers what this capability holds about the subject, or leave it out.",
-      });
-    }
-    if (contribution.retain !== undefined) {
-      assertRetention(capability, subject.data, contribution);
-      continue;
-    }
-    if (typeof contribution.erase !== "function") {
-      throw new ValidationError({
-        message: `The ${capability} capability's ${subject.data} purge has no erase function.`,
+        message: `The ${capability} capability's ${subject} purge has the step name "${String(step)}", which is not a lowercase slug.`,
         action:
-          "Give it an `erase` that removes or anonymizes the subject's rows, or a `retain` that says why it keeps them.",
+          "Name the step with lowercase letters, digits and hyphens, starting with a letter — `scores`, `synced-progress`.",
       });
     }
   }
+  if (declared.length < 2) return;
+  const unnamed = declared.filter((each) => each.step === undefined).length;
+  if (unnamed > 0) {
+    const names = declared.map((each) => (each.step === undefined ? "unnamed" : `"${each.step}"`)).join(", ");
+    throw new ValidationError({
+      message: `The ${capability} capability declares ${declared.length} purge contributions for ${subject} (${names}), and ${unnamed} ${unnamed === 1 ? "has" : "have"} no step name.`,
+      action:
+        "Give each its own `step` name, so the purge runs and retries each on its own, or fold them into one contribution.",
+    });
+  }
+  const seen = new Set<string>();
+  for (const { step } of declared) {
+    if (step === undefined) continue;
+    if (seen.has(step)) {
+      throw new ValidationError({
+        message: `The ${capability} capability declares two ${subject} purge contributions with the step name "${step}".`,
+        action: "Give each its own `step` name: two with one name would share a step, and a retry would re-run both.",
+      });
+    }
+    seen.add(step);
+  }
+}
+
+/** Refuse one contribution with nothing to record, an export that is not a function, or no disposition. */
+function assertContribution(capability: string, contribution: PurgeContribution): void {
+  const purge = purgeLabel(contribution);
+  if (contribution.summary.trim() === "") {
+    throw new ValidationError({
+      message: `The ${capability} capability's ${purge} has no summary.`,
+      action: "Say in one sentence what it erases. The purge records it with the step.",
+    });
+  }
+  if (contribution.export !== undefined && typeof contribution.export !== "function") {
+    throw new ValidationError({
+      message: `The ${capability} capability's ${purge} has an export that is not a function.`,
+      action: "Give it an `export` that answers what this capability holds about the subject, or leave it out.",
+    });
+  }
+  if (contribution.retain !== undefined) {
+    assertRetention(capability, purge, contribution);
+    return;
+  }
+  if (typeof contribution.erase !== "function") {
+    throw new ValidationError({
+      message: `The ${capability} capability's ${purge} has no erase function.`,
+      action:
+        "Give it an `erase` that removes or anonymizes the subject's rows, or a `retain` that says why it keeps them.",
+    });
+  }
+}
+
+/** How a refusal names one contribution: `user purge`, or `user purge step "scores"` for a named one. */
+function purgeLabel(contribution: PurgeContribution): string {
+  return contribution.step === undefined
+    ? `${contribution.subject} purge`
+    : `${contribution.subject} purge step "${contribution.step}"`;
 }
 
 /**
  * Refuse a retaining contribution the person could not be answered with: no basis, a basis key outside the
  * capability's own domain, no export, or an erase too.
  */
-function assertRetention(capability: string, subject: PurgeSubject, contribution: PurgeContribution): void {
+function assertRetention(capability: string, purge: string, contribution: PurgeContribution): void {
   const retain = contribution.retain as { basis?: unknown; basisKey?: unknown } | undefined;
   const basis = retain?.basis;
   if (typeof basis !== "string" || basis.trim() === "") {
     throw new ValidationError({
-      message: `The ${capability} capability's ${subject} purge retains the rows with no basis.`,
+      message: `The ${capability} capability's ${purge} retains the rows with no basis.`,
       action: "Say in one sentence, written for the person, why they are kept — `Kept for tax records.`",
     });
   }
-  if (retain?.basisKey !== undefined) assertBasisKey(capability, subject, retain.basisKey);
+  if (retain?.basisKey !== undefined) assertBasisKey(capability, purge, retain.basisKey);
   if (typeof contribution.export !== "function") {
     throw new ValidationError({
-      message: `The ${capability} capability's ${subject} purge retains the rows and has no export.`,
+      message: `The ${capability} capability's ${purge} retains the rows and has no export.`,
       action: "Give it an `export`: rows that are kept are rows an access request is answered with.",
     });
   }
   if (contribution.erase !== undefined) {
     throw new ValidationError({
-      message: `The ${capability} capability's ${subject} purge both retains and erases the rows.`,
+      message: `The ${capability} capability's ${purge} both retains and erases the rows.`,
       action: "Declare one disposition: `retain` with its basis, or `erase`.",
     });
   }
@@ -245,33 +308,39 @@ function assertRetention(capability: string, subject: PurgeSubject, contribution
  * Refuse a basis key no catalog could hold for this capability — the rule `composeMessages` holds every `messages`
  * key to: `<domain>/<path>`, and the domain is the contributing capability's own name.
  */
-function assertBasisKey(capability: string, subject: PurgeSubject, key: unknown): void {
+function assertBasisKey(capability: string, purge: string, key: unknown): void {
   const shown = String(key);
   if (!MessageKey.safeParse(key).success) {
     throw new ValidationError({
-      message: `The ${capability} capability's ${subject} purge names the basis key \`${shown}\`, which is not a catalog key.`,
+      message: `The ${capability} capability's ${purge} names the basis key \`${shown}\`, which is not a catalog key.`,
       action: `Name it \`${capability}/<path>\`, as every message key is.`,
     });
   }
   const domain = messageDomain(shown);
   if (domain !== capability) {
     throw new ValidationError({
-      message: `The ${capability} capability's ${subject} purge names the basis key \`${shown}\`, outside its own domain.`,
+      message: `The ${capability} capability's ${purge} names the basis key \`${shown}\`, outside its own domain.`,
       action: `Rename it to start with \`${capability}/\`: a capability may only contribute messages under its own domain.`,
       detail: `\`${capability}\` named the basis key \`${shown}\`, whose domain is \`${domain}\`.`,
     });
   }
 }
 
-/** The steps a purge of `subject` runs, in composition order — libraries first, the adopter's `app` last. */
+/**
+ * The steps a purge of `subject` runs, in composition order — libraries first, the adopter's `app` last — and a
+ * capability's named steps in the order it declared them.
+ */
 export function purgeSteps(
   capabilities: readonly { readonly name: string; readonly purge?: readonly PurgeContribution[] }[],
   subject: PurgeSubject,
 ): PurgeStep[] {
   const steps: PurgeStep[] = [];
   for (const capability of capabilities) {
-    const contribution = capability.purge?.find((candidate) => candidate.subject === subject);
-    if (contribution) steps.push({ step: capability.name, contribution });
+    for (const contribution of capability.purge ?? []) {
+      if (contribution.subject !== subject) continue;
+      const step = contribution.step === undefined ? capability.name : `${capability.name}/${contribution.step}`;
+      steps.push({ step, capability: capability.name, contribution });
+    }
   }
   return steps;
 }
@@ -279,6 +348,8 @@ export function purgeSteps(
 /** What every export entry says: the capability, its sentence, and what a purge does with its rows. */
 interface PurgeExportEntryBase {
   readonly capability: string;
+  /** The contribution's own step name, for one of a capability's named steps. Absent for an unnamed one. */
+  readonly step?: string;
   readonly summary: string;
   /** `erase` — a purge erases or anonymizes these rows — or `retain`, a purge keeps them. */
   readonly disposition: PurgeDisposition;
@@ -306,7 +377,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Read every step's export for one subject — the export document's body, in step order.
+ * Read every step's export for one subject — the export document's body, in step order. A capability's named
+ * steps each answer their own entry under that capability, so one feature's unreadable table costs its own part.
  *
  * **Each read is guarded on its own and they run concurrently**, the same shape as the user pane's guarded
  * sub-reads: one capability whose table will not read costs its own entry as `unavailable`, and the rest of
@@ -320,15 +392,16 @@ export async function purgeExports(
   translate?: BasisTranslation,
 ): Promise<PurgeExportEntry[]> {
   return Promise.all(
-    steps.map(async ({ step, contribution }): Promise<PurgeExportEntry> => {
+    steps.map(async ({ capability, contribution }): Promise<PurgeExportEntry> => {
+      const named = contribution.step === undefined ? { capability } : { capability, step: contribution.step };
       const base: PurgeExportEntryBase = isRetained(contribution)
         ? {
-            capability: step,
+            ...named,
             summary: contribution.summary,
             disposition: "retain",
             ...retainedBasis(contribution, translate),
           }
-        : { capability: step, summary: contribution.summary, disposition: "erase" };
+        : { ...named, summary: contribution.summary, disposition: "erase" };
       const read = contribution.export;
       if (read === undefined) return { ...base, state: "not_exported" };
       try {

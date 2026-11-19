@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { PurgeStep } from "@pithy-sh/core/src/capability/purge";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type PurgeStep, purgeSteps } from "@pithy-sh/core/src/capability/purge";
 import type { WorkflowStepLike } from "@pithy-sh/core/src/workflow/faults";
 import { describe, expect, test } from "vitest";
 import { PURGE_START_PAGE, type PurgeOps, purgeUser, startDuePurges } from "./run";
@@ -47,6 +48,7 @@ function contribution(name: string, log: string[], failures = 0): PurgeStep & { 
   let erases = 0;
   return {
     step: name,
+    capability: name,
     erases: () => erases,
     contribution: {
       subject: "user",
@@ -91,6 +93,7 @@ function ops(log: string[], due: "due" | "not_due" | "gone" = "due", held: () =>
 function retaining(name: string, log: string[]): PurgeStep {
   return {
     step: name,
+    capability: name,
     contribution: {
       subject: "user",
       summary: `Keeps ${name}'s rows.`,
@@ -156,6 +159,7 @@ describe("purgeUser", () => {
     const seen: (string | null)[] = [];
     const testers: PurgeStep = {
       step: "testers",
+      capability: "testers",
       contribution: {
         subject: "user",
         summary: "Erases the membership.",
@@ -223,6 +227,61 @@ describe("purgeUser", () => {
     expect([media.erases(), app.erases(), auth.erases()]).toEqual([1, 3, 1]);
     expect(ran.filter((name) => name === "erase app")).toHaveLength(3);
     expect(ran.filter((name) => name === "erase media")).toHaveLength(1);
+  });
+
+  test("a capability's named steps run as two Workflow steps, and a failure in one retries only that one", async () => {
+    const log: string[] = [];
+    let runsErases = 0;
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      purge: [
+        {
+          subject: "user",
+          step: "scores",
+          summary: "Deletes the scores.",
+          erase: async () => void log.push("erase scores"),
+        },
+        {
+          subject: "user",
+          step: "runs",
+          summary: "Deletes the runs.",
+          erase: async () => {
+            runsErases += 1;
+            log.push("erase runs");
+            // The runs table is briefly unreachable, and comes back on the platform's retry.
+            if (runsErases <= 2) throw new Error("runs is down");
+          },
+        },
+      ],
+    });
+    const steps = [contribution("auth", log), ...purgeSteps([app], "user")];
+    const { step, ran } = workflow(5);
+    const outcome = await purgeUser({ steps, env: {}, ops: ops(log) }, step, Terminal, { userId: "u1" });
+    expect(outcome.erased).toEqual(["app/scores", "app/runs", "auth"]);
+    expect(ran.filter((name) => name === "erase app/scores")).toHaveLength(1);
+    expect(ran.filter((name) => name === "erase app/runs")).toHaveLength(3);
+    expect(ran).toContain("hold app/runs");
+    expect(log).toContain("record app/scores u1: Deletes the scores.");
+    expect(log).toContain("record app/runs u1: Deletes the runs.");
+  });
+
+  test("a capability's one unnamed contribution runs and records under the capability's name, as it always has", async () => {
+    const log: string[] = [];
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      purge: [{ subject: "user", summary: "Erases the adopter's tables.", erase: async () => {} }],
+    });
+    const { step, ran } = workflow();
+    await purgeUser(
+      { steps: [...purgeSteps([app], "user"), contribution("auth", log)], env: {}, ops: ops(log) },
+      step,
+      Terminal,
+      { userId: "u1" },
+    );
+    expect(ran).toContain("erase app");
+    expect(log).toContain("record app u1: Erases the adopter's tables.");
   });
 
   test("an instance that failed on one contribution, replayed, re-runs that one and none that finished", async () => {
@@ -296,6 +355,7 @@ describe("purgeUser", () => {
         steps: [
           {
             step: "app",
+            capability: "app",
             contribution: { subject: "user", summary: "x", erase: async (context) => void seen.push(context) },
           },
         ],
@@ -349,6 +409,7 @@ describe("purgeUser under a legal hold", () => {
     const steps = [
       {
         step: "media",
+        capability: "media",
         contribution: {
           subject: "user" as const,
           summary: "Deletes media.",
