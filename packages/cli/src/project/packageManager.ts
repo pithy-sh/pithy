@@ -216,6 +216,11 @@ export interface InstallPackageOptions {
   workerDir?: string;
   /** The package to install, e.g. `@pithy-sh/auth`. */
   pkg: string;
+  /**
+   * The manager to install with, for a caller that knows it before any lockfile does: `pithy init` installs into a
+   * project that has none yet, where {@link detectPackageManager} would say `npm`. Defaults to the detected one.
+   */
+  packageManager?: PackageManager;
   /** Override the spawner (tests inject a stub); defaults to the real install. */
   run?: InstallRunner;
 }
@@ -234,7 +239,7 @@ export interface InstallPackageOptions {
  */
 export async function installPackage(options: InstallPackageOptions): Promise<{ packageManager: PackageManager }> {
   const { projectDir, pkg } = options;
-  const packageManager = await detectPackageManager(projectDir);
+  const packageManager = options.packageManager ?? (await detectPackageManager(projectDir));
   const workerDir = options.workerDir ?? projectDir;
   if (await alreadyProvided(projectDir, pkg, workerDir)) return { packageManager };
   const cwd = await installDirFor(projectDir, workerDir);

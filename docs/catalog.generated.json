@@ -554,6 +554,8 @@
         "--androidRail",
         "--web-rail",
         "--webRail",
+        "--billing-subject",
+        "--billingSubject",
         "--dir",
         "--json",
         "--no-json"

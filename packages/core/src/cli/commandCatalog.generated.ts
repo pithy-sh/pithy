@@ -1307,6 +1307,11 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
+      "--billing-subject": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
       "--dir": {
         "type": "string",
         "required": false,
