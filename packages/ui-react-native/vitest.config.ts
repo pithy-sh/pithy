@@ -103,7 +103,7 @@ export default defineConfig({
           ...UNIT_BUDGETS,
           name: "node",
           environment: "node",
-          include: ["src/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: ["node_modules/**"],
           env: { ...NO_ACCOUNT },
           setupFiles: [CONFIG_DIR_SETUP],
