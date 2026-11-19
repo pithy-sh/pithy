@@ -1101,7 +1101,6 @@
     "packages/leaderboard/src/retention/prune.ts": 2,
     "packages/leaderboard/src/retention/prune.workers.test.ts": 1,
     "packages/leaderboard/src/schema-descriptions.test.ts": 2,
-    "packages/leaderboard/vitest.config.ts": 2,
     "packages/ledger/src/capability.test.ts": 1,
     "packages/ledger/src/capability.ts": 4,
     "packages/ledger/src/http/guards.ts": 2,

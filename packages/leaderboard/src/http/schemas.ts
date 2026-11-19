@@ -3,12 +3,7 @@
 
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
-import {
-  BOARD_KEY_PATTERN,
-  INSTANCE_ID_PATTERN,
-  MAX_INSTANCE_ID_LENGTH,
-  RESERVED_INSTANCE_IDS,
-} from "../config/boardKey";
+import { BOARD_KEY_PATTERN, INSTANCE_ID_PATTERN, isInstanceId, MAX_INSTANCE_ID_LENGTH } from "../config/boardKey";
 import { MAX_SEGMENT_SIZE } from "../rank/segment";
 
 /**
@@ -51,13 +46,20 @@ export const EntryParam = BoardParam.extend({
 }).describe("The board and player a moderation route addresses.");
 export type EntryParam = z.infer<typeof EntryParam>;
 
-/** The id segment of an instance route. */
+/**
+ * The id segment of an instance route. `isInstanceId` decides, as it does for config; the length and pattern
+ * are stated beside it so the OpenAPI document carries them. The refine runs only once those pass, so an id
+ * that is too long or badly shaped is told that alone, and the reserved-word issue names only `segment`.
+ */
 const InstanceId = z
   .string()
   .min(1)
   .max(MAX_INSTANCE_ID_LENGTH)
   .regex(INSTANCE_ID_PATTERN, "An instance id is letters, digits, dashes and underscores.")
-  .refine((id) => !RESERVED_INSTANCE_IDS.has(id), "`segment` cannot name an instance.")
+  .refine(isInstanceId, {
+    message: "`segment` cannot name an instance.",
+    when: (payload) => payload.issues.length === 0,
+  })
   .describe(
     "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
   );

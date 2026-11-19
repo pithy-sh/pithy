@@ -85,7 +85,7 @@ export const RankPassContinuation = z
 export type RankPassContinuation = z.output<typeof RankPassContinuation>;
 
 /** Two sweeps' outcomes as one: their deletions added, and every board either could not prune. */
-function mergePruned(a: PruneOutcome, b: PruneOutcome): PruneOutcome {
+export function mergePruned(a: PruneOutcome, b: PruneOutcome): PruneOutcome {
   const deleted =
     (a.state === "pruned" ? a.deleted : a.counted.deleted) + (b.state === "pruned" ? b.deleted : b.counted.deleted);
   const unpruned = [...(a.state === "partial" ? a.unpruned : []), ...(b.state === "partial" ? b.unpruned : [])];
