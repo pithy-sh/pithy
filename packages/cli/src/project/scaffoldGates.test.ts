@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { runAdd } from "../capabilities/flow";
 import { localDevStateRoot, localDevStorePath } from "../devSecrets/store";
 import { runUiAdd } from "../ui/flow";
+import { composeInitPayments } from "./initPayments";
 import { scaffoldProject } from "./scaffold";
 import { resolveSingleWorker } from "./workerScope";
 
@@ -269,6 +270,55 @@ describe("after pithy add secrets", () => {
     } finally {
       await rm(probe, { force: true });
     }
+  }, 180_000);
+});
+
+/**
+ * `pithy init` with rails named: payments composed by the add flow, then the rails turned on. A store rail needs
+ * nothing more and a hosted one needs its return URLs, so the fixture names both kinds. A project of its own, so
+ * the secrets block above proves what it proves alone.
+ */
+describe("after pithy init composes payments for named rails", () => {
+  let paid: string;
+
+  beforeAll(async () => {
+    paid = await mkdtemp(join(tmpdir(), "pithy-gates-paid-"));
+    await scaffoldProject({ targetDir: paid, appName: PROJECT, worker: WORKER });
+    await linkFarm(paid);
+    await composeInitPayments({
+      projectDir: paid,
+      workerDir: join(paid, "apps", WORKER),
+      worker: WORKER,
+      project: PROJECT,
+      account: null,
+      billingSubject: "user",
+      rails: ["apple", "google", "stripe"],
+      steps: { install: async () => ({ packageManager: "bun" }), migrate: async () => [] },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await rm(paid, { recursive: true, force: true });
+  });
+
+  test("writes the rails into the payments registration", async () => {
+    const config = await readFile(join(paid, "apps", WORKER, "pithy.config.ts"), "utf8");
+    expect(config).toContain("rails: { apple: true, google: true, stripe: true },");
+  });
+
+  test("typechecks, with no edit by the adopter", async () => {
+    const { code, output } = await run(paid, tsc(paid), ["-b"]);
+    expect({ code, output }).toMatchObject({ code: 0, output: "" });
+  }, 120_000);
+
+  test("lints clean", async () => {
+    const { code, output } = await run(paid, biome(paid), ["check", "."]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+  }, 60_000);
+
+  test("runs its tests", async () => {
+    const { code, output } = await run(paid, vitest(paid), ["run"]);
+    expect({ code, output }).toMatchObject({ code: 0 });
   }, 180_000);
 });
 

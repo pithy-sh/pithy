@@ -801,14 +801,6 @@ describe("the React Native offer", () => {
     return { code, stderr: stderr.join("") };
   }
 
-  test("a rail the new backend cannot enable is refused before anything is scaffolded", async () => {
-    const target = join(dir, "refused");
-    const { code, stderr } = await refused(["--dir", target, "--name", "acme", "--ios-rail", "apple", "--json"]);
-    expect(code).toBe(3);
-    expect(stderr).toContain("The apple rail needs the payments capability");
-    await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
-  });
-
   test("a rail value no platform takes is refused, listing the valid ones", async () => {
     const target = join(dir, "invalid");
     const { code, stderr } = await refused(["--dir", target, "--name", "acme", "--web-rail", "google", "--json"]);
