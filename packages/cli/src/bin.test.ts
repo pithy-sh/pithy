@@ -114,6 +114,7 @@ describe("pithy init", () => {
       lint: "biome",
       frontEnd: null,
       reactNative: null,
+      selling: null,
       domains: null,
       // The agent instructions: a cloned repo with neither file gets both.
       agents: { path: "AGENTS.md", state: "added", reason: null },
