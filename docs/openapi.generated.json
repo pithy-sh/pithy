@@ -4519,7 +4519,7 @@
                             "properties": {
                               "capability": {
                                 "type": "string",
-                                "description": "The capability whose rows this step answered for."
+                                "description": "The step: the capability whose rows it answered for, or `<capability>/<step>` for one of a capability's named steps."
                               },
                               "disposition": {
                                 "type": "string",
@@ -10517,7 +10517,7 @@
         ],
         "operationId": "postAuthAdminUsersByUserIdExport",
         "summary": "Export everything the kit holds about one user, from every composed capability, as one document.",
-        "description": "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
+        "description": "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them, and one per step for a capability that splits its purge into named steps. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
         "parameters": [
           {
             "name": "userId",
@@ -10600,6 +10600,10 @@
                                 "type": "string",
                                 "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
+                              "step": {
+                                "description": "The step's own name, when the capability splits this purge into named steps — `scores`, `runs` — each with its own entry under the capability; the purge runs it as `<capability>/<step>`. Absent for a capability's one unnamed step, and from a Worker that predates named steps.",
+                                "type": "string"
+                              },
                               "summary": {
                                 "type": "string",
                                 "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
@@ -10649,6 +10653,10 @@
                                 "type": "string",
                                 "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
+                              "step": {
+                                "description": "The step's own name, when the capability splits this purge into named steps — `scores`, `runs` — each with its own entry under the capability; the purge runs it as `<capability>/<step>`. Absent for a capability's one unnamed step, and from a Worker that predates named steps.",
+                                "type": "string"
+                              },
                               "summary": {
                                 "type": "string",
                                 "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
@@ -10689,6 +10697,10 @@
                                 "type": "string",
                                 "description": "The capability whose rows these are — the purge step that erases or keeps them."
                               },
+                              "step": {
+                                "description": "The step's own name, when the capability splits this purge into named steps — `scores`, `runs` — each with its own entry under the capability; the purge runs it as `<capability>/<step>`. Absent for a capability's one unnamed step, and from a Worker that predates named steps.",
+                                "type": "string"
+                              },
                               "summary": {
                                 "type": "string",
                                 "description": "What that capability's purge erases, anonymizes or keeps, in its own sentence."
@@ -10725,7 +10737,7 @@
                         ],
                         "description": "One capability's part of an export, behind a state, so an unread part cannot be taken for an empty one."
                       },
-                      "description": "Every composed capability's part, in the order the purge erases them."
+                      "description": "Every composed capability's part, in the order the purge erases them. A capability with named steps answers one part per step, each naming its `step`."
                     }
                   },
                   "required": [

@@ -74,9 +74,10 @@ export function personRowGaps(capabilities: readonly PersonRowsSubject[]): Perso
   for (const capability of capabilities) {
     const columns = personColumnsOf(capability);
     if (columns.length === 0) continue;
-    const contribution = capability.purge?.find((candidate) => candidate.subject === "user");
-    if (!contribution) gaps.push({ capability: capability.name, columns, gap: "no_contribution" });
-    else if (typeof contribution.export !== "function")
+    // Every user contribution answers for its rows: a capability split into named steps exports from each.
+    const contributions = capability.purge?.filter((candidate) => candidate.subject === "user") ?? [];
+    if (contributions.length === 0) gaps.push({ capability: capability.name, columns, gap: "no_contribution" });
+    else if (contributions.some((contribution) => typeof contribution.export !== "function"))
       gaps.push({ capability: capability.name, columns, gap: "no_export" });
   }
   return gaps;

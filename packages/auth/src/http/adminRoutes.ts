@@ -838,7 +838,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
       describeRoute({
         summary: "Export everything the kit holds about one user, from every composed capability, as one document.",
         description:
-          "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
+          "The answer to an access request. One entry per composed capability that declares a purge contribution, in the order the purge erases them, and one per step for a capability that splits its purge into named steps. Audited as a disclosure, with the reason, which travels in the body because a reason often names the person who asked and a URL is written to every request log. Changes nothing.",
         verification: "control-plane",
         scopes: [AUTH_USERS_EXPORT_SCOPE],
         responses: { 200: AdminUserExportResponse },
@@ -888,7 +888,10 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           metadata: {
             reason,
             disclosure: true,
-            capabilities: entries.map((entry) => `${entry.capability}:${entry.state}`),
+            capabilities: entries.map(
+              (entry) =>
+                `${entry.step === undefined ? entry.capability : `${entry.capability}/${entry.step}`}:${entry.state}`,
+            ),
           },
         });
 

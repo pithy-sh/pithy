@@ -777,10 +777,11 @@ export interface Capability<
    * when this capability holds nothing keyed to a person, which is the ordinary case.
    *
    * **The purge Workflow runs each composed contribution as its own step**, named for this capability, so a
-   * failure retries this capability alone and the steps that finished are not re-run. That is why there is
-   * at most one per subject here, and why `erase` must succeed when there is nothing left to erase.
-   * `defineCapability` refuses a contribution for a subject the kit does not know. An adopter declares one
-   * on their own `app` capability for their own tables, with the same types.
+   * failure retries that step alone and the steps that finished are not re-run. That is why `erase` must succeed
+   * when there is nothing left to erase. Several for one subject each take their own `step` name and run as
+   * `<capability>/<step>`. `defineCapability` refuses a contribution for a subject the kit does not know, and
+   * several for one subject without distinct step names. An adopter declares one on their own `app` capability
+   * for their own tables, with the same types — or one per feature, each named.
    */
   purge?: readonly PurgeContribution[];
   /**
@@ -861,7 +862,7 @@ export function defineCapability<
   for (const spec of Object.values(input.databases ?? {})) {
     if (spec.migrations && spec.retained) declareRetained(spec.migrations, spec.retained);
   }
-  // A purge contribution no purge could run — a subject the kit does not know, or two for one — is refused
+  // A purge contribution no purge could run — a subject the kit does not know, or two sharing a step — is refused
   // where it is written, naming the capability, rather than on the day somebody is erased.
   if (input.purge) assertPurgeContributions(input.name, input.purge);
   // An index no reprocess could re-embed is refused the same way, naming the capability.

@@ -10,7 +10,7 @@ import { isPersonColumn, personColumnsOf, personRowGaps } from "./personColumns"
 const Row = (columns: string[]) =>
   z.object(Object.fromEntries(columns.map((column) => [column, z.string().describe(column)]))).describe("A row.");
 
-const holding = (name: string, columns: string[], purge?: { subject: string; export?: unknown }[]) => ({
+const holding = (name: string, columns: string[], purge?: { subject: string; step?: string; export?: unknown }[]) => ({
   name,
   databases: { app: { binding: "DB", tables: { [`${name}Rows`]: Row(["id", ...columns]) } } },
   ...(purge ? { purge } : {}),
@@ -48,6 +48,22 @@ describe("personRowGaps", () => {
     expect(personRowGaps([holding("files", ["ownerId"], [{ subject: "user" }])])).toEqual([
       { capability: "files", columns: ["filesRows.ownerId"], gap: "no_export" },
     ]);
+  });
+
+  test("one whose named user steps do not all export is a gap, whichever step leaves it out", () => {
+    const exports = async () => ({});
+    expect(
+      personRowGaps([
+        holding(
+          "app",
+          ["userId"],
+          [
+            { subject: "user", step: "scores", export: exports },
+            { subject: "user", step: "runs" },
+          ],
+        ),
+      ]),
+    ).toEqual([{ capability: "app", columns: ["appRows.userId"], gap: "no_export" }]);
   });
 
   test("one that erases or retains and exports passes, and one with no person column needs nothing", () => {
