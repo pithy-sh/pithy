@@ -41,7 +41,7 @@ import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
 import { exchangeHandoff, handOffToApp, startNativeSignIn } from "./handoff";
 import { admitsRefusedAccount, lifecycleRedirect } from "./lifecycleGate";
-import { accountHolder, requireAccountHolder, requireAuth } from "./middleware";
+import { accountHolder, requireAccountHolder, requireAuthUnnarrowed } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
@@ -225,7 +225,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
         verification: ["bearer", "session"],
         responses: { 200: MyDevicesResponse },
       }),
-      requireAuth(),
+      requireAuthUnnarrowed(),
       (c) => listMyDevices(c, wiring),
     );
     app.post(
@@ -235,7 +235,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
         verification: ["bearer", "session"],
         responses: { 200: MyDeviceRevokeResponse },
       }),
-      requireAuth(),
+      requireAuthUnnarrowed(),
       csrf,
       validate("json", RevokeDeviceBody),
       (c) => revokeMyDevice(c, wiring, c.req.valid("json")),
@@ -303,7 +303,7 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
           200: { description: "The caller's stored picture, as PNG, JPEG or WebP bytes.", contentType: "image/*" },
         },
       }),
-      requireAuth(),
+      requireAuthUnnarrowed(),
       (c) => serveMyImage(c, wiring),
     );
 

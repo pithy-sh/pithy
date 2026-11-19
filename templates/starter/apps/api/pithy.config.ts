@@ -61,6 +61,19 @@ const app = defineCapability({
   //     }),
   //     (c) => c.text("Hi."),
   //   );
+  //   // With auth composed (`pithy add auth`), requireAuth() from auth's
+  //   // src/http/middleware admits a signed-in caller and answers 401
+  //   // otherwise. The handler after it reads c.var.auth with no null check.
+  //   a.get(
+  //     "/me",
+  //     describeRoute({
+  //       summary: "Say who is signed in.",
+  //       verification: ["bearer", "session"],
+  //       responses: { 200: { description: "The caller's user id.", contentType: "text/plain" } },
+  //     }),
+  //     requireAuth(),
+  //     (c) => c.text(c.var.auth.userId),
+  //   );
   // },
 });
 

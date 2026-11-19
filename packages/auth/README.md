@@ -60,6 +60,39 @@ So: **do not "improve" this by matching more addresses, and do not make the refu
 
 **Microsoft reaches row 3 more than any other provider, on purpose.** Entra ID cannot vouch for an email it did not verify: its `email` is a directory attribute a tenant admin sets to anything. So a Microsoft address is verified only by the `xms_edov` claim, the personal-accounts tenant, or — connecting from inside the account — matching the address the account already holds. `src/instance/microsoftEmail.ts` is the rule and `docs/microsoft-oauth.md` is the setup.
 
+## A signed-in caller for an app route
+
+`requireAuth()` is the gate for your own routes too. Stack it after `describeRoute`, and the handler after it reads `c.var.auth` with no null check:
+
+```ts
+import { requireAuth } from "@pithy-sh/auth/src/http/middleware";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+
+app.get(
+  "/notes",
+  describeRoute({ summary: "List your notes.", verification: ["bearer", "session"], responses: { 200: Notes } }),
+  requireAuth(),
+  async (c) => c.json({ notes: await notesOf(c.var.auth.userId) }),
+);
+```
+
+No valid session or bearer token is 401 `auth/invalid_token`. A suspended or deleted account is 403 `auth/account_suspended` or `auth/account_deleted`. The narrowing reaches the handlers chained after the guard on the same route; a separate `app.use(path, requireAuth())` statement refuses the same requests and narrows nothing, since a type does not carry from one statement to the next. Hono's context does not widen back to `Context<PithyHonoEnv>`, so a function that takes the handler's context types it `Context<PithyHonoEnv & SignedInEnv>`; a route that must hand `c` to one taking `Context<PithyHonoEnv>` stacks `requireAuthUnnarrowed()`, the same check with no narrowing.
+
+**Test it signed in.** `signInTestUser` from `@pithy-sh/auth/src/test-utils/signIn` signs a user in inside the Workers pool and hands back the headers. The session is a real row Better Auth wrote, so the route sees what a deployed Worker would. Pass the address of a user your seed wrote to sign in as them, or a new one to create a user, and the secret your test seeded as `auth-session-secret`:
+
+```ts
+import { env } from "cloudflare:test";
+import { signInTestUser } from "@pithy-sh/auth/src/test-utils/signIn";
+
+test("a signed-in caller lists their notes", async () => {
+  const ada = await signInTestUser(env.DB, { email: "ada@example.com", secret: SESSION_SECRET });
+  const res = await app.request("/notes", { headers: ada.headers }, env);
+  expect(res.status).toBe(200);
+});
+```
+
+`headers` carries the session token as `Authorization: Bearer`, the way a phone sends it. `cookie` is the same session as a browser holds it. One session, two shapes, no second token. The cookie's name follows the origin, so if your test composes `auth()` on an `https` `baseURL`, pass the same `baseURL` and the cookie comes back as `__Secure-better-auth.session_token`, the only name that Worker reads.
+
 ## A recent sign-in for an app route
 
 `requireRecentSignIn({ maxAgeSeconds, purpose })` gates one app route on a sign-in within the window it names: revealing a stored secret, changing who can see something. It stacks after the route's own gates. A session signed in longer ago is refused with 403 `auth/recent_sign_in_required`, the same code on every gated route, and the refusal is recorded as `auth/recent_sign_in_refused` with your `purpose`. A bearer session and a cookie session are judged alike, and the remedy is the same for both: sign in again, then retry. Rotating a token never passes, because a rotation keeps the original sign-in time. [`docs/recent-sign-in.md`](docs/recent-sign-in.md) says when to use the gate and how a web and a phone client handle the refusal.
