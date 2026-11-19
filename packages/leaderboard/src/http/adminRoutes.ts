@@ -12,13 +12,16 @@ import type { Context, Hono } from "hono";
 import { clearLock, type EntryActOutcome, moderateEntry } from "../admin/moderate";
 import { listEntries, listLocks } from "../admin/read";
 import { type LeaderboardAuditAction, LeaderboardAuditActions } from "../audit/actions";
-import { type LeaderboardBoard, type LeaderboardConfig, materializeSchedule } from "../config/config";
+import { listInstances } from "../board/instances";
+import { familyPrefix, type LeaderboardConfig, materializeSchedule } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { LeaderboardBoardNotFoundError } from "../error/errors";
 import { windowKeyAt } from "../window/schedule";
+import { boardOr404 } from "./handlers";
 import {
   AdminBoardList,
   AdminEntriesPage,
+  AdminInstancesPage,
   AdminLockClearResult,
   AdminLockList,
   AdminModerationResult,
@@ -27,16 +30,28 @@ import {
   AdminBoardParam,
   AdminEntriesQuery,
   AdminEntryParam,
+  AdminFamilyParam,
+  AdminInstanceEntryParam,
+  AdminInstanceParam,
+  AdminInstancesQuery,
+  boardKeyOf,
   ClearLockBody,
   CorrectEntryBody,
   EntryActBody,
   LockParam,
 } from "./schemas";
 import { LEADERBOARD_ENTRIES_MODERATE_SCOPE, LEADERBOARD_ENTRIES_READ_SCOPE } from "./scopes";
-import { adminBoardView, adminEntryState, adminEntryView, adminLockView } from "./views";
+import {
+  adminBoardView,
+  adminEntryState,
+  adminEntryView,
+  adminFamilyView,
+  adminInstanceView,
+  adminLockView,
+} from "./views";
 
 /**
- * The leaderboard's management surface (#817), behind the control plane:
+ * The leaderboard's management surface, behind the control plane:
  *
  *   GET  {base}/admin/boards                                   → every board            (leaderboard:entries:read)
  *   GET  {base}/admin/boards/:board/entries                    → a window, paged         (leaderboard:entries:read)
@@ -49,6 +64,11 @@ import { adminBoardView, adminEntryState, adminEntryView, adminLockView } from "
  *                                                                param AdminEntryParam, json CorrectEntryBody
  *   POST {base}/admin/locks/:name/clear                        → clear a stale lock      (leaderboard:entries:moderate)
  *                                                                param LockParam, json ClearLockBody
+ *   GET  {base}/admin/families/:family/instances               → a family's instances   (leaderboard:entries:read)
+ *                                                                param AdminFamilyParam, query AdminInstancesQuery
+ *
+ * Every `admin/boards/:board/…` route is registered again at `admin/boards/:board/:instance/…` for an
+ * instance of a family, taking `AdminInstanceParam` or `AdminInstanceEntryParam`, through the same handler.
  *
  * **`requireControlPlane` replaces `requireAuth`, never stacks with it.** A management client holds no
  * session, and the seam leaves `c.var.auth` null so a control-plane credential can satisfy no player gate;
@@ -94,13 +114,6 @@ function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
   return context;
 }
 
-/** The configured board, or the capability's own 404. A param schema shapes the key; it never looks it up. */
-function board(config: LeaderboardConfig, key: string): LeaderboardBoard {
-  const found = config.boards.find((b) => b.key === key);
-  if (!found) throw new LeaderboardBoardNotFoundError({ detail: `No board configured with key "${key}".` });
-  return found;
-}
-
 const ENTRY_ACTIONS: Record<"hide" | "unhide" | "correct", LeaderboardAuditAction> = {
   hide: LeaderboardAuditActions.entryHidden,
   unhide: LeaderboardAuditActions.entryUnhidden,
@@ -120,10 +133,10 @@ export function registerLeaderboardAdminRoutes(
   async function entryAct(
     c: Context<PithyHonoEnv>,
     act: "hide" | "unhide" | "correct",
-    param: AdminEntryParam,
+    param: AdminEntryParam & { instance?: string },
     body: EntryActBody & { score?: number },
   ) {
-    const b = board(config, param.board);
+    const b = boardOr404(config, boardKeyOf(param));
     const now = clock();
     const who = caller(c);
     const outcome: EntryActOutcome = await moderateEntry(database(c), {
@@ -184,7 +197,7 @@ export function registerLeaderboardAdminRoutes(
     app.get(
       `${base}/admin/boards`,
       describeRoute({
-        summary: "List every configured board, with the window open now.",
+        summary: "List every configured board and family, with the window open now.",
         verification: "control-plane",
         scopes: [LEADERBOARD_ENTRIES_READ_SCOPE],
         responses: { 200: AdminBoardList },
@@ -193,40 +206,10 @@ export function registerLeaderboardAdminRoutes(
       (c) => {
         const now = clock();
         return c.json(
-          { boards: config.boards.map((b) => adminBoardView(config, b, now)) } satisfies AdminBoardList,
-          200,
-        );
-      },
-    );
-
-    app.get(
-      `${base}/admin/boards/:board/entries`,
-      describeRoute({
-        summary: "Read a window of a board, ranked and paged, hidden entries included.",
-        verification: "control-plane",
-        scopes: [LEADERBOARD_ENTRIES_READ_SCOPE],
-        responses: { 200: AdminEntriesPage },
-      }),
-      requireControlPlane(LEADERBOARD_ENTRIES_READ_SCOPE),
-      validate("param", AdminBoardParam),
-      validate("query", AdminEntriesQuery),
-      async (c) => {
-        const b = board(config, c.req.valid("param").board);
-        const query = c.req.valid("query");
-        const window = query.window ?? windowKeyAt(b.window, clock());
-        const page = await listEntries(leaderboardDatabase(database(c)), b, window, {
-          ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
-          ...(query.limit === undefined ? {} : { limit: query.limit }),
-          ...(query.userId === undefined ? {} : { userId: query.userId }),
-          ...(query.hidden === undefined ? {} : { hidden: query.hidden === "true" }),
-        });
-        return c.json(
           {
-            board: b.key,
-            window,
-            entries: page.items.map(adminEntryView),
-            nextCursor: page.nextCursor,
-          } satisfies AdminEntriesPage,
+            boards: config.boards.map((b) => adminBoardView(config, b, now)),
+            families: config.families.map((f) => adminFamilyView(config, f, now)),
+          } satisfies AdminBoardList,
           200,
         );
       },
@@ -247,46 +230,119 @@ export function registerLeaderboardAdminRoutes(
       },
     );
 
-    app.post(
-      `${base}/admin/boards/:board/entries/:userId/hide`,
-      describeRoute({
-        summary: "Hide an entry from every read, with a reason.",
-        verification: "control-plane",
-        scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
-        responses: { 200: AdminModerationResult },
-      }),
-      requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
-      validate("param", AdminEntryParam),
-      validate("json", EntryActBody),
-      (c) => entryAct(c, "hide", c.req.valid("param"), c.req.valid("json")),
-    );
+    // Every board-addressed management route twice: at `:board` for a configured board, and at
+    // `:board/:instance` for an instance of a family, through the same handler.
+    const roots = [
+      { path: `${base}/admin/boards/:board`, board: AdminBoardParam, entry: AdminEntryParam },
+      { path: `${base}/admin/boards/:board/:instance`, board: AdminInstanceParam, entry: AdminInstanceEntryParam },
+    ] as const;
+    for (const root of roots) {
+      app.get(
+        `${root.path}/entries`,
+        describeRoute({
+          summary: "Read a window of a board, ranked and paged, hidden entries included.",
+          verification: "control-plane",
+          scopes: [LEADERBOARD_ENTRIES_READ_SCOPE],
+          responses: { 200: AdminEntriesPage },
+        }),
+        requireControlPlane(LEADERBOARD_ENTRIES_READ_SCOPE),
+        validate("param", root.board),
+        validate("query", AdminEntriesQuery),
+        async (c) => {
+          const b = boardOr404(config, boardKeyOf(c.req.valid("param")));
+          const query = c.req.valid("query");
+          const window = query.window ?? windowKeyAt(b.window, clock());
+          const page = await listEntries(leaderboardDatabase(database(c)), b, window, {
+            ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+            ...(query.userId === undefined ? {} : { userId: query.userId }),
+            ...(query.hidden === undefined ? {} : { hidden: query.hidden === "true" }),
+          });
+          return c.json(
+            {
+              board: b.key,
+              window,
+              entries: page.items.map(adminEntryView),
+              nextCursor: page.nextCursor,
+            } satisfies AdminEntriesPage,
+            200,
+          );
+        },
+      );
 
-    app.post(
-      `${base}/admin/boards/:board/entries/:userId/unhide`,
-      describeRoute({
-        summary: "Put a hidden entry back on the board, with a reason.",
-        verification: "control-plane",
-        scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
-        responses: { 200: AdminModerationResult },
-      }),
-      requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
-      validate("param", AdminEntryParam),
-      validate("json", EntryActBody),
-      (c) => entryAct(c, "unhide", c.req.valid("param"), c.req.valid("json")),
-    );
+      app.post(
+        `${root.path}/entries/:userId/hide`,
+        describeRoute({
+          summary: "Hide an entry from every read, with a reason.",
+          verification: "control-plane",
+          scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
+          responses: { 200: AdminModerationResult },
+        }),
+        requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
+        validate("param", root.entry),
+        validate("json", EntryActBody),
+        (c) => entryAct(c, "hide", c.req.valid("param"), c.req.valid("json")),
+      );
 
-    app.post(
-      `${base}/admin/boards/:board/entries/:userId/correct`,
+      app.post(
+        `${root.path}/entries/:userId/unhide`,
+        describeRoute({
+          summary: "Put a hidden entry back on the board, with a reason.",
+          verification: "control-plane",
+          scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
+          responses: { 200: AdminModerationResult },
+        }),
+        requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
+        validate("param", root.entry),
+        validate("json", EntryActBody),
+        (c) => entryAct(c, "unhide", c.req.valid("param"), c.req.valid("json")),
+      );
+
+      app.post(
+        `${root.path}/entries/:userId/correct`,
+        describeRoute({
+          summary: "Correct an entry's score, with a reason. The original is kept.",
+          verification: "control-plane",
+          scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
+          responses: { 200: AdminModerationResult },
+        }),
+        requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
+        validate("param", root.entry),
+        validate("json", CorrectEntryBody),
+        (c) => entryAct(c, "correct", c.req.valid("param"), c.req.valid("json")),
+      );
+    }
+
+    app.get(
+      `${base}/admin/families/:family/instances`,
       describeRoute({
-        summary: "Correct an entry's score, with a reason. The original is kept.",
+        summary: "List a family's instances, paged, by key.",
         verification: "control-plane",
-        scopes: [LEADERBOARD_ENTRIES_MODERATE_SCOPE],
-        responses: { 200: AdminModerationResult },
+        scopes: [LEADERBOARD_ENTRIES_READ_SCOPE],
+        responses: { 200: AdminInstancesPage },
       }),
-      requireControlPlane(LEADERBOARD_ENTRIES_MODERATE_SCOPE),
-      validate("param", AdminEntryParam),
-      validate("json", CorrectEntryBody),
-      (c) => entryAct(c, "correct", c.req.valid("param"), c.req.valid("json")),
+      requireControlPlane(LEADERBOARD_ENTRIES_READ_SCOPE),
+      validate("param", AdminFamilyParam),
+      validate("query", AdminInstancesQuery),
+      async (c) => {
+        const prefix = c.req.valid("param").family;
+        if (!config.families.some((f) => familyPrefix(f) === prefix)) {
+          throw new LeaderboardBoardNotFoundError({ detail: `No family configured with prefix "${prefix}".` });
+        }
+        const query = c.req.valid("query");
+        const page = await listInstances(leaderboardDatabase(database(c)), prefix, {
+          ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+          ...(query.limit === undefined ? {} : { limit: query.limit }),
+        });
+        return c.json(
+          {
+            family: prefix,
+            instances: page.items.map(adminInstanceView),
+            nextCursor: page.nextCursor,
+          } satisfies AdminInstancesPage,
+          200,
+        );
+      },
     );
 
     app.post(

@@ -2,8 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { Context } from "hono";
 import { assertBoardDefinition } from "../board/registry";
-import type { LeaderboardBoard, LeaderboardConfig } from "../config/config";
+import {
+  familyPrefix,
+  type LeaderboardBoard,
+  type LeaderboardConfig,
+  type ResolvedBoard,
+  resolveBoard,
+} from "../config/config";
 import type { LeaderboardDatabase } from "../data/tables";
 import { deleteEntry, entryStore } from "../entry/store";
 import {
@@ -32,13 +41,39 @@ export interface HandlerDeps {
   /** The authenticated player, from the core AuthContext seam. Never from the request body. */
   userId: string;
   now: () => Date;
+  /** The request, handed to a family's `allow` hook. Required only to submit to a family that has one. */
+  context?: Context<PithyHonoEnv>;
 }
 
-/** The configured board, or a 404. Board keys come from config, so an unknown key is not a lookup miss. */
-function board(deps: HandlerDeps, key: string): LeaderboardBoard {
-  const found = deps.config.boards.find((b) => b.key === key);
-  if (!found) throw new LeaderboardBoardNotFoundError({ detail: `No board configured with key "${key}".` });
+/**
+ * The board a key resolves to — configured, or an instance of a family — or a 404. Board keys and family
+ * patterns come from config, so an unknown key is not a lookup miss.
+ */
+export function boardOr404(config: LeaderboardConfig, key: string): ResolvedBoard {
+  const found = resolveBoard(config, key);
+  if (!found) throw new LeaderboardBoardNotFoundError({ detail: `No board or family matches key "${key}".` });
   return found;
+}
+
+const board = (deps: HandlerDeps, key: string): ResolvedBoard => boardOr404(deps.config, key);
+
+/**
+ * Hold a submission to its family's `allow` hook. A refused id answers as a board that does not exist:
+ * to the caller, an id the Worker does not know is exactly that.
+ */
+async function assertAllowed(deps: HandlerDeps, b: ResolvedBoard): Promise<void> {
+  const allow = b.family?.allow;
+  if (!allow) return;
+  if (!deps.context) {
+    throw new InternalError({
+      detail: `Family "${b.family?.pattern}" has an allow hook, but no request context reached the submit handler.`,
+    });
+  }
+  if (!(await allow(b.key, deps.context))) {
+    throw new LeaderboardBoardNotFoundError({
+      detail: `The allow hook of family "${b.family?.pattern}" refused "${b.key}".`,
+    });
+  }
 }
 
 /**
@@ -73,6 +108,7 @@ export async function submitScore(
   if (b.max !== undefined && score > b.max) {
     throw new LeaderboardScoreRejectedError({ detail: `Score ${score} is above board "${b.key}" max ${b.max}.` });
   }
+  await assertAllowed(deps, b);
   const now = deps.now();
   // Guard the board's immutable fields before the first write of each board, not after.
   await assertBoardDefinition(deps.db, b, now);
@@ -202,26 +238,33 @@ export async function removeEntry(
   return { removed };
 }
 
-/** The board set, as configured — what a client needs to render a board picker. */
+/** One board's shape, as a client renders it. */
+interface BoardShapeSummary {
+  store: string;
+  direction: string;
+  aggregation: string;
+  window: string | null;
+  tiers: Array<{ key: string; from: number }>;
+}
+
+function shapeSummary(b: Omit<LeaderboardBoard, "key">): BoardShapeSummary {
+  return {
+    // Always `d1` today; surfaced so a client can tell an exact board from a future approximate one.
+    store: b.store,
+    direction: b.direction,
+    aggregation: b.aggregation,
+    window: b.window ?? null,
+    tiers: b.tiers?.map((t) => ({ key: t.key, from: t.from })) ?? [],
+  };
+}
+
+/** The board set and the families, as configured — what a client needs to render a board picker. */
 export function listBoards(deps: HandlerDeps): {
-  boards: Array<{
-    key: string;
-    store: string;
-    direction: string;
-    aggregation: string;
-    window: string | null;
-    tiers: Array<{ key: string; from: number }>;
-  }>;
+  boards: Array<BoardShapeSummary & { key: string }>;
+  families: Array<BoardShapeSummary & { key: string; pattern: string }>;
 } {
   return {
-    boards: deps.config.boards.map((b) => ({
-      key: b.key,
-      // Always `d1` today; surfaced so a client can tell an exact board from a future approximate one.
-      store: b.store,
-      direction: b.direction,
-      aggregation: b.aggregation,
-      window: b.window ?? null,
-      tiers: b.tiers?.map((t) => ({ key: t.key, from: t.from })) ?? [],
-    })),
+    boards: deps.config.boards.map((b) => ({ key: b.key, ...shapeSummary(b) })),
+    families: deps.config.families.map((f) => ({ key: familyPrefix(f), pattern: f.pattern, ...shapeSummary(f) })),
   };
 }

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { BOARD_KEY_PATTERN, INSTANCE_ID_PATTERN } from "../config/boardKey";
 import {
   BoardList,
   BoardPage,
@@ -16,6 +17,8 @@ import {
 } from "../http/responses";
 import { BOOKMARK_HEADER } from "../session/bookmark";
 import {
+  CLIENT_BOARD_KEY_PATTERN,
+  CLIENT_INSTANCE_ID_PATTERN,
   hideEntry,
   LEADERBOARD_BASE_PATH,
   LEADERBOARD_BOOKMARK_HEADER,
@@ -182,6 +185,27 @@ describe("every route, with what it sends and what it reads back", () => {
     await readTop("../b1", {}, { fetch: send });
     expect(calls[0]?.url).toBe(`${LEADERBOARD_BASE_PATH}/..%2Fb1/top`);
     await expect(readTop("\uD800", {}, { fetch: send })).resolves.toMatchObject({ ok: true });
+  });
+
+  test("an instance key of a family is its two segments, and nothing else splits", async () => {
+    const { send, calls } = answering(PAGE);
+    await readTop("level/V1St_GX-8", {}, { fetch: send });
+    expect(calls[0]?.url).toBe(`${LEADERBOARD_BASE_PATH}/level/V1St_GX-8/top`);
+    for (const [key, encoded] of [
+      ["level/..", "level%2F.."],
+      ["../abc", "..%2Fabc"],
+      ["level/a/b", "level%2Fa%2Fb"],
+      ["Level/abc", "Level%2Fabc"],
+      ["/abc", "%2Fabc"],
+    ] as const) {
+      await readTop(key, {}, { fetch: send });
+      expect(calls.at(-1)?.url, key).toBe(`${LEADERBOARD_BASE_PATH}/${encoded}/top`);
+    }
+  });
+
+  test("spells the key shapes the server holds, without importing them", () => {
+    expect(CLIENT_BOARD_KEY_PATTERN.source).toBe(BOARD_KEY_PATTERN.source);
+    expect(CLIENT_INSTANCE_ID_PATTERN.source).toBe(INSTANCE_ID_PATTERN.source);
   });
 });
 
