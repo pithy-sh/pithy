@@ -20203,10 +20203,10 @@
           "leaderboard"
         ],
         "operationId": "getLeaderboardAdminBoards",
-        "summary": "List every configured board, with the window open now.",
+        "summary": "List every configured board and family, with the window open now.",
         "responses": {
           "200": {
-            "description": "The configured boards.",
+            "description": "The configured boards and families.",
             "content": {
               "application/json": {
                 "schema": {
@@ -20289,13 +20289,174 @@
                         ],
                         "description": "One configured board, with the window open now."
                       },
-                      "description": "Every board this Worker serves, in config order."
+                      "description": "Every board this Worker serves by a fixed key, in config order."
+                    },
+                    "families": {
+                      "description": "Every board family this Worker serves, in config order. Absent from a Worker on a release before families.",
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "description": "The family's prefix. The instance listing takes it as `:family`, and an instance is addressed as `:board/:instance`."
+                              },
+                              "store": {
+                                "type": "string",
+                                "description": "Where the board's entries live. Always `d1` today."
+                              },
+                              "direction": {
+                                "type": "string",
+                                "enum": [
+                                  "asc",
+                                  "desc"
+                                ],
+                                "description": "`desc` when a higher score ranks first, `asc` when a lower one does."
+                              },
+                              "aggregation": {
+                                "type": "string",
+                                "enum": [
+                                  "best",
+                                  "latest",
+                                  "sum"
+                                ],
+                                "description": "How repeat submissions combine."
+                              },
+                              "window": {
+                                "description": "The UTC CRON expression marking where each window opens, or null for an all-time board.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "currentWindow": {
+                                "type": "string",
+                                "description": "The key of the window open now, or `all` on an all-time board."
+                              },
+                              "min": {
+                                "description": "The lowest score the board accepts, or null when it has no floor.",
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "max": {
+                                "description": "The highest score the board accepts, or null when it has no ceiling.",
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "rank": {
+                                "type": "string",
+                                "enum": [
+                                  "live",
+                                  "materialized"
+                                ],
+                                "description": "How the board ranks: `live` counts on every read, `materialized` stores a rank its refresh pass renumbers."
+                              },
+                              "pattern": {
+                                "type": "string",
+                                "description": "The family's key pattern, such as `level/:levelId`."
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "store",
+                              "direction",
+                              "aggregation",
+                              "window",
+                              "currentWindow",
+                              "min",
+                              "max",
+                              "rank",
+                              "pattern"
+                            ],
+                            "description": "One configured board family, with the window open now on each of its instances."
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
                     "boards"
                   ],
-                  "description": "The configured boards."
+                  "description": "The configured boards and families."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:read"
+        ]
+      }
+    },
+    "/leaderboard/admin/locks": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardAdminLocks",
+        "summary": "Read the rank-refresh lock, when one is held.",
+        "responses": {
+          "200": {
+            "description": "The rank-refresh locks held now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "locks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "The lock's name. `rank-refresh` is the only one: it serializes the refresh across every board."
+                          },
+                          "holder": {
+                            "type": "string",
+                            "description": "The token of the refresh instance holding it. What a clear must name."
+                          },
+                          "acquiredAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the holder took it, ISO-8601. A refresh releases it when it finishes."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "holder",
+                          "acquiredAt"
+                        ],
+                        "description": "A held rank-refresh lock."
+                      },
+                      "description": "Every lock held now. Empty when no refresh is running and none was left behind."
+                    }
+                  },
+                  "required": [
+                    "locks"
+                  ],
+                  "description": "The rank-refresh locks held now."
                 }
               }
             }
@@ -20491,76 +20652,6 @@
                     "nextCursor"
                   ],
                   "description": "A page of one window of a board."
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "security": [
-          {
-            "controlPlane": []
-          }
-        ],
-        "x-pithy-verification": [
-          "control-plane"
-        ],
-        "x-pithy-scopes": [
-          "leaderboard:entries:read"
-        ]
-      }
-    },
-    "/leaderboard/admin/locks": {
-      "get": {
-        "tags": [
-          "leaderboard"
-        ],
-        "operationId": "getLeaderboardAdminLocks",
-        "summary": "Read the rank-refresh lock, when one is held.",
-        "responses": {
-          "200": {
-            "description": "The rank-refresh locks held now.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "locks": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "description": "The lock's name. `rank-refresh` is the only one: it serializes the refresh across every board."
-                          },
-                          "holder": {
-                            "type": "string",
-                            "description": "The token of the refresh instance holding it. What a clear must name."
-                          },
-                          "acquiredAt": {
-                            "type": "string",
-                            "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                            "description": "When the holder took it, ISO-8601. A refresh releases it when it finishes."
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "holder",
-                          "acquiredAt"
-                        ],
-                        "description": "A held rank-refresh lock."
-                      },
-                      "description": "Every lock held now. Empty when no refresh is running and none was left behind."
-                    }
-                  },
-                  "required": [
-                    "locks"
-                  ],
-                  "description": "The rank-refresh locks held now."
                 }
               }
             }
@@ -21175,6 +21266,955 @@
         ]
       }
     },
+    "/leaderboard/admin/boards/{board}/{instance}/entries": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardAdminBoardsByBoardByInstanceEntries",
+        "summary": "Read a window of a board, ranked and paged, hidden entries included.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many entries to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "userId",
+            "in": "query",
+            "required": false,
+            "description": "Read one player's entry in this window, rather than the whole board.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "hidden",
+            "in": "query",
+            "required": false,
+            "description": "`true` for hidden entries only, `false` for entries not hidden. Omit for both.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of one window of a board.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window read."
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The player's id."
+                          },
+                          "score": {
+                            "type": "number",
+                            "description": "The entry's score, after the board's aggregation."
+                          },
+                          "rank": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "The entry's position, counted live, from 1; null while it is hidden or the player opted out."
+                          },
+                          "achievedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the score that counts was first reached, ISO-8601. The tiebreak."
+                          },
+                          "submittedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the entry was last written, ISO-8601."
+                          },
+                          "visible": {
+                            "type": "boolean",
+                            "description": "Whether the player consents to appear. Theirs to set."
+                          },
+                          "hidden": {
+                            "type": "boolean",
+                            "description": "Whether a moderator has hidden the entry. Only a moderator clears it."
+                          },
+                          "resultId": {
+                            "description": "The result that wrote the score this entry holds, such as a multiplayer session id; null for a plain submission.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "score",
+                          "rank",
+                          "achievedAt",
+                          "submittedAt",
+                          "visible",
+                          "hidden",
+                          "resultId"
+                        ],
+                        "description": "One entry on a board, with its moderation state."
+                      },
+                      "description": "The entries in the board's order, best first, hidden ones in place."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the end of the board. Opaque; hand it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "board",
+                    "window",
+                    "entries",
+                    "nextCursor"
+                  ],
+                  "description": "A page of one window of a board."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:read"
+        ]
+      }
+    },
+    "/leaderboard/admin/boards/{board}/{instance}/entries/{userId}/hide": {
+      "post": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "postLeaderboardAdminBoardsByBoardByInstanceEntriesByUserIdHide",
+        "summary": "Hide an entry from every read, with a reason.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose entry the act addresses.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A hide or unhide: the entry's window, an idempotency key, and a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act, such as a UUID. Sending the same key again answers what the first request did, and changes and emits nothing. The same key on a different act is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "Why, in the operator's words. Required, recorded in the entry's history and on the audit event."
+                  },
+                  "window": {
+                    "description": "The window the entry is in — the ISO key of a window, or `all` on an all-time board. Omit for the one open now.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "description": "A hide or unhide: the entry's window, an idempotency key, and a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A moderation act's outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "act": {
+                      "type": "string",
+                      "enum": [
+                        "hide",
+                        "unhide",
+                        "correct"
+                      ],
+                      "description": "What was done."
+                    },
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window the entry is in."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player whose entry it is."
+                    },
+                    "before": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act found. On a correction, the original score."
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act left."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason the act was recorded with."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "False when the entry was already where the act asked to put it. Nothing was written or emitted."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key was seen before, and this is the first request's answer."
+                    },
+                    "ranks": {
+                      "type": "string",
+                      "enum": [
+                        "live",
+                        "next-refresh"
+                      ],
+                      "description": "When ranks reflect the act: `live` on the next read, or `next-refresh` when the board's stored rank is renumbered by its next refresh pass, a closed window's included."
+                    }
+                  },
+                  "required": [
+                    "act",
+                    "board",
+                    "window",
+                    "userId",
+                    "before",
+                    "after",
+                    "reason",
+                    "changed",
+                    "replayed",
+                    "ranks"
+                  ],
+                  "description": "A moderation act's outcome."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:moderate"
+        ]
+      }
+    },
+    "/leaderboard/admin/boards/{board}/{instance}/entries/{userId}/unhide": {
+      "post": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "postLeaderboardAdminBoardsByBoardByInstanceEntriesByUserIdUnhide",
+        "summary": "Put a hidden entry back on the board, with a reason.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose entry the act addresses.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A hide or unhide: the entry's window, an idempotency key, and a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act, such as a UUID. Sending the same key again answers what the first request did, and changes and emits nothing. The same key on a different act is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "Why, in the operator's words. Required, recorded in the entry's history and on the audit event."
+                  },
+                  "window": {
+                    "description": "The window the entry is in — the ISO key of a window, or `all` on an all-time board. Omit for the one open now.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason"
+                ],
+                "description": "A hide or unhide: the entry's window, an idempotency key, and a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A moderation act's outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "act": {
+                      "type": "string",
+                      "enum": [
+                        "hide",
+                        "unhide",
+                        "correct"
+                      ],
+                      "description": "What was done."
+                    },
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window the entry is in."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player whose entry it is."
+                    },
+                    "before": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act found. On a correction, the original score."
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act left."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason the act was recorded with."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "False when the entry was already where the act asked to put it. Nothing was written or emitted."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key was seen before, and this is the first request's answer."
+                    },
+                    "ranks": {
+                      "type": "string",
+                      "enum": [
+                        "live",
+                        "next-refresh"
+                      ],
+                      "description": "When ranks reflect the act: `live` on the next read, or `next-refresh` when the board's stored rank is renumbered by its next refresh pass, a closed window's included."
+                    }
+                  },
+                  "required": [
+                    "act",
+                    "board",
+                    "window",
+                    "userId",
+                    "before",
+                    "after",
+                    "reason",
+                    "changed",
+                    "replayed",
+                    "ranks"
+                  ],
+                  "description": "A moderation act's outcome."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:moderate"
+        ]
+      }
+    },
+    "/leaderboard/admin/boards/{board}/{instance}/entries/{userId}/correct": {
+      "post": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "postLeaderboardAdminBoardsByBoardByInstanceEntriesByUserIdCorrect",
+        "summary": "Correct an entry's score, with a reason. The original is kept.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose entry the act addresses.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A score correction: the entry's window, the new score, an idempotency key, and a reason.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "A key the client mints once per act, such as a UUID. Sending the same key again answers what the first request did, and changes and emits nothing. The same key on a different act is refused."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "Why, in the operator's words. Required, recorded in the entry's history and on the audit event."
+                  },
+                  "window": {
+                    "description": "The window the entry is in — the ISO key of a window, or `all` on an all-time board. Omit for the one open now.",
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "number",
+                    "description": "The score the entry should hold. Held to the board's `min` and `max`, as a submission is."
+                  }
+                },
+                "required": [
+                  "idempotencyKey",
+                  "reason",
+                  "score"
+                ],
+                "description": "A score correction: the entry's window, the new score, an idempotency key, and a reason."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A moderation act's outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "act": {
+                      "type": "string",
+                      "enum": [
+                        "hide",
+                        "unhide",
+                        "correct"
+                      ],
+                      "description": "What was done."
+                    },
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window the entry is in."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The player whose entry it is."
+                    },
+                    "before": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act found. On a correction, the original score."
+                    },
+                    "after": {
+                      "type": "object",
+                      "properties": {
+                        "score": {
+                          "type": "number",
+                          "description": "The entry's score."
+                        },
+                        "visible": {
+                          "type": "boolean",
+                          "description": "Whether the player consents to appear."
+                        },
+                        "hidden": {
+                          "type": "boolean",
+                          "description": "Whether a moderator has hidden the entry."
+                        }
+                      },
+                      "required": [
+                        "score",
+                        "visible",
+                        "hidden"
+                      ],
+                      "description": "What the act left."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "description": "The reason the act was recorded with."
+                    },
+                    "changed": {
+                      "type": "boolean",
+                      "description": "False when the entry was already where the act asked to put it. Nothing was written or emitted."
+                    },
+                    "replayed": {
+                      "type": "boolean",
+                      "description": "True when this idempotency key was seen before, and this is the first request's answer."
+                    },
+                    "ranks": {
+                      "type": "string",
+                      "enum": [
+                        "live",
+                        "next-refresh"
+                      ],
+                      "description": "When ranks reflect the act: `live` on the next read, or `next-refresh` when the board's stored rank is renumbered by its next refresh pass, a closed window's included."
+                    }
+                  },
+                  "required": [
+                    "act",
+                    "board",
+                    "window",
+                    "userId",
+                    "before",
+                    "after",
+                    "reason",
+                    "changed",
+                    "replayed",
+                    "ranks"
+                  ],
+                  "description": "A moderation act's outcome."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:moderate"
+        ]
+      }
+    },
+    "/leaderboard/admin/families/{family}/instances": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardAdminFamiliesByFamilyInstances",
+        "summary": "List a family's instances, paged, by key.",
+        "parameters": [
+          {
+            "name": "family",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the family to list, such as `level` for the pattern `level/:levelId`. A shape check only; whether it is configured is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Where to resume, from the previous page's `nextCursor`. Opaque; a malformed one is a first page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many instances to return, from 1 to 100. Defaults to a page a dashboard can render.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of one family's instances: every one that has taken an entry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "family": {
+                      "type": "string",
+                      "description": "The family's prefix."
+                    },
+                    "instances": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "The instance's board key, `<family>/<id>`. What the entry routes take as `:board/:instance`."
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the instance took its first entry, ISO-8601."
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "createdAt"
+                        ],
+                        "description": "One instance of a board family."
+                      },
+                      "description": "The family's instances, by key."
+                    },
+                    "nextCursor": {
+                      "description": "Where the next page resumes, or null at the last instance. Opaque; hand it back verbatim.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "family",
+                    "instances",
+                    "nextCursor"
+                  ],
+                  "description": "A page of one family's instances: every one that has taken an entry."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:entries:read"
+        ]
+      }
+    },
     "/leaderboard/admin/locks/{name}/clear": {
       "post": {
         "tags": [
@@ -21311,7 +22351,7 @@
         "summary": "List the configured boards.",
         "responses": {
           "200": {
-            "description": "The configured boards.",
+            "description": "The configured boards and families.",
             "content": {
               "application/json": {
                 "schema": {
@@ -21378,13 +22418,88 @@
                         ],
                         "description": "One configured board."
                       },
-                      "description": "Every board this Worker serves."
+                      "description": "Every board this Worker serves by a fixed key."
+                    },
+                    "families": {
+                      "description": "Every board family this Worker serves. Absent from a Worker on a release before families.",
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "string",
+                                "description": "The family's prefix. An instance is the board `<key>/<id>`, addressed at `/leaderboard/<key>/<id>`."
+                              },
+                              "store": {
+                                "type": "string",
+                                "description": "Where the board's entries live. Always `d1` today."
+                              },
+                              "direction": {
+                                "type": "string",
+                                "description": "`desc` when a higher score ranks first, `asc` when a lower one does."
+                              },
+                              "aggregation": {
+                                "type": "string",
+                                "description": "How repeat submissions combine: `best`, `latest` or `sum`."
+                              },
+                              "window": {
+                                "description": "The UTC CRON expression marking where each window opens, or null for an all-time board.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "tiers": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "key": {
+                                      "type": "string",
+                                      "description": "The tier's key."
+                                    },
+                                    "from": {
+                                      "type": "number",
+                                      "description": "The score at which the tier begins, inclusive, read in the board's direction."
+                                    }
+                                  },
+                                  "required": [
+                                    "key",
+                                    "from"
+                                  ],
+                                  "description": "One tier."
+                                },
+                                "description": "The board's tiers, worst to best. Empty when it has none."
+                              },
+                              "pattern": {
+                                "type": "string",
+                                "description": "The family's key pattern, such as `level/:levelId`."
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "store",
+                              "direction",
+                              "aggregation",
+                              "window",
+                              "tiers",
+                              "pattern"
+                            ],
+                            "description": "One configured board family: the shape every board in it shares."
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
                     "boards"
                   ],
-                  "description": "The configured boards."
+                  "description": "The configured boards and families."
                 }
               }
             }
@@ -22241,6 +23356,920 @@
         ]
       }
     },
+    "/leaderboard/{board}/{instance}/segment": {
+      "post": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "postLeaderboardByBoardByInstanceSegment",
+        "summary": "Rank a segment of players, such as a friends list.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A friends or cohort view of a board.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userIds": {
+                    "minItems": 1,
+                    "maxItems": 80,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": "The players to rank among — a friends list or any cohort. A collection dimension over the same store, not a second board."
+                  },
+                  "limit": {
+                    "default": 20,
+                    "description": "How many entries to return.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "offset": {
+                    "default": 0,
+                    "description": "How many entries to skip.",
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "window": {
+                    "description": "Which window to read; omit for the one open now.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "userIds"
+                ],
+                "description": "A friends or cohort view of a board."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A page of ranked entries from one board and window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window this page reads: the key of a scheduled window, or `all` for an all-time board."
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The player's id, from `@pithy-sh/auth`."
+                          },
+                          "score": {
+                            "type": "number",
+                            "description": "The player's score in this window, after the board's aggregation."
+                          },
+                          "achievedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the score that counts was recorded, ISO-8601."
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Position on the board, from 1. Ties share a rank."
+                          },
+                          "tier": {
+                            "description": "The tier the score falls in, or null when the board has no tiers.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "score",
+                          "achievedAt",
+                          "rank",
+                          "tier"
+                        ],
+                        "description": "One ranked player on a board."
+                      },
+                      "description": "The entries, best first."
+                    }
+                  },
+                  "required": [
+                    "board",
+                    "window",
+                    "entries"
+                  ],
+                  "description": "A page of ranked entries from one board and window."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/leaderboard/{board}/{instance}/top": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardByBoardByInstanceTop",
+        "summary": "Read the top of a board.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many entries to return, capped at 100 — a page, not the whole board.",
+            "schema": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "How many entries to skip. Ranks number from here.",
+            "schema": {
+              "default": 0,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of ranked entries from one board and window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window this page reads: the key of a scheduled window, or `all` for an all-time board."
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The player's id, from `@pithy-sh/auth`."
+                          },
+                          "score": {
+                            "type": "number",
+                            "description": "The player's score in this window, after the board's aggregation."
+                          },
+                          "achievedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the score that counts was recorded, ISO-8601."
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Position on the board, from 1. Ties share a rank."
+                          },
+                          "tier": {
+                            "description": "The tier the score falls in, or null when the board has no tiers.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "score",
+                          "achievedAt",
+                          "rank",
+                          "tier"
+                        ],
+                        "description": "One ranked player on a board."
+                      },
+                      "description": "The entries, best first."
+                    }
+                  },
+                  "required": [
+                    "board",
+                    "window",
+                    "entries"
+                  ],
+                  "description": "A page of ranked entries from one board and window."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ],
+        "x-pithy-operation": "instances.top.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
+      }
+    },
+    "/leaderboard/{board}/{instance}/me": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardByBoardByInstanceMe",
+        "summary": "Read the caller's own rank.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own standing on a board.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window read."
+                    },
+                    "userId": {
+                      "type": "string",
+                      "description": "The caller's id."
+                    },
+                    "score": {
+                      "type": "number",
+                      "description": "The caller's score in this window."
+                    },
+                    "rank": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "The caller's position, from 1, or null while it is not ranked yet."
+                    },
+                    "tier": {
+                      "description": "The caller's tier, or null when the board has no tiers.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "visible": {
+                      "type": "boolean",
+                      "description": "Whether the caller appears to other players. False after they opted out."
+                    },
+                    "rankStale": {
+                      "type": "boolean",
+                      "description": "True when `rank` came from the stored column and may lag the score beside it."
+                    }
+                  },
+                  "required": [
+                    "board",
+                    "window",
+                    "userId",
+                    "score",
+                    "rank",
+                    "tier",
+                    "visible",
+                    "rankStale"
+                  ],
+                  "description": "The caller's own standing on a board."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ],
+        "x-pithy-operation": "instances.rank.read",
+        "x-pithy-tool": {
+          "effect": null
+        }
+      }
+    },
+    "/leaderboard/{board}/{instance}/around": {
+      "get": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "getLeaderboardByBoardByInstanceAround",
+        "summary": "Read the players ranked around the caller.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "radius",
+            "in": "query",
+            "required": false,
+            "description": "How many entries to return either side of the player.",
+            "schema": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 25
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of ranked entries from one board and window.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "board": {
+                      "type": "string",
+                      "description": "The board's key."
+                    },
+                    "window": {
+                      "type": "string",
+                      "description": "The window this page reads: the key of a scheduled window, or `all` for an all-time board."
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string",
+                            "description": "The player's id, from `@pithy-sh/auth`."
+                          },
+                          "score": {
+                            "type": "number",
+                            "description": "The player's score in this window, after the board's aggregation."
+                          },
+                          "achievedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the score that counts was recorded, ISO-8601."
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "description": "Position on the board, from 1. Ties share a rank."
+                          },
+                          "tier": {
+                            "description": "The tier the score falls in, or null when the board has no tiers.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "score",
+                          "achievedAt",
+                          "rank",
+                          "tier"
+                        ],
+                        "description": "One ranked player on a board."
+                      },
+                      "description": "The entries, best first."
+                    }
+                  },
+                  "required": [
+                    "board",
+                    "window",
+                    "entries"
+                  ],
+                  "description": "A page of ranked entries from one board and window."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/leaderboard/{board}/{instance}/me/visibility": {
+      "put": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "putLeaderboardByBoardByInstanceMeVisibility",
+        "summary": "Show or hide the caller's own entry.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A player's own consent to be shown. Theirs to set — a submission never resets it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "visible": {
+                    "type": "boolean",
+                    "description": "Whether this player consents to appear on the board. Gates every read, including segments."
+                  }
+                },
+                "required": [
+                  "visible"
+                ],
+                "description": "A player's own consent to be shown. Theirs to set — a submission never resets it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's visibility was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "visible": {
+                      "type": "boolean",
+                      "description": "The caller's visibility, as now stored."
+                    }
+                  },
+                  "required": [
+                    "visible"
+                  ],
+                  "description": "The caller's visibility was set."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ]
+      }
+    },
+    "/leaderboard/{board}/{instance}/entries/{userId}/hidden": {
+      "put": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "putLeaderboardByBoardByInstanceEntriesByUserIdHidden",
+        "summary": "Hide or restore another player's entry.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose entry a moderation route targets. Bounded in length, not in charset — player ids are minted by your auth provider, so we cap what reaches the store rather than guess its format.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A moderator's hide toggle. Separate from player consent so a player cannot undo it.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "hidden": {
+                    "type": "boolean",
+                    "description": "Whether to hide this entry from every read. The score is kept, not deleted."
+                  }
+                },
+                "required": [
+                  "hidden"
+                ],
+                "description": "A moderator's hide toggle. Separate from player consent so a player cannot undo it."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The entry's moderation state was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hidden": {
+                      "type": "boolean",
+                      "description": "Whether the entry is now hidden from other players."
+                    }
+                  },
+                  "required": [
+                    "hidden"
+                  ],
+                  "description": "The entry's moderation state was set."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:admin"
+        ]
+      }
+    },
+    "/leaderboard/{board}/{instance}/entries/{userId}": {
+      "delete": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "deleteLeaderboardByBoardByInstanceEntriesByUserId",
+        "summary": "Remove another player's entry.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The player whose entry a moderation route targets. Bounded in length, not in charset — player ids are minted by your auth provider, so we cap what reaches the store rather than guess its format.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Which window to read — the ISO key of a closed window, or omit for the one open now. Reading your own history is the point: these windows live in your D1 for as long as `retain` says, which no platform SDK offers.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The entry was removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "boolean",
+                      "description": "Always true: the entry existed and is gone. An entry that does not exist is a 404, `leaderboard/entry_not_found`."
+                    }
+                  },
+                  "required": [
+                    "removed"
+                  ],
+                  "description": "The entry was removed."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:admin"
+        ]
+      }
+    },
     "/leaderboard/{board}": {
       "post": {
         "tags": [
@@ -22260,6 +24289,103 @@
               "minLength": 1,
               "maxLength": 64,
               "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A score submission. The player, the window, and the timestamp are all server-derived.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "description": "The score to submit. Folded into the player's entry by the board's aggregation."
+                  }
+                },
+                "required": [
+                  "score"
+                ],
+                "description": "A score submission. The player, the window, and the timestamp are all server-derived."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The score was recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "window": {
+                      "type": "string",
+                      "description": "The window the score was recorded in."
+                    }
+                  },
+                  "required": [
+                    "window"
+                  ],
+                  "description": "The score was recorded."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "bearer",
+          "session"
+        ],
+        "x-pithy-scopes": [
+          "leaderboard:submit"
+        ]
+      }
+    },
+    "/leaderboard/{board}/{instance}": {
+      "post": {
+        "tags": [
+          "leaderboard"
+        ],
+        "operationId": "postLeaderboardByBoardByInstance",
+        "summary": "Submit a score.",
+        "description": "Requires the submit scope while `serverAuthoritative` is on, which is the default.",
+        "parameters": [
+          {
+            "name": "board",
+            "in": "path",
+            "required": true,
+            "description": "The prefix of the board family the route addresses, such as `level` for the pattern `level/:levelId`.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
+          },
+          {
+            "name": "instance",
+            "in": "path",
+            "required": true,
+            "description": "The id half of an instance key, such as `abc` in `level/abc`: letters, digits, dashes and underscores, up to 64 characters, and never `segment`. A shape check only; whether `:board` names a family is the handler's 404.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
             }
           }
         ],

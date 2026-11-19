@@ -21,6 +21,7 @@ import { readOptionalFile } from "../project/readOptionalFile";
 import { withRollback } from "../project/rollback";
 import { pathExists, WORKER_NAME } from "../project/scaffold";
 import { workerDirName } from "../project/workerIdentity";
+import { BUNFIG, withHoistedLinker } from "./bunfig";
 import type { UiAddOptions, UiAddReport, UiSyncReport } from "./flow";
 import { importedKitPackages, kitRangesFor } from "./kitRanges";
 import {
@@ -170,12 +171,20 @@ async function perEnvironment(
 }
 
 /** Every file a native add may create or edit, absolute — what a failure has to put back. */
-function touchedPaths(appDir: string, planned: Record<string, string>): string[] {
+function touchedPaths(projectDir: string, appDir: string, planned: Record<string, string>): string[] {
   return [
     ...Object.keys(planned).map((rel) => join(appDir, rel)),
     join(appDir, "pithy.worker.jsonc"),
     join(appDir, "package.json"),
+    join(projectDir, BUNFIG),
   ];
+}
+
+/** Set the hoisted linker in the project root's `bunfig.toml`, keeping a linker the project already chose. */
+async function hoistInstall(projectDir: string): Promise<void> {
+  const path = join(projectDir, BUNFIG);
+  const next = withHoistedLinker(await readOptionalFile(path));
+  if (next !== null) await writeFileAtomic(path, next);
 }
 
 /**
@@ -264,6 +273,7 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
       await writeFileAtomic(join(at, "package.json"), starterPackage(app));
     await wireManifest(at, stub, packageManager, worker);
     const pkg = await wirePackage(projectDir, at, packaged);
+    await hoistInstall(projectDir);
     return { written, pkg };
   };
 
@@ -272,13 +282,16 @@ export async function runNativeUiAdd(options: UiAddOptions, stub: UiStub): Promi
   if (options.dryRun) {
     const run = await inShadow(options.projectDir, (shadow) => {
       const at = shadow.at(appDir);
-      return withRollback({ root: shadow.root, paths: touchedPaths(at, files) }, () => write(shadow.root, at));
+      return withRollback({ root: shadow.root, paths: touchedPaths(shadow.root, at, files) }, () =>
+        write(shadow.root, at),
+      );
     });
     result = run.result;
     planned = { ...emptyPlan(), files: run.files, notes: run.notes };
   } else {
-    result = await withRollback({ root: options.projectDir, paths: touchedPaths(appDir, files) }, () =>
-      write(options.projectDir, appDir),
+    result = await withRollback(
+      { root: options.projectDir, paths: touchedPaths(options.projectDir, appDir, files) },
+      () => write(options.projectDir, appDir),
     );
   }
 

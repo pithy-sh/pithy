@@ -8,14 +8,15 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { moderateEntry } from "../admin/moderate";
+import { assertBoardDefinition } from "../board/registry";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
-import { type LeaderboardBoard, LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
+import { type LeaderboardBoard, LeaderboardConfig, type LeaderboardConfigInput, resolveBoard } from "../config/config";
 import { LEADERBOARD_STALE_WINDOWS_TABLE, leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
 import { LEADERBOARD_MIGRATIONS } from "../migrations/all";
 import { windowKeyAt } from "../window/schedule";
 import { RANK_CHUNK_SIZE } from "./materialize";
-import { runRankPass } from "./worker";
+import { RankPassContinuation, runRankPass } from "./worker";
 
 const NOW = new Date("2026-07-16T12:00:00.000Z");
 const DAILY = "0 0 * * *";
@@ -87,6 +88,64 @@ beforeEach(async () => {
 });
 
 describe("runRankPass", () => {
+  test("prunes and ranks a family's instances as it does a configured board", async () => {
+    const c = config({
+      boards: [{ key: "b1", direction: "desc" }],
+      families: [{ pattern: "level/:levelId", direction: "asc", window: DAILY, retain: 1 }],
+      rank: { materialize: "0 * * * *" },
+    });
+    const db = leaderboardDatabase(env.DB);
+    const instance = resolveBoard(c, "level/abc");
+    if (!instance) throw new Error("expected level/abc to resolve");
+    // The first accepted submission records the instance, as the submit handler does.
+    await assertBoardDefinition(db, instance, NOW);
+    const store = entryStore(db);
+    for (let i = 0; i < 4; i++) {
+      const day = new Date(NOW.getTime() - i * 86_400_000);
+      await store.submit(instance, windowKeyAt(DAILY, day), "u1", 30 + i, day, true);
+    }
+    await store.submit(instance, windowKeyAt(DAILY, NOW), "u2", 20, NOW, true);
+    const result = await runRankPass(env.DB, c, NOW);
+    expect(result.pruned).toEqual({ state: "pruned", deleted: 2 });
+    expect(result.refreshed).toEqual([
+      expect.objectContaining({ state: "refreshed", board: "b1", ranked: 0 }),
+      expect.objectContaining({ state: "refreshed", board: "level/abc", window: windowKeyAt(DAILY, NOW), ranked: 2 }),
+    ]);
+    const { results } = await env.DB.prepare(
+      "SELECT user_id, rank FROM pithy_leaderboard_entries WHERE board_id = 'level/abc' AND window_key = ? ORDER BY rank",
+    )
+      .bind(windowKeyAt(DAILY, NOW))
+      .all<{ user_id: string; rank: number }>();
+    expect(results).toEqual([
+      { user_id: "u2", rank: 1 },
+      { user_id: "u1", rank: 2 },
+    ]);
+  });
+
+  test("walks the instances a page at a time and reaches every one of them", async () => {
+    const c = config({
+      boards: [{ key: "b1", direction: "desc" }],
+      families: [{ pattern: "level/:levelId", direction: "desc" }],
+      rank: { materialize: "0 * * * *" },
+    });
+    const db = leaderboardDatabase(env.DB);
+    const store = entryStore(db);
+    const keys = ["level/a", "level/b", "level/c"];
+    for (const key of keys) {
+      const instance = resolveBoard(c, key);
+      if (!instance) throw new Error(`expected ${key} to resolve`);
+      await assertBoardDefinition(db, instance, NOW);
+      await store.submit(instance, "all", "u1", 10, NOW, true);
+    }
+    const result = await runRankPass(env.DB, c, NOW, 1);
+    expect(result.pruned).toEqual({ state: "pruned", deleted: 0 });
+    expect(result.refreshed.map((r) => [r.board, r.state])).toEqual([
+      ["b1", "refreshed"],
+      ...keys.map((key) => [key, "refreshed"]),
+    ]);
+    expect(result.refreshed.slice(1)).toEqual(keys.map(() => expect.objectContaining({ ranked: 1 })));
+  });
+
   test("prunes closed windows past retain, even when rank is live", async () => {
     // Retention is why a live board set with windows still deploys this worker.
     const c = config({ boards: [{ key: "b1", direction: "desc", window: DAILY, retain: 1 }] });
@@ -246,7 +305,7 @@ describe("runRankPass", () => {
   });
 
   /**
-   * The #371 gate. One board's refresh throws; the pass keeps every sibling and the sweep beside them.
+   * One board's refresh throws; the pass keeps every sibling and the sweep beside them.
    *
    * Asserted on the value in both directions the issue asks for: the sibling board's numbers are still
    * there (it was not blanked), and the sick board does not read as a board that ranked nobody.
@@ -284,5 +343,14 @@ describe("runRankPass", () => {
     const c = config({ boards: [{ key: "b1", direction: "desc" }] });
     await entryStore(leaderboardDatabase(env.DB)).submit(boardAt(c, 0), "all", "u1", 10, NOW, true);
     expect(await runRankPass(env.DB, c, NOW)).toEqual({ pruned: { state: "pruned", deleted: 0 }, refreshed: [] });
+  });
+});
+
+describe("RankPassContinuation", () => {
+  test("reads the params one run hands the next, and nothing a cron fire carries", () => {
+    const params = { holder: "h", nowMs: NOW.getTime(), after: "level/a", run: 1 };
+    expect(RankPassContinuation.parse(params)).toEqual(params);
+    expect(RankPassContinuation.safeParse(undefined).success).toBe(false);
+    expect(RankPassContinuation.safeParse({}).success).toBe(false);
   });
 });

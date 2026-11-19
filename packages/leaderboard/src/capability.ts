@@ -30,7 +30,7 @@ export interface LeaderboardCapability extends Capability {
   /**
    * What a capability composed beside this one publishes through — `multiplayer`, submitting a session's
    * result to a board. Found in its `compose` hook, so it never imports this package and a project without it
-   * bundles multiplayer (#645). See `peer.ts`.
+   * bundles multiplayer. See `peer.ts`.
    */
   leaderboardPeer: LeaderboardPeer;
 }
@@ -69,7 +69,7 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
     // The package this capability ships in and the version it ships at, both stamped by
     // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
     // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
-    // version alone leaves a client guessing the key (#626).
+    // version alone leaves a client guessing the key.
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     requiredBindings,
@@ -83,14 +83,14 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
       },
     },
     routes,
-    // The management surface a client composes its calls from, with the mount path actually used (#817).
+    // The management surface a client composes its calls from, with the mount path actually used.
     adminRoutes: leaderboardAdminRoutes(mountPath),
     // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
-    // this config mounted — a gate the config switched off is not here (#560).
+    // this config mounted — a gate the config switched off is not here.
     scopeGates: scopeGatesOf(routes),
     seeds: [leaderboardExampleSeed],
     // A person's entries: exported on an access request and erased by their purge, as its own step in the adopter's
-    // Worker (#814).
+    // Worker.
     purge: [leaderboardUserPurge()],
   });
 
@@ -106,10 +106,13 @@ export function isLeaderboardCapability(capability: Capability): capability is L
  *
  * Two things need it: materialized rank (the refresh), and configured retention (the prune). Retention
  * now defaults to keep-all, so a windowed board only needs the worker if it actually sets `retain` or
- * `retainDays` — a board that keeps everything has nothing to prune. A live, keep-all board set needs no
+ * `retainDays` — a board that keeps everything has nothing to prune. A family's retention applies to every
+ * instance of it, so a family that sets one needs the worker too. A live, keep-all board set needs no
  * worker at all.
  */
 export function needsRankWorker(config: LeaderboardConfig): boolean {
   if (materializeSchedule(config) !== undefined) return true;
-  return config.boards.some((board) => board.retain !== undefined || board.retainDays !== undefined);
+  return [...config.boards, ...config.families].some(
+    (board) => board.retain !== undefined || board.retainDays !== undefined,
+  );
 }

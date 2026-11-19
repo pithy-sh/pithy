@@ -562,6 +562,9 @@ export const DOCTOR_GATES: { readonly [K in keyof DoctorReport]-?: DoctorGate } 
     reportsOnly:
       "Where the install hoists, the import resolves and the tests pass; where it does not, the Workers tests that import it fail on their own.",
   },
+  expoReact: {
+    reportsOnly: "The React an Expo app resolves is the install's state, not a fault in the project's files.",
+  },
   duplicateCapabilities: {
     reportsOnly: "Both declarations install and resolve, so the drift between them has not happened yet.",
   },
